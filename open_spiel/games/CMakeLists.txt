@@ -197,6 +197,8 @@ set(GAME_SOURCES
   ultimate_tic_tac_toe/ultimate_tic_tac_toe.cc
   y/y.cc
   y/y.h
+  long_narde/long_narde.cc
+  long_narde/long_narde.h
 )
 
 if (${OPEN_SPIEL_BUILD_WITH_HANABI})
@@ -294,6 +296,10 @@ add_test(amazons_test amazons_test)
 add_executable(backgammon_test backgammon/backgammon_test.cc ${OPEN_SPIEL_OBJECTS}
                $<TARGET_OBJECTS:tests>)
 add_test(backgammon_test backgammon_test)
+
+add_executable(long_narde_test long_narde/long_narde_test.cc ${OPEN_SPIEL_OBJECTS}
+               $<TARGET_OBJECTS:tests>)
+add_test(long_narde_test long_narde_test)
 
 add_executable(bargaining_instance_generator bargaining/bargaining_instance_generator.cc
                ${OPEN_SPIEL_OBJECTS})
