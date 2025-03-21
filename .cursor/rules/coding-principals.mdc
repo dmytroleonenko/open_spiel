@@ -1,0 +1,57 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# We develop using TDD principle
+** Our intentions are all reflected in our tests. 
+** Our implementation only reflect our intentions (make our tetsts pass). 
+** If your task is to develop something you must break down the task to small testable pieces and create test cases first.
+** whatever function/method/class output is expected should be tested. Whatever edge case there might be - think on how to cover it with the test case that is ment to detect that edge case
+** if your task is to modify functionality you remove the old intentions (test cases) and replace them with the new test cases before you write any inplementation code.
+** When we modify our implementation we always run the test right away
+** Only failing test guide you how to modify the implementation and whether you have to do it. If test passes you never modify the implementation code.
+
+# avoiding hacks
+** Our implementations code must not contain any "hack" or workaround to make test pass. We treat our test as a ground truth of what to expect from the implementation
+** We make sure tests are passing by either implementing changes into our implementation code or checking if our test cases comply with our intentions
+** You must never ever hack the test case to pass if the actual implementation behaves not the way we expect. Test case sets the baseline. Our expectation. If we manipulate the test just for it to pass it kills the purpose.
+
+# temporary scripts
+** if you need to debug something, try something, find out with trial/error and the code is not ment to be the implementation of something you were tasked with you must create it under temporary_scripts/
+** when the code fulfilled its purpose you must delete it
+** try to use inline scripts when possible for that purpose and write script files only if the logic is complex enough to express it in the inline form
+
+
+# Coding style
+** you must code in snake_case in Python and CamelStyle in C++
+** you name functions with can_do_something, do_something in Python. Ex.: shift_data_array or can_read_file
+** Each method/function must have a docstring describing the function role and inputs/outputs with specified data types (for python)
+** In case the code writes a file you must document the format of the file. Test cases must validate if the code produces correct output format.
+** Code must be simple and readable
+** if the file is longer than 500 lines we should asses if it makes sense to split it into several files with distinct functionality
+** avoid code duplication. Reuse as much as possible
+** Functions/methods must not be longer than 50 lines. Otherwise they need to be simplified and broken up into smaller functions
+** avoid cascades of if/else conditions. Split into functions/methods. Make sure we test them properly in our test cases
+
+
+# Uncertanties
+** Whenever you are not sure what you were tasked with or there might be different interpretations of what I said you must ask a follow up question to clarify
+** If your are uncertain why certain portion of code doesn't work as expected and several tries to fix resulted in continious unexpected behaviour you must ask me to give you directions for further exploration
+
+# Answering questions
+** whenever I ask you about our code you must make sure you're responding with our implementation in mind
+** If your answer include general principles or algorithms you must clearly specify that. Like "Generally ....." or "Code might look like this ....".
+
+# Version control
+** Once you implemented something and all tee tests pass you must create a git commit
+** you must make sure that the files staged for commit never contain any of: logs, model weights, temporary data, learning data, benchmark raw data. Basically I want only code and documentation in git.
+
+# Python environments
+** you must make sure all our code dependencies are in the uv environment we created. Environment name corresponds with the project folder name. Create if doesn't exist.
+** Make sure we're within the uv environment for our project before executing python commands. Otherwise activate prior (with "source .venv/bin/activate")
+
+# TODO
+** Once you're tasked with something you must first create entries in the TODO.md
+** Once you brake up the task into a small action items [ ] you must go over them.
+** Once you finish an action item you must make sure the test pass and then you update the TODO.md marking it as done [*]
