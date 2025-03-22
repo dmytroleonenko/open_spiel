@@ -13,6 +13,8 @@ __pycache__/
 .venv
 venv/
 ENV/
+bin/
+lib/
 
  # OSX specific
 .DS_Store
@@ -60,3 +62,9 @@ Package.resolved
 # Visual Studio generated files
 open_spiel/.vs
 /.env
+lib64
+pyvenv.cfg
+
+# Python pip specific
+*.egg-info/
+

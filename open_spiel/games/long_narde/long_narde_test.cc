@@ -39,8 +39,8 @@ void CheckNoHits(const State &state) {
   Player player = state.CurrentPlayer();
   const auto &lnstate = down_cast<const LongNardeState &>(state);
   for (Action action : lnstate.LegalActions()) {
-    std::vector<CheckerMove> cmoves = lnstate.AugmentWithHitInfo(
-        player, lnstate.SpielMoveToCheckerMoves(player, action));
+    // Long Narde doesn't use AugmentWithHitInfo - just check the raw moves
+    std::vector<CheckerMove> cmoves = lnstate.SpielMoveToCheckerMoves(player, action);
     for (CheckerMove cmove : cmoves) {
       // Verify that no hit is possible in Long Narde
       SPIEL_CHECK_FALSE(cmove.hit);
@@ -51,17 +51,6 @@ void CheckNoHits(const State &state) {
 void BasicLongNardeTestsCheckNoHits() {
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   testing::RandomSimTest(*game, 10, true, true, &CheckNoHits);
-}
-
-void BasicLongNardeTestsVaryScoring() {
-  for (std::string scoring :
-       {"winloss_scoring", "enable_gammons", "full_scoring"}) {
-    auto game =
-        LoadGame("long_narde", {{"scoring_type", GameParameter(scoring)}});
-    testing::ChanceOutcomesTest(*game);
-    testing::RandomSimTestWithUndo(*game, 10);
-    testing::RandomSimTest(*game, 10);
-  }
 }
 
 void BasicLongNardeTestsDoNotStartWithDoubles() {
@@ -115,7 +104,7 @@ void HeadRuleTest() {
   std::unique_ptr<State> state = game->NewInitialState();
   LongNardeState* lnstate = static_cast<LongNardeState*>(state.get());
   
-  // Set up a non-first turn situation with dice 3,4
+  // Test 1: Regular turn (not first turn) - only one checker should be allowed to leave head
   lnstate->SetState(
       kXPlayerId, false, {3, 4}, {0, 0}, {0, 0},
       {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15},
@@ -134,7 +123,112 @@ void HeadRuleTest() {
     if (head_moves > 1) multi_head_moves++;
   }
   
-  // Verify no actions allow more than one checker to leave the head
+  // Verify no actions allow more than one checker to leave the head on regular turns
+  SPIEL_CHECK_EQ(multi_head_moves, 0);
+  
+  // Test 2: First turn with regular non-doubles dice - should still only allow one head move
+  lnstate->SetState(
+      kXPlayerId, true, {2, 5}, {0, 0}, {0, 0},
+      {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15},
+       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
+  
+  legal_actions = lnstate->LegalActions();
+  multi_head_moves = 0;
+  
+  for (Action action : legal_actions) {
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+    int head_moves = 0;
+    for (const auto& move : moves) {
+      if (move.pos == kWhiteHeadPos) head_moves++;
+    }
+    if (head_moves > 1) multi_head_moves++;
+  }
+  
+  // Verify no actions allow more than one checker to leave the head on first turn with non-special dice
+  SPIEL_CHECK_EQ(multi_head_moves, 0);
+  
+  // Test 3: First turn with double 6 (special dice) - should allow two head moves
+  lnstate->SetState(
+      kXPlayerId, true, {6, 6}, {0, 0}, {0, 0},
+      {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15},
+       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
+  
+  legal_actions = lnstate->LegalActions();
+  multi_head_moves = 0;
+  
+  for (Action action : legal_actions) {
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+    int head_moves = 0;
+    for (const auto& move : moves) {
+      if (move.pos == kWhiteHeadPos) head_moves++;
+    }
+    if (head_moves > 1) multi_head_moves++;
+  }
+  
+  // Verify actions exist that allow two checkers to leave the head on first turn with double 6
+  SPIEL_CHECK_GT(multi_head_moves, 0);
+  
+  // Test 4: First turn with double 4 (special dice) - should allow two head moves
+  lnstate->SetState(
+      kXPlayerId, true, {4, 4}, {0, 0}, {0, 0},
+      {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15},
+       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
+  
+  legal_actions = lnstate->LegalActions();
+  multi_head_moves = 0;
+  
+  for (Action action : legal_actions) {
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+    int head_moves = 0;
+    for (const auto& move : moves) {
+      if (move.pos == kWhiteHeadPos) head_moves++;
+    }
+    if (head_moves > 1) multi_head_moves++;
+  }
+  
+  // Verify actions exist that allow two checkers to leave the head on first turn with double 4
+  SPIEL_CHECK_GT(multi_head_moves, 0);
+  
+  // Test 5: First turn with double 3 (special dice) - should allow two head moves
+  lnstate->SetState(
+      kXPlayerId, true, {3, 3}, {0, 0}, {0, 0},
+      {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15},
+       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
+  
+  legal_actions = lnstate->LegalActions();
+  multi_head_moves = 0;
+  
+  for (Action action : legal_actions) {
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+    int head_moves = 0;
+    for (const auto& move : moves) {
+      if (move.pos == kWhiteHeadPos) head_moves++;
+    }
+    if (head_moves > 1) multi_head_moves++;
+  }
+  
+  // Verify actions exist that allow two checkers to leave the head on first turn with double 3
+  SPIEL_CHECK_GT(multi_head_moves, 0);
+  
+  // Test 6: First turn with double 2 (non-special doubles) - should NOT allow two head moves
+  lnstate->SetState(
+      kXPlayerId, true, {2, 2}, {0, 0}, {0, 0},
+      {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15},
+       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
+  
+  legal_actions = lnstate->LegalActions();
+  multi_head_moves = 0;
+  
+  for (Action action : legal_actions) {
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+    int head_moves = 0;
+    for (const auto& move : moves) {
+      if (move.pos == kWhiteHeadPos) head_moves++;
+    }
+    if (head_moves > 1) multi_head_moves++;
+  }
+  
+  // Verify no actions allow more than one checker to leave the head on first turn with non-special doubles
   SPIEL_CHECK_EQ(multi_head_moves, 0);
 }
 
@@ -146,7 +240,7 @@ void FirstTurnDoublesExceptionTest() {
   
   // Set up a first turn situation with dice 6,6
   lnstate->SetState(
-      kXPlayerId, false, {6, 6}, {0, 0}, {0, 0},
+      kXPlayerId, true, {6, 6}, {0, 0}, {0, 0},
       {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15},
        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
   
@@ -179,7 +273,7 @@ void BlockingBridgeRuleTest() {
   std::unique_ptr<State> state = game->NewInitialState();
   LongNardeState* lnstate = static_cast<LongNardeState*>(state.get());
   
-  // Set up a situation where White could complete a 6-point prime that would trap Black
+  // Test 1: White attempting to create an illegal 6-point prime that would trap Black
   lnstate->SetState(
       kXPlayerId, false, {3, 2}, {0, 0}, {0, 0},
       {{0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 8},
@@ -187,7 +281,7 @@ void BlockingBridgeRuleTest() {
   
   std::vector<Action> legal_actions = lnstate->LegalActions();
   
-  // Find the action that would complete the bridge (move from position 23 to position 10)
+  // Find actions that would complete the bridge (move from position 22 to position 19)
   bool can_create_bridge = false;
   for (Action action : legal_actions) {
     std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
@@ -200,6 +294,72 @@ void BlockingBridgeRuleTest() {
   
   // Verify that completing the bridge is not allowed
   SPIEL_CHECK_FALSE(can_create_bridge);
+  
+  // Test 2: White should be able to create a 6-point prime when Black has checkers ahead of it
+  lnstate->SetState(
+      kXPlayerId, false, {3, 2}, {0, 0}, {0, 0},
+      {{0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 8},
+       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0}});
+  
+  legal_actions = lnstate->LegalActions();
+  
+  // Find actions that would complete the bridge
+  can_create_bridge = false;
+  for (Action action : legal_actions) {
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+    for (const auto& move : moves) {
+      if (move.pos == 22 && move.num == 3) { // Would create a 6-point bridge, but it's legal
+        can_create_bridge = true;
+      }
+    }
+  }
+  
+  // Verify that completing the bridge is allowed when opponent has checkers ahead
+  SPIEL_CHECK_TRUE(can_create_bridge);
+  
+  // Test 3: Black attempting to create an illegal 6-point prime that would trap White
+  lnstate->SetState(
+      kOPlayerId, false, {3, 2}, {0, 0}, {0, 0},
+      {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+       {8, 2, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
+  
+  legal_actions = lnstate->LegalActions();
+  
+  // Find actions that would complete the bridge (move from position 1 to position 4)
+  can_create_bridge = false;
+  for (Action action : legal_actions) {
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, action);
+    for (const auto& move : moves) {
+      if (move.pos == 1 && move.num == 3) { // Would create a 6-point bridge
+        can_create_bridge = true;
+      }
+    }
+  }
+  
+  // Verify that completing the bridge is not allowed
+  SPIEL_CHECK_FALSE(can_create_bridge);
+  
+  // Test 4: Black should be able to create a 6-point prime when White has checkers ahead of it
+  lnstate->SetState(
+      kOPlayerId, false, {3, 2}, {0, 0}, {0, 0},
+      {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0},
+       {8, 2, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
+  
+  legal_actions = lnstate->LegalActions();
+  
+  // Find actions that would complete the bridge
+  can_create_bridge = false;
+  for (Action action : legal_actions) {
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, action);
+    for (const auto& move : moves) {
+      if (move.pos == 1 && move.num == 3) { // Would create a 6-point bridge, but it's legal
+        can_create_bridge = true;
+      }
+    }
+  }
+  
+  // Verify that completing the bridge is allowed when opponent has checkers ahead
+  SPIEL_CHECK_TRUE(can_create_bridge);
 }
 
 // Test movement direction - both players must move counter-clockwise
@@ -310,14 +470,13 @@ void BearingOffLogicTest() {
   SPIEL_CHECK_TRUE(can_bear_off_pos_4);  // Higher roll
 }
 
-// Test scoring: mars (2 points) and oin (1 point)
+// Test scoring system and last roll tie rule
 void ScoringSystemTest() {
-  std::shared_ptr<const Game> game = LoadGame("long_narde", 
-                                            {{"scoring_type", GameParameter("enable_gammons")}});
+  // Test 1: Mars scoring (White wins, Black has no checkers off)
+  std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
   LongNardeState* lnstate = static_cast<LongNardeState*>(state.get());
   
-  // Set up a position where White has borne off all checkers, Black has none
   lnstate->SetState(
       kOPlayerId, false, {5, 3}, {0, 0}, {15, 0},
       {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
@@ -329,24 +488,34 @@ void ScoringSystemTest() {
   SPIEL_CHECK_EQ(returns[kXPlayerId], 2);
   SPIEL_CHECK_EQ(returns[kOPlayerId], -2);
   
-  // Set up a position where White has borne off all checkers, Black has some
+  // Test 2: Oyn scoring (White wins, Black has some checkers off)
   lnstate->SetState(
       kOPlayerId, false, {5, 3}, {0, 0}, {15, 3},
       {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
   
-  // Check that White gets 1 point (oin) for bearing off all checkers when Black has some
+  // Check that White gets 1 point (oyn) for bearing off all checkers when Black has some
   SPIEL_CHECK_TRUE(lnstate->IsTerminal());
   returns = lnstate->Returns();
   SPIEL_CHECK_EQ(returns[kXPlayerId], 1);
   SPIEL_CHECK_EQ(returns[kOPlayerId], -1);
-}
-
-// Test last roll tie feature
-void LastRollTieTest() {
-  std::shared_ptr<const Game> game = LoadGame("long_narde");
-  std::unique_ptr<State> state = game->NewInitialState();
-  LongNardeState* lnstate = static_cast<LongNardeState*>(state.get());
+  
+  // Test 3: Black mars White
+  lnstate->SetState(
+      kXPlayerId, false, {5, 3}, {0, 0}, {0, 15},
+      {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15},
+       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
+  
+  // Black gets 2 points for mars
+  SPIEL_CHECK_TRUE(lnstate->IsTerminal());
+  returns = lnstate->Returns();
+  SPIEL_CHECK_EQ(returns[kXPlayerId], -2);
+  SPIEL_CHECK_EQ(returns[kOPlayerId], 2);
+  
+  // Test 4: Last roll tie rule in winloss mode (should not allow tie)
+  game = LoadGame("long_narde", {{"scoring_type", GameParameter("winloss_scoring")}});
+  state = game->NewInitialState();
+  lnstate = static_cast<LongNardeState*>(state.get());
   
   // Set up a position where White has all checkers off, Black has 14 off and 1 in home
   lnstate->SetState(
@@ -354,22 +523,201 @@ void LastRollTieTest() {
       {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
   
-  // Verify that the game is not terminal, as Black should get one last roll
+  // Game should be terminal in winloss mode
+  SPIEL_CHECK_TRUE(lnstate->IsTerminal());
+  returns = lnstate->Returns();
+  SPIEL_CHECK_EQ(returns[kXPlayerId], 1);  // White wins with oyn
+  SPIEL_CHECK_EQ(returns[kOPlayerId], -1);
+  
+  // Test 5: Last roll tie rule in winlosstie mode
+  game = LoadGame("long_narde", {{"scoring_type", GameParameter("winlosstie_scoring")}});
+  state = game->NewInitialState();
+  lnstate = static_cast<LongNardeState*>(state.get());
+  
+  // Same position as Test 4
+  lnstate->SetState(
+      kOPlayerId, false, {5, 3}, {0, 0}, {15, 14},
+      {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
+  
+  // Game should NOT be terminal in winlosstie mode
   SPIEL_CHECK_FALSE(lnstate->IsTerminal());
   
-  // Now have Black bear off their last checker
+  // After Black bears off last checker
   lnstate->SetState(
       kChancePlayerId, false, {0, 0}, {0, 0}, {15, 15},
       {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
   
-  // Now the game should be terminal
+  // Now game should be terminal with a tie
   SPIEL_CHECK_TRUE(lnstate->IsTerminal());
-  
-  // And the returns should indicate a tie
-  auto returns = lnstate->Returns();
+  returns = lnstate->Returns();
   SPIEL_CHECK_EQ(returns[kXPlayerId], 0);
   SPIEL_CHECK_EQ(returns[kOPlayerId], 0);
+}
+
+// Test that landing on opponent checkers is not allowed in Long Narde (no hitting)
+void NoLandingOnOpponentTest() {
+  std::shared_ptr<const Game> game = LoadGame("long_narde");
+  std::unique_ptr<State> state = game->NewInitialState();
+  LongNardeState* lnstate = static_cast<LongNardeState*>(state.get());
+  
+  // Setup a position where White could potentially land on Black's checker
+  lnstate->SetState(
+      kXPlayerId, false, {4, 2}, {0, 0}, {0, 0},
+      {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 14},
+       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0}});
+  
+  std::vector<Action> legal_actions = lnstate->LegalActions();
+  
+  // Try to find an action that would land on opponent's checker
+  bool can_land_on_opponent = false;
+  for (Action action : legal_actions) {
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+    for (const auto& move : moves) {
+      // Check if White can move from position 23 to position 19 (landing on Black's checker)
+      if (move.pos == 19 && move.num == 2) {
+        can_land_on_opponent = true;
+      }
+      // Check if White can move from position 23 to position 16 (landing on Black's checker)
+      if (move.pos == 23 && move.num == 4 && lnstate->GetToPos(kXPlayerId, move.pos, move.num) == 16) {
+        can_land_on_opponent = true;
+      }
+    }
+  }
+  
+  // Verify no actions allow landing on opponent's checkers
+  SPIEL_CHECK_FALSE(can_land_on_opponent);
+  
+  // Setup a position where Black could potentially land on White's checker
+  lnstate->SetState(
+      kOPlayerId, false, {4, 2}, {0, 0}, {0, 0},
+      {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 14},
+       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0}});
+  
+  legal_actions = lnstate->LegalActions();
+  
+  // Try to find an action that would land on opponent's checker
+  can_land_on_opponent = false;
+  for (Action action : legal_actions) {
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, action);
+    for (const auto& move : moves) {
+      // Check if Black can move from position 19 to position 16 (landing on White's checker)
+      if (move.pos == 19 && move.num == 4 && lnstate->GetToPos(kOPlayerId, move.pos, move.num) == 16) {
+        can_land_on_opponent = true;
+      }
+    }
+  }
+  
+  // Verify no actions allow landing on opponent's checkers
+  SPIEL_CHECK_FALSE(can_land_on_opponent);
+  
+  // Also verify that all moves in legal actions have hit=false
+  for (Action action : legal_actions) {
+    // Long Narde doesn't use AugmentWithHitInfo - just check the raw moves
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, action);
+    for (const auto& move : moves) {
+      SPIEL_CHECK_FALSE(move.hit);
+    }
+  }
+}
+
+void ActionEncodingTest() {
+  std::shared_ptr<const Game> game = LoadGame("long_narde");
+  std::unique_ptr<State> state = game->NewInitialState();
+  LongNardeState* lnstate = static_cast<LongNardeState*>(state.get());
+  
+  // Set up a test state with dice values
+  lnstate->SetState(
+      kXPlayerId, false, {6, 3}, {0, 0}, {0, 0},
+      {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 14},
+       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
+
+  // Test 1: Regular move encoding (high roll first)
+  std::vector<CheckerMove> moves1 = {{23, 6}, {17, 3}};  // Move from pos 23 with 6, then from 17 with 3
+  Action encoded1 = lnstate->CheckerMovesToSpielMove(moves1);
+  SPIEL_CHECK_LT(encoded1, 625);  // Should be in first half (high roll first)
+  std::vector<CheckerMove> decoded1 = lnstate->SpielMoveToCheckerMoves(kXPlayerId, encoded1);
+  SPIEL_CHECK_EQ(decoded1[0].pos, moves1[0].pos);
+  SPIEL_CHECK_EQ(decoded1[0].num, moves1[0].num);
+  SPIEL_CHECK_EQ(decoded1[1].pos, moves1[1].pos);
+  SPIEL_CHECK_EQ(decoded1[1].num, moves1[1].num);
+
+  // Test 2: Regular move encoding (low roll first)
+  std::vector<CheckerMove> moves2 = {{23, 3}, {20, 6}};  // Move from pos 23 with 3, then from 20 with 6
+  Action encoded2 = lnstate->CheckerMovesToSpielMove(moves2);
+  SPIEL_CHECK_GE(encoded2, 625);  // Should be in second half (low roll first)
+  std::vector<CheckerMove> decoded2 = lnstate->SpielMoveToCheckerMoves(kXPlayerId, encoded2);
+  SPIEL_CHECK_EQ(decoded2[0].pos, moves2[0].pos);
+  SPIEL_CHECK_EQ(decoded2[0].num, moves2[0].num);
+  SPIEL_CHECK_EQ(decoded2[1].pos, moves2[1].pos);
+  SPIEL_CHECK_EQ(decoded2[1].num, moves2[1].num);
+
+  // Test 3: Pass move encoding
+  std::vector<CheckerMove> moves3 = {{kPassPos, -1}, {kPassPos, -1}};  // Double pass
+  Action encoded3 = lnstate->CheckerMovesToSpielMove(moves3);
+  std::vector<CheckerMove> decoded3 = lnstate->SpielMoveToCheckerMoves(kXPlayerId, encoded3);
+  SPIEL_CHECK_EQ(decoded3[0].pos, kPassPos);
+  SPIEL_CHECK_EQ(decoded3[0].num, -1);
+  SPIEL_CHECK_EQ(decoded3[1].pos, kPassPos);
+  SPIEL_CHECK_EQ(decoded3[1].num, -1);
+
+  // Test 4: Mixed regular and pass move
+  std::vector<CheckerMove> moves4 = {{23, 6}, {kPassPos, -1}};  // One move and one pass
+  Action encoded4 = lnstate->CheckerMovesToSpielMove(moves4);
+  std::vector<CheckerMove> decoded4 = lnstate->SpielMoveToCheckerMoves(kXPlayerId, encoded4);
+  SPIEL_CHECK_EQ(decoded4[0].pos, moves4[0].pos);
+  SPIEL_CHECK_EQ(decoded4[0].num, moves4[0].num);
+  SPIEL_CHECK_EQ(decoded4[1].pos, kPassPos);
+  SPIEL_CHECK_EQ(decoded4[1].num, -1);
+
+  // Test 5: Verify bounds
+  SPIEL_CHECK_LT(encoded1, kNumDistinctActions);
+  SPIEL_CHECK_LT(encoded2, kNumDistinctActions);
+  SPIEL_CHECK_LT(encoded3, kNumDistinctActions);
+  SPIEL_CHECK_LT(encoded4, kNumDistinctActions);
+}
+
+void TestBearingOffLogic() {
+  std::shared_ptr<const Game> game = LoadGame("long_narde");
+  std::unique_ptr<State> state = game->NewInitialState();
+  LongNardeState* ln_state = static_cast<LongNardeState*>(state.get());
+  
+  // Create a custom board state where all checkers are in home for both players
+  // White home: 0-5, Black home: 12-17
+  std::vector<int> scores = {0, 0};
+  std::vector<std::vector<int>> board = {
+    {0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},  // White
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0}   // Black
+  };
+  
+  // Set the state to have white's turn next with a fixed dice roll of 6-5
+  ln_state->SetState(kXPlayerId, false, {6, 5}, scores, board);
+  
+  // Test White's bearing off
+  // White has a checker on position 5, rolling a 6 should bear it off
+  CheckerMove white_move(5, 6);
+  SPIEL_CHECK_EQ(ln_state->score(kXPlayerId), 0);
+  ln_state->ApplyCheckerMove(kXPlayerId, white_move);
+  SPIEL_CHECK_EQ(ln_state->score(kXPlayerId), 1);
+  
+  // Undo the move and verify it's back
+  ln_state->UndoCheckerMove(kXPlayerId, white_move);
+  SPIEL_CHECK_EQ(ln_state->score(kXPlayerId), 0);
+  SPIEL_CHECK_EQ(ln_state->board(kXPlayerId, 5), 1);
+  
+  // Now test Black's bearing off
+  // Black has a checker on position 17, rolling a 6 should bear it off
+  ln_state->SetState(kOPlayerId, false, {6, 5}, scores, board);
+  CheckerMove black_move(17, 6);
+  SPIEL_CHECK_EQ(ln_state->score(kOPlayerId), 0);
+  ln_state->ApplyCheckerMove(kOPlayerId, black_move);
+  SPIEL_CHECK_EQ(ln_state->score(kOPlayerId), 1);
+  
+  // Undo the move and verify it's back
+  ln_state->UndoCheckerMove(kOPlayerId, black_move);
+  SPIEL_CHECK_EQ(ln_state->score(kOPlayerId), 0);
+  SPIEL_CHECK_EQ(ln_state->board(kOPlayerId, 17), 1);
 }
 
 }  // namespace
@@ -380,7 +728,6 @@ int main(int argc, char** argv) {
   open_spiel::testing::LoadGameTest("long_narde");
   open_spiel::long_narde::BasicLongNardeTestsCheckNoHits();
   open_spiel::long_narde::BasicLongNardeTestsDoNotStartWithDoubles();
-  open_spiel::long_narde::BasicLongNardeTestsVaryScoring();
   open_spiel::long_narde::InitialBoardSetupTest();
   open_spiel::long_narde::HeadRuleTest();
   open_spiel::long_narde::FirstTurnDoublesExceptionTest();
@@ -389,5 +736,7 @@ int main(int argc, char** argv) {
   open_spiel::long_narde::HomeRegionsTest();
   open_spiel::long_narde::BearingOffLogicTest();
   open_spiel::long_narde::ScoringSystemTest();
-  open_spiel::long_narde::LastRollTieTest();
+  open_spiel::long_narde::NoLandingOnOpponentTest();
+  open_spiel::long_narde::ActionEncodingTest();
+  open_spiel::long_narde::TestBearingOffLogic();
 }

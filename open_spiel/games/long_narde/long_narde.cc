@@ -78,9 +78,9 @@ const GameType kGameType{
     /*provides_information_state_tensor=*/false,
     /*provides_observation_string=*/true,
     /*provides_observation_tensor=*/true,
-    /*parameter_specification=*/
-    {{"scoring_type",
-      GameParameter(static_cast<std::string>(kDefaultScoringType))}}};
+    /*parameter_specification=*/{
+        {"scoring_type", GameParameter(std::string(kDefaultScoringType))}
+    }};
 
 static std::shared_ptr<const Game> Factory(const GameParameters& params) {
   return std::shared_ptr<const Game>(new LongNardeGame(params));
@@ -91,29 +91,11 @@ REGISTER_SPIEL_GAME(kGameType, Factory);
 RegisterSingleTensorObserver single_tensor(kGameType.short_name);
 }  // namespace
 
-ScoringType ParseScoringType(const std::string& st_str) {
-  if (st_str == "winloss_scoring") {
-    return ScoringType::kWinLossScoring;
-  } else if (st_str == "enable_gammons") {
-    return ScoringType::kEnableGammons;
-  } else if (st_str == "full_scoring") {
-    return ScoringType::kFullScoring;
-  } else {
-    SpielFatalError("Unrecognized scoring_type parameter: " + st_str);
-  }
-}
-
 std::string PositionToString(int pos) {
-  switch (pos) {
-    case kBarPos:
-      return "Bar";
-    case kScorePos:
-      return "Score";
-    case -1:
-      return "Pass";
-    default:
-      return absl::StrCat(pos);
-  }
+  if (pos == -1) return "Pass";
+  SPIEL_CHECK_GE(pos, 0);
+  SPIEL_CHECK_LT(pos, kNumPoints);  // kNumPoints should be 24 for Long Narde
+  return absl::StrCat(pos + 1);
 }
 
 std::string CurPlayerToString(Player cur_player) {
@@ -149,13 +131,83 @@ int LongNardeState::AugmentCheckerMove(CheckerMove* cmove, int player,
     end = start - cmove->num;
     if (end <= 0) {
       end = kNumOffPosHumanReadable;  // Off
-    } else if (board_[Opponent(player)]
-                     [player == kOPlayerId ? (end - 1) : (kNumPoints - end)] ==
-               1) {
-      cmove->hit = true;  // Check to see if move is a hit
     }
   }
   return end;
+}
+
+// Note: We've removed EncodedBarMove and EncodedPassMove functions and 
+// hardcoded their values (24 and 25) in the functions that use them since
+// Long Narde doesn't use the bar concept
+
+std::vector<CheckerMove> LongNardeState::SpielMoveToCheckerMoves(
+    int player, Action spiel_move) const {
+  SPIEL_CHECK_GE(spiel_move, 0);
+  SPIEL_CHECK_LT(spiel_move, kNumDistinctActions);
+
+  bool high_roll_first = spiel_move < 625;  // base-25: 25*25 = 625
+  if (!high_roll_first) {
+    spiel_move -= 625;
+  }
+
+  std::vector<Action> digits = {spiel_move % 25, spiel_move / 25};  // base-25
+  std::vector<CheckerMove> cmoves;
+  int high_roll = DiceValue(0) >= DiceValue(1) ? DiceValue(0) : DiceValue(1);
+  int low_roll = DiceValue(0) < DiceValue(1) ? DiceValue(0) : DiceValue(1);
+
+  for (int i = 0; i < 2; ++i) {
+    SPIEL_CHECK_GE(digits[i], 0);
+    SPIEL_CHECK_LE(digits[i], 24);  // 0-23 for board positions, 24 for pass
+
+    int num = -1;
+    if (i == 0) {
+      num = high_roll_first ? high_roll : low_roll;
+    } else {
+      num = high_roll_first ? low_roll : high_roll;
+    }
+    SPIEL_CHECK_GE(num, 1);
+    SPIEL_CHECK_LE(num, 6);
+
+    if (digits[i] == 24) {  // Pass move is now 24 instead of 25
+      cmoves.push_back(kPassMove);
+    } else {
+      cmoves.push_back(CheckerMove(digits[i], num));
+    }
+  }
+
+  return cmoves;
+}
+
+Action LongNardeState::CheckerMovesToSpielMove(
+    const std::vector<CheckerMove>& moves) const {
+  SPIEL_CHECK_LE(moves.size(), 2);
+
+  int high_roll = DiceValue(0) >= DiceValue(1) ? DiceValue(0) : DiceValue(1);
+  int low_roll = DiceValue(0) < DiceValue(1) ? DiceValue(0) : DiceValue(1);
+  bool high_roll_first = true;
+
+  Action dig0 = 24;  // Pass move is now 24 instead of 25
+  Action dig1 = 24;  // Pass move is now 24 instead of 25
+
+  int pos0 = moves[0].pos;
+  if (pos0 != kPassPos) {
+    dig0 = pos0;
+  }
+
+  if (moves.size() > 1) {
+    int pos1 = moves[1].pos;
+    if (pos1 != kPassPos) {
+      dig1 = pos1;
+    }
+  }
+
+  Action move = dig1 * 25 + dig0;  // base-25 encoding
+  if (!high_roll_first) {
+    move += 625;  // 25*25 = 625
+  }
+  SPIEL_CHECK_GE(move, 0);
+  SPIEL_CHECK_LT(move, kNumDistinctActions);
+  return move;
 }
 
 std::string LongNardeState::ActionToString(Player player,
@@ -183,17 +235,12 @@ std::string LongNardeState::ActionToString(Player player,
     int cmove0_start;
     int cmove1_start;
     if (player == kOPlayerId) {
-      cmove0_start = (cmoves[0].pos == kBarPos ? kNumBarPosHumanReadable
-                                               : cmoves[0].pos + 1);
-      cmove1_start = (cmoves[1].pos == kBarPos ? kNumBarPosHumanReadable
-                                               : cmoves[1].pos + 1);
+      cmove0_start = cmoves[0].pos + 1;
+      cmove1_start = cmoves[1].pos + 1;
     } else {
-      // swap the board numbering round for Player X so player is moving
-      // from 24->0
-      cmove0_start = (cmoves[0].pos == kBarPos ? kNumBarPosHumanReadable
-                                               : kNumPoints - cmoves[0].pos);
-      cmove1_start = (cmoves[1].pos == kBarPos ? kNumBarPosHumanReadable
-                                               : kNumPoints - cmoves[1].pos);
+      // swap the board numbering for Player X
+      cmove0_start = kNumPoints - cmoves[0].pos;
+      cmove1_start = kNumPoints - cmoves[1].pos;
     }
 
     // Add hit information and compute whether the moves go off the board.
@@ -201,67 +248,52 @@ std::string LongNardeState::ActionToString(Player player,
     int cmove1_end = AugmentCheckerMove(&cmoves[1], player, cmove1_start);
 
     // check for 2 pieces hitting on the same point.
-    bool double_hit =
-        (cmoves[1].hit && cmoves[0].hit && cmove1_end == cmove0_end);
+    bool double_hit = false;
 
     std::string returnVal = "";
-    if (cmove0_start == cmove1_start &&
-        cmove0_end == cmove1_end) {     // same move, show as (2).
+    if (cmove0_start == cmove1_start && cmove0_end == cmove1_end) {     // same move, show as (2).
       if (cmoves[1].num == kPassPos) {  // Player can't move at all!
         returnVal = "Pass";
       } else {
         returnVal = absl::StrCat(move_id, " - ",
                                  PositionToStringHumanReadable(cmove0_start),
                                  "/", PositionToStringHumanReadable(cmove0_end),
-                                 cmoves[0].hit ? "*" : "", "(2)");
+                                 "(2)");
       }
     } else if ((cmove0_start < cmove1_start ||
                 (cmove0_start == cmove1_start && cmove0_end < cmove1_end) ||
                 cmoves[0].num == kPassPos) &&
                cmoves[1].num != kPassPos) {
-      // tradition to start with higher numbers first,
-      // so swap moves round if this not the case. If
-      // there is a pass move, put it last.
+      // tradition to start with higher numbers first, so swap moves round if this not the case.
+      // If there is a pass move, put it last.
       if (cmove1_end == cmove0_start) {
-        // Check to see if the same piece is moving for both
-        // moves, as this changes the format of the output.
+        // Check to see if the same piece is moving for both moves, as this changes the format of the output.
         returnVal = absl::StrCat(
             move_id, " - ", PositionToStringHumanReadable(cmove1_start), "/",
-            PositionToStringHumanReadable(cmove1_end), cmoves[1].hit ? "*" : "",
-            "/", PositionToStringHumanReadable(cmove0_end),
-            cmoves[0].hit ? "*" : "");
+            PositionToStringHumanReadable(cmove1_end), "/",
+            PositionToStringHumanReadable(cmove0_end));
       } else {
         returnVal = absl::StrCat(
             move_id, " - ", PositionToStringHumanReadable(cmove1_start), "/",
-            PositionToStringHumanReadable(cmove1_end), cmoves[1].hit ? "*" : "",
-            " ",
-            (cmoves[0].num != kPassPos)
-                ? PositionToStringHumanReadable(cmove0_start)
-                : "",
+            PositionToStringHumanReadable(cmove1_end), " ",
+            (cmoves[0].num != kPassPos) ? PositionToStringHumanReadable(cmove0_start) : "",
             (cmoves[0].num != kPassPos) ? "/" : "",
-            PositionToStringHumanReadable(cmove0_end),
-            (cmoves[0].hit && !double_hit) ? "*" : "");
+            PositionToStringHumanReadable(cmove0_end));
       }
     } else {
       if (cmove0_end == cmove1_start) {
-        // Check to see if the same piece is moving for both
-        // moves, as this changes the format of the output.
+        // Check to see if the same piece is moving for both moves, as this changes the format of the output.
         returnVal = absl::StrCat(
             move_id, " - ", PositionToStringHumanReadable(cmove0_start), "/",
-            PositionToStringHumanReadable(cmove0_end), cmoves[0].hit ? "*" : "",
-            "/", PositionToStringHumanReadable(cmove1_end),
-            cmoves[1].hit ? "*" : "");
+            PositionToStringHumanReadable(cmove0_end), "/",
+            PositionToStringHumanReadable(cmove1_end));
       } else {
         returnVal = absl::StrCat(
             move_id, " - ", PositionToStringHumanReadable(cmove0_start), "/",
-            PositionToStringHumanReadable(cmove0_end), cmoves[0].hit ? "*" : "",
-            " ",
-            (cmoves[1].num != kPassPos)
-                ? PositionToStringHumanReadable(cmove1_start)
-                : "",
+            PositionToStringHumanReadable(cmove0_end), " ",
+            (cmoves[1].num != kPassPos) ? PositionToStringHumanReadable(cmove1_start) : "",
             (cmoves[1].num != kPassPos) ? "/" : "",
-            PositionToStringHumanReadable(cmove1_end),
-            (cmoves[1].hit && !double_hit) ? "*" : "");
+            PositionToStringHumanReadable(cmove1_end));
       }
     }
 
@@ -284,23 +316,18 @@ void LongNardeState::ObservationTensor(Player player,
   SPIEL_CHECK_EQ(values.size(), kStateEncodingSize);
   auto value_it = values.begin();
   
-  for (int count : board_[player]) {
-    *value_it++ = ((count == 1) ? 1 : 0);
-    *value_it++ = ((count == 2) ? 1 : 0);
-    *value_it++ = ((count == 3) ? 1 : 0);
-    *value_it++ = ((count > 3) ? (count - 3) : 0);
+  // Simplified encoding for Long Narde - just store the number of checkers
+  // on each point for each player
+  for (int i = 0; i < kNumPoints; ++i) {
+    *value_it++ = board(player, i);  // Number of current player's checkers
   }
-  for (int count : board_[opponent]) {
-    *value_it++ = ((count == 1) ? 1 : 0);
-    *value_it++ = ((count == 2) ? 1 : 0);
-    *value_it++ = ((count == 3) ? 1 : 0);
-    *value_it++ = ((count > 3) ? (count - 3) : 0);
+  for (int i = 0; i < kNumPoints; ++i) {
+    *value_it++ = board(opponent, i);  // Number of opponent's checkers
   }
-  *value_it++ = (bar_[player]);
+  
   *value_it++ = (scores_[player]);
   *value_it++ = ((cur_player_ == player) ? 1 : 0);
 
-  *value_it++ = (bar_[opponent]);
   *value_it++ = (scores_[opponent]);
   *value_it++ = ((cur_player_ == opponent) ? 1 : 0);
 
@@ -310,10 +337,8 @@ void LongNardeState::ObservationTensor(Player player,
   SPIEL_CHECK_EQ(value_it, values.end());
 }
 
-LongNardeState::LongNardeState(std::shared_ptr<const Game> game,
-                                 ScoringType scoring_type)
+LongNardeState::LongNardeState(std::shared_ptr<const Game> game)
     : State(game),
-      scoring_type_(scoring_type),
       cur_player_(kChancePlayerId),
       prev_player_(kChancePlayerId),
       turns_(-1),
@@ -323,12 +348,13 @@ LongNardeState::LongNardeState(std::shared_ptr<const Game> game,
       is_first_turn_(true),
       moved_from_head_(false),
       dice_({}),
-      bar_({0, 0}),
       scores_({0, 0}),
       board_(
           {std::vector<int>(kNumPoints, 0), std::vector<int>(kNumPoints, 0)}),
       turn_history_info_({}),
-      allow_last_roll_tie_(false) {
+      allow_last_roll_tie_(false),
+      scoring_type_(ParseScoringType(
+          game->GetParameters().at("scoring_type").string_value())) {
   SetupInitialBoard();
 }
 
@@ -341,13 +367,9 @@ void LongNardeState::SetupInitialBoard() {
 }
 
 int LongNardeState::board(int player, int pos) const {
-  if (pos == kBarPos) {
-    return bar_[player];
-  } else {
-    SPIEL_CHECK_GE(pos, 0);
-    SPIEL_CHECK_LT(pos, kNumPoints);
-    return board_[player][pos];
-  }
+  SPIEL_CHECK_GE(pos, 0);
+  SPIEL_CHECK_LT(pos, kNumPoints);
+  return board_[player][pos];
 }
 
 Player LongNardeState::CurrentPlayer() const {
@@ -442,12 +464,13 @@ bool LongNardeState::WouldFormBlockingBridge(int player, int from_pos, int to_po
       if (consecutive_count == 6) {
         // Now check if all opponent checkers are trapped behind this bridge
         bool any_opponent_ahead = false;
+        int opponent = Opponent(player);
         
         // For white, check if any black checkers are beyond the bridge
         if (player == kXPlayerId) {
           int bridge_end = pos;
           for (int i = bridge_end + 1; i < kNumPoints; i++) {
-            if (temp_board[kOPlayerId][i] > 0) {
+            if (board(opponent, i) > 0) {
               any_opponent_ahead = true;
               break;
             }
@@ -457,7 +480,7 @@ bool LongNardeState::WouldFormBlockingBridge(int player, int from_pos, int to_po
         else {
           int bridge_end = pos;
           for (int i = bridge_end - 1; i >= 0; i--) {
-            if (temp_board[kXPlayerId][i] > 0) {
+            if (board(opponent, i) > 0) {
               any_opponent_ahead = true;
               break;
             }
@@ -479,10 +502,9 @@ bool LongNardeState::WouldFormBlockingBridge(int player, int from_pos, int to_po
 
 void LongNardeState::DoApplyAction(Action move) {
   if (IsChanceNode()) {
-    turn_history_info_.push_back(TurnHistoryInfo(kChancePlayerId, prev_player_,
-                                                 dice_, move, double_turn_,
-                                                 false, false, is_first_turn_,
-                                                 moved_from_head_));
+    turn_history_info_.push_back(
+        TurnHistoryInfo(kChancePlayerId, prev_player_, dice_, move, double_turn_,
+                        is_first_turn_, moved_from_head_));
 
     if (turns_ == -1) {
       // In Long Narde, White (X) always goes first - no initial roll needed
@@ -521,8 +543,9 @@ void LongNardeState::DoApplyAction(Action move) {
   bool first_move_from_head = IsHeadPos(cur_player_, moves[0].pos);
   bool second_move_from_head = IsHeadPos(cur_player_, moves[1].pos);
   
-  bool first_move_hit = ApplyCheckerMove(cur_player_, moves[0]);
-  bool second_move_hit = ApplyCheckerMove(cur_player_, moves[1]);
+  // Apply checker moves (hitting not supported, so no hit info is returned)
+  ApplyCheckerMove(cur_player_, moves[0]);
+  ApplyCheckerMove(cur_player_, moves[1]);
 
   // If either move was from head, update moved_from_head_
   if (first_move_from_head || second_move_from_head) {
@@ -531,8 +554,7 @@ void LongNardeState::DoApplyAction(Action move) {
 
   turn_history_info_.push_back(
       TurnHistoryInfo(cur_player_, prev_player_, dice_, move, double_turn_,
-                      first_move_hit, second_move_hit, is_first_turn_,
-                      moved_from_head_));
+                      is_first_turn_, moved_from_head_));
 
   if (!double_turn_) {
     turns_++;
@@ -595,7 +617,6 @@ void LongNardeState::UndoAction(Player player, Action action) {
 
     // Recreate the checker moves
     std::vector<CheckerMove> moves = SpielMoveToCheckerMoves(player, action);
-    moves = AugmentWithHitInfo(player, moves);
 
     // Undo in reverse order to handle a case of one checker moving twice.
     // (Second move comes before first move here, following the policy also
@@ -614,64 +635,6 @@ void LongNardeState::UndoAction(Player player, Action action) {
   }
 }
 
-// Modified to check Long Narde rules
-bool LongNardeState::IsLegalFromTo(int player, int from_pos, int to_pos, 
-                                  int my_checkers_from, int opp_checkers_to) const {
-  // Common basic checks
-  if (my_checkers_from <= 0) {
-    return false;  // No checkers to move
-  }
-  
-  // Check head rule
-  if (!IsLegalHeadMove(player, from_pos)) {
-    return false;
-  }
-  
-  // No landing on opponent checkers in Long Narde
-  if (opp_checkers_to > 0) {
-    return false;
-  }
-  
-  // Check for blocking bridge
-  if (WouldFormBlockingBridge(player, from_pos, to_pos)) {
-    return false;
-  }
-  
-  // If bearing off, must be exact or higher roll when all checkers in home
-  if ((player == kXPlayerId && to_pos >= kNumPoints) || 
-      (player == kOPlayerId && to_pos < 0)) {
-    if (AllInHome(player)) {
-      int furthest = FurthestCheckerInHome(player);
-      if (furthest == -1) {
-        return true;  // No checkers in home (unlikely but valid)
-      }
-      
-      // For bearing off, ensure we use exact die values when possible
-      // or higher values when no exact match is available
-      int distance;
-      if (player == kXPlayerId) {
-        distance = kNumPoints - furthest;
-      } else {
-        distance = furthest + 1;
-      }
-      
-      int die_value = GetDistance(player, from_pos, to_pos);
-      
-      if (furthest == from_pos) {
-        return true;  // Furthest checker can always bear off with any value
-      } else {
-        // Must use exact values for non-furthest checkers
-        return die_value == GetDistance(player, from_pos, 
-                                       player == kXPlayerId ? kNumPoints : -1);
-      }
-    } else {
-      return false;  // Can't bear off until all checkers are in home
-    }
-  }
-  
-  return true;
-}
-
 // Modified for Long Narde home/bearing off rules
 bool LongNardeState::IsPosInHome(int player, int pos) const {
   switch (player) {
@@ -686,10 +649,6 @@ bool LongNardeState::IsPosInHome(int player, int pos) const {
 
 // Checks if all checkers are in home
 bool LongNardeState::AllInHome(int player) const {
-  if (bar_[player] > 0) {
-    return false;
-  }
-
   SPIEL_CHECK_GE(player, 0);
   SPIEL_CHECK_LE(player, 1);
 
@@ -697,19 +656,19 @@ bool LongNardeState::AllInHome(int player) const {
   if (player == kXPlayerId) {
     // Check areas outside home (points 7-24)
     for (int i = kWhiteHomeEnd + 1; i < kNumPoints; ++i) {
-      if (board_[player][i] > 0) {
+      if (board(player, i) > 0) {
         return false;
       }
     }
   } else {  // kOPlayerId
     // Check areas outside home (points 1-12 and 19-24)
     for (int i = 0; i < kBlackHomeStart; ++i) {
-      if (board_[player][i] > 0) {
+      if (board(player, i) > 0) {
         return false;
       }
     }
     for (int i = kBlackHomeEnd + 1; i < kNumPoints; ++i) {
-      if (board_[player][i] > 0) {
+      if (board(player, i) > 0) {
         return false;
       }
     }
@@ -725,8 +684,8 @@ bool LongNardeState::IsTerminal() const {
       scores_[kOPlayerId] == kNumCheckersPerPlayer) {
     
     // If white has borne off all checkers and black has at least 14 off,
-    // black gets one more roll to potentially achieve a tie
-    if (allow_last_roll_tie_) {
+    // black gets one more roll to potentially achieve a tie, but only in winlosstie mode
+    if (scoring_type_ == ScoringType::kWinLossTieScoring) {
       if (scores_[kXPlayerId] == kNumCheckersPerPlayer && 
           scores_[kOPlayerId] >= 14 && scores_[kOPlayerId] < kNumCheckersPerPlayer) {
         return false;  // Not terminal yet, black gets last roll
@@ -744,8 +703,8 @@ std::vector<double> LongNardeState::Returns() const {
     return {0.0, 0.0};
   }
 
-  // Check for tie condition (last roll rule)
-  if (allow_last_roll_tie_) {
+  // Check for tie condition (only possible in winlosstie mode)
+  if (scoring_type_ == ScoringType::kWinLossTieScoring) {
     // If both players have all checkers off the board, it's a tie
     if (scores_[kXPlayerId] == kNumCheckersPerPlayer && 
         scores_[kOPlayerId] == kNumCheckersPerPlayer) {
@@ -759,39 +718,21 @@ std::vector<double> LongNardeState::Returns() const {
                 : kOPlayerId;
   int lost = Opponent(won);
 
-  // Then, the score is determined by the scoring system.
-  if (scoring_type_ == ScoringType::kWinLossScoring) {
-    return (won == kXPlayerId ? std::vector<double>{1.0, -1.0}
-                              : std::vector<double>{-1.0, 1.0});
-  } else if (scoring_type_ == ScoringType::kEnableGammons) {
-    int gammon = IsGammoned(lost);
-    double score = 1.0 + gammon;
-    return (won == kXPlayerId ? std::vector<double>{score, -score}
-                              : std::vector<double>{-score, score});
-  } else {
-    // Must be full scoring
-    SPIEL_CHECK_EQ(scoring_type_, ScoringType::kFullScoring);
-    int gammon = IsGammoned(lost);
-    int backgammon = IsBackgammoned(lost);
-    double score = 1.0 + gammon + backgammon;
-    return (won == kXPlayerId ? std::vector<double>{score, -score}
-                              : std::vector<double>{-score, score});
-  }
+  // Check if opponent has any checkers off (Oyn vs Mars)
+  double score = (scores_[lost] > 0) ? 1.0 : 2.0;  // 1 for Oyn, 2 for Mars
+  
+  return (won == kXPlayerId ? std::vector<double>{score, -score}
+                           : std::vector<double>{-score, score});
 }
 
 // Long Narde game implementation
 LongNardeGame::LongNardeGame(const GameParameters& params)
     : Game(kGameType, params),
-      scoring_type_(
-          ParseScoringType(ParameterValue<std::string>("scoring_type"))) {}
+      scoring_type_(ParseScoringType(
+          params.at("scoring_type").string_value())) {}
 
 double LongNardeGame::MaxUtility() const {
-  if (scoring_type_ == ScoringType::kWinLossScoring) {
-    return 1;
-  } else {
-    // Mars scores 2 points
-    return 2;
-  }
+  return 2;  // Mars scores 2 points
 }
 
 // Keep other implementation details the same as backgammon for now,
@@ -811,6 +752,49 @@ std::vector<std::pair<Action, double>> LongNardeState::ChanceOutcomes() const {
   }
 }
 
+std::set<CheckerMove> LongNardeState::LegalCheckerMoves(int player) const {
+  std::set<CheckerMove> moves;
+
+  // Regular board moves
+  bool all_in_home = AllInHome(player);
+  for (int i = 0; i < kNumPoints; ++i) {
+    if (board(player, i) <= 0) continue;
+
+    // Check if this is a legal position to move from (head rule)
+    if (!IsLegalHeadMove(player, i)) continue;
+
+    for (int outcome : dice_) {
+      if (!UsableDiceOutcome(outcome)) continue;
+
+      int to_pos = GetToPos(player, i, outcome);
+      
+      // Handle bearing off
+      if ((player == kXPlayerId && to_pos < 0) || 
+          (player == kOPlayerId && to_pos >= kNumPoints)) {
+        if (all_in_home) {
+          // Check if this is a legal bear-off move
+          if (i == FurthestCheckerInHome(player) || 
+              (player == kXPlayerId && i + outcome == -1) ||
+              (player == kOPlayerId && i + outcome == kNumPoints)) {
+            moves.insert(CheckerMove(i, outcome));
+          }
+        }
+        continue;
+      }
+
+      // Regular move validation
+      if (to_pos >= 0 && to_pos < kNumPoints) {
+        // Check if landing position is free and won't create illegal blocking bridge
+        if (board(1-player, to_pos) == 0 && !WouldFormBlockingBridge(player, i, to_pos)) {
+          moves.insert(CheckerMove(i, outcome));
+        }
+      }
+    }
+  }
+
+  return moves;
+}
+
 std::vector<Action> LongNardeState::LegalActions() const {
   if (IsChanceNode()) return LegalChanceOutcomes();
   if (IsTerminal()) return {};
@@ -818,79 +802,152 @@ std::vector<Action> LongNardeState::LegalActions() const {
   SPIEL_CHECK_GE(cur_player_, 0);
   SPIEL_CHECK_LE(cur_player_, 1);
 
-  // Generate all possible legal moves based on the current dice
-  std::vector<Action> legal_actions;
-  
-  // Create action based on each possible starting position
-  for (int from_pos = 0; from_pos < kNumPoints; ++from_pos) {
-    // Skip positions with no checkers
-    if (board_[cur_player_][from_pos] <= 0) {
-      continue;
-    }
-    
-    // Try the first die value
-    int die_value1 = dice_[0];
-    int to_pos1 = GetToPos(cur_player_, from_pos, die_value1);
-    bool move1_valid = false;
-    
-    // Check if move is legal
-    if (cur_player_ == kXPlayerId) {
-      move1_valid = IsLegalFromTo(cur_player_, from_pos, to_pos1, 
-                                  board_[cur_player_][from_pos], 
-                                  (to_pos1 < kNumPoints) ? board_[1-cur_player_][to_pos1] : 0);
-    } else {  // kOPlayerId
-      move1_valid = IsLegalFromTo(cur_player_, from_pos, to_pos1, 
-                                  board_[cur_player_][from_pos], 
-                                  (to_pos1 >= 0) ? board_[1-cur_player_][to_pos1] : 0);
-    }
-    
-    if (move1_valid) {
-      // Create a single move action
-      std::vector<CheckerMove> move_seq = {
-        {from_pos, die_value1, false}
-      };
-      legal_actions.push_back(CheckerMovesToSpielMove(move_seq));
-    }
-    
-    // Try the second die value
-    int die_value2 = dice_[1];
-    int to_pos2 = GetToPos(cur_player_, from_pos, die_value2);
-    bool move2_valid = false;
-    
-    // Check if move is legal
-    if (cur_player_ == kXPlayerId) {
-      move2_valid = IsLegalFromTo(cur_player_, from_pos, to_pos2, 
-                                 board_[cur_player_][from_pos], 
-                                 (to_pos2 < kNumPoints) ? board_[1-cur_player_][to_pos2] : 0);
-    } else {  // kOPlayerId
-      move2_valid = IsLegalFromTo(cur_player_, from_pos, to_pos2, 
-                                 board_[cur_player_][from_pos], 
-                                 (to_pos2 >= 0) ? board_[1-cur_player_][to_pos2] : 0);
-    }
-    
-    if (move2_valid) {
-      // Create a single move action
-      std::vector<CheckerMove> move_seq = {
-        {from_pos, die_value2, false}
-      };
-      legal_actions.push_back(CheckerMovesToSpielMove(move_seq));
-    }
+  // Get all legal single checker moves
+  std::set<CheckerMove> legal_moves = LegalCheckerMoves(cur_player_);
+
+  // If no legal moves available, return pass move
+  if (legal_moves.empty()) {
+    // Create a vector with two pass moves
+    std::vector<CheckerMove> pass_moves = {kPassMove, kPassMove};
+    return {CheckerMovesToSpielMove(pass_moves)};
   }
-  
-  // Add pass action if no legal moves are available
-  if (legal_actions.empty()) {
-    std::vector<CheckerMove> pass_move = {
-      {kPassPos, -1, false}, 
-      {kPassPos, -1, false}
-    };
-    legal_actions.push_back(CheckerMovesToSpielMove(pass_move));
+
+  // Create a state copy for move generation
+  std::unique_ptr<State> cstate = Clone();
+  LongNardeState* state = dynamic_cast<LongNardeState*>(cstate.get());
+  std::set<std::vector<CheckerMove>> movelist;
+  int max_moves = state->RecLegalMoves({}, &movelist);
+
+  // Convert move sequences to actions
+  return ProcessLegalMoves(max_moves, movelist);
+}
+
+int LongNardeState::RecLegalMoves(std::vector<CheckerMove> moveseq,
+                                 std::set<std::vector<CheckerMove>>* movelist) {
+  // Base case: if we've used both dice, add the sequence
+  if (moveseq.size() == 2) {
+    movelist->insert(moveseq);
+    return 1;
   }
-  
-  return legal_actions;
+
+  std::set<CheckerMove> moves_here = LegalCheckerMoves(cur_player_);
+
+  if (moves_here.empty()) {
+    movelist->insert(moveseq);
+    return moveseq.size();
+  }
+
+  int max_moves = -1;
+  for (const auto& move : moves_here) {
+    moveseq.push_back(move);
+    ApplyCheckerMove(cur_player_, move);
+    int child_max = RecLegalMoves(moveseq, movelist);
+    UndoCheckerMove(cur_player_, move);
+    max_moves = std::max(child_max, max_moves);
+    moveseq.pop_back();
+  }
+
+  return max_moves;
 }
 
 std::unique_ptr<State> LongNardeState::Clone() const {
   return std::unique_ptr<State>(new LongNardeState(*this));
+}
+
+// Get the To position for this play given the from position and number of
+// pips on the die.
+int LongNardeState::GetToPos(int player, int from_pos, int pips) const {
+  // Both players move counter-clockwise in Long Narde, which means:
+  // - White moves from higher positions to lower (e.g., 23→22→...→0)
+  //   and bears off when going below 0
+  // - Black also moves counter-clockwise (e.g., 11→10→...→0→23→22→...→12)
+  //   and bears off when going above 23
+  
+  // For Black, implement counter-clockwise movement with position wrapping
+  if (player == kOPlayerId) {
+    // Apply counter-clockwise movement
+    int pos = from_pos - pips;
+    // Handle position wrapping
+    if (pos < 0) {
+      pos += kNumPoints; // Wrap around from 0 to 23
+    }
+    return pos;
+  } else {
+    // For White, counter-clockwise is simply decreasing position
+    return from_pos - pips;
+  }
+}
+
+ScoringType ParseScoringType(const std::string& st_str) {
+  if (st_str == "winloss_scoring") {
+    return ScoringType::kWinLossScoring;
+  } else if (st_str == "winlosstie_scoring") {
+    return ScoringType::kWinLossTieScoring;
+  } else {
+    SpielFatalError("Unrecognized scoring_type parameter: " + st_str);
+  }
+}
+
+// Apply a checker move: remove from the source position and add to the destination
+bool LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
+  // Pass does nothing
+  if (move.pos == kPassPos) {
+    return false;
+  }
+
+  // First, remove the checker from source
+  board_[player][move.pos]--;
+
+  // Mark the die as used
+  for (int i = 0; i < 2; ++i) {
+    if (dice_[i] == move.num) {
+      dice_[i] += 6;
+      break;
+    }
+  }
+
+  // Calculate where the checker ends up
+  int next_pos = GetToPos(player, move.pos, move.num);
+
+  // Now add the checker (or score)
+  if ((player == kXPlayerId && next_pos < 0) || 
+      (player == kOPlayerId && next_pos >= kNumPoints)) {
+    scores_[player]++;
+  } else {
+    board_[player][next_pos]++;
+  }
+
+  return false;  // Long Narde doesn't support hitting
+}
+
+// Undo a checker move
+void LongNardeState::UndoCheckerMove(int player, const CheckerMove& move) {
+  // Undoing a pass does nothing
+  if (move.pos == kPassPos) {
+    return;
+  }
+
+  // Calculate where the checker ended up
+  int next_pos = GetToPos(player, move.pos, move.num);
+
+  // Remove the moved checker or decrement score
+  if ((player == kXPlayerId && next_pos < 0) || 
+      (player == kOPlayerId && next_pos >= kNumPoints)) {
+    scores_[player]--;
+  } else {
+    board_[player][next_pos]--;
+  }
+
+  // Mark the die as unused
+  for (int i = 0; i < 2; ++i) {
+    if (dice_[i] == move.num + 6) {
+      dice_[i] -= 6;
+      break;
+    }
+  }
+
+  // Return the checker to its original position
+  board_[player][move.pos]++;
 }
 
 }  // namespace long_narde

@@ -1,0 +1,56 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# you are modifying the open_spiel game of backgammon to narde
+* Backgammon is under open_spiel/games/backgammon and you never modify it. You might consult the original implementation if you need
+* Long narde is originally a copy of backgammon implementation and is located under open_spiel/games/long_narde
+* The goal is to make a game that has very similar game dynamic, common for open_spiel API but slightly changed game rules.
+* every time you modify the long_narde code you must keep in mind that the code was backgammon specific initially. There might be left-overs from backgammon logic, move encoding, hitting, bar, etc. You must review it and consult with me how you gonna modify it
+
+Here are the rule difference you must always keep in mind:
+Backgammon vs Long Narde rules:
+
+
+Starting setup
+Backgammon: 15 checkers distributed across four points (2 on your 24‑point; 5 on 13; 3 on 8; 5 on 6), with players facing each other and moving in opposite directions.
+Long Narde: All 15 checkers stacked on a single “head” point (White on 24; Black on 12), with both players moving in the same direction (counterclockwise).
+
+First turn
+Backgammon: Each player rolls one die; higher roll goes first and uses both dice values to move.
+Long Narde: Same die‑roll to decide who starts, but that player then rolls two new dice to begin. In our case we just assume white moves first and skip this step
+
+Dice usage
+Both games: Roll two dice each turn (four moves on doubles). You must play both values if legally possible; if only one move is possible, you must play the higher pip.
+
+Direction of movement
+Backgammon: Opposite directions around the board.
+Long Narde: Same direction (counterclockwise) for both players.
+
+Hitting (capturing)
+Backgammon: Allowed — landing on a lone (“blot”) checker sends it to the bar for re‑entry.
+Long Narde: Forbidden — a single checker fully controls its point; no bar or re‑entry exists.
+
+Blocking (primes)
+Backgammon: You may build primes of any length; a six‑point prime completely blocks an opponent.
+Long Narde: You may form a six‑point prime only if at least one opponent checker lies beyond it; you cannot completely lock out all opponent checkers.
+
+Head‑movement restriction
+Backgammon: No restriction — any number of checkers may leave starting points each turn.
+Long Narde: Only one checker may leave the head per turn, except on the first roll (you must move two off the head if you roll 3‑3, 4‑4, or 6‑6).
+
+Bar and re‑entry
+Backgammon: Hit checkers go to the bar and must re‑enter before any other move.
+Long Narde: No bar; no re‑entry.
+
+Bearing off
+Identical rules in both games: once all checkers are in your home board, you roll to remove them according to standard pip‑matching rules.
+
+Scoring
+Backgammon: Normal win = 1 point; gammon (opponent bears off none) = 2; backgammon (opponent bears off none and has checkers on bar/home) = 3.
+Long Narde: Oyn (opponent bears off ≥1) = 1 point; Mars (opponent bears off none) = 2 points; no triple‑score.
+
+Doubling cube
+Backgammon: Standard feature (2–64) used to raise stakes.
+Long Narde: Traditionally not used.
