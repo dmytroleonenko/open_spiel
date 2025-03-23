@@ -41,11 +41,22 @@ inline constexpr const int kXPlayerId = 0;  // White player
 inline constexpr const int kOPlayerId = 1;  // Black player
 inline constexpr const int kPassPos = -1;
 
+// Move CheckerMove struct definition before its usage
+struct CheckerMove {
+  // Pass is encoded as (pos, num) = (-1, -1).
+  int pos;  // Valid board locations: 0-23; -1 represents a pass.
+  int num;  // 1-6
+  constexpr CheckerMove(int _pos, int _num) : pos(_pos), num(_num) {}
+  bool operator<(const CheckerMove& rhs) const {
+    return (pos * 6 + (num - 1)) < (rhs.pos * 6 + rhs.num - 1);
+  }
+};
+
 // Constant pass move to avoid repeated construction
 inline constexpr const CheckerMove kPassMove(kPassPos, -1);
 
 // Constant vector of two pass moves
-inline const std::vector<open_spiel::long_narde::CheckerMove> kDoublePassMove = {kPassMove, kPassMove};
+inline const std::vector<CheckerMove> kDoublePassMove = {kPassMove, kPassMove};
 
 // Number of checkers per player
 inline constexpr const int kNumCheckersPerPlayer = 15;
@@ -90,15 +101,8 @@ enum class ScoringType {
   kWinLossTieScoring  // "winlosstie_scoring": Allows black one last move to try for tie
 };
 
-struct CheckerMove {
-  // Pass is encoded as (pos, num) = (-1, -1).
-  int pos;  // Valid board locations: 0-23; -1 represents a pass.
-  int num;  // 1-6
-  constexpr CheckerMove(int _pos, int _num) : pos(_pos), num(_num) {}
-  bool operator<(const CheckerMove& rhs) const {
-    return (pos * 6 + (num - 1)) < (rhs.pos * 6 + rhs.num - 1);
-  }
-};
+// Add ParseScoringType declaration before its usage
+ScoringType ParseScoringType(const std::string& st_str);
 
 // This is a small helper to track historical turn info not stored in the moves.
 // It is only needed for proper implementation of Undo.
@@ -189,19 +193,20 @@ class LongNardeState : public State {
                                                    Action spiel_move) const;
   Action TranslateAction(int from1, int from2, bool use_high_die_first) const;
 
-  // Return checker moves with extra hit information.
-  // Note: Long Narde doesn't support hitting, so this function is commented out
-  // since hitting is not part of Long Narde game rules.
-  /*
-  std::vector<CheckerMove>
-  AugmentWithHitInfo(Player player,
-                     const std::vector<CheckerMove> &cmoves) const;
-  */
-
-  // Long Narde specific functions
   bool WouldFormBlockingBridge(int player, int from_pos, int to_pos) const;
   bool IsHeadPos(int player, int pos) const;
   bool IsLegalHeadMove(int player, int from_pos) const;
+
+  // Returns the position of the furthest checker in the home of this player.
+  // Returns -1 if none found.
+  int FurthestCheckerInHome(int player) const;
+
+  bool ApplyCheckerMove(int player, const CheckerMove& move);
+  void UndoCheckerMove(int player, const CheckerMove& move);
+
+  bool UsableDiceOutcome(int outcome) const;
+  std::vector<Action> ProcessLegalMoves(int max_moves,
+                                      const std::set<std::vector<CheckerMove>>& movelist) const;
 
  protected:
   void DoApplyAction(Action move_id) override;
@@ -211,33 +216,18 @@ class LongNardeState : public State {
   void RollDice(int outcome);
   bool AllInHome(int player) const;
   int CheckersInHome(int player) const;
-  bool UsableDiceOutcome(int outcome) const;
-  int PositionFromBar(int player, int spaces) const;
-  int PositionFrom(int player, int pos, int spaces) const;
   int NumOppCheckers(int player, int pos) const;
   std::string DiceToString(int outcome) const;
-  int IsGammoned(int player) const;
-  int IsBackgammoned(int player) const;
   int DiceValue(int i) const;
   int HighestUsableDiceOutcome() const;
-  // EncodedPassMove and EncodedBarMove are not needed for Long Narde
-  // since we've hardcoded pass value as 25 and the bar concept doesn't exist
 
-  // A helper function used by ActionToString to add necessary hit information
-  // and compute whether the move goes off the board.
-  int AugmentCheckerMove(CheckerMove* cmove, int player, int start) const;
+  // A helper function used by ActionToString to compute the end position
+  // of a move and determine whether it goes off the board.
+  int GetMoveEndPosition(CheckerMove* cmove, int player, int start) const;
 
-  // Returns the position of the furthest checker in the home of this player.
-  // Returns -1 if none found.
-  int FurthestCheckerInHome(int player) const;
-
-  bool ApplyCheckerMove(int player, const CheckerMove& move);
-  void UndoCheckerMove(int player, const CheckerMove& move);
   std::set<CheckerMove> LegalCheckerMoves(int player) const;
   int RecLegalMoves(std::vector<CheckerMove> moveseq,
                     std::set<std::vector<CheckerMove>>* movelist);
-  std::vector<Action> ProcessLegalMoves(
-      int max_moves, const std::set<std::vector<CheckerMove>>& movelist) const;
 
   ScoringType scoring_type_;  // Which rules apply when scoring the game.
 

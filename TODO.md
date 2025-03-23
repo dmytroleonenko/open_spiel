@@ -54,3 +54,100 @@ We will create a copy of "games/backgammon" and modify it to implement the game 
 - Follow TDD: Create or update tests that specify the desired behavior before modifying game logic.
 - Ensure tests cover all edge cases of the Long Narde rules. 
 - The implementation is complete, but we're facing build environment issues that need to be resolved to run the tests. 
+
+# Long Narde Test Cases Review
+
+[*] Review `NoLandingOnOpponentTest` - Test looks good:
+   - Tests basic landing prevention for both players
+   - Tests landing prevention with doubles
+   - Tests multiple opponent checkers
+   - Tests edge cases near board boundaries
+   - Includes random simulation test with 100 iterations
+   - Comprehensive coverage of no-landing rule
+
+[*] Review `BasicLongNardeTestsDoNotStartWithDoubles` - Test looks good:
+   - Properly verifies that initial dice roll never results in doubles
+   - Uses sufficient iterations (100)
+   - Correctly checks both dice values are different
+   - Aligns with Long Narde rules for initial roll
+
+[*] Review `InitialBoardSetupTest` - Test looks good:
+   - Correctly verifies White's 15 checkers start on point 24
+   - Correctly verifies Black's 15 checkers start on point 12
+   - Checks that no other points have any checkers
+   - Uses proper constants for positions and number of checkers
+
+[*] Review `HeadRuleTest` - Test looks good:
+   - Tests regular turns allow only one checker from head
+   - Tests first turn with non-doubles allows only one checker
+   - Tests first turn with special doubles (6-6, 4-4, 3-3) allows two checkers
+   - Tests first turn with non-special doubles (2-2, 1-1) allows only one checker
+   - Tests both White and Black head movement rules
+   - Comprehensive coverage of all head movement rules
+
+[*] Review `BlockingBridgeRuleTest` - Test looks good:
+   - Tests White can't create 6-point prime that traps Black
+   - Tests White can create 6-point prime if Black has checkers ahead
+   - Tests Black can't create 6-point prime that traps White
+   - Tests Black can create 6-point prime if White has checkers ahead
+   - Comprehensive coverage of bridge blocking rules
+
+[*] Review `MovementDirectionTest` - Test is good but could be expanded:
+   - Correctly verifies White moves counter-clockwise
+   - Correctly verifies Black moves counter-clockwise
+   - Could add tests with different dice combinations
+   - Could add tests with checkers in different positions
+   - Could verify bearing off moves follow direction rules
+
+[*] Review `HomeRegionsTest` - Test looks good:
+   - Correctly verifies White's home region (points 1-6)
+   - Correctly verifies Black's home region (points 13-18)
+   - Verifies all other points are not in home for either player
+   - Uses proper constants and indices
+
+[*] Review `BearingOffLogicTest` - Test looks good:
+   - Tests White bearing off with exact and higher rolls
+   - Tests Black bearing off with exact and higher rolls
+   - Tests bearing off with doubles
+   - Tests prevention of bearing off when checkers outside home
+   - Tests score updates and undo functionality for both players
+   - Comprehensive coverage of bearing off mechanics
+
+[*] Review `ScoringSystemTest` - Test looks good:
+   - Tests Mars scoring (2 points) when winner bears off all while opponent has none
+   - Tests Oyn scoring (1 point) when winner bears off all while opponent has some
+   - Tests both White and Black can score Mars
+   - Tests last roll tie rule in winloss mode (no ties allowed)
+   - Tests last roll tie rule in winlosstie mode (ties allowed)
+   - Tests winlosstie mode with mars opportunity (verifies mars score takes precedence over tie)
+   - Comprehensive coverage of scoring rules and game modes
+
+[*] Review `ActionEncodingTest` - Test looks good:
+   - Tests encoding/decoding of moves with high roll first
+   - Tests encoding/decoding of moves with low roll first
+   - Tests encoding/decoding of pass moves
+   - Tests encoding/decoding of mixed regular and pass moves
+   - Verifies all encoded actions are within valid range
+   - Comprehensive coverage of move encoding functionality
+
+[*] Review `IsPosInHomeTest` - Test looks good:
+   - Correctly tests White's home region boundaries
+   - Correctly tests Black's home region boundaries
+   - Tests both inside and outside positions for each player
+   - Uses proper indices and point numbers
+   - Comprehensive coverage of home region checks
+
+[*] Review `FurthestCheckerInHomeTest` - Test looks good:
+   - Tests empty home board returns -1
+   - Tests White's furthest checker in home
+   - Tests Black's furthest checker in home
+   - Tests both players having checkers in home
+   - Tests edge cases at home region boundaries
+   - Comprehensive coverage of furthest checker logic
+
+[*] Review `BasicLongNardeTests` - Test looks good:
+   - Calls all individual test functions
+   - Includes LoadGameTest for basic game loading
+   - Proper test organization and execution
+
+[ ] Add additional test cases if any important Long Narde rules are not covered by existing tests 

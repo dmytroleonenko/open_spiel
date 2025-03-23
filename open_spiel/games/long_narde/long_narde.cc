@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
+#include "open_spiel/abseil-cpp/absl/strings/string_view.h"
 #include "open_spiel/game_parameters.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
@@ -30,8 +31,9 @@ namespace long_narde {
 namespace {
 
 // A few constants to help with the conversion to human-readable string formats.
-constexpr int kNumBarPosHumanReadable = 25;
 constexpr int kNumOffPosHumanReadable = -2;
+// Long Narde doesn't use the bar concept, but this is kept for compatibility with the code structure
+constexpr int kNumBarPosHumanReadable = -3;
 constexpr int kNumNonDoubleOutcomes = 15;
 
 const std::vector<std::pair<Action, double>> kChanceOutcomes = {
@@ -91,8 +93,11 @@ REGISTER_SPIEL_GAME(kGameType, Factory);
 RegisterSingleTensorObserver single_tensor(kGameType.short_name);
 }  // namespace
 
+// In Long Narde, pass moves are represented in two ways:
+// 1. Internally as kPassPos (-1) in the game logic
+// 2. As position 24 when encoding/decoding actions (since valid board positions are 0-23)
 std::string PositionToString(int pos) {
-  if (pos == -1) return "Pass";
+  if (pos == kPassPos || pos == 24) return "Pass";
   SPIEL_CHECK_GE(pos, 0);
   SPIEL_CHECK_LT(pos, kNumPoints);  // kNumPoints should be 24 for Long Narde
   return absl::StrCat(pos + 1);
@@ -114,16 +119,16 @@ std::string CurPlayerToString(Player cur_player) {
 }
 
 std::string PositionToStringHumanReadable(int pos) {
-  if (pos == kNumBarPosHumanReadable) {
-    return "Bar";
-  } else if (pos == kNumOffPosHumanReadable) {
+  if (pos == kNumOffPosHumanReadable) {
     return "Off";
+  } else if (pos == kPassPos || pos == 24) {
+    return "Pass";
   } else {
     return PositionToString(pos);
   }
 }
 
-int LongNardeState::AugmentCheckerMove(CheckerMove* cmove, int player,
+int LongNardeState::GetMoveEndPosition(CheckerMove* cmove, int player,
                                         int start) const {
   int end = cmove->num;
   if (end != kPassPos) {
@@ -212,7 +217,9 @@ Action LongNardeState::CheckerMovesToSpielMove(
 
 std::string LongNardeState::ActionToString(Player player,
                                             Action move_id) const {
-  if (player == kChancePlayerId) {
+  if (IsChanceNode()) {
+    SPIEL_CHECK_GE(move_id, 0);
+    SPIEL_CHECK_LT(move_id, kChanceOutcomes.size());
     if (turns_ >= 0) {
       // Normal chance roll.
       return absl::StrCat("chance outcome ", move_id,
@@ -222,83 +229,82 @@ std::string LongNardeState::ActionToString(Player player,
       // Initial roll to determine who starts.
       const char* starter = (move_id < kNumNonDoubleOutcomes ?
                              "X starts" : "O starts");
-      if (move_id >= kNumNonDoubleOutcomes) {
-        move_id -= kNumNonDoubleOutcomes;
+      Action outcome_id = move_id;
+      if (outcome_id >= kNumNonDoubleOutcomes) {
+        outcome_id -= kNumNonDoubleOutcomes;
       }
+      SPIEL_CHECK_LT(outcome_id, kChanceOutcomeValues.size());
       return absl::StrCat("chance outcome ", move_id, " ", starter, ", ",
-                          "(roll: ", kChanceOutcomeValues[move_id][0],
-                          kChanceOutcomeValues[move_id][1], ")");
+                          "(roll: ", kChanceOutcomeValues[outcome_id][0],
+                          kChanceOutcomeValues[outcome_id][1], ")");
+    }
+  }
+
+  std::vector<CheckerMove> cmoves = SpielMoveToCheckerMoves(player, move_id);
+
+  int cmove0_start;
+  int cmove1_start;
+  if (player == kOPlayerId) {
+    cmove0_start = cmoves[0].pos + 1;
+    cmove1_start = cmoves[1].pos + 1;
+  } else {
+    // swap the board numbering for Player X
+    cmove0_start = kNumPoints - cmoves[0].pos;
+    cmove1_start = kNumPoints - cmoves[1].pos;
+  }
+
+  // Add hit information and compute whether the moves go off the board.
+  int cmove0_end = GetMoveEndPosition(&cmoves[0], player, cmove0_start);
+  int cmove1_end = GetMoveEndPosition(&cmoves[1], player, cmove1_start);
+
+  std::string returnVal = "";
+  if (cmove0_start == cmove1_start && cmove0_end == cmove1_end) {     // same move, show as (2).
+    if (cmoves[1].num == kPassPos) {  // Player can't move at all!
+      returnVal = "Pass";
+    } else {
+      returnVal = absl::StrCat(move_id, " - ",
+                               PositionToStringHumanReadable(cmove0_start),
+                               "/", PositionToStringHumanReadable(cmove0_end),
+                               "(2)");
+    }
+  } else if ((cmove0_start < cmove1_start ||
+              (cmove0_start == cmove1_start && cmove0_end < cmove1_end) ||
+              cmoves[0].num == kPassPos) &&
+             cmoves[1].num != kPassPos) {
+    // tradition to start with higher numbers first, so swap moves round if this not the case.
+    // If there is a pass move, put it last.
+    if (cmove1_end == cmove0_start) {
+      // Check to see if the same piece is moving for both moves, as this changes the format of the output.
+      returnVal = absl::StrCat(
+          move_id, " - ", PositionToStringHumanReadable(cmove1_start), "/",
+          PositionToStringHumanReadable(cmove1_end), "/",
+          PositionToStringHumanReadable(cmove0_end));
+    } else {
+      returnVal = absl::StrCat(
+          move_id, " - ", PositionToStringHumanReadable(cmove1_start), "/",
+          PositionToStringHumanReadable(cmove1_end), " ",
+          (cmoves[0].num != kPassPos) ? PositionToStringHumanReadable(cmove0_start) : "",
+          (cmoves[0].num != kPassPos) ? "/" : "",
+          PositionToStringHumanReadable(cmove0_end));
     }
   } else {
-    std::vector<CheckerMove> cmoves = SpielMoveToCheckerMoves(player, move_id);
-
-    int cmove0_start;
-    int cmove1_start;
-    if (player == kOPlayerId) {
-      cmove0_start = cmoves[0].pos + 1;
-      cmove1_start = cmoves[1].pos + 1;
+    if (cmove0_end == cmove1_start) {
+      // Check to see if the same piece is moving for both moves, as this changes the format of the output.
+      returnVal = absl::StrCat(
+          move_id, " - ", PositionToStringHumanReadable(cmove0_start), "/",
+          PositionToStringHumanReadable(cmove0_end), "/",
+          PositionToStringHumanReadable(cmove1_end));
     } else {
-      // swap the board numbering for Player X
-      cmove0_start = kNumPoints - cmoves[0].pos;
-      cmove1_start = kNumPoints - cmoves[1].pos;
+      returnVal = absl::StrCat(
+          move_id, " - ", PositionToStringHumanReadable(cmove0_start), "/",
+          PositionToStringHumanReadable(cmove0_end), " ",
+          (cmoves[1].num != kPassPos) ? PositionToStringHumanReadable(cmove1_start) : "",
+          (cmoves[1].num != kPassPos) ? "/" : "",
+          PositionToStringHumanReadable(cmove1_end));
     }
-
-    // Add hit information and compute whether the moves go off the board.
-    int cmove0_end = AugmentCheckerMove(&cmoves[0], player, cmove0_start);
-    int cmove1_end = AugmentCheckerMove(&cmoves[1], player, cmove1_start);
-
-    // check for 2 pieces hitting on the same point.
-    bool double_hit = false;
-
-    std::string returnVal = "";
-    if (cmove0_start == cmove1_start && cmove0_end == cmove1_end) {     // same move, show as (2).
-      if (cmoves[1].num == kPassPos) {  // Player can't move at all!
-        returnVal = "Pass";
-      } else {
-        returnVal = absl::StrCat(move_id, " - ",
-                                 PositionToStringHumanReadable(cmove0_start),
-                                 "/", PositionToStringHumanReadable(cmove0_end),
-                                 "(2)");
-      }
-    } else if ((cmove0_start < cmove1_start ||
-                (cmove0_start == cmove1_start && cmove0_end < cmove1_end) ||
-                cmoves[0].num == kPassPos) &&
-               cmoves[1].num != kPassPos) {
-      // tradition to start with higher numbers first, so swap moves round if this not the case.
-      // If there is a pass move, put it last.
-      if (cmove1_end == cmove0_start) {
-        // Check to see if the same piece is moving for both moves, as this changes the format of the output.
-        returnVal = absl::StrCat(
-            move_id, " - ", PositionToStringHumanReadable(cmove1_start), "/",
-            PositionToStringHumanReadable(cmove1_end), "/",
-            PositionToStringHumanReadable(cmove0_end));
-      } else {
-        returnVal = absl::StrCat(
-            move_id, " - ", PositionToStringHumanReadable(cmove1_start), "/",
-            PositionToStringHumanReadable(cmove1_end), " ",
-            (cmoves[0].num != kPassPos) ? PositionToStringHumanReadable(cmove0_start) : "",
-            (cmoves[0].num != kPassPos) ? "/" : "",
-            PositionToStringHumanReadable(cmove0_end));
-      }
-    } else {
-      if (cmove0_end == cmove1_start) {
-        // Check to see if the same piece is moving for both moves, as this changes the format of the output.
-        returnVal = absl::StrCat(
-            move_id, " - ", PositionToStringHumanReadable(cmove0_start), "/",
-            PositionToStringHumanReadable(cmove0_end), "/",
-            PositionToStringHumanReadable(cmove1_end));
-      } else {
-        returnVal = absl::StrCat(
-            move_id, " - ", PositionToStringHumanReadable(cmove0_start), "/",
-            PositionToStringHumanReadable(cmove0_end), " ",
-            (cmoves[1].num != kPassPos) ? PositionToStringHumanReadable(cmove1_start) : "",
-            (cmoves[1].num != kPassPos) ? "/" : "",
-            PositionToStringHumanReadable(cmove1_end));
-      }
-    }
-
-    return returnVal;
   }
+
+  return returnVal;
 }
 
 std::string LongNardeState::ObservationString(Player player) const {
@@ -354,8 +360,20 @@ LongNardeState::LongNardeState(std::shared_ptr<const Game> game)
       turn_history_info_({}),
       allow_last_roll_tie_(false),
       scoring_type_(ParseScoringType(
-          game->GetParameters().at("scoring_type").string_value())) {
+          game->GetParameters().count("scoring_type") > 0 ? 
+          game->GetParameters().at("scoring_type").string_value() : 
+          kDefaultScoringType)) {
   SetupInitialBoard();
+}
+
+void LongNardeState::SetState(int cur_player, bool double_turn, const std::vector<int>& dice,
+                              const std::vector<int>& scores,
+                              const std::vector<std::vector<int>>& board) {
+  cur_player_ = cur_player;
+  double_turn_ = double_turn;
+  dice_ = dice;
+  scores_ = scores;
+  board_ = board;
 }
 
 void LongNardeState::SetupInitialBoard() {
@@ -411,15 +429,14 @@ bool LongNardeState::IsLegalHeadMove(int player, int from_pos) const {
     return true;
   }
 
+  // First turn always allows moves from head
+  if (is_first_turn_) {
+    return true;
+  }
+
   // If we already moved from head in this turn, no more moves from head are allowed
   if (moved_from_head_) {
     return false;
-  }
-
-  // First turn special case for doubles 6, 4, or 3
-  if (is_first_turn_ && dice_[0] == dice_[1] && 
-      (dice_[0] == 6 || dice_[0] == 4 || dice_[0] == 3)) {
-    return true;
   }
 
   return true;  // One move from head is always allowed
@@ -729,7 +746,7 @@ std::vector<double> LongNardeState::Returns() const {
 LongNardeGame::LongNardeGame(const GameParameters& params)
     : Game(kGameType, params),
       scoring_type_(ParseScoringType(
-          params.at("scoring_type").string_value())) {}
+          params.count("scoring_type") > 0 ? params.at("scoring_type").string_value() : kDefaultScoringType)) {}
 
 double LongNardeGame::MaxUtility() const {
   return 2;  // Mars scores 2 points
@@ -754,6 +771,14 @@ std::vector<std::pair<Action, double>> LongNardeState::ChanceOutcomes() const {
 
 std::set<CheckerMove> LongNardeState::LegalCheckerMoves(int player) const {
   std::set<CheckerMove> moves;
+  /*
+  *** Commented out for now, because it's too verbose. We can uncomment it if we want to debug.
+  *
+  std::cout << "LegalCheckerMoves for player " << player << ", is_first_turn=" << is_first_turn_ 
+            << ", head pos=" << (player == kXPlayerId ? kWhiteHeadPos : kBlackHeadPos) 
+            << ", board[player][head]=" << board(player, (player == kXPlayerId ? kWhiteHeadPos : kBlackHeadPos))
+            << ", dice: " << dice_[0] << "," << dice_[1] << std::endl;
+  */
 
   // Regular board moves
   bool all_in_home = AllInHome(player);
@@ -761,10 +786,14 @@ std::set<CheckerMove> LongNardeState::LegalCheckerMoves(int player) const {
     if (board(player, i) <= 0) continue;
 
     // Check if this is a legal position to move from (head rule)
-    if (!IsLegalHeadMove(player, i)) continue;
+    if (!IsLegalHeadMove(player, i)) {
+      continue;
+    }
 
     for (int outcome : dice_) {
-      if (!UsableDiceOutcome(outcome)) continue;
+      if (!UsableDiceOutcome(outcome)) {
+        continue;
+      }
 
       int to_pos = GetToPos(player, i, outcome);
       
@@ -827,7 +856,7 @@ int LongNardeState::RecLegalMoves(std::vector<CheckerMove> moveseq,
   // Base case: if we've used both dice, add the sequence
   if (moveseq.size() == 2) {
     movelist->insert(moveseq);
-    return 1;
+    return moveseq.size();  // Return the actual size, not hardcoded 2
   }
 
   std::set<CheckerMove> moves_here = LegalCheckerMoves(cur_player_);
@@ -876,6 +905,32 @@ int LongNardeState::GetToPos(int player, int from_pos, int pips) const {
     // For White, counter-clockwise is simply decreasing position
     return from_pos - pips;
   }
+}
+
+// Returns the position of the furthest checker in the home of this player.
+// For White (kXPlayerId), this is the highest position in 0-5 that has a checker.
+// For Black (kOPlayerId), this is the lowest position in 12-17 that has a checker.
+// Returns -1 if none found.
+int LongNardeState::FurthestCheckerInHome(int player) const {
+  if (player == kXPlayerId) {
+    // White's home is positions 0-5
+    // The furthest checker is the one at the highest position (closest to 5)
+    for (int i = kWhiteHomeEnd; i >= kWhiteHomeStart; --i) {
+      if (board(player, i) > 0) {
+        return i;
+      }
+    }
+  } else {  // kOPlayerId
+    // Black's home is positions 12-17
+    // The furthest checker is the one at the lowest position (closest to 12)
+    for (int i = kBlackHomeStart; i <= kBlackHomeEnd; ++i) {
+      if (board(player, i) > 0) {
+        return i;
+      }
+    }
+  }
+  
+  return -1;  // No checkers found in home
 }
 
 ScoringType ParseScoringType(const std::string& st_str) {
@@ -948,6 +1003,87 @@ void LongNardeState::UndoCheckerMove(int player, const CheckerMove& move) {
 
   // Return the checker to its original position
   board_[player][move.pos]++;
+}
+
+// Check if a dice outcome is still usable (not marked as used)
+bool LongNardeState::UsableDiceOutcome(int outcome) const {
+  // A die value of 7-12 means it's been used (marked by adding 6)
+  return outcome >= 1 && outcome <= 6;
+}
+
+// Process legal moves into actions
+std::vector<Action> LongNardeState::ProcessLegalMoves(
+    int max_moves, const std::set<std::vector<CheckerMove>>& movelist) const {
+  std::vector<Action> legal_moves;
+  
+  // Convert each move sequence to an action
+  for (const auto& moveseq : movelist) {
+    if (moveseq.size() == max_moves) {
+      Action action = CheckerMovesToSpielMove(moveseq);
+      legal_moves.push_back(action);
+    }
+  }
+  
+  // Sort the actions in ascending order
+  std::sort(legal_moves.begin(), legal_moves.end());
+  
+  // Remove duplicate actions
+  auto new_end = std::unique(legal_moves.begin(), legal_moves.end());
+  legal_moves.erase(new_end, legal_moves.end());
+  
+  return legal_moves;
+}
+
+// Convert the current game state to a human-readable string
+std::string LongNardeState::ToString() const {
+  std::string rv;
+  
+  // Add current player
+  absl::StrAppend(&rv, "Current player: ", CurPlayerToString(cur_player_), "\n");
+  
+  // Add dice info if any
+  if (!dice_.empty()) {
+    absl::StrAppend(&rv, "Dice: ");
+    for (int die : dice_) {
+      if (die <= 6) {  // Only show unused dice
+        absl::StrAppend(&rv, die, " ");
+      }
+    }
+    absl::StrAppend(&rv, "\n");
+  }
+  
+  // Add scores
+  absl::StrAppend(&rv, "Scores - White: ", scores_[kXPlayerId],
+                  ", Black: ", scores_[kOPlayerId], "\n");
+  
+  // Add board state
+  absl::StrAppend(&rv, "Board:\n");
+  // White's pieces (X)
+  absl::StrAppend(&rv, "White (X): ");
+  for (int i = 0; i < kNumPoints; ++i) {
+    if (board_[kXPlayerId][i] > 0) {
+      absl::StrAppend(&rv, i + 1, ":", board_[kXPlayerId][i], " ");
+    }
+  }
+  absl::StrAppend(&rv, "\n");
+  
+  // Black's pieces (O)
+  absl::StrAppend(&rv, "Black (O): ");
+  for (int i = 0; i < kNumPoints; ++i) {
+    if (board_[kOPlayerId][i] > 0) {
+      absl::StrAppend(&rv, i + 1, ":", board_[kOPlayerId][i], " ");
+    }
+  }
+  absl::StrAppend(&rv, "\n");
+  
+  return rv;
+}
+
+// Check if a position is off the board for a given player
+bool LongNardeState::IsOff(int player, int pos) const {
+  // For White (kXPlayerId), positions < 0 are off the board (bearing off)
+  // For Black (kOPlayerId), positions >= kNumPoints (24) are off the board
+  return (player == kXPlayerId) ? pos < 0 : pos >= kNumPoints;
 }
 
 }  // namespace long_narde
