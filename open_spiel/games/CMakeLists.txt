@@ -301,6 +301,10 @@ add_executable(long_narde_test long_narde/long_narde_test.cc ${OPEN_SPIEL_OBJECT
                $<TARGET_OBJECTS:tests>)
 add_test(long_narde_test long_narde_test)
 
+add_executable(random_sim_test long_narde/random_sim_test.cc ${OPEN_SPIEL_OBJECTS}
+               $<TARGET_OBJECTS:tests>)
+add_test(random_sim_test random_sim_test)
+
 add_executable(bargaining_instance_generator bargaining/bargaining_instance_generator.cc
                ${OPEN_SPIEL_OBJECTS})
 add_executable(bargaining_test bargaining/bargaining_test.cc ${OPEN_SPIEL_OBJECTS}

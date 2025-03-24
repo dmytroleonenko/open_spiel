@@ -43,17 +43,28 @@ inline constexpr const int kPassPos = -1;
 
 // Move CheckerMove struct definition before its usage
 struct CheckerMove {
-  // Pass is encoded as (pos, num) = (-1, -1).
-  int pos;  // Valid board locations: 0-23; -1 represents a pass.
-  int num;  // 1-6
-  constexpr CheckerMove(int _pos, int _num) : pos(_pos), num(_num) {}
+  // Pass is encoded as pos = -1 (kPassPos)
+  int pos;      // Valid board locations: 0-23; -1 represents a pass.
+  int to_pos;   // Destination position (or -1 for pass)
+  int die;      // Die value used (1-6, or -1 for pass)
+  
+  // Constructor
+  constexpr CheckerMove(int _pos, int _to_pos, int _die) 
+      : pos(_pos), to_pos(_to_pos), die(_die) {}
+  
+  // Legacy constructor for compatibility
+  constexpr CheckerMove(int _pos, int _die) 
+      : pos(_pos), to_pos(-1), die(_die) {}
+  
   bool operator<(const CheckerMove& rhs) const {
-    return (pos * 6 + (num - 1)) < (rhs.pos * 6 + rhs.num - 1);
+    if (pos != rhs.pos) return pos < rhs.pos;
+    if (to_pos != rhs.to_pos) return to_pos < rhs.to_pos;
+    return die < rhs.die;
   }
 };
 
 // Constant pass move to avoid repeated construction
-inline constexpr const CheckerMove kPassMove(kPassPos, -1);
+inline constexpr const CheckerMove kPassMove(kPassPos, kPassPos, -1);
 
 // Constant vector of two pass moves
 inline const std::vector<CheckerMove> kDoublePassMove = {kPassMove, kPassMove};
@@ -196,6 +207,8 @@ class LongNardeState : public State {
   bool WouldFormBlockingBridge(int player, int from_pos, int to_pos) const;
   bool IsHeadPos(int player, int pos) const;
   bool IsLegalHeadMove(int player, int from_pos) const;
+  bool IsFirstTurn(int player) const;
+  bool& MutableIsFirstTurn() { return is_first_turn_; }
 
   // Returns the position of the furthest checker in the home of this player.
   // Returns -1 if none found.
@@ -226,8 +239,9 @@ class LongNardeState : public State {
   int GetMoveEndPosition(CheckerMove* cmove, int player, int start) const;
 
   std::set<CheckerMove> LegalCheckerMoves(int player) const;
-  int RecLegalMoves(std::vector<CheckerMove> moveseq,
-                    std::set<std::vector<CheckerMove>>* movelist);
+  int RecLegalMoves(const std::vector<CheckerMove>& moveseq,
+                    std::set<std::vector<CheckerMove>>* movelist,
+                    int max_depth = 10);
 
   ScoringType scoring_type_;  // Which rules apply when scoring the game.
 
