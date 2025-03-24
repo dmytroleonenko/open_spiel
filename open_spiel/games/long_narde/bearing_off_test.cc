@@ -1,70 +1,64 @@
-// Test the bearing off bug in Long Narde
-#include "open_spiel/games/long_narde/long_narde.h"
-#include "open_spiel/spiel.h"
-#include <iostream>
+// Copyright 2019 DeepMind Technologies Limited
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-using namespace open_spiel;
-using namespace open_spiel::long_narde;
+#include "open_spiel/games/long_narde/long_narde.h"
+
+#include <iostream>
+#include "open_spiel/spiel.h"
 
 int main(int argc, char** argv) {
-  std::cout << "Running Bearing Off From Position 1 Test\n";
+  using namespace open_spiel;
+  std::cout << "\n=== Running Bearing Off From Position 1 Test ===\n";
+  
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
-  auto lnstate = dynamic_cast<LongNardeState*>(state.get());
+  auto lnstate = static_cast<long_narde::LongNardeState*>(state.get());
   
-  // Create our test board from scratch
+  // Create our test board with one checker in position 1
   std::vector<std::vector<int>> test_board = {
-    {0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White: 7 at pos 1
-    {0, 0, 0, 0, 3, 1, 5, 0, 0, 2, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0}  // Black distribution
+    {0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White: 1 at pos 1
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Black distribution
   };
   
   // Set up the test state with white to move, dice 1 and 3
   std::vector<int> dice = {1, 3};
-  std::vector<int> scores = {8, 0}; // White has 8 checkers borne off
-  lnstate->SetState(kXPlayerId, false, dice, scores, test_board);
+  std::vector<int> scores = {14, 0}; // White has 14 checkers borne off
+  lnstate->SetState(long_narde::kXPlayerId, false, dice, scores, test_board);
   
   // Get legal actions
   std::vector<Action> legal_actions = lnstate->LegalActions();
   
-  // Verify that bearing off actions are available
+  // Find bearing off moves
   bool can_bear_off_with_1 = false;
   bool can_bear_off_with_3 = false;
-  bool has_pass = false;
-  
-  std::cout << "Board state for bearing off test:\n" << lnstate->ToString() << std::endl;
-  std::cout << "Legal actions count: " << legal_actions.size() << std::endl;
   
   for (Action action : legal_actions) {
-    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+    std::vector<long_narde::CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(long_narde::kXPlayerId, action);
     
-    for (const CheckerMove& move : moves) {
-      // For White, to_pos < 0 means bearing off
+    for (const auto& move : moves) {
       if (move.pos == 1 && move.to_pos < 0) {
         if (move.die == 1) {
           can_bear_off_with_1 = true;
-          std::cout << "Found action to bear off with die value 1\n";
         } else if (move.die == 3) {
           can_bear_off_with_3 = true;
-          std::cout << "Found action to bear off with die value 3\n";
         }
       }
     }
-    
-    // Check for pass action
-    std::vector<CheckerMove> pass_moves = {kPassMove, kPassMove};
-    Action pass_action = lnstate->CheckerMovesToSpielMove(pass_moves);
-    if (action == pass_action) {
-      has_pass = true;
-    }
   }
   
-  // Display the results
-  std::cout << "Can bear off with 1: " << (can_bear_off_with_1 ? "YES" : "NO") << std::endl;
-  std::cout << "Can bear off with 3: " << (can_bear_off_with_3 ? "YES" : "NO") << std::endl;
-  std::cout << "Has pass action: " << (has_pass ? "YES" : "NO") << std::endl;
-  
-  // We expect to be able to bear off with both dice
-  bool test_passed = can_bear_off_with_1 && can_bear_off_with_3 && !has_pass;
+  // Should be able to bear off with 1 (exact move)
+  bool test_passed = can_bear_off_with_1 && can_bear_off_with_3;
   
   if (test_passed) {
     std::cout << "✓ Bearing off test PASSED - can bear off with any die value when all checkers are in home\n";

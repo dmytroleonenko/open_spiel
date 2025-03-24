@@ -469,8 +469,19 @@ Player LongNardeState::CurrentPlayer() const {
 int LongNardeState::Opponent(int player) const { return 1 - player; }
 
 void LongNardeState::RollDice(int outcome) {
-  dice_.push_back(kChanceOutcomeValues[outcome][0]);
-  dice_.push_back(kChanceOutcomeValues[outcome][1]);
+  int die1 = kChanceOutcomeValues[outcome][0];
+  int die2 = kChanceOutcomeValues[outcome][1];
+  
+  // Ensure dice are ordered with higher value first for non-doubles
+  if (die1 != die2 && die1 < die2) {
+    // Swap the dice values
+    dice_.push_back(die2);
+    dice_.push_back(die1);
+  } else {
+    // Keep original order (either already ordered or doubles)
+    dice_.push_back(die1);
+    dice_.push_back(die2);
+  }
 }
 
 int LongNardeState::DiceValue(int i) const {
@@ -725,14 +736,14 @@ void LongNardeState::DoApplyAction(Action move_id) {
     }
     
     // If this is a non-first turn and a head move when we've already used one, skip it
-    if (!is_first_turn_ && m.pos == head_pos && used_head_move) {
+    if (!is_first_turn_ && IsHeadPos(cur_player_, m.pos) && used_head_move) {
       // Convert to pass move
       filtered_moves.push_back(kPassMove);
       continue;
     }
     
     // Track if we've used a head move
-    if (m.pos == head_pos) {
+    if (IsHeadPos(cur_player_, m.pos)) {
       used_head_move = true;
       moved_from_head_ = true;
     }
@@ -1005,8 +1016,7 @@ bool LongNardeState::IsValidCheckerMove(int player, int from_pos, int to_pos, in
   }
   
   // 3. Bearing off logic
-  bool is_bearing_off = (player == kXPlayerId && to_pos < 0) || 
-                       (player == kOPlayerId && to_pos >= kNumPoints);
+  bool is_bearing_off = IsOff(player, to_pos);
   if (is_bearing_off) {
     // Can only bear off when all checkers are in home
     if (!AllInHome(player)) {
@@ -1166,20 +1176,18 @@ void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
     }
   }
 
-  // Calculate where the checker ends up
+  // Calculate where the checker ends up using GetToPos
   int next_pos = GetToPos(player, move.pos, move.die);
 
   // Now add the checker (or score)
-  if ((player == kXPlayerId && next_pos < 0) || 
-      (player == kOPlayerId && next_pos >= kNumPoints)) {
+  if (IsOff(player, next_pos)) {
     scores_[player]++;
   } else {
     board_[player][next_pos]++;
   }
 
   // Set moved_from_head_ flag if this move came from the head
-  if ((player == kXPlayerId && move.pos == kWhiteHeadPos) ||
-      (player == kOPlayerId && move.pos == kBlackHeadPos)) {
+  if (IsHeadPos(player, move.pos)) {
     moved_from_head_ = true;
   }
 }
@@ -1195,8 +1203,7 @@ void LongNardeState::UndoCheckerMove(int player, const CheckerMove& move) {
   int next_pos = GetToPos(player, move.pos, move.die);
 
   // Remove the moved checker or decrement score
-  if ((player == kXPlayerId && next_pos < 0) || 
-      (player == kOPlayerId && next_pos >= kNumPoints)) {
+  if (IsOff(player, next_pos)) {
     scores_[player]--;
   } else {
     board_[player][next_pos]--;
@@ -1253,7 +1260,7 @@ std::vector<Action> LongNardeState::ProcessLegalMoves(
       if (!is_first_turn_) {
         int head_move_count = 0;
         for (const auto& move : moveseq) {
-          if (move.pos == head_pos && move.pos != kPassPos) {
+          if (IsHeadPos(cur_player_, move.pos) && move.pos != kPassPos) {
             head_move_count++;
           }
         }
@@ -1297,7 +1304,7 @@ std::vector<Action> LongNardeState::ProcessLegalMoves(
         if (!is_first_turn_) {
           int head_move_count = 0;
           for (const auto& move : moveseq) {
-            if (move.pos == head_pos && move.pos != kPassPos) {
+            if (IsHeadPos(cur_player_, move.pos) && move.pos != kPassPos) {
               head_move_count++;
             }
           }
@@ -1381,27 +1388,27 @@ bool LongNardeState::IsOff(int player, int pos) const {
   return (player == kXPlayerId) ? pos < 0 : pos >= kNumPoints;
 }
 
+// Helper function for counter-clockwise movement with wrapping
+inline int CounterClockwisePos(int from, int pips, int num_points) {
+  // Moves pips steps counter-clockwise from 'from', wrapping if needed.
+  int pos = from - pips;
+  // Safe wrap in case pos is negative:
+  pos = (pos % num_points + num_points) % num_points;
+  return pos;
+}
+
 // Get the To position for this play given the from position and number of
 // pips on the die.
 int LongNardeState::GetToPos(int player, int from_pos, int pips) const {
-  // Both players move counter-clockwise in Long Narde, which means:
-  // - White moves from higher positions to lower (e.g., 23→22→...→0)
-  //   and bears off when going below 0
-  // - Black also moves counter-clockwise (e.g., 11→10→...→0→23→22→...→12)
-  //   and bears off when going above 23
+  // Both players move counter-clockwise in Long Narde:
+  // - White (kXPlayerId) never wraps: from_pos - pips can go negative if bearing off
+  // - Black (kOPlayerId) wraps around the board when going below 0
   
-  // For Black, implement counter-clockwise movement with position wrapping
-  if (player == kOPlayerId) {
-    // Apply counter-clockwise movement
-    int pos = from_pos - pips;
-    // Handle position wrapping
-    if (pos < 0) {
-      pos += kNumPoints; // Wrap around from 0 to 23
-    }
-    return pos;
+  if (player == kXPlayerId) {
+    return from_pos - pips;  // can be < 0 if bearing off
   } else {
-    // For White, counter-clockwise is simply decreasing position
-    return from_pos - pips;
+    // For black, do a modulo wrap around kNumPoints (24) points
+    return CounterClockwisePos(from_pos, pips, kNumPoints);
   }
 }
 
@@ -1452,12 +1459,8 @@ std::vector<Action> LongNardeState::LegalActions() const {
 
   // All possible move actions.
   std::vector<Action> moves;
+  bool found_any_valid_move = false;
   
-  // Add pass move if there are no legal moves using the dice.
-  std::vector<CheckerMove> pass_move_encoding = {kPassMove, kPassMove};
-  Action pass_spiel_action = CheckerMovesToSpielMove(pass_move_encoding);
-  moves.push_back(pass_spiel_action);
-
   // Generate possible actions.
   for (int pos1 = 1; pos1 < kNumPoints; ++pos1) {
     // Skip moving from a position with no checkers for the current player.
@@ -1467,7 +1470,8 @@ std::vector<Action> LongNardeState::LegalActions() const {
       int to_pos1 = GetToPos(cur_player_, pos1, die1);
       
       // Skip if first move would land on opponent checker
-      if (to_pos1 != kNumPoints && to_pos1 > 0 && board_[1 - cur_player_][to_pos1] > 0) {
+      // Fixed to check the full valid range of board positions [0, kNumPoints-1]
+      if (to_pos1 >= 0 && to_pos1 < kNumPoints && board_[1 - cur_player_][to_pos1] > 0) {
         continue;
       }
       
@@ -1476,9 +1480,12 @@ std::vector<Action> LongNardeState::LegalActions() const {
         continue;
       }
 
+      // If we make it here, we found at least a one-die move
+      found_any_valid_move = true;
+
       int die2 = (die1 == high_roll) ? low_roll : high_roll;
       
-      // Add pure pass for second move.
+      // Add move where only one die is used.
       std::vector<CheckerMove> moves_encoding = {{pos1, die1}, kPassMove};
       moves.push_back(CheckerMovesToSpielMove(moves_encoding));
 
@@ -1494,7 +1501,8 @@ std::vector<Action> LongNardeState::LegalActions() const {
         int to_pos2 = GetToPos(cur_player_, pos2, die2);
         
         // Skip if second move would land on opponent checker
-        if (to_pos2 != kNumPoints && to_pos2 > 0 && board_[1 - cur_player_][to_pos2] > 0) {
+        // Fixed to check the full valid range of board positions [0, kNumPoints-1]
+        if (to_pos2 >= 0 && to_pos2 < kNumPoints && board_[1 - cur_player_][to_pos2] > 0) {
           continue;
         }
         
@@ -1507,6 +1515,13 @@ std::vector<Action> LongNardeState::LegalActions() const {
         moves.push_back(CheckerMovesToSpielMove(moves_encoding));
       }
     }
+  }
+  
+  // Only add the pass move if no valid moves were found
+  if (!found_any_valid_move) {
+    std::vector<CheckerMove> pass_move_encoding = {kPassMove, kPassMove};
+    Action pass_spiel_action = CheckerMovesToSpielMove(pass_move_encoding);
+    moves.push_back(pass_spiel_action);
   }
   
   // Filter out any illegal actions

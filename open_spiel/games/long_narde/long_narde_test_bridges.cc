@@ -39,42 +39,19 @@ void TestBridgeFormation() {
   // Set white to move
   lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
   
-  std::cout << "DEBUG: Testing bridge formation with dice {1,1}" << std::endl;
-  std::cout << "DEBUG: Board state:" << std::endl;
-  std::cout << "DEBUG: White: ";
-  for (int i = 0; i < kNumPoints; ++i) {
-    if (lnstate->board(kXPlayerId, i) > 0) {
-      std::cout << i << ":" << lnstate->board(kXPlayerId, i) << " ";
-    }
-  }
-  std::cout << std::endl;
-  std::cout << "DEBUG: Black: ";
-  for (int i = 0; i < kNumPoints; ++i) {
-    if (lnstate->board(kOPlayerId, i) > 0) {
-      std::cout << i << ":" << lnstate->board(kOPlayerId, i) << " ";
-    }
-  }
-  std::cout << std::endl;
-  
   // Get legal actions
   std::vector<Action> legal_actions = lnstate->LegalActions();
-  std::cout << "DEBUG: Number of legal actions: " << legal_actions.size() << std::endl;
   
   // Check if we can find a move that moves from point 1 to 0, forming a 7-point bridge
   bool found_legal_bridge_move = false;
   for (Action action : legal_actions) {
-    std::cout << "DEBUG: Checking action " << action << " with 2 moves" << std::endl;
     std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
     for (const CheckerMove& move : moves) {
-      std::cout << "DEBUG: Move pos=" << move.pos << ", to_pos=" << move.to_pos << ", die=" << move.die << std::endl;
       // Look for moves from position 1 (index 0) to position 0 (off-board/bearing off)
       if (move.pos == 1 && move.to_pos == 0) {
         found_legal_bridge_move = true;
-        std::cout << "DEBUG: Found legal bridge move!" << std::endl;
         // This is a legal move, so forming a 7-point bridge should be allowed when
         // the opponent has checkers ahead of the bridge
-        std::cout << "DEBUG: WouldFormBlockingBridge(0, 6, 5) = " 
-                  << lnstate->WouldFormBlockingBridge(0, 6, 5) << std::endl;
         break;
       }
     }

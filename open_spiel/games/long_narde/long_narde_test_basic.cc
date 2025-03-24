@@ -64,14 +64,9 @@ void BasicLongNardeTestsCheckNoHits() {
   
   // Comment out the RandomSimTest that's causing memory issues
   // testing::RandomSimTest(*game, 1, false, true, &CheckNoHits);
-  
-  // Just log that we're skipping this test
-  std::cout << "Skipping RandomSimTest for CheckNoHits due to memory issues.\n";
 }
 
 void BasicLongNardeTestsDoNotStartWithDoubles() {
-  std::cout << "Running modified dice equality test to avoid random failures...\n";
-  
   // Instead of relying on random values, let's directly test the assumption
   auto game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
@@ -91,20 +86,39 @@ void BasicLongNardeTestsDoNotStartWithDoubles() {
   
   // Now check that the dice aren't equal (game should handle this)
   LongNardeState* long_narde_state = dynamic_cast<LongNardeState*>(state.get());
-  if (long_narde_state->dice(0) == long_narde_state->dice(1)) {
-    std::cout << "Found equal dice: " << long_narde_state->dice(0) 
-              << " and " << long_narde_state->dice(1) << "\n";
-    std::cout << "This might be fine if the game is expected to handle equal dice in some way.\n";
-  } else {
-    std::cout << "Dice are properly distinct: " << long_narde_state->dice(0) 
-              << " and " << long_narde_state->dice(1) << "\n";
-    SPIEL_CHECK_NE(long_narde_state->dice(0), long_narde_state->dice(1));
+  SPIEL_CHECK_NE(long_narde_state->dice(0), long_narde_state->dice(1));
+}
+
+void WhiteMovesFirstTest() {
+  auto game = LoadGame("long_narde");
+  
+  // Run multiple simulations to verify White always moves first
+  for (int i = 0; i < 10; ++i) {
+    std::unique_ptr<State> state = game->NewInitialState();
+    
+    // Apply the first chance outcome (dice roll)
+    if (state->IsChanceNode()) {
+      auto outcomes = state->ChanceOutcomes();
+      state->ApplyAction(outcomes[0].first);
+    }
+    
+    // Check that the current player is White (kXPlayerId)
+    auto lnstate = static_cast<const LongNardeState*>(state.get());
+    SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kXPlayerId);
+    
+    // Try a different dice roll to ensure it's consistent
+    auto new_state = game->NewInitialState();
+    if (new_state->IsChanceNode()) {
+      auto outcomes = new_state->ChanceOutcomes();
+      new_state->ApplyAction(outcomes[i % outcomes.size()].first);  // Use different outcomes
+      auto new_lnstate = static_cast<const LongNardeState*>(new_state.get());
+      SPIEL_CHECK_EQ(new_lnstate->CurrentPlayer(), kXPlayerId);
+    }
   }
 }
 
 }  // namespace
 
-// Exposed test function
 void TestBasicSetup() {
   std::cout << "\n=== Testing Basic Setup ===" << std::endl;
   
@@ -117,6 +131,9 @@ void TestBasicSetup() {
   
   std::cout << "\n=== Running BasicLongNardeTestsDoNotStartWithDoubles ===\n";
   BasicLongNardeTestsDoNotStartWithDoubles();
+  
+  std::cout << "\n=== Running WhiteMovesFirstTest ===\n";
+  WhiteMovesFirstTest();
   
   std::cout << "✓ Basic setup tests passed\n";
 }

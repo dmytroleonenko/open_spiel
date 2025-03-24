@@ -36,6 +36,7 @@ void TestBridgeFormation(); // Bridge formation tests
 void TestActionEncoding(); // Action encoding tests
 void TestEndgame();        // Endgame tests including bearing off
 void TestHeadRule();       // Head rule tests
+void TestPassMoveBehavior(); // Test pass move behavior
 
 // Original function for backward compatibility
 void BasicLongNardeTests();

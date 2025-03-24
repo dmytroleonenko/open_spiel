@@ -27,6 +27,7 @@ int main(int argc, char** argv) {
   open_spiel::long_narde::TestActionEncoding();
   open_spiel::long_narde::TestEndgame();
   open_spiel::long_narde::TestHeadRule();
+  open_spiel::long_narde::TestPassMoveBehavior();
   
   // For backward compatibility, the legacy test function that's called from
   // scripts like build_long_narde.sh
@@ -35,6 +36,6 @@ int main(int argc, char** argv) {
     // TestBasicMovement is already run as part of TestMovementRules and BasicLongNardeTests
   }
   
-  std::cout << "\nAll tests passed!" << std::endl;
+  std::cout << "✓ All tests passed\n";
   return 0;
 } 
