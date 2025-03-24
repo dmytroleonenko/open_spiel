@@ -195,3 +195,75 @@ We will create a copy of "games/backgammon" and modify it to implement the game 
      - Tested edge cases where one player has 14 checkers off
      - Verified tie behavior differences between scoring modes
      - Tested multiple edge cases of the Long Narde endgame scoring rules 
+
+# Long Narde Test Cases TODO
+
+This file contains a list of test cases from the original `long_narde_test.cc` that need to be properly implemented in separate files.
+
+## Missing Test Cases
+
+The following test cases from the original test file have not been properly implemented in separate files:
+
+1. **HeadRuleTest** (Test Case #2)
+   - Original Location: `long_narde_test.cc`
+   - Expected Location: `long_narde_test_movement.cc`
+   - Issue: A different test named `HeadRuleTestInternal` exists in `long_narde_test_movement.cc`, but it uses a different approach and doesn't exactly match the original test. The original test specifically checks for `actual_multi_head_moves` which isn't present in the new implementation.
+
+2. **FirstTurnDoublesExceptionTest** (Test Case #3)
+   - Original Location: `long_narde_test.cc`
+   - Expected Location: `long_narde_test_movement.cc` or `long_narde_test_basic.cc`
+   - Issue: This test is completely missing from the separate test files.
+
+3. **BlockingBridgeRuleTest** (Test Case #4)
+   - Original Location: `long_narde_test.cc`
+   - Expected Location: `long_narde_test_bridges.cc`
+   - Issue: While there is a `TestBridgeFormation` test in `long_narde_test_bridges.cc`, it doesn't exactly match the implementation of the original `BlockingBridgeRuleTest`. The original test had 4 specific test cases that aren't all covered.
+
+## Correctly Implemented Tests
+
+1. **InitialBoardSetupTest** (Test Case #1)
+   - Original Location: `long_narde_test.cc`
+   - Current Location: `long_narde_test_basic.cc`
+   - Status: Correctly implemented with minor refactoring that preserves the test logic. 
+
+# Test Case Implementation Issues
+
+The following test cases from the original long_narde_test.cc are not properly implemented in separate files:
+
+1. ~~`HomeRegionsTest` (test case 6) - Not implemented in any separate file~~ - **Fixed**: Implemented in long_narde_test_movement.cc
+2. ~~`BearingOffLogicTest` (test case 7) - Not implemented in bearing_off_test.cc which handles a different bearing off test~~ - **Fixed**: Implemented in long_narde_test_endgame.cc
+3. ~~`ScoringSystemTest` (test case 8) - Not implemented in any separate file, should probably be in long_narde_test_endgame.cc~~ - **Fixed**: Implemented in long_narde_test_endgame.cc
+
+The following tests have differences between the original implementation and the separate file:
+
+1. ~~`MovementDirectionTest` (test case 5) - Implementation in long_narde_test_movement.cc is different from the original~~ - **Fixed**: Updated in long_narde_test_movement.cc to match original
+2. ~~`NoLandingOnOpponentTest` (test case 9) - Implementation in long_narde_test_movement.cc is different from the original~~ - **Fixed**: Updated in long_narde_test_movement.cc to match original 
+
+# Long Narde Test Implementation TODOs
+
+## Test Case Implementation Discrepancies
+
+### Test Case #18: BearingOffFromPosition1Test
+~~The implementation in `long_narde_test_endgame.cc` significantly differs from the original test in `long_narde_test.cc`:~~
+
+~~- **Original Test**:~~
+  ~~- Uses a board with White having 7 checkers at position 1~~
+  ~~- Tests bearing off with dice values 1 and 3~~
+  ~~- Checks if bearing off is allowed with both exact roll (1) and higher roll (3)~~
+  ~~- Verifies pass action availability~~
+  ~~- Tests a bug where bearing off should be allowed with any roll but is only working with exact roll~~
+
+~~- **New Implementation**:~~
+  ~~- Uses a different board setup (White has checkers at positions 1, 2, 3, 4, 5)~~
+  ~~- Uses dice 6 and 2 instead of 1 and 3~~
+  ~~- Only tests bearing off with higher roll (6 from position 1)~~
+  ~~- Tests both White and Black bearing off~~
+  ~~- Does not check for pass action~~
+
+~~**Action Required**: Update `long_narde_test_endgame.cc` to match the original test's logic and edge cases.~~
+
+**Fixed**: Updated BearingOffFromPosition1Test in long_narde_test_endgame.cc to match the original test's implementation.
+
+# Long Narde Test Cases Review
+
+// ... existing code ... 

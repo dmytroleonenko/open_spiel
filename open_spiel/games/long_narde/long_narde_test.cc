@@ -1806,50 +1806,29 @@ void RunTests() {
   SingleLegalMoveTest();
   ConsecutiveMovesTest();
   UndoRedoTest();
-  ComplexEndgameTest();  // Add the new test
+  ComplexEndgameTest();  
   ActionEncodingTest();
-  // ... existing code ...
-  
-  BearingOffFromPosition1Test();
-  
+  BearingOffFromPosition1Test();  // Run our test
   std::cout << "All tests passed!" << std::endl;
 }
 
 // Test the bearing off bug when all checkers are in position 1
 void BearingOffFromPosition1Test() {
+  std::cout << "\n=== Running BearingOffFromPosition1Test ===" << std::endl;
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
-  auto lnstate = static_cast<LongNardeState*>(state.get());
+  auto lnstate = dynamic_cast<LongNardeState*>(state.get());
   
-  // Set up a board position where White has all checkers in position 1
-  // and Black has checkers elsewhere
-  lnstate->Reset();
+  // Create our test board from scratch
+  std::vector<std::vector<int>> test_board = {
+    {0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White: 7 at pos 1
+    {0, 0, 0, 0, 3, 1, 5, 0, 0, 2, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0}  // Black distribution
+  };
   
-  // Clear the board
-  for (int i = 0; i < kNumPoints; ++i) {
-    lnstate->SetCheckerCount(kXPlayerId, i, 0);
-    lnstate->SetCheckerCount(kOPlayerId, i, 0);
-  }
-  
-  // Set white to have 7 checkers at position 1 and 8 already borne off
-  lnstate->SetCheckerCount(kXPlayerId, 1, 7);
-  lnstate->scores_[kXPlayerId] = 8;
-  
-  // Set some black checkers
-  lnstate->SetCheckerCount(kOPlayerId, 4, 3);
-  lnstate->SetCheckerCount(kOPlayerId, 5, 1);
-  lnstate->SetCheckerCount(kOPlayerId, 6, 5);
-  lnstate->SetCheckerCount(kOPlayerId, 9, 2);
-  lnstate->SetCheckerCount(kOPlayerId, 11, 1);
-  lnstate->SetCheckerCount(kOPlayerId, 16, 1);
-  lnstate->SetCheckerCount(kOPlayerId, 17, 1);
-  lnstate->SetCheckerCount(kOPlayerId, 20, 1);
-  
-  // Set dice values to 1 and 3
-  lnstate->SetDiceValues({1, 3});
-  
-  // Set current player to White
-  lnstate->SetCurrentPlayer(kXPlayerId);
+  // Set up the test state with white to move, dice 1 and 3
+  std::vector<int> dice = {1, 3};
+  std::vector<int> scores = {8, 0}; // White has 8 checkers borne off
+  lnstate->SetState(kXPlayerId, false, dice, scores, test_board);
   
   // Get legal actions
   std::vector<Action> legal_actions = lnstate->LegalActions();
@@ -1866,7 +1845,8 @@ void BearingOffFromPosition1Test() {
     std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
     
     for (const CheckerMove& move : moves) {
-      if (move.pos == 1 && move.to_pos == kBearOffPos) {
+      // For White, to_pos < 0 means bearing off
+      if (move.pos == 1 && move.to_pos < 0) {
         if (move.die == 1) {
           can_bear_off_with_1 = true;
         } else if (move.die == 3) {
@@ -1875,7 +1855,10 @@ void BearingOffFromPosition1Test() {
       }
     }
     
-    if (action == 624) {  // Pass action
+    // Check for pass action
+    std::vector<CheckerMove> pass_moves = {kPassMove, kPassMove};
+    Action pass_action = lnstate->CheckerMovesToSpielMove(pass_moves);
+    if (action == pass_action) {
       has_pass = true;
     }
   }
@@ -1886,17 +1869,61 @@ void BearingOffFromPosition1Test() {
   std::cout << "Can bear off with 3: " << (can_bear_off_with_3 ? "YES" : "NO") << std::endl;
   std::cout << "Has pass action: " << (has_pass ? "YES" : "NO") << std::endl;
   
-  // These checks should pass if the implementation is correct
+  // We expect this test to fail initially - the bug is that we can only bear off with an exact roll
+  // The correct behavior is that we should be able to bear off with any roll
+  // So our test should check that we can bear off with both dice (1 and 3)
   SPIEL_CHECK_TRUE(can_bear_off_with_1);  // Should be able to bear off with 1
   SPIEL_CHECK_TRUE(can_bear_off_with_3);  // Should be able to bear off with 3
   SPIEL_CHECK_FALSE(has_pass);           // Should not need to pass
+  std::cout << "✓ BearingOffFromPosition1Test " << 
+    (can_bear_off_with_3 ? "passed" : "failed (as expected)") << std::endl;
 }
 
-// Test declarations
-void KnownBoardStatesXTest();
-void KnownBoardStatesOTest();
+}  // namespace
+}  // namespace long_narde
+}  // namespace open_spiel
+
+namespace open_spiel {
+namespace long_narde {
+
+// Exposed functions for running tests from main
+void TestBasicMovement();
+void TestBridgeFormation();
+void TestHeadRule();
+void BasicLongNardeTests();
+
+namespace {
+
+// Private test function declarations go here
+void InitialBoardSetupTest();
+void BasicLongNardeTestsDoNotStartWithDoubles();
+void HeadRuleTest();
+void MovementDirectionTest();
+void BearingOffLogicTest();
+void NoLandingOnOpponentTest();
+void SingleLegalMoveTest();
+void ConsecutiveMovesTest();
+void UndoRedoTest();
+void ComplexEndgameTest();
 void ActionEncodingTest();
-void BearingOffFromPosition1Test(); // Add our new test
+void BearingOffFromPosition1Test();  // Add the declaration at the top
+
+// Keep the original main RunTests function which calls our test
+void RunTests() {
+  InitialBoardSetupTest();
+  BasicLongNardeTestsDoNotStartWithDoubles();
+  HeadRuleTest();
+  MovementDirectionTest();
+  BearingOffLogicTest();
+  NoLandingOnOpponentTest();
+  SingleLegalMoveTest();
+  ConsecutiveMovesTest();
+  UndoRedoTest();
+  ComplexEndgameTest();  
+  ActionEncodingTest();
+  BearingOffFromPosition1Test();  // Run our test
+  std::cout << "All tests passed!" << std::endl;
+}
 
 }  // namespace
 }  // namespace long_narde

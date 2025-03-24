@@ -304,7 +304,15 @@ add_executable(backgammon_test backgammon/backgammon_test.cc ${OPEN_SPIEL_OBJECT
                $<TARGET_OBJECTS:tests>)
 add_test(backgammon_test backgammon_test)
 
-add_executable(long_narde_test long_narde/long_narde_test.cc ${OPEN_SPIEL_OBJECTS}
+add_executable(long_narde_test 
+               long_narde/long_narde_test_main.cc
+               long_narde/long_narde_test_basic.cc
+               long_narde/long_narde_test_movement.cc
+               long_narde/long_narde_test_bridges.cc
+               long_narde/long_narde_test_actions.cc
+               long_narde/long_narde_test_endgame.cc
+               long_narde/long_narde_test_legacy.cc
+               ${OPEN_SPIEL_OBJECTS}
                $<TARGET_OBJECTS:tests>)
 add_test(long_narde_test long_narde_test)
 
