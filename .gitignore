@@ -68,3 +68,5 @@ pyvenv.cfg
 # Python pip specific
 *.egg-info/
 
+*.log
+gdb_commands.txt

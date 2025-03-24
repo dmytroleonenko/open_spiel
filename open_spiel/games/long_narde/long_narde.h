@@ -210,16 +210,29 @@ class LongNardeState : public State {
   bool IsFirstTurn(int player) const;
   bool& MutableIsFirstTurn() { return is_first_turn_; }
 
+  // Centralized function to check if a checker move is valid
+  bool IsValidCheckerMove(int player, int from_pos, int to_pos, int die_value, bool check_head_rule = true) const;
+
   // Returns the position of the furthest checker in the home of this player.
   // Returns -1 if none found.
   int FurthestCheckerInHome(int player) const;
 
-  bool ApplyCheckerMove(int player, const CheckerMove& move);
+  void ApplyCheckerMove(int player, const CheckerMove& move);
   void UndoCheckerMove(int player, const CheckerMove& move);
 
   bool UsableDiceOutcome(int outcome) const;
   std::vector<Action> ProcessLegalMoves(int max_moves,
                                       const std::set<std::vector<CheckerMove>>& movelist) const;
+
+  // Tests if a bridge (illegal formation) would be created by applying a move.
+  // Returns true if a bridge would be formed, false otherwise.
+  bool WouldFormBridge(Player player, int from_pos, int to_pos) const;
+
+  // Validate that an action is legal and decodes to valid moves
+  bool ValidateAction(Action action) const;
+
+  // Returns all illegal actions for the given board state.
+  std::vector<Action> IllegalActions() const;
 
  protected:
   void DoApplyAction(Action move_id) override;

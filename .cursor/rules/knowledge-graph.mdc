@@ -1,0 +1,48 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+**CRITICAL: You MUST query the knowledge graph first before ANY other action.**
+
+## Step 0: Pre-Action Check
+
+Before executing any troubleshooting, coding, or system changes, **you must query the knowledge graph** using the designated tool. This is a mandatory first step.
+
+- **Tool Name Example:**  
+  ```javascript
+  mcp_mcp_neo4j_memory_search_nodes("component_name");
+
+Instructions
+	1.	Query the Knowledge Graph First
+	•	Mandatory Requirement:
+ALWAYS perform a knowledge graph query before beginning any troubleshooting, design decisions, or implementation tasks.
+	•	Command Example:
+
+mcp_mcp_neo4j_memory_search_nodes("component_name");
+
+
+	2.	Document Critical Discoveries & Dependencies
+	•	Log bugs, edge cases, undocumented configurations, and project-specific workflows.
+	•	Include context such as project name, software versions, timestamps, and links to source documentation.
+	3.	Maintain Clear Structure and Accuracy
+	•	Use clear, descriptive names (e.g., “Project: MCP Neo4j Memory”) and specific entity types (e.g., EdgeCase, Configuration, Component) with version details.
+	•	Write concise, factual observations with error messages and solutions.
+	•	Define relationships with active verbs (e.g., USES, PART_OF, DEPENDS_ON) and create bidirectional or hierarchical links as needed.
+	4.	Perform Regular Health Checks and Updates
+	•	Before and after major changes, verify that the knowledge graph reflects the current system state.
+	•	Periodically review entries for outdated data, deprecated dependencies, and inconsistencies.
+	•	Update entities to reflect code refactors, configuration changes, and new version releases, marking changes with version tags and timestamps.
+
+Warning
+
+Failure to query the knowledge graph first may result in:
+	•	Duplicated work and overlooked insights.
+	•	Inefficient troubleshooting due to missing critical system context.
+	•	Increased risk of introducing errors by not leveraging verified knowledge.
+
+Additional Notes
+	•	File Name: Rename this file to knowledge-graph.md to ensure it is recognized as a Markdown file.
+	•	Step Indicator: “Step 0” emphasizes that querying the knowledge graph must be done before any other action.
+	
+**CRITICAL: You MUST query the knowledge graph first before ANY other action.**

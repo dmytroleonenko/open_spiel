@@ -1,7 +1,7 @@
 ---
 description: 
-globs: 
-alwaysApply: true
+globs: open_spiel/games/**/*.cc,open_spiel/games/**/*.h
+alwaysApply: false
 ---
 # We develop using TDD principle
 ** Our intentions are all reflected in our tests. 

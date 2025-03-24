@@ -1,9 +1,9 @@
 ---
-description: 
+description: When not sure about the game rues. When you think we are developing backgammon.
 globs: 
-alwaysApply: true
+alwaysApply: false
 ---
-# you are modifying the open_spiel game of backgammon to narde
+# you are modifying the open_spiel game of backgammon to Long narde
 * Backgammon is under open_spiel/games/backgammon and you never modify it. You might consult the original implementation if you need
 * Long narde is originally a copy of backgammon implementation and is located under open_spiel/games/long_narde
 * The goal is to make a game that has very similar game dynamic, common for open_spiel API but slightly changed game rules.

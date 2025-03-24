@@ -16,6 +16,8 @@ add_executable(imperfect_recall_mccfr imperfect_recall_mccfr.cc
                ${OPEN_SPIEL_OBJECTS})
 
 add_executable(example example.cc ${OPEN_SPIEL_OBJECTS})
+target_link_libraries(example ${OPEN_SPIEL_LIBS})
+set_target_properties(example PROPERTIES COMPILE_FLAGS ${DEBUG_FLAGS_LONG_NARDE})
 add_test(example_test example --game=tic_tac_toe --seed=0)
 
 add_executable(fsicfr_liars_dice fsicfr_liars_dice.cc ${OPEN_SPIEL_OBJECTS})

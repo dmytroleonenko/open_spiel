@@ -213,6 +213,13 @@ add_library (games OBJECT ${GAME_SOURCES})
 
 target_include_directories (games PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Set debug symbols for long_narde files
+set_source_files_properties(
+  long_narde/long_narde.cc 
+  long_narde/long_narde.h
+  PROPERTIES COMPILE_FLAGS ${DEBUG_FLAGS_LONG_NARDE}
+)
+
 if (${OPEN_SPIEL_BUILD_WITH_HANABI})
   add_subdirectory(hanabi)
 endif()

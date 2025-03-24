@@ -1,0 +1,28 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+Claude Think Tool Usage Guidelines
+
+The Think tool provides Claude with a dedicated space for structured thinking, enabling more complex reasoning and problem-solving. Use this tool in the following scenarios:
+
+1. **Complex Multi-Step Problems**: When a problem requires breaking down into smaller, logical steps, especially those involving dependencies between steps.
+
+2. **Reasoning Through Constraints**: When you need to analyze multiple constraints, requirements, or conditions simultaneously.
+
+3. **Policy Adherence**: When strict adherence to specific guidelines, rules, or policies is required.
+
+4. **Planning Complex Operations**: When organizing a complex series of actions, especially those requiring tool calls in a specific sequence.
+
+5. **Debugging or Troubleshooting**: When analyzing potential causes and solutions for complex errors.
+
+6. **Decision Making with Many Variables**: When evaluating multiple factors or trade-offs.
+
+The Think tool should NOT be used for:
+Simple, straightforward questions
+Tasks that don't require multi-step reasoning
+Basic information retrieval or summarization
+Creative writing or simple generation tasks
+
+When using the Think tool, clearly state the reasoning challenge, break down your thinking into explicit steps, consider multiple angles, and synthesize insights into a coherent solution.

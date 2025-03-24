@@ -31,6 +31,22 @@ set(CMAKE_CUDA_STANDARD 14)
 set(CMAKE_CUDA_STANDARD_REQUIRED TRUE)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 
+# Enable building shared libraries by default
+option(BUILD_SHARED_LIBS "Build shared libraries" ON)
+message("${BoldYellow}Building shared libraries: ${BUILD_SHARED_LIBS}${ColourReset}")
+
+# Ensure that libraries are built as shared by default
+if(BUILD_SHARED_LIBS)
+  set(CMAKE_FIND_LIBRARY_SUFFIXES ".so" ".dylib" ".dll" ${CMAKE_FIND_LIBRARY_SUFFIXES})
+  # On Linux, make sure the linker adds RPATH so runtime library search works
+  if(UNIX AND NOT APPLE)
+    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+    set(CMAKE_SKIP_BUILD_RPATH FALSE)
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+    set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
+  endif()
+endif()
+
 # Set default build type.
 set (BUILD_TYPE $ENV{BUILD_TYPE})
 if(NOT BUILD_TYPE)
@@ -40,6 +56,7 @@ if(NOT BUILD_TYPE)
 endif()
 message("${BoldYellow}Current build type is: ${BUILD_TYPE}${ColourReset}")
 
+# Global optimization flags (can be overridden for specific targets)
 if(${BUILD_TYPE} STREQUAL "Debug")
   # Basic build for debugging (default).
   # -Og enables optimizations that do not interfere with debugging.
@@ -59,6 +76,10 @@ if(${BUILD_TYPE} STREQUAL "Release")
   # The difference in perfomance can be up to 10x higher.
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DNDEBUG -O3")
 endif()
+
+# Specific debug symbols for long_narde code components
+set(DEBUG_FLAGS_LONG_NARDE "-g -O0")
+message("${BoldYellow}Debug flags for long_narde: ${DEBUG_FLAGS_LONG_NARDE}${ColourReset}")
 
 if(APPLE)
   # On MacOS:

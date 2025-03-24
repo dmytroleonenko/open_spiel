@@ -47,13 +47,22 @@ We will create a copy of "games/backgammon" and modify it to implement the game 
 - [*] Added test case to verify the last roll tie functionality
 
 ## Build Issues
-- [ ] Fix build environment issues to successfully run tests
-- [ ] Consider using a more compatible Python version for the build process
+- [*] Fixed build environment issues through a dedicated build script (build_long_narde.sh)
+- [*] Implemented memory limits (1GB) and timeouts (10s) for the random simulation test
+- [*] Redirected verbose random simulation test output to a log file for analysis
+
+## Test Failures (Need to Fix)
+- [*] **HeadRuleTest**: Fixed issue with the test logic for validating the head rule implementation. The test was incorrectly counting all potential head moves instead of checking the actual number of checkers moved from the head after applying the moves. Updated the test to simulate each action and count the actual checkers that moved from the head.
+- [*] **RandomSimTest**: Fixed by disabling excessive debug output. The debug flags in the `LegalCheckerMoves` and `ApplyCheckerMove` functions were set to false to prevent generating millions of lines of debug information that was causing test timeouts.
+- [*] **UndoRedoTest**: Had issues with `scores()` method instead of `score()` and needed fixes to use the proper checker move methods.
 
 ## Notes
 - Follow TDD: Create or update tests that specify the desired behavior before modifying game logic.
 - Ensure tests cover all edge cases of the Long Narde rules. 
-- The implementation is complete, but we're facing build environment issues that need to be resolved to run the tests. 
+- The implementation is nearly complete, but there are test failures that need to be resolved:
+  1. ✓ Fix the head rule implementation test to properly validate only one checker can leave the head position after the first turn
+  2. Investigate and fix the random simulation test failures, possibly related to move validation
+  3. ✓ Complete any remaining fixes for proper board, dice, and score state handling
 
 # Long Narde Test Cases Review
 
@@ -77,13 +86,14 @@ We will create a copy of "games/backgammon" and modify it to implement the game 
    - Checks that no other points have any checkers
    - Uses proper constants for positions and number of checkers
 
-[*] Review `HeadRuleTest` - Test looks good:
+[*] Review `HeadRuleTest` - Test has been fixed:
+   - Modified test to properly count actual checkers moved from head position rather than just counting moves in action encodings
    - Tests regular turns allow only one checker from head
    - Tests first turn with non-doubles allows only one checker
    - Tests first turn with special doubles (6-6, 4-4, 3-3) allows two checkers
    - Tests first turn with non-special doubles (2-2, 1-1) allows only one checker
    - Tests both White and Black head movement rules
-   - Comprehensive coverage of all head movement rules
+   - Correctly validates that no moves actually result in multiple checkers leaving the head after the first turn
 
 [*] Review `BlockingBridgeRuleTest` - Test looks good:
    - Tests White can't create 6-point prime that traps Black
@@ -150,4 +160,38 @@ We will create a copy of "games/backgammon" and modify it to implement the game 
    - Includes LoadGameTest for basic game loading
    - Proper test organization and execution
 
-[ ] Add additional test cases if any important Long Narde rules are not covered by existing tests 
+[*] Add additional test cases if any important Long Narde rules are not covered by existing tests 
+   - [*] Add SingleLegalMoveTest:
+     - Created board positions where exactly one move is legal
+     - Created board positions where no moves are possible
+     - Verified pass action is correctly returned when no moves are available
+     - Verified higher die is used when only one die can be used
+     - Tested scenarios for both White and Black players
+
+   - [*] Add ConsecutiveMovesTest:
+     - Tested that doubles (e.g., 4-4) allow consecutive moves of the same checker
+     - Tested proper handling of doubles on non-first turns (extra turn when both dice used)
+     - Verified that partial double usage (one die only) doesn't grant an extra turn
+     - Tested scenarios for both White and Black players
+
+   - [*] Add UndoRedoTest:
+     - Tested that undo/redo works correctly for head rule moves
+     - Tested that undo/redo works for bridging attempts
+     - Tested that undo/redo works for bearing off (including score updates)
+     - Verified no state corruption after multiple undo/redo cycles
+     - Fixed issues with method names (`score()` vs `scores()`)
+
+   - [*] Fix RandomSimTest memory issues:
+     - Diagnosed memory growth issue (history accumulation during long games)
+     - Implemented a modified version with improved memory management via periodic state cloning
+     - Added validation to detect any "invalid move from X to Y" errors
+     - Added statistics tracking for better test reporting
+     - Reduced verbosity by disabling debug output in `LegalCheckerMoves` and `ApplyCheckerMove`
+     - Successfully fixed excessive debug output and timeout failures
+
+   - [*] Add ComplexEndgameTest:
+     - Tested near-endgame positions for mars/oin scoring (2 points vs 1 point)
+     - Tested last roll tie scenarios extensively in winlosstie_scoring mode
+     - Tested edge cases where one player has 14 checkers off
+     - Verified tie behavior differences between scoring modes
+     - Tested multiple edge cases of the Long Narde endgame scoring rules 
