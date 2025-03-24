@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <vector>
 
 #include "open_spiel/spiel.h"
 #include "open_spiel/tests/basic_tests.h"
@@ -24,96 +25,105 @@ namespace open_spiel {
 namespace long_narde {
 
 void TestBridgeFormation() {
+  // Load game and create state.
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
   auto lnstate = static_cast<LongNardeState*>(state.get());
-  
-  // Set up a test board where White has 6 points in a row (illegal bridge)
-  // but Black has a checker ahead of the bridge (making it legal)
-  std::vector<std::vector<int>> test_board = {
-    {0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9}, // White 1-6
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Black
-  };
-  std::vector<int> dice = {1, 1};
-  
-  // Set white to move
-  lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
-  
-  // Get legal actions
-  std::vector<Action> legal_actions = lnstate->LegalActions();
-  
-  // Check if we can find a move that moves from point 1 to 0, forming a 7-point bridge
-  bool found_legal_bridge_move = false;
-  for (Action action : legal_actions) {
-    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
-    for (const CheckerMove& move : moves) {
-      // Look for moves from position 1 (index 0) to position 0 (off-board/bearing off)
-      if (move.pos == 1 && move.to_pos == 0) {
-        found_legal_bridge_move = true;
-        // This is a legal move, so forming a 7-point bridge should be allowed when
-        // the opponent has checkers ahead of the bridge
-        break;
-      }
+
+  // ------------------------------------------------------------
+  // Test 1: Directly test illegal bridge detection.
+  // We want to simulate a move within White's home board that fills a gap.
+  //
+  // We'll configure White’s home board (indices 0–5) as:
+  //   [2, 1, 1, 0, 2, 1]
+  // so that point 0 has an extra checker.
+  // White's head (index 23) will hold the remaining checkers so that total white = 15.
+  // Black will have no checkers.
+  //
+  // Then a move from White's position 4 with a die of 1 (i.e. move from pos 4 to pos 3)
+  // will subtract one from pos4 (leaving it with 1) and add one to pos3.
+  // The resulting home board becomes: [2, 1, 1, 1, 1, 1] – a contiguous block of 6.
+  // With no Black checkers ahead (indices 6–23), this move should be flagged as illegal.
+  // ------------------------------------------------------------
+  {
+    // Build White row:
+    // Start with home board: indices 0..5 = {2, 1, 1, 0, 2, 1}
+    std::vector<int> white_row = {2, 1, 1, 0, 2, 1};
+    // Fill indices 6 through 22 with 0.
+    white_row.resize(23, 0);
+    // Set head (index 23) to 15 - (2+1+1+0+2+1) = 15 - 7 = 8.
+    if (white_row.size() < 24) {
+      white_row.push_back(8);
+    } else {
+      white_row[23] = 8;
     }
-    if (found_legal_bridge_move) break;
+    // Total White checkers: 2+1+1+0+2+1+8 = 15.
+    
+    // Black row: all 24 positions zero.
+    std::vector<int> black_row(24, 0);
+    std::vector<std::vector<int>> test_board = {white_row, black_row};
+    std::vector<int> dice = {1, 2};  // Die of 1 will be used.
+    lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+
+    // Simulate move from White's pos 4 to pos 3.
+    bool bridge_illegal = lnstate->WouldFormBlockingBridge(kXPlayerId, 4, 3);
+    SPIEL_CHECK_TRUE(bridge_illegal);
   }
-  
-  // There should be a legal move to form the bridge since opponent has checkers ahead
-  SPIEL_CHECK_TRUE(found_legal_bridge_move);
-  
-  // Now test an illegal bridge - opponent has no checkers ahead
-  test_board = {
-    {0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10}, // White 1-5
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Black
-  };
-  
-  // Set white to move, dice 1 (to move to position 6)
-  dice = {1, 6};
-  lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
-  
-  // Get legal actions
-  legal_actions = lnstate->LegalActions();
-  
-  // Check for moves from point 7 to point 6 (forming a blocking bridge)
-  bool found_illegal_bridge_move = false;
-  for (Action action : legal_actions) {
-    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
-    for (const CheckerMove& move : moves) {
-      // Look for moves from position 6 to position 5 (forming a 6-point bridge)
-      if (move.pos == 6 && move.to_pos == 5) {
-        found_illegal_bridge_move = true;
-        break;
+
+  // ------------------------------------------------------------
+  // Test 2: With opponent relief, the same move should be legal.
+  // We use the same White configuration as above.
+  // For Black, we place 14 checkers at one location (say index 2) and 1 checker at index 7
+  // (so that at least one Black checker is ahead of White’s home board).
+  // ------------------------------------------------------------
+  {
+    std::vector<int> white_row = {2, 1, 1, 0, 2, 1};
+    white_row.resize(23, 0);
+    white_row.push_back(8);  // White head: 8 checkers.
+    std::vector<int> black_row(24, 0);
+    black_row[2] = 14;
+    black_row[7] = 1;
+    std::vector<std::vector<int>> test_board = {white_row, black_row};
+    std::vector<int> dice = {1, 2};
+    lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+
+    bool bridge_illegal = lnstate->WouldFormBlockingBridge(kXPlayerId, 4, 3);
+    SPIEL_CHECK_FALSE(bridge_illegal);
+  }
+
+  // ------------------------------------------------------------
+  // Test 3: Legal actions filtering.
+  // In the illegal bridge configuration (Test 1: Black has no checkers ahead),
+  // the move from pos 4 to pos 3 should not be among the legal actions.
+  // ------------------------------------------------------------
+  {
+    std::vector<int> white_row = {2, 1, 1, 0, 2, 1};
+    white_row.resize(23, 0);
+    white_row.push_back(8);  // White head.
+    // For Black, put all 15 checkers in a location within White’s home board region,
+    // e.g. index 2, so that no Black checker is ahead.
+    std::vector<int> black_row(24, 0);
+    black_row[2] = 15;
+    std::vector<std::vector<int>> test_board = {white_row, black_row};
+    std::vector<int> dice = {1, 2};
+    lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+
+    std::vector<Action> legal_actions = lnstate->LegalActions();
+    bool found_illegal_bridge_move = false;
+    for (Action action : legal_actions) {
+      std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+      for (const CheckerMove& move : moves) {
+        // Look for a move from pos4 to pos3.
+        if (move.pos == 4 && move.to_pos == 3) {
+          found_illegal_bridge_move = true;
+          break;
+        }
       }
+      if (found_illegal_bridge_move) break;
     }
-    if (found_illegal_bridge_move) break;
+    SPIEL_CHECK_FALSE(found_illegal_bridge_move);
   }
-  
-  // There should be no legal moves to form a blocking bridge since Black has no checkers ahead
-  SPIEL_CHECK_FALSE(found_illegal_bridge_move);
-  
-  // Test bridge detection functions directly
-  // Set up a state where White has checkers on points 1-5 and we want to move to point 6
-  test_board = {
-    {0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10}, // White 1-5
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Black
-  };
-  lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
-  
-  // Directly test the bridge detection function
-  bool would_form_bridge = lnstate->WouldFormBlockingBridge(0, 5, 5);
-  SPIEL_CHECK_TRUE(would_form_bridge);
-  
-  // Test with opponent checker ahead
-  test_board = {
-    {0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10}, // White 1-5
-    {0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Black with checker at 7
-  };
-  lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
-  
-  // Should not be a blocking bridge since opponent has a checker ahead
-  would_form_bridge = lnstate->WouldFormBlockingBridge(0, 5, 5);
-  SPIEL_CHECK_FALSE(would_form_bridge);
 }
 
 }  // namespace long_narde
-}  // namespace open_spiel 
+}  // namespace open_spiel
