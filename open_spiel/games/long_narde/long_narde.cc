@@ -1,18 +1,14 @@
-// long_narde.cc:
-// Copyright 2019 DeepMind Technologies Limited
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
+/**
+ *   Long Narde Rules:
+ *  1. Setup: White's 15 checkers on point 24; Black's 15 on point 12.
+    2. Movement: Both move checkers CCW into home (White 1–6, Black 13–18), then bear off.
+    3. Starting: Each rolls 1 die; higher is White and goes first. But in our open_spiel implementation white is always first without the dice roll
+    4. Turns: Roll 2 dice, move checkers exactly by each value. No landing on opponent. If no moves exist, skip; if only one is possible, use the higher die.
+    5. Head Rule: Only 1 checker may leave the head (White 24, Black 12) per turn. Exception on the first turn: if you roll double 6, 4, or 3, you can move 2 checkers from the head; after that, no more head moves.
+    6. Bearing Off: Once all your checkers reach home, bear them off with exact or higher rolls.
+    7. Ending/Scoring: Game ends when someone bears off all. If the loser has none off, winner scores 2 (mars); otherwise 1 (oin). Some events allow a last roll to tie.
+    8. Block (Bridge): You cannot form a contiguous block of 6 checkers unless at least 1 opponent checker is still ahead of it. Fully trapping all 15 opponent checkers is banned—even a momentary (going through in a sequence of moves) 6‑block that would leave no opponent checkers in front is disallowed.
+ */
 #include "open_spiel/games/long_narde/long_narde.h"
 
 #include <algorithm>
@@ -88,7 +84,7 @@ RegisterSingleTensorObserver single_tensor(kGameType.short_name);
 // 1. Internally as kPassPos (-1) in the game logic.
 // 2. As position 24 when encoding/decoding actions (since valid board positions are 0-23).
 std::string PositionToString(int pos) {
-  if (pos == kPassPos || pos == 24) return "Pass";
+  if (pos == kPassPos) return "Pass";
   SPIEL_CHECK_GE(pos, 0);
   SPIEL_CHECK_LT(pos, kNumPoints);
   return absl::StrCat(pos + 1);
@@ -108,7 +104,7 @@ std::string CurPlayerToString(Player cur_player) {
 std::string PositionToStringHumanReadable(int pos) {
   if (pos == kNumOffPosHumanReadable) {
     return "Off";
-  } else if (pos == kPassPos || pos == 24) {
+  } else if (pos == kPassPos) {
     return "Pass";
   } else {
     return PositionToString(pos);
@@ -540,9 +536,10 @@ void LongNardeState::ProcessChanceRoll(Action move_id) {
 
   // Decide which player starts or continues.
   if (turns_ < 0) {
-    // First chance roll of the game.
+    // White always starts, ignore dice outcomes
     turns_ = 0;
     cur_player_ = prev_player_ = kXPlayerId;
+    return;  // Skip all other chance logic for the first turn
   } else if (double_turn_) {
     // Extra turn in progress (from doubles).
     cur_player_ = prev_player_;
@@ -566,11 +563,8 @@ void LongNardeState::DoApplyAction(Action move_id) {
     return;
   }
 
-  // Otherwise, handle a normal (non-chance) move.
   if (!ValidateAction(move_id)) {
-    std::cout << "ERROR: Invalid action " << move_id << " chosen. Converting to pass." << std::endl;
-    std::vector<CheckerMove> pass_moves = {kPassMove, kPassMove};
-    move_id = CheckerMovesToSpielMove(pass_moves);
+    SpielFatalError(absl::StrCat("Invalid action: ", move_id));
   }
   is_first_turn_ = IsFirstTurn(cur_player_);
   std::vector<CheckerMove> original_moves = SpielMoveToCheckerMoves(cur_player_, move_id);
