@@ -495,12 +495,33 @@ bool LongNardeState::ValidateAction(Action action) const {
   bool is_debugging = false;
   const auto& legal_actions = LegalActions();
   if (std::find(legal_actions.begin(), legal_actions.end(), action) == legal_actions.end()) {
-    if (is_debugging) {
-      std::cout << "DEBUG: Action " << action << " not in legal actions list of size " << legal_actions.size() << std::endl;
-      for (auto a : legal_actions) {
-        std::cout << "  " << a << std::endl;
-      }
+    std::cout << "DEBUG: Action " << action << " not found in legal actions.\n";
+    std::cout << "DEBUG: Legal actions (" << legal_actions.size() << " total): ";
+    for (Action a : legal_actions) {
+      std::cout << a << " ";
     }
+    std::cout << "\n\nDEBUG: Decoded moves for each legal action:\n";
+    for (Action legal : legal_actions) {
+      std::vector<CheckerMove> legal_decoded = SpielMoveToCheckerMoves(cur_player_, legal);
+      std::cout << "DEBUG: Legal action " << legal << " decodes to:";
+      for (const auto& move : legal_decoded) {
+        std::cout << " [pos=" << move.pos 
+                  << ", to_pos=" << GetToPos(cur_player_, move.pos, move.die) 
+                  << ", die=" << move.die << "]";
+      }
+      std::cout << std::endl;
+    }
+    std::cout << "\nDEBUG: Decoded moves for invalid action " << action << ":\n";
+    std::vector<CheckerMove> moves = SpielMoveToCheckerMoves(cur_player_, action);
+    for (const auto& m : moves) {
+      std::cout << "  pos=" << m.pos << ", to_pos=" << GetToPos(cur_player_, m.pos, m.die)
+                << ", die=" << m.die << "\n";
+    }
+    std::cout << "DEBUG: Current dice: ";
+    for (int d : dice_) {
+      std::cout << d << " ";
+    }
+    std::cout << "\nDEBUG: Board state:\n" << ToString() << "\n";
     return false;
   }
   std::vector<CheckerMove> moves = SpielMoveToCheckerMoves(cur_player_, action);
@@ -564,6 +585,18 @@ void LongNardeState::DoApplyAction(Action move_id) {
   }
 
   if (!ValidateAction(move_id)) {
+    std::cout << "DEBUG: Invalid action: " << move_id << "\n";
+    std::cout << "DEBUG: Current dice: ";
+    for (int d : dice_) {
+      std::cout << d << " ";
+    }
+    std::cout << "\nDEBUG: Board state:\n" << ToString() << "\n";
+    std::vector<CheckerMove> moves = SpielMoveToCheckerMoves(cur_player_, move_id);
+    for (const auto& m : moves) {
+      std::cout << "DEBUG: Decoded move: pos=" << m.pos
+                << ", to_pos=" << GetToPos(cur_player_, m.pos, m.die)
+                << ", die=" << m.die << "\n";
+    }
     SpielFatalError(absl::StrCat("Invalid action: ", move_id));
   }
   is_first_turn_ = IsFirstTurn(cur_player_);
@@ -999,7 +1032,7 @@ int LongNardeState::RecLegalMoves(const std::vector<CheckerMove>& moveseq,
   if (movelist->size() >= kSafeLimit) {
     return moveseq.size();
   }
-  if (max_depth <= 0 || moveseq.size() >= 2) {
+  if (max_depth <= 0 || moveseq.size() >= max_depth) {
     if (!moveseq.empty()) {
       movelist->insert(moveseq);
     }
@@ -1032,14 +1065,18 @@ int LongNardeState::RecLegalMoves(const std::vector<CheckerMove>& moveseq,
     moves_checked++;
     if (!is_first_turn_ && used_head_move && IsHeadPos(cur_player_, move.pos)) continue;
     new_moveseq.push_back(move);
+    // Save current moved_from_head_ state before applying the move
+    bool old_moved_from_head = moved_from_head_;
     ApplyCheckerMove(cur_player_, move);
     if (movelist->size() >= kSafeLimit / 2) {
       UndoCheckerMove(cur_player_, move);
+      moved_from_head_ = old_moved_from_head;  // Restore state
       new_moveseq.pop_back();
       return max_moves > 0 ? max_moves : moveseq.size();
     }
     int child_max = RecLegalMoves(new_moveseq, movelist, max_depth - 1);
     UndoCheckerMove(cur_player_, move);
+    moved_from_head_ = old_moved_from_head;  // Restore state after recursion
     new_moveseq.pop_back();
     max_moves = std::max(child_max, max_moves);
   }
@@ -1226,62 +1263,42 @@ std::vector<Action> LongNardeState::LegalActions() const {
   if (IsTerminal()) return {};
   if (IsChanceNode()) return LegalChanceOutcomes();
 
-  // Compute dice values.
-  int high_roll = DiceValue(0);
-  int low_roll = DiceValue(1);
-  if (high_roll < low_roll) std::swap(high_roll, low_roll);
+  // Create a non-const copy of the state for move generation
+  auto state_copy = std::make_unique<LongNardeState>(*this);
+  
+  // Use our recursive helper to gather all move sequences
+  std::set<std::vector<CheckerMove>> movelist;
+  // If dice are doubles, a maximum of 4 half-moves is possible, otherwise 2.
+  int max_moves = (dice_.size() == 2 && dice_[0] == dice_[1]) ? 4 : 2;
 
-  std::vector<Action> moves;
-  bool found_any_valid_move = false;
-  
-  // Instead of directly using {high_roll, low_roll} which causes deduction errors,
-  // we explicitly create a temporary vector.
-  std::vector<int> dice_vals = {high_roll, low_roll};
-  
-  for (int pos1 = 1; pos1 < kNumPoints; ++pos1) {
-    if (board_[cur_player_][pos1] == 0) continue;
-    for (int die1 : dice_vals) {
-      int to_pos1 = GetToPos(cur_player_, pos1, die1);
-      if (to_pos1 >= 0 && to_pos1 < kNumPoints && board_[1 - cur_player_][to_pos1] > 0) {
-        continue;
-      }
-      if (!IsValidCheckerMove(cur_player_, pos1, to_pos1, die1, true)) {
-        continue;
-      }
-      found_any_valid_move = true;
-      int die2 = (die1 == high_roll) ? low_roll : high_roll;
-      std::vector<CheckerMove> moves_encoding = {{pos1, die1}, kPassMove};
-      moves.push_back(CheckerMovesToSpielMove(moves_encoding));
-      for (int pos2 = 1; pos2 < kNumPoints; ++pos2) {
-        if (pos2 == pos1 && board_[cur_player_][pos1] <= 1) continue;
-        if (pos2 != pos1 && board_[cur_player_][pos2] == 0) continue;
-        int to_pos2 = GetToPos(cur_player_, pos2, die2);
-        if (to_pos2 >= 0 && to_pos2 < kNumPoints && board_[1 - cur_player_][to_pos2] > 0) {
-          continue;
-        }
-        if (!IsValidCheckerMove(cur_player_, pos2, to_pos2, die2, true)) {
-          continue;
-        }
-        std::vector<CheckerMove> moves_encoding = {{pos1, die1}, {pos2, die2}};
-        moves.push_back(CheckerMovesToSpielMove(moves_encoding));
-      }
+  // Recursively gather all move sequences using the copy.
+  state_copy->RecLegalMoves({}, &movelist, max_moves);
+
+  // Convert sequences into actions
+  std::vector<Action> legal_moves;
+  for (const auto& moveseq : movelist) {
+    if (moveseq.size() == max_moves) {
+      legal_moves.push_back(CheckerMovesToSpielMove(moveseq));
     }
   }
-  if (!found_any_valid_move) {
-    std::vector<CheckerMove> pass_move_encoding = {kPassMove, kPassMove};
-    Action pass_spiel_action = CheckerMovesToSpielMove(pass_move_encoding);
-    moves.push_back(pass_spiel_action);
+
+  // If no moves exist, add the pass action.
+  if (legal_moves.empty()) {
+    std::vector<CheckerMove> pass_move = {kPassMove, kPassMove};
+    legal_moves.push_back(CheckerMovesToSpielMove(pass_move));
   }
+
+  // Filter out illegal actions
   std::vector<Action> illegal_actions = IllegalActions();
   if (!illegal_actions.empty()) {
     std::unordered_set<Action> illegal_set(illegal_actions.begin(), illegal_actions.end());
     std::vector<Action> filtered_moves;
-    for (Action move : moves) {
+    for (Action move : legal_moves) {
       if (illegal_set.find(move) == illegal_set.end()) {
         filtered_moves.push_back(move);
       }
     }
-    moves = filtered_moves;
+    legal_moves = filtered_moves;
   }
   
   // --- NEW: Filter out head moves if any non-head move exists ---
@@ -1290,7 +1307,7 @@ std::vector<Action> LongNardeState::LegalActions() const {
 
   // Check if there is any legal move that does not originate from the head.
   bool hasNonHeadMove = false;
-  for (Action a : moves) {
+  for (Action a : legal_moves) {
     std::vector<CheckerMove> cmoves = SpielMoveToCheckerMoves(cur_player_, a);
     // Ignore pass moves.
     if (!cmoves.empty() && cmoves[0].pos != head_pos && cmoves[0].pos != kPassPos) {
@@ -1302,16 +1319,15 @@ std::vector<Action> LongNardeState::LegalActions() const {
   // If a non-head move exists, filter out any move that originates from the head.
   if (hasNonHeadMove) {
     std::vector<Action> filtered_moves;
-    for (Action a : moves) {
+    for (Action a : legal_moves) {
       std::vector<CheckerMove> cmoves = SpielMoveToCheckerMoves(cur_player_, a);
       if (!cmoves.empty() && cmoves[0].pos == head_pos) continue;
       filtered_moves.push_back(a);
     }
-    moves = filtered_moves;
+    legal_moves = filtered_moves;
   }
-  // --- End of new filtering code ---
 
-  return moves;
+  return legal_moves;
 }
 
 }  // namespace long_narde

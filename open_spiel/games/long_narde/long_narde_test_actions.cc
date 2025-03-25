@@ -230,8 +230,8 @@ void UndoRedoTest() {
   
   // Make a move
   std::vector<CheckerMove> moves = {
-    {kWhiteHeadPos, kWhiteHeadPos - 1, 1},
-    {kWhiteHeadPos, kWhiteHeadPos - 2, 2}
+    {kWhiteHeadPos, kWhiteHeadPos - 1, 2},
+    {kWhiteHeadPos, kWhiteHeadPos - 2, 1}
   };
   Action action = lnstate->CheckerMovesToSpielMove(moves);
   lnstate->ApplyAction(action);

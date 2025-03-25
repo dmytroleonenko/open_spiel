@@ -1,6 +1,6 @@
 ---
-description: 
-globs: open_spiel/games/**/*.cc,open_spiel/games/**/*.h
+description: when not sure about coding style
+globs: 
 alwaysApply: false
 ---
 # We develop using TDD principle

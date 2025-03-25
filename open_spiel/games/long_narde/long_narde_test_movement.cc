@@ -113,21 +113,20 @@ void CheckerDistributionTest() {
   SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, kBlackHeadPos), kNumCheckersPerPlayer);
   
   // Check that after a move, the distribution changes correctly
-  // First get through the chance node
-  lnstate->ApplyAction(0);  // Apply dice roll 1,2
+  // Apply dice roll 6,6 (one of the special doubles that allow two head moves)
+  lnstate->ApplyAction(20);
   
-  // Apply a move: move one checker from 24 to 23 and another from 24 to 22
+  // Apply a move: move one checker from 24 to 18 and another from 24 to 18
   std::vector<CheckerMove> moves = {
-    {kWhiteHeadPos, kWhiteHeadPos - 1, 1},  // From 24 to 23
-    {kWhiteHeadPos, kWhiteHeadPos - 2, 2}   // From 24 to 22
+    {kWhiteHeadPos, kWhiteHeadPos - 6, 6},  // From 24 to 18
+    {kWhiteHeadPos, kWhiteHeadPos - 6, 6}   // From 24 to 18
   };
   Action action = lnstate->CheckerMovesToSpielMove(moves);
   lnstate->ApplyAction(action);
   
   // Verify the new distribution
   SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos), 13);    // 13 left at 24
-  SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos - 1), 1); // 1 at 23
-  SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos - 2), 1); // 1 at 22
+  SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos - 6), 2); // 2 at 18
   
   std::cout << "✓ Checker distribution verified\n";
 }
