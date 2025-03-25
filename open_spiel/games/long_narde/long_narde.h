@@ -41,6 +41,9 @@ inline constexpr const int kXPlayerId = 0;  // White player
 inline constexpr const int kOPlayerId = 1;  // Black player
 inline constexpr const int kPassPos = -1;
 
+// Define the die value to use for pass moves
+inline constexpr const int kPassDieValue = 1;
+
 // Move CheckerMove struct definition before its usage
 struct CheckerMove {
   // Pass is encoded as pos = -1 (kPassPos)
@@ -64,7 +67,7 @@ struct CheckerMove {
 };
 
 // Constant pass move to avoid repeated construction
-inline constexpr const CheckerMove kPassMove(kPassPos, kPassPos, -1);
+inline constexpr const CheckerMove kPassMove(kPassPos, kPassPos, kPassDieValue);
 
 // Constant vector of two pass moves
 inline const std::vector<CheckerMove> kDoublePassMove = {kPassMove, kPassMove};
@@ -147,6 +150,7 @@ class LongNardeState : public State {
   Player CurrentPlayer() const override;
   void UndoAction(Player player, Action action) override;
   std::vector<Action> LegalActions() const override;
+  virtual int NumDistinctActions() const;
   std::string ActionToString(Player player, Action move_id) const override;
   std::vector<std::pair<Action, double>> ChanceOutcomes() const override;
   std::string ToString() const override;
@@ -200,7 +204,7 @@ class LongNardeState : public State {
   // do not contain the hit information; use the AddHitInfo function to get the
   // hit information.
   Action CheckerMovesToSpielMove(const std::vector<CheckerMove>& moves) const;
-  std::vector<CheckerMove> SpielMoveToCheckerMoves(int player,
+  std::vector<CheckerMove> SpielMoveToCheckerMoves(Player player,
                                                    Action spiel_move) const;
   Action TranslateAction(int from1, int from2, bool use_high_die_first) const;
 
@@ -233,6 +237,9 @@ class LongNardeState : public State {
 
   // Returns all illegal actions for the given board state.
   std::vector<Action> IllegalActions() const;
+
+  // Process a chance roll (dice roll) action.
+  void ProcessChanceRoll(Action move_id);
 
  protected:
   void DoApplyAction(Action move_id) override;

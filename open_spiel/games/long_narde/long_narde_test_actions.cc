@@ -34,21 +34,40 @@ void ActionEncodingTest() {
   
   // Apply a specific dice roll instead of using global variables
   // Roll dice 3, 5 for testing
-  lnstate->ApplyAction(1);  // Just pick an action from chance outcomes to set dice
-  
-  // Make sure we're in player mode, not chance mode
-  while (lnstate->IsChanceNode()) {
-    lnstate->ApplyAction(1);  // Apply another chance outcome if needed
+  // Apply the initial chance outcome (only once) to set the dice and starting player.
+  if (lnstate->IsChanceNode()) {
+    lnstate->ApplyAction(10);
   }
   
   // White's turn
   SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kXPlayerId);
   
+  // Modify the board state so that not all white checkers are at the head
+  // The initial board has all white checkers at kWhiteHeadPos, which enforces the head rule.
+  // To allow encoding two moves (one from a non-head point), remove two checkers from the head
+  // and place one each at positions 14 and 19.
+  std::vector<std::vector<int>> modified_board(2, std::vector<int>(kNumPoints, 0));
+  
+  // Copy the current board state
+  for (int pos = 0; pos < kNumPoints; ++pos) {
+    modified_board[kXPlayerId][pos] = lnstate->board(kXPlayerId, pos);
+    modified_board[kOPlayerId][pos] = lnstate->board(kOPlayerId, pos);
+  }
+  
+  // Remove two checkers from the head (kWhiteHeadPos) and add one to positions 14 and 19
+  modified_board[kXPlayerId][kWhiteHeadPos] -= 2;
+  modified_board[kXPlayerId][14] += 1;
+  modified_board[kXPlayerId][19] += 1;
+  
+  // Update the state with the modified board while keeping the same dice and scores
+  std::vector<int> scores = {lnstate->score(kXPlayerId), lnstate->score(kOPlayerId)};
+  lnstate->SetState(kXPlayerId, false, std::vector<int>{5, 3}, scores, modified_board);
+  
   // Test 1: Regular move encoding (high roll first)
-  // Create a move: Position 15 with die 5, position 19 with die 3
+  // Create a move: Position 14 with die 5, position 19 with die 3
   std::vector<CheckerMove> test_moves = {
-    {kWhiteHeadPos, kWhiteHeadPos - 5, 5},
-    {kWhiteHeadPos, kWhiteHeadPos - 3, 3}
+    {14, lnstate->GetToPos(kXPlayerId, 14, 5), 5},
+    {19, lnstate->GetToPos(kXPlayerId, 19, 3), 3}
   };
   
   // Encode the moves to a SpielMove (Action)
