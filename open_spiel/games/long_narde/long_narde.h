@@ -114,16 +114,19 @@ struct TurnHistoryInfo {
   bool double_turn;
   bool is_first_turn;
   bool moved_from_head;
+  bool is_playing_extra_turn;  // Added: tracks if this turn was an extra turn
   TurnHistoryInfo(int _player, int _prev_player, std::vector<int> _dice,
                   int _action, bool _double_turn,
-                  bool _is_first_turn, bool _moved_from_head)
+                  bool _is_first_turn, bool _moved_from_head,
+                  bool _is_playing_extra_turn)  // Added parameter
       : player(_player),
         prev_player(_prev_player),
         dice(_dice),
         action(_action),
         double_turn(_double_turn),
         is_first_turn(_is_first_turn),
-        moved_from_head(_moved_from_head) {}
+        moved_from_head(_moved_from_head),
+        is_playing_extra_turn(_is_playing_extra_turn) {}  // Added initialization
 };
 
 class LongNardeGame;
@@ -227,13 +230,14 @@ class LongNardeState : public State {
   // Process a chance roll (dice roll) action.
   void ProcessChanceRoll(Action move_id);
 
+  bool AllInHome(int player) const;
+
  protected:
   void DoApplyAction(Action move_id) override;
 
  private:
   void SetupInitialBoard();
   void RollDice(int outcome);
-  bool AllInHome(int player) const;
   int CheckersInHome(int player) const;
   int NumOppCheckers(int player, int pos) const;
   std::string DiceToString(int outcome) const;
@@ -259,6 +263,7 @@ class LongNardeState : public State {
   bool double_turn_;
   bool is_first_turn_;        // Tracks if this is the first turn
   bool moved_from_head_;      // Tracks if a checker was moved from the head this turn
+  bool is_playing_extra_turn_; // Added: tracks if current turn is an extra turn from doubles
   std::vector<int> dice_;     // Current dice.
   std::vector<int> scores_;   // Checkers returned home by each player.
   std::vector<std::vector<int>> board_;  // Checkers for each player on points.
