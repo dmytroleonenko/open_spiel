@@ -485,146 +485,185 @@ bool LongNardeState::IsFirstTurn(int player) const {
 }
 
 bool LongNardeState::WouldFormBlockingBridge(int player, int from_pos, int to_pos) const {
-  bool is_debugging = false;
+  bool is_debugging = false; // General debug flag
+  // Specific debug for the failing bridge test case (White, 4->3)
+  bool specific_debug = (player == kXPlayerId && from_pos == 4 && to_pos == 3);
+
   std::vector<std::vector<int>> temp_board = board_;
   if (from_pos >= 0 && from_pos < kNumPoints) {
-    temp_board[player][from_pos]--;
+    // Ensure we don't decrement below zero, although this shouldn't happen for valid moves
+    if (temp_board[player][from_pos] > 0) temp_board[player][from_pos]--;
   }
+  // Check if to_pos is valid before incrementing
   if (to_pos >= 0 && to_pos < kNumPoints) {
     temp_board[player][to_pos]++;
   } else {
+     // If moving off the board, it cannot form a bridge on the board
     return false;
   }
+
   int consecutive_count = 0;
   int start_pos, end_pos, direction;
+
+  // Determine iteration direction based on player
   if (player == kXPlayerId) {
-    start_pos = 0;
-    end_pos = kNumPoints;
-    direction = 1;
+    start_pos = 0; end_pos = kNumPoints; direction = 1;
   } else {
-    start_pos = kNumPoints - 1;
-    end_pos = -1;
-    direction = -1;
+    start_pos = kNumPoints - 1; end_pos = -1; direction = -1;
   }
+
   for (int pos = start_pos; pos != end_pos; pos += direction) {
     if (temp_board[player][pos] > 0) {
       consecutive_count++;
     } else {
-      consecutive_count = 0;
+      consecutive_count = 0; // Reset count if gap found
+      // Continue checking the rest of the board for other potential bridges
       continue;
     }
-    if (consecutive_count == 6) {
+
+    // Check if a 6-block is formed
+    if (consecutive_count >= 6) { // Use >= 6 for safety, though exactly 6 is the rule trigger
       bool any_opponent_ahead = false;
       int opponent = Opponent(player);
+      int bridge_end = pos; // The index where the 6th consecutive checker was found
+
+      if (specific_debug) {
+          std::cout << "DEBUG WouldFormBlockingBridge(X, 4->3): Found 6-block ending at " << bridge_end << ". Checking opponent ahead..." << std::endl;
+      }
+
+      // Check if any opponent checker is ahead of the bridge
       if (player == kXPlayerId) {
-        int bridge_end = pos;
+        // For White, 'ahead' means higher indices (towards Black's side)
         for (int i = bridge_end + 1; i < kNumPoints; i++) {
-          if (board(opponent, i) > 0) {
+          if (board(opponent, i) > 0) { // Check ORIGINAL board_
+             if (specific_debug) {
+                 std::cout << "  -> Opponent found at index " << i << " (Value: " << board(opponent, i) << "). Bridge is LEGAL." << std::endl;
+             }
             any_opponent_ahead = true;
             break;
           }
         }
-      } else {
-        int bridge_end = pos;
+      } else { // player == kOPlayerId
+        // For Black, 'ahead' means lower indices (towards White's side)
         for (int i = 0; i < bridge_end; i++) {
-          if (board(opponent, i) > 0) {
+          if (board(opponent, i) > 0) { // Check ORIGINAL board_
+             if (specific_debug) {
+                 std::cout << "  -> Opponent found at index " << i << " (Value: " << board(opponent, i) << "). Bridge is LEGAL." << std::endl;
+             }
             any_opponent_ahead = true;
             break;
           }
         }
       }
+
+      // If a 6-block was found AND no opponent was ahead, it's an illegal bridge
       if (!any_opponent_ahead) {
-        return true;
+         if (specific_debug) {
+             std::cout << "  -> NO Opponent found ahead. Bridge is ILLEGAL." << std::endl;
+         }
+        return true; // Illegal bridge detected
       }
+      // If an opponent was found ahead, this specific 6-block is legal.
+      // Reset count to potentially find other illegal bridges starting after this one.
+      // Example: [1,1,1,1,1,1, 0, 1,1,1,1,1,1] - first block is legal if opponent ahead,
+      // but second block might still be illegal.
+      // However, the rule is usually interpreted as *any* 6-block trapping all opponents is illegal.
+      // Let's stick to returning true immediately if an illegal one is found.
+      // If this block was legal (opponent ahead), we continue the outer loop.
+      // We need to reset consecutive_count here? No, the outer loop continues from pos+1.
+      // If the next pos also has a checker, consecutive_count becomes 7, which is fine.
     }
+  } // End loop through positions
+
+  // If loop completes without returning true, no illegal bridge was formed
+  if (specific_debug) {
+      std::cout << "DEBUG WouldFormBlockingBridge(X, 4->3): No illegal bridge found." << std::endl;
   }
   return false;
 }
 
 bool LongNardeState::IsValidCheckerMove(int player, int from_pos, int to_pos, int die_value, bool check_head_rule) const {
-  bool is_debugging = false;
+  bool is_debugging = false; // Keep general debugging off unless needed
+  // Add specific debugging for the problematic move O: 11 -> 12
+  bool specific_debug = (player == kOPlayerId && from_pos == 11 && to_pos == 12);
+
   if (from_pos == kPassPos) return true;
   if (from_pos < 0 || from_pos >= kNumPoints) {
-    if (is_debugging) std::cout << "DEBUG: Invalid from_pos " << from_pos << std::endl;
+    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Invalid from_pos " << from_pos << std::endl;
     return false;
   }
   if (board(player, from_pos) <= 0) {
-    if (is_debugging) std::cout << "DEBUG: No checker at from_pos " << from_pos << std::endl;
+    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: No checker at from_pos " << from_pos << std::endl;
     return false;
   }
   if (die_value < 1 || die_value > 6) {
-    if (is_debugging) std::cout << "DEBUG: Invalid die_value " << die_value << std::endl;
+    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Invalid die_value " << die_value << std::endl;
     return false;
   }
   int expected_to_pos = GetToPos(player, from_pos, die_value);
   if (to_pos != expected_to_pos) {
-    if (is_debugging) std::cout << "DEBUG: to_pos " << to_pos << " doesn't match expected " << expected_to_pos << std::endl;
+    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: to_pos " << to_pos << " doesn't match expected " << expected_to_pos << std::endl;
     return false;
   }
   if (check_head_rule && !IsLegalHeadMove(player, from_pos)) {
-    if (is_debugging) std::cout << "DEBUG: Head rule violation for pos " << from_pos << std::endl;
+    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Head rule violation for pos " << from_pos << std::endl;
     return false;
   }
   bool is_bearing_off = IsOff(player, to_pos);
   if (is_bearing_off) {
     if (!AllInHome(player)) {
-      if (is_debugging) std::cout << "DEBUG: Cannot bear off, not all checkers in home" << std::endl;
+      if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Cannot bear off, not all checkers in home" << std::endl;
       return false;
     }
-    
-    // Calculate exact roll needed to bear off from this position
-    int exact_roll = 0;
-    if (player == kXPlayerId) {
-      exact_roll = from_pos + 1;  // For White: position 1 requires die roll 2
-    } else {
-      exact_roll = kNumPoints - from_pos;  // For Black
-    }
-    
-    // If it's an exact roll, always allow bearing off
-    if (die_value == exact_roll) {
-      return true;
-    }
-    
-    // Higher roll is allowed only if no checkers are on higher points
+    int exact_roll = (player == kXPlayerId) ? (from_pos + 1) : (kNumPoints - from_pos);
+    if (die_value == exact_roll) return true;
     if (die_value > exact_roll) {
-      if (player == kXPlayerId) {
-        // For White: check if any checkers are on higher points than from_pos
-        for (int pos = from_pos + 1; pos <= kWhiteHomeEnd; pos++) {
-          if (board(player, pos) > 0) {
-            if (is_debugging) std::cout << "DEBUG: Cannot bear off with higher roll, checker at higher point " << pos << std::endl;
-            return false;
-          }
+        if (player == kXPlayerId) {
+            for (int pos = from_pos + 1; pos <= kWhiteHomeEnd; pos++) {
+                if (board(player, pos) > 0) {
+                    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Cannot bear off high (X), checker at " << pos << std::endl;
+                    return false;
+                }
+            }
+        } else {
+            for (int pos = kBlackHomeStart; pos < from_pos; pos++) {
+                if (board(player, pos) > 0) {
+                    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Cannot bear off high (O), checker at " << pos << std::endl;
+                    return false;
+                }
+            }
         }
-        return true;  // No checkers on higher points, can bear off
-      } else {
-        // For Black: check if any checkers are on lower points than from_pos
-        for (int pos = kBlackHomeStart; pos < from_pos; pos++) {
-          if (board(player, pos) > 0) {
-            if (is_debugging) std::cout << "DEBUG: Cannot bear off with higher roll, checker at lower point " << pos << std::endl;
-            return false;
-          }
-        }
-        return true;  // No checkers on lower points, can bear off
-      }
+        return true;
     }
-    
-    // If die_value < exact_roll, can't bear off
-    if (is_debugging) std::cout << "DEBUG: Invalid bearing off move" << std::endl;
-    return false;
+    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Invalid bearing off move (die too low)" << std::endl;
+    return false; // Die too low
   }
   
+  // Check bounds for non-bearing off moves
   if (to_pos < 0 || to_pos >= kNumPoints) {
-    if (is_debugging) std::cout << "DEBUG: Invalid to_pos " << to_pos << std::endl;
+    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Invalid to_pos " << to_pos << std::endl;
     return false;
+  }
+
+  // *** Critical Check: Opponent Occupancy ***
+  if (specific_debug) {
+    std::cout << "DEBUG IsValidCheckerMove (O: 11->12): Checking opponent occupancy at to_pos=" << to_pos << std::endl;
+    std::cout << "  board(X, " << to_pos << ") = " << board(1-player, to_pos) << std::endl;
+    // Also print neighbors for context
+    std::cout << "  Context: O[" << board(player, 11) << "," << board(player, 12) << "," << board(player, 13) << "] "
+              << "X[" << board(1-player, 11) << "," << board(1-player, 12) << "," << board(1-player, 13) << "]" << std::endl;
   }
   if (board(1-player, to_pos) > 0) {
-    if (is_debugging) std::cout << "DEBUG: Cannot land on opponent's checker at " << to_pos << std::endl;
+    if (is_debugging || specific_debug) std::cout << "  -> FAILED: Opponent found at " << to_pos << std::endl;
     return false;
   }
-  if (WouldFormBlockingBridge(player, from_pos, to_pos)) {
-    if (is_debugging) std::cout << "DEBUG: Would form illegal blocking bridge" << std::endl;
-    return false;
-  }
+  // *** End Critical Check ***
+
+  // REMOVED: Bridge check is deferred to LegalActions filtering
+  // if (WouldFormBlockingBridge(player, from_pos, to_pos)) {
+  //  if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Would form illegal blocking bridge" << std::endl;
+  //  return false;
+  // }
   return true;
 }
 
@@ -979,65 +1018,97 @@ std::set<CheckerMove> LongNardeState::LegalCheckerMoves(int player) const {
 void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
   if (move.pos == kPassPos) return;
   // Check validity without head rule, as RecLegalMoves handles sequence validity
+  // Note: We rely on this check being correct *at the time it's called*.
   if (!IsValidCheckerMove(player, move.pos, move.to_pos, move.die, /*check_head_rule=*/false)) {
-    std::string error_message = absl::StrCat("Invalid checker move from ", move.pos, 
-                                           " to ", move.to_pos, " with die=", move.die, 
+    std::string error_message = absl::StrCat("ApplyCheckerMove: Invalid checker move from ", move.pos,
+                                           " to ", move.to_pos, " with die=", move.die,
                                            " for player ", player);
+    // Add board state to error
+     error_message += "\nBoard state:\n" + ToString();
     SpielFatalError(error_message);
-    return;
+    // No return needed after SpielFatalError
   }
+
+  // Add specific debugging for the problematic move O: 11 -> 12 and its context
+  bool specific_debug = (player == kOPlayerId && (move.pos == 11 || move.to_pos == 12 || move.pos == 13 || move.to_pos == 13));
+  if (specific_debug) {
+      std::cout << "DEBUG ApplyCheckerMove (O): move=" << move.pos << "->" << move.to_pos << " die=" << move.die << std::endl;
+      std::cout << "  Board state BEFORE apply at [11, 12, 13]: O=["
+                << board_[kOPlayerId][11] << "," << board_[kOPlayerId][12] << "," << board_[kOPlayerId][13] << "] X=["
+                << board_[kXPlayerId][11] << "," << board_[kXPlayerId][12] << "," << board_[kXPlayerId][13] << "]" << std::endl;
+  }
+
   board_[player][move.pos]--;
-  // Iterate up to the actual size of the dice vector
+  // Mark die used
   for (int i = 0; i < dice_.size(); ++i) {
-    // Check if the current die in the vector matches the die used by the move
-    // AND ensure the die hasn't already been marked as used (value > 6)
     if (dice_[i] == move.die) {
-      dice_[i] += 6; // Mark this specific die instance as used
-      break; // Stop after finding and marking the first matching unused die
+      dice_[i] += 6;
+      break;
     }
   }
-  int next_pos = GetToPos(player, move.pos, move.die);
+  int next_pos = move.to_pos; // Use the pre-calculated to_pos from CheckerMove
   if (IsOff(player, next_pos)) {
     scores_[player]++;
   } else {
+    // We assume next_pos is valid because IsValidCheckerMove passed
     board_[player][next_pos]++;
   }
   if (IsHeadPos(player, move.pos)) {
     moved_from_head_ = true;
   }
+
+  if (specific_debug) {
+      std::cout << "  Board state AFTER apply at [11, 12, 13]: O=["
+                << board_[kOPlayerId][11] << "," << board_[kOPlayerId][12] << "," << board_[kOPlayerId][13] << "] X=["
+                << board_[kXPlayerId][11] << "," << board_[kXPlayerId][12] << "," << board_[kXPlayerId][13] << "]" << std::endl;
+  }
 }
 
 void LongNardeState::UndoCheckerMove(int player, const CheckerMove& move) {
   if (move.pos == kPassPos) return;
-  int next_pos = GetToPos(player, move.pos, move.die);
+
+  int next_pos = move.to_pos; // Use the pre-calculated to_pos from CheckerMove
+
+  // Add specific debugging for the problematic move O: 11 -> 12 and its context
+  bool specific_debug = (player == kOPlayerId && (move.pos == 11 || next_pos == 12 || move.pos == 13 || next_pos == 13));
+   if (specific_debug) {
+      std::cout << "DEBUG UndoCheckerMove (O): move=" << move.pos << "->" << next_pos << " die=" << move.die << std::endl;
+      std::cout << "  Board state BEFORE undo at [11, 12, 13]: O=["
+                << board_[kOPlayerId][11] << "," << board_[kOPlayerId][12] << "," << board_[kOPlayerId][13] << "] X=["
+                << board_[kXPlayerId][11] << "," << board_[kXPlayerId][12] << "," << board_[kXPlayerId][13] << "]" << std::endl;
+  }
+
+
   if (IsOff(player, next_pos)) {
     scores_[player]--;
   } else {
-    // Ensure the position exists before decrementing
+    // Ensure the position exists before decrementing (should always be true if Apply was valid)
     if (next_pos >= 0 && next_pos < kNumPoints) {
        board_[player][next_pos]--;
     } else {
-        // This case should ideally not happen if ApplyCheckerMove was valid
-        // Add logging or error handling if necessary
          std::cerr << "Warning: UndoCheckerMove attempting to decrement invalid next_pos " << next_pos << std::endl;
     }
   }
-  // Iterate up to the actual size of the dice vector
+  // Unmark die used
   for (int i = 0; i < dice_.size(); ++i) {
-    // Find the die instance marked as used (value = original die + 6)
     if (dice_[i] == move.die + 6) {
-      dice_[i] -= 6; // Mark this die instance as unused again
-      break; // Stop after finding and unmarking the first matching used die
+      dice_[i] -= 6;
+      break;
     }
   }
-  // Ensure the original position exists before incrementing
+  // Ensure the original position exists before incrementing (should always be true)
   if (move.pos >= 0 && move.pos < kNumPoints) {
       board_[player][move.pos]++;
   } else {
-      // This case should ideally not happen if ApplyCheckerMove was valid
       std::cerr << "Warning: UndoCheckerMove attempting to increment invalid move.pos " << move.pos << std::endl;
   }
   // Note: Undoing moved_from_head_ is handled by restoring the state in RecLegalMoves
+
+   if (specific_debug) {
+      std::cout << "  Board state AFTER undo at [11, 12, 13]: O=["
+                << board_[kOPlayerId][11] << "," << board_[kOPlayerId][12] << "," << board_[kOPlayerId][13] << "] X=["
+                << board_[kXPlayerId][11] << "," << board_[kXPlayerId][12] << "," << board_[kXPlayerId][13] << "]" << std::endl;
+  }
 }
 
 bool LongNardeState::UsableDiceOutcome(int outcome) const {
@@ -1110,74 +1181,94 @@ std::vector<Action> LongNardeState::ProcessLegalMoves(
 int LongNardeState::RecLegalMoves(const std::vector<CheckerMove>& moveseq,
                                   std::set<std::vector<CheckerMove>>* movelist,
                                   int max_depth) {
-  const size_t kSafeLimit = 50;
+  const size_t kSafeLimit = 50; // Limit recursion depth/breadth for safety
   if (movelist->size() >= kSafeLimit) {
-    return moveseq.size();
+    return moveseq.size(); // Return current depth if limit reached
   }
-  if (max_depth <= 0 || moveseq.size() >= max_depth) {
+
+  // Base case 1: Max depth for this path reached.
+  if (max_depth <= 0) {
+    // Only add non-empty sequences. Empty sequences shouldn't be valid actions.
     if (!moveseq.empty()) {
       movelist->insert(moveseq);
     }
     return moveseq.size();
   }
+
+  // Get valid single moves from the current state.
+  // LegalCheckerMoves uses IsValidCheckerMove(..., check_head_rule=true),
+  // considering the current state including is_first_turn_ and moved_from_head_.
   std::set<CheckerMove> moves_here = LegalCheckerMoves(cur_player_);
+
+  // Base case 2: No moves possible from this state (player must pass/stop).
   if (moves_here.empty()) {
-    movelist->insert(moveseq);
+    // Add the sequence found so far. It represents a valid end-point for moves.
+    // If moveseq is empty, it means pass was the only option from the start.
+    // Only insert if it's not already present to avoid duplicates if multiple paths lead here.
+    if (movelist->find(moveseq) == movelist->end()) {
+        movelist->insert(moveseq);
+    }
     return moveseq.size();
   }
-  bool used_head_move = false;
-  if (!is_first_turn_ && !moveseq.empty()) {
-    int head_pos = cur_player_ == kXPlayerId ? kWhiteHeadPos : kBlackHeadPos;
-    for (const auto& prev_move : moveseq) {
-      if (prev_move.pos == head_pos) {
-        used_head_move = true;
-        break;
-      }
-    }
-  }
-  // We set the recursion limit (kMaxMovesToCheck) to at least 15 to ensure that all distinct half-move
-  // sequences are considered. In non-doubles, the order of moves (e.g. using 3 then 5 vs. 5 then 3)
-  // yields different terminal states, while in doubles (e.g. 6,6) moves use the same value and are fewer.
-  // Since only up to 15 checkers can move from a given point, a limit of 15 (or higher, like 20) guarantees
-  // that no valid sequence is pruned.
-  const size_t kMaxMovesToCheck = 15;
+
+  // --- Recursive Step ---
+  const size_t kMaxMovesToCheck = 15; // Limit branching factor per step
   size_t moves_checked = 0;
-  std::vector<CheckerMove> new_moveseq;
-  new_moveseq.reserve(2);
-  new_moveseq = moveseq;
-  int max_moves = -1;
+  std::vector<CheckerMove> new_moveseq = moveseq; // Create a mutable copy for the next level
+  new_moveseq.reserve(moveseq.size() + max_depth); // Reserve potential max size
+  int max_len_found = moveseq.size(); // Track max length found *down this path*
+
   for (const auto& move : moves_here) {
-    if (movelist->size() >= kSafeLimit / 2) return moveseq.size();
-    if (moves_checked >= kMaxMovesToCheck) break;
+    // Check limits before processing the move
+    if (movelist->size() >= kSafeLimit / 2) return max_len_found; // Early exit if close to limit
+    if (moves_checked >= kMaxMovesToCheck) break; // Limit branching
     moves_checked++;
-    if (IsHeadPos(cur_player_, move.pos) && used_head_move) {
-      // Allow a second head move if it's the first turn AND dice are double 6,4,3
-      bool special_double = (
-        is_first_turn_ &&
-        dice_.size() == 2 && DiceValue(0) == DiceValue(1) &&
-        (DiceValue(0) == 3 || DiceValue(0) == 4 || DiceValue(0) == 6)
-      );
-      if (!special_double) {
-        continue;
-      }
-    }
+
+    // --- Try applying the move and recursing ---
     new_moveseq.push_back(move);
-    // Save current moved_from_head_ state before applying the move
-    bool old_moved_from_head = moved_from_head_;
+    bool old_moved_from_head = moved_from_head_; // Save state part not handled by Undo
     ApplyCheckerMove(cur_player_, move);
-    if (movelist->size() >= kSafeLimit / 2) {
-      UndoCheckerMove(cur_player_, move);
-      moved_from_head_ = old_moved_from_head;  // Restore state
-      new_moveseq.pop_back();
-      return max_moves > 0 ? max_moves : moveseq.size();
+
+    // *** Check for momentary illegal bridge ***
+    if (HasIllegalBridge(cur_player_)) {
+        // This move created an illegal bridge. This path is invalid.
+        // Backtrack the move and continue to the next possible move from the *previous* state.
+        UndoCheckerMove(cur_player_, move);
+        moved_from_head_ = old_moved_from_head;
+        new_moveseq.pop_back(); // Remove the invalid move from the sequence being built
+        continue; // Skip the recursive call for this invalid path
     }
+    // *** END CHECK ***
+
+
+    // Check limit again before recursion call
+    if (movelist->size() >= kSafeLimit / 2) {
+      UndoCheckerMove(cur_player_, move); // Backtrack state
+      moved_from_head_ = old_moved_from_head;
+      // Don't pop new_moveseq as we are returning early
+      return max_len_found;
+    }
+
+    // Recursive call for the next move in the sequence
     int child_max = RecLegalMoves(new_moveseq, movelist, max_depth - 1);
+
+    // Backtrack state after recursive call returns
     UndoCheckerMove(cur_player_, move);
-    moved_from_head_ = old_moved_from_head;  // Restore state after recursion
-    new_moveseq.pop_back();
-    max_moves = std::max(child_max, max_moves);
+    moved_from_head_ = old_moved_from_head;
+    new_moveseq.pop_back(); // Remove the move tried in this iteration
+
+    // Update the maximum sequence length found so far in this branch
+    max_len_found = std::max(child_max, max_len_found);
+    // --- End of move processing ---
   }
-  return max_moves;
+
+  // After trying all moves from this state, if no valid sequence was extended
+  // (e.g., all moves led to bridges or dead ends), we might need to add the
+  // current sequence 'moveseq' if it represents a valid stopping point.
+  // This is handled by the base case check `if (moves_here.empty())` at the start
+  // and implicitly by returning max_len_found.
+
+  return max_len_found;
 }
 
 std::unique_ptr<State> LongNardeState::Clone() const {
@@ -1372,102 +1463,208 @@ std::vector<Action> LongNardeState::LegalActions() const {
   if (IsTerminal()) return {};
   if (IsChanceNode()) return LegalChanceOutcomes();
 
-  // Create a non-const copy of the state for move generation
+  // Use a mutable copy ONLY for RecLegalMoves state modifications
   auto state_copy = std::make_unique<LongNardeState>(*this);
-
-  // Use our recursive helper to gather all move sequences
   std::set<std::vector<CheckerMove>> movelist;
-  // If dice are doubles, a maximum of 4 half-moves is possible, otherwise 2.
-  // Handle cases with 0 or 1 die available.
-  int max_moves = 0;
-  if (dice_.size() == 2 && DiceValue(0) == DiceValue(1)) {
-      max_moves = 4;
-  } else if (!dice_.empty()) {
-      // Count usable dice (values 1-6)
-      int usable_dice_count = 0;
-      for(int outcome : dice_) {
-          if (UsableDiceOutcome(outcome)) {
-              usable_dice_count++;
+
+  int max_possible_moves = 0;
+  // Use state_copy->dice_ as RecLegalMoves modifies the dice in the copy
+  if (state_copy->dice_.size() == 2 && state_copy->DiceValue(0) == state_copy->DiceValue(1)) {
+      max_possible_moves = 4; // Doubles potentially use 4 dice
+  } else {
+      // Count usable dice (value 1-6)
+      for(int outcome : state_copy->dice_) {
+          if (state_copy->UsableDiceOutcome(outcome)) {
+              max_possible_moves++;
           }
       }
-      max_moves = usable_dice_count;
-      // Special case for doubles where only 1, 2, or 3 moves are possible
-      if (dice_.size() == 2 && DiceValue(0) == DiceValue(1)) {
-         // If RecLegalMoves finds sequences shorter than 4, max_moves should adapt.
-         // Let RecLegalMoves handle the actual depth based on available moves.
-         // We set the initial max_depth for RecLegalMoves.
-         max_moves = 4; // Keep max depth as 4 for doubles initially
-      } else {
-         max_moves = usable_dice_count;
-      }
   }
-   // Ensure max_moves is not negative if dice_ is empty (shouldn't happen in player turn)
-   if (max_moves < 0) max_moves = 0;
+   // Ensure max_possible_moves is not negative if dice_ is empty (shouldn't happen in player turn)
+   if (max_possible_moves < 0) max_possible_moves = 0;
 
+  // Generate all possible move sequences up to the max possible dice usage
+  // RecLegalMoves now prunes sequences that create momentary illegal bridges
+  state_copy->RecLegalMoves({}, &movelist, max_possible_moves);
 
-  // Recursively gather all move sequences using the copy.
-  // Pass the calculated max_moves as the maximum depth.
-  state_copy->RecLegalMoves({}, &movelist, max_moves);
-
-  // Convert sequences into actions
   std::vector<Action> legal_moves;
   int longest_sequence = 0;
-  if (!movelist.empty()) {
-      // Find the length of the longest sequence found (player must use max possible dice)
+
+  // If movelist is empty after RecLegalMoves (no moves possible or all pruned), it's a pass.
+  // Check if the only entry is the empty sequence (inserted by base case 2 in RecLegalMoves)
+  bool forced_pass = movelist.empty() || (movelist.size() == 1 && movelist.count({}) > 0);
+
+  if (!forced_pass) {
+      // Find the length of the longest actual move sequence found
       for (const auto& moveseq : movelist) {
-          longest_sequence = std::max(longest_sequence, static_cast<int>(moveseq.size()));
+          // Ignore the empty sequence if it exists alongside actual moves
+          if (!moveseq.empty()) {
+             longest_sequence = std::max(longest_sequence, static_cast<int>(moveseq.size()));
+          }
       }
   }
+  // If longest_sequence is still 0, it's a forced pass.
 
-
+  // Filter sequences: only keep those matching the longest possible length
   for (const auto& moveseq : movelist) {
-    // Only add sequences that match the longest possible sequence length
-    if (!moveseq.empty() && moveseq.size() == longest_sequence) {
-       // Basic head rule check (already partially handled in RecLegalMoves, but double-check)
-        if (!is_first_turn_) {
-            int head_move_count = 0;
-            for (const auto& move : moveseq) {
-                if (IsHeadPos(cur_player_, move.pos) && move.pos != kPassPos) {
-                    head_move_count++;
-                }
-            }
-             // Allow special doubles on first turn, otherwise max 1 head move
-            bool special_double_first_turn = is_first_turn_ && dice_.size() == 2 && DiceValue(0) == DiceValue(1) && (DiceValue(0) == 3 || DiceValue(0) == 4 || DiceValue(0) == 6);
-            if (head_move_count > 1 && !special_double_first_turn) {
-                 continue; // Skip sequences with too many head moves
+    // Only consider sequences that match the longest length found.
+    // An empty sequence is only valid if longest_sequence is 0 (forced pass).
+    if (moveseq.size() == longest_sequence) {
+        // Skip adding the empty sequence representation unless it's a forced pass
+        if (longest_sequence == 0 && !moveseq.empty()) continue;
+        // If longest_sequence > 0, skip the empty sequence if it's present
+        if (longest_sequence > 0 && moveseq.empty()) continue;
+
+        // *** NEW: Verify this sequence doesn't create any bridge violations ***
+        // Create a clean copy of the current state to verify the sequence
+        auto verify_state = std::make_unique<LongNardeState>(*this);
+        bool sequence_valid = true;
+        
+        // Apply each move in the sequence and check for bridge violations
+        for (const auto& move : moveseq) {
+            if (move.pos == kPassPos) continue; // Skip pass moves
+            
+            // Apply the move
+            verify_state->ApplyCheckerMove(verify_state->cur_player_, move);
+            
+            // Check if this creates an illegal bridge
+            if (verify_state->HasIllegalBridge(verify_state->cur_player_)) {
+                sequence_valid = false;
+                break;
             }
         }
-        legal_moves.push_back(CheckerMovesToSpielMove(moveseq));
+        
+        // Only add sequences that pass the final verification
+        if (sequence_valid) {
+            // If sequence is valid (correct length and no bridge violations), add it.
+            // Use the original state (*this*) to encode the move.
+            legal_moves.push_back(CheckerMovesToSpielMove(moveseq));
+        }
+        // *** END NEW ***
     }
   }
 
-  // If no moves exist (even after finding longest sequence), add the pass action.
-  // This happens if longest_sequence is 0.
+  // If after filtering, legal_moves is empty, it implies a forced pass.
+  // This handles cases where movelist was initially empty or only contained shorter sequences.
   if (legal_moves.empty()) {
-    std::vector<CheckerMove> pass_move = {kPassMove, kPassMove};
-    // Encode pass using available dice if possible, otherwise default pass
-     if (!dice_.empty()) {
-         int die1 = UsableDiceOutcome(dice_[0]) ? dice_[0] : (dice_.size() > 1 && UsableDiceOutcome(dice_[1]) ? dice_[1] : 1); // Use first available or default 1
-         int die2 = (dice_.size() > 1 && UsableDiceOutcome(dice_[1])) ? dice_[1] : die1; // Use second available or same as first
-         pass_move[0].die = die1;
-         pass_move[1].die = die2;
-     } else {
-         // Should not happen in player turn, but handle defensively
-         pass_move[0].die = 1;
-         pass_move[1].die = 1;
-     }
-    legal_moves.push_back(CheckerMovesToSpielMove(pass_move));
+    std::vector<CheckerMove> pass_move_seq;
+    // Use original state's dice here
+    if (!dice_.empty()) {
+        int die1 = 1, die2 = 1;
+        int usable_count = 0;
+        if (UsableDiceOutcome(dice_[0])) { die1 = DiceValue(0); usable_count++; } // Use DiceValue
+        if (dice_.size() > 1 && UsableDiceOutcome(dice_[1])) {
+            die2 = DiceValue(1); usable_count++; // Use DiceValue
+            if (usable_count == 1) die1 = die2;
+        } else if (usable_count == 1) {
+            die2 = die1;
+        }
+        pass_move_seq.push_back({kPassPos, kPassPos, die1});
+        pass_move_seq.push_back({kPassPos, kPassPos, die2});
+    } else {
+         pass_move_seq.push_back({kPassPos, kPassPos, 1});
+         pass_move_seq.push_back({kPassPos, kPassPos, 1});
+    }
+    legal_moves.push_back(CheckerMovesToSpielMove(pass_move_seq));
   }
 
-  // Deduplicate final list (RecLegalMoves might add equivalent sequences)
+  // Deduplicate final list
   if (legal_moves.size() > 1) {
       std::sort(legal_moves.begin(), legal_moves.end());
       auto last = std::unique(legal_moves.begin(), legal_moves.end());
       legal_moves.erase(last, legal_moves.end());
   }
 
-
   return legal_moves;
+}
+
+
+// *** NEW HELPER FUNCTION: HasIllegalBridge ***
+// Checks the current board state for an illegal bridge for the given player.
+bool LongNardeState::HasIllegalBridge(int player) const {
+    // Add specific debug for the failing bridge test case (White, 4->3 context)
+    bool specific_debug = (player == kXPlayerId); // Broaden debug for X player
+
+    if (specific_debug) {
+        std::cout << "DEBUG HasIllegalBridge(Player " << player << ") called. Current Board:" << std::endl;
+        // Print relevant part of the board for White (indices 0-7)
+        std::cout << "  X: [";
+        for(int i=0; i<=7; ++i) std::cout << board(kXPlayerId, i) << (i==7 ? "" : ",");
+        std::cout << "]" << std::endl;
+        std::cout << "  O: [";
+        for(int i=0; i<=7; ++i) std::cout << board(kOPlayerId, i) << (i==7 ? "" : ",");
+        std::cout << "]" << std::endl;
+    }
+
+    int consecutive_count = 0;
+    int start_pos, end_pos, direction;
+    int opponent = Opponent(player);
+
+    if (player == kXPlayerId) {
+        start_pos = 0; end_pos = kNumPoints; direction = 1;
+    } else {
+        start_pos = kNumPoints - 1; end_pos = -1; direction = -1;
+    }
+
+    for (int pos = start_pos; pos != end_pos; pos += direction) {
+        if (board(player, pos) > 0) { // Check CURRENT board state
+            consecutive_count++;
+        } else {
+            consecutive_count = 0;
+            continue;
+        }
+
+        if (consecutive_count >= 6) {
+            bool any_opponent_ahead = false;
+            int bridge_end = pos; // Index where the 6th checker is found
+
+            if (specific_debug) {
+                std::cout << "  -> Found 6-block ending at index " << bridge_end << ". Checking opponent ahead..." << std::endl;
+            }
+
+            if (player == kXPlayerId) {
+                // For White, 'ahead' means higher indices
+                for (int i = bridge_end + 1; i < kNumPoints; i++) {
+                    // *** IMPORTANT: Check ORIGINAL board state for opponent position ***
+                    // This assumes 'board_' member holds the state *before* the sequence began.
+                    // However, HasIllegalBridge is called *after* ApplyCheckerMove,
+                    // so 'board_' reflects the *temporary* state.
+                    // The rule implies checking opponent position relative to the potential block.
+                    // Let's stick to checking the current state's opponent position.
+                    if (board(opponent, i) > 0) { // Check CURRENT board state
+                         if (specific_debug) {
+                             std::cout << "    -> Opponent found ahead at index " << i << " (Value: " << board(opponent, i) << "). Bridge is LEGAL." << std::endl;
+                         }
+                        any_opponent_ahead = true;
+                        break;
+                    }
+                }
+            } else { // kOPlayerId
+                // For Black, 'ahead' means lower indices
+                for (int i = 0; i < bridge_end; i++) { // Check indices before the bridge end
+                    if (board(opponent, i) > 0) { // Check CURRENT board state
+                         if (specific_debug) {
+                             std::cout << "    -> Opponent found ahead at index " << i << " (Value: " << board(opponent, i) << "). Bridge is LEGAL." << std::endl;
+                         }
+                        any_opponent_ahead = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!any_opponent_ahead) {
+                 if (specific_debug) {
+                     std::cout << "    -> NO Opponent found ahead. Bridge is ILLEGAL." << std::endl;
+                 }
+                return true; // Found an illegal bridge
+            }
+            // If this 6-block was legal, continue checking the rest of the board
+        }
+    }
+
+    if (specific_debug) {
+        std::cout << "  -> No illegal bridge found in this state." << std::endl;
+    }
+    return false; // No illegal bridge found
 }
 
 }  // namespace long_narde

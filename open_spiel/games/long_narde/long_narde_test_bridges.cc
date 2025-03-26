@@ -20,7 +20,7 @@ void TestBridgeFormation() {
   // Test 1: Directly test illegal bridge detection.
   // We want to simulate a move within White's home board that fills a gap.
   //
-  // We'll configure White’s home board (indices 0–5) as:
+  // We'll configure White's home board (indices 0–5) as:
   //   [2, 1, 1, 0, 2, 1]
   // so that point 0 has an extra checker.
   // White's head (index 23) will hold the remaining checkers so that total white = 15.
@@ -60,7 +60,7 @@ void TestBridgeFormation() {
   // Test 2: With opponent relief, the same move should be legal.
   // We use the same White configuration as above.
   // For Black, we place 14 checkers at one location (say index 2) and 1 checker at index 7
-  // (so that at least one Black checker is ahead of White’s home board).
+  // (so that at least one Black checker is ahead of White's home board).
   // ------------------------------------------------------------
   {
     std::vector<int> white_row = {2, 1, 1, 0, 2, 1};
@@ -86,7 +86,7 @@ void TestBridgeFormation() {
     std::vector<int> white_row = {2, 1, 1, 0, 2, 1};
     white_row.resize(23, 0);
     white_row.push_back(8);  // White head.
-    // For Black, put all 15 checkers in a location within White’s home board region,
+    // For Black, put all 15 checkers in a location within White's home board region,
     // e.g. index 2, so that no Black checker is ahead.
     std::vector<int> black_row(24, 0);
     black_row[2] = 15;

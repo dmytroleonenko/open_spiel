@@ -232,6 +232,9 @@ class LongNardeState : public State {
 
   bool AllInHome(int player) const;
 
+  // Checks if the current board state contains an illegal bridge for the player.
+  bool HasIllegalBridge(int player) const;
+
  protected:
   void DoApplyAction(Action move_id) override;
 
@@ -269,6 +272,8 @@ class LongNardeState : public State {
   std::vector<std::vector<int>> board_;  // Checkers for each player on points.
   std::vector<TurnHistoryInfo> turn_history_info_;  // Info needed for Undo.
   bool allow_last_roll_tie_;  // Tracks if a last roll for tie is allowed.
+
+  friend class LongNardeGame;
 };
 
 // Add an overload for the << operator for ScoringType to fix compilation errors

@@ -391,6 +391,68 @@ void HomeRegionsTest() {
   std::cout << "✓ HomeRegionsTest passed\n";
 }
 
+//------------------------------------------------------------------------------
+// Test: IllegalLandingInLegalActions
+// Verifies that LegalActions does not generate moves landing on occupied points,
+// specifically targeting the bug identified in random_sim_test.
+//------------------------------------------------------------------------------
+void TestIllegalLandingInLegalActions() {
+  std::cout << "\n=== Running TestIllegalLandingInLegalActions ===\n";
+
+  std::shared_ptr<const Game> game = LoadGame("long_narde");
+  std::unique_ptr<State> state = game->NewInitialState();
+  auto lnstate = static_cast<LongNardeState*>(state.get());
+
+  // Setup based on random_sim_test failure (Move index 7):
+  // Board: X has 13 at head (23), 2 at index 12. O has 14 at head (11), 1 at index 13.
+  // Turn: Black (O, player 1)
+  // Dice: 1, 1
+  // Illegal Move Attempt: O from head (11) to 12 with die 1 (lands on X's checker).
+  std::vector<std::vector<int>> board_setup = {
+      // White (X): 13 at index 23, 2 at index 12
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13},
+      // Black (O): 14 at index 11, 1 at index 13
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+  };
+  // Black (O) to move, dice 1, 1.
+  lnstate->SetState(kOPlayerId, false, {1, 1}, {0, 0}, board_setup);
+
+  // Get legal actions
+  std::vector<Action> legal_actions = lnstate->LegalActions();
+  SPIEL_CHECK_FALSE(legal_actions.empty()); // Should have some moves (e.g., O from 13)
+
+  bool found_illegal_landing = false;
+  int illegal_from_pos = 11; // Black's head (pos 12)
+  int illegal_to_pos = 12;   // Target pos 13 (occupied by White)
+  int illegal_die = 1;
+
+  for (Action action : legal_actions) {
+    // Decode moves for the current player (Black)
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, action);
+    for (const auto& move : moves) {
+      // Check if this move matches the illegal one identified
+      // Note: GetToPos for Black calculates the target index correctly.
+      // We need to check if the decoded move has pos=11, die=1, resulting in to_pos=12.
+      // The SpielMoveToCheckerMoves already calculates the to_pos based on GetToPos.
+      if (move.pos == illegal_from_pos && move.die == illegal_die && move.to_pos == illegal_to_pos) {
+        found_illegal_landing = true;
+        std::cerr << "ERROR: Found illegal move in LegalActions: "
+                  << "Player O from=" << move.pos << " (pos " << move.pos + 1 << "), "
+                  << "to=" << move.to_pos << " (pos " << move.to_pos + 1 << "), "
+                  << "die=" << move.die << std::endl;
+        std::cerr << "Board state:\n" << lnstate->ToString() << std::endl;
+        break;
+      }
+    }
+    if (found_illegal_landing) break;
+  }
+
+  // Assert that the illegal move (O: 11 -> 12 with die 1) was NOT found in LegalActions
+  SPIEL_CHECK_FALSE(found_illegal_landing);
+
+  std::cout << "✓ TestIllegalLandingInLegalActions passed (no illegal landings found)\n";
+}
+
 }  // namespace testing_internal
 
 //------------------------------------------------------------------------------
@@ -408,6 +470,7 @@ void TestMovementRules() {
   testing_internal::MovementDirectionTest();
   testing_internal::NoLandingOnOpponentTest();
   testing_internal::HomeRegionsTest();
+  testing_internal::TestIllegalLandingInLegalActions();
 
   std::cout << "✓ All movement tests passed\n";
 }
