@@ -442,7 +442,7 @@ void VerifySingleDiePlayBehavior() {
       std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
       // Encoded action usually has 2 moves (1 actual, 1 pass padding)
       // For doubles, it can have up to 4. Check structure carefully.
-      SPIEL_GE(moves.size(), 2); // Should have at least 2, maybe more for doubles encoding structure
+      SPIEL_CHECK_GE(moves.size(), 2); // Should have at least 2, maybe more for doubles encoding structure
 
       int non_pass_count = 0;
       CheckerMove non_pass_move = kPassMove;
