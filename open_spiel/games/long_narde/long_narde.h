@@ -37,6 +37,10 @@ struct CheckerMove {
   int to_pos;   // Destination position (or -1 for pass)
   int die;      // Die value used (1-6, or -1 for pass)
   
+  // Default constructor
+  constexpr CheckerMove() 
+      : pos(kPassPos), to_pos(kPassPos), die(kPassDieValue) {}
+  
   // Constructor
   constexpr CheckerMove(int _pos, int _to_pos, int _die) 
       : pos(_pos), to_pos(_to_pos), die(_die) {}
@@ -234,6 +238,12 @@ class LongNardeState : public State {
 
   // Checks if the current board state contains an illegal bridge for the player.
   bool HasIllegalBridge(int player) const;
+  
+  // Generate all possible half-moves from the current state
+  std::set<CheckerMove> GenerateAllHalfMoves(int player) const;
+
+  // Helper function: checks if 'player' has any checker in [startPos, endPos] inclusive.
+  bool HasAnyChecker(int player, int startPos, int endPos) const;
 
  protected:
   void DoApplyAction(Action move_id) override;

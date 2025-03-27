@@ -453,6 +453,104 @@ void TestIllegalLandingInLegalActions() {
   std::cout << "✓ TestIllegalLandingInLegalActions passed (no illegal landings found)\n";
 }
 
+// Test to verify that half-move generation produces correct moves
+void TestHalfMoveGeneration() {
+  std::cout << "\n=== Running TestHalfMoveGeneration ===\n";
+  
+  std::shared_ptr<const Game> game = LoadGame("long_narde");
+  std::unique_ptr<State> state = game->NewInitialState();
+  auto lnstate = static_cast<LongNardeState*>(state.get());
+  
+  // Set up a test board state
+  std::vector<std::vector<int>> test_board = {
+    {0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, // White: one at point 1, one at point 24
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Black: one at point 12
+  };
+  std::vector<int> dice = {3, 5};
+  std::vector<int> scores = {13, 14}; // Most checkers are already borne off
+  
+  // Set state
+  lnstate->SetState(kXPlayerId, false, dice, scores, test_board);
+  
+  std::cout << "Test setup:\n" << lnstate->ToString() << std::endl;
+  std::cout << "White's Home: points 1-6 (indices 0-5)\n";
+  std::cout << "Expecting moves: \n"
+            << "1. Point 24 with die 3 (pos=23, die=3)\n"
+            << "2. Point 24 with die 5 (pos=23, die=5)\n";
+  
+  // Generate half-moves for White (X)
+  std::set<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kXPlayerId);
+  
+  std::cout << "Generated " << half_moves.size() << " half-moves:\n";
+  for (const auto& move : half_moves) {
+    int human_pos = (move.pos >= 0) ? move.pos + 1 : move.pos;
+    int human_to_pos = (move.to_pos >= 0) ? move.to_pos + 1 : (move.to_pos == kPassPos ? move.to_pos : -1);
+    std::cout << "  - Move from pos " << human_pos 
+              << " to pos " << (human_to_pos < 0 ? "Off" : std::to_string(human_to_pos))
+              << " with die " << move.die << "\n";
+  }
+  
+  // Check for each specific expected move
+  bool found_point24_die3 = false;
+  bool found_point24_die5 = false;
+  
+  for (const auto& move : half_moves) {
+    if (move.pos == 23 && move.die == 3) {
+      found_point24_die3 = true;
+      std::cout << "✓ Found Point 24 with die 3\n";
+    }
+    if (move.pos == 23 && move.die == 5) {
+      found_point24_die5 = true;
+      std::cout << "✓ Found Point 24 with die 5\n";
+    }
+  }
+  
+  // Report individual missing moves
+  if (!found_point24_die3) std::cout << "✗ Missing: Point 24 with die 3\n";
+  if (!found_point24_die5) std::cout << "✗ Missing: Point 24 with die 5\n";
+  
+  // Expect exactly 2 half-moves:
+  // 1. Move from point 24 using die 3
+  // 2. Move from point 24 using die 5
+  SPIEL_CHECK_EQ(half_moves.size(), 2);
+  
+  // Verify all moves were found
+  SPIEL_CHECK_TRUE(found_point24_die3);
+  SPIEL_CHECK_TRUE(found_point24_die5);
+  
+  // Now get legal actions and verify they match expected combinations
+  std::vector<Action> legal_actions = lnstate->LegalActions();
+  
+  // We expect to have actions that use both dice
+  SPIEL_CHECK_GE(legal_actions.size(), 1);
+  
+  // Verify all actions use at least one valid half-move
+  bool all_valid = true;
+  for (Action action : legal_actions) {
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+    bool action_valid = false;
+    
+    for (const auto& move : moves) {
+      if (move.pos != kPassPos) {
+        bool is_valid_half_move = half_moves.count(move) > 0;
+        if (is_valid_half_move) {
+          action_valid = true;
+          break;
+        }
+      }
+    }
+    
+    if (!action_valid) {
+      all_valid = false;
+      break;
+    }
+  }
+  
+  SPIEL_CHECK_TRUE(all_valid);
+  
+  std::cout << "✓ TestHalfMoveGeneration passed\n";
+}
+
 }  // namespace testing_internal
 
 //------------------------------------------------------------------------------
@@ -471,6 +569,7 @@ void TestMovementRules() {
   testing_internal::NoLandingOnOpponentTest();
   testing_internal::HomeRegionsTest();
   testing_internal::TestIllegalLandingInLegalActions();
+  testing_internal::TestHalfMoveGeneration();
 
   std::cout << "✓ All movement tests passed\n";
 }
