@@ -643,36 +643,32 @@ bool LongNardeState::WouldFormBlockingBridge(int player, int from_pos, int to_po
 }
 
 bool LongNardeState::IsValidCheckerMove(int player, int from_pos, int to_pos, int die_value, bool check_head_rule) const {
-  bool is_debugging = false; // Keep general debugging off unless needed
-  // Add specific debugging for the problematic move O: 11 -> 12
-  bool specific_debug = (player == kOPlayerId && from_pos == 11 && to_pos == 12);
-
   if (from_pos == kPassPos) return true;
   if (from_pos < 0 || from_pos >= kNumPoints) {
-    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Invalid from_pos " << from_pos << std::endl;
+    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Invalid from_pos " << from_pos << std::endl;
     return false;
   }
   if (board(player, from_pos) <= 0) {
-    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: No checker at from_pos " << from_pos << std::endl;
+    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: No checker at from_pos " << from_pos << std::endl;
     return false;
   }
   if (die_value < 1 || die_value > 6) {
-    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Invalid die_value " << die_value << std::endl;
+    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Invalid die_value " << die_value << std::endl;
     return false;
   }
   int expected_to_pos = GetToPos(player, from_pos, die_value);
   if (to_pos != expected_to_pos) {
-    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: to_pos " << to_pos << " doesn't match expected " << expected_to_pos << std::endl;
+    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: to_pos " << to_pos << " doesn't match expected " << expected_to_pos << std::endl;
     return false;
   }
   if (check_head_rule && !IsLegalHeadMove(player, from_pos)) {
-    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Head rule violation for pos " << from_pos << std::endl;
+    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Head rule violation for pos " << from_pos << std::endl;
     return false;
   }
   bool is_bearing_off = IsOff(player, to_pos);
   if (is_bearing_off) {
     if (!AllInHome(player)) {
-        if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Cannot bear off, not all checkers in home" << std::endl;
+        if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Cannot bear off, not all checkers in home" << std::endl;
         return false;
     }
 
@@ -715,24 +711,24 @@ bool LongNardeState::IsValidCheckerMove(int player, int from_pos, int to_pos, in
             }
         }
         if (further_checker_exists) {
-             if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Cannot bear off high, checker exists further back on path" << std::endl;
+             if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Cannot bear off high, checker exists further back on path" << std::endl;
              return false;
         }
         return true;
     }
-    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Invalid bearing off move (die too low)" << std::endl;
+    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Invalid bearing off move (die too low)" << std::endl;
     return false;
   }
   
   // Check bounds for non-bearing off moves
   if (to_pos < 0 || to_pos >= kNumPoints) {
-    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Invalid to_pos " << to_pos << std::endl;
+    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Invalid to_pos " << to_pos << std::endl;
     return false;
   }
 
   // *** Critical Check: Opponent Occupancy ***
   // Only check opponent occupancy if this is a normal move (not bearing off)
-  if (specific_debug) {
+  if (kDebugging) {
     std::cout << "DEBUG IsValidCheckerMove (O: 11->12): Checking opponent occupancy at to_pos=" << to_pos << std::endl;
     std::cout << "  board(X, " << to_pos << ") = " << board(1-player, to_pos) << std::endl;
     // Also print neighbors for context
@@ -748,7 +744,7 @@ bool LongNardeState::IsValidCheckerMove(int player, int from_pos, int to_pos, in
 
   // *** Critical Check: Blocking Bridge ***
   if (WouldFormBlockingBridge(player, from_pos, to_pos)) {
-    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Would form illegal blocking bridge" << std::endl;
+    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Would form illegal blocking bridge" << std::endl;
     return false;
   }
 
@@ -1020,23 +1016,26 @@ bool LongNardeState::ValidateAction(Action action) const {
   }
   const auto& legal_actions = LegalActions();
   if (std::find(legal_actions.begin(), legal_actions.end(), action) == legal_actions.end()) {
-    std::cout << "DEBUG: Action " << action << " not found in legal actions.\n";
-    std::cout << "DEBUG: Legal actions (" << legal_actions.size() << " total): ";
-    for (Action a : legal_actions) {
-      std::cout << a << " ";
+    bool is_debugging = false; // Keep general debugging off unless needed
+    if (is_debugging) {
+      std::cout << "DEBUG: Action " << action << " not found in legal actions.\n";
+      std::cout << "DEBUG: Legal actions (" << legal_actions.size() << " total): ";
+      for (Action a : legal_actions) {
+        std::cout << a << " ";
+      }
+      std::cout << "\n";
+      std::cout << "DEBUG: Decoded moves for invalid action " << action << ":\n";
+      std::vector<CheckerMove> moves = SpielMoveToCheckerMoves(cur_player_, action);
+      for (const auto& m : moves) {
+        std::cout << "  pos=" << m.pos << ", to_pos=" << GetToPos(cur_player_, m.pos, m.die)
+                  << ", die=" << m.die << "\n";
+      }
+      std::cout << "DEBUG: Current dice: ";
+      for (int d : dice_) {
+        std::cout << d << " ";
+      }
+      std::cout << "\nDEBUG: Board state:\n" << ToString() << "\n";
     }
-    std::cout << "\n";
-    std::cout << "DEBUG: Decoded moves for invalid action " << action << ":\n";
-    std::vector<CheckerMove> moves = SpielMoveToCheckerMoves(cur_player_, action);
-    for (const auto& m : moves) {
-      std::cout << "  pos=" << m.pos << ", to_pos=" << GetToPos(cur_player_, m.pos, m.die)
-                << ", die=" << m.die << "\n";
-    }
-    std::cout << "DEBUG: Current dice: ";
-    for (int d : dice_) {
-      std::cout << d << " ";
-    }
-    std::cout << "\nDEBUG: Board state:\n" << ToString() << "\n";
     return false;
   }
   std::vector<CheckerMove> moves = SpielMoveToCheckerMoves(cur_player_, action);
@@ -1044,12 +1043,15 @@ bool LongNardeState::ValidateAction(Action action) const {
     if (move.pos == kPassPos) continue;
     int to_pos = GetToPos(cur_player_, move.pos, move.die);
     if (!IsValidCheckerMove(cur_player_, move.pos, to_pos, move.die, true)) {
-      std::cout << "ERROR: Decoded move from " << move.pos << " to " << to_pos
-                << " with die=" << move.die << " for player " << cur_player_
-                << " is not valid but action was in legal actions!" << std::endl;
-      std::cout << "Dice: [" << (dice_.size() >= 1 ? std::to_string(dice_[0]) : "none")
-                << ", " << (dice_.size() >= 2 ? std::to_string(dice_[1]) : "none") << "]" << std::endl;
-      std::cout << "Board state: " << ToString() << std::endl;
+      bool is_debugging = false; // Keep general debugging off unless needed
+      if (is_debugging) {
+        std::cout << "ERROR: Decoded move from " << move.pos << " to " << to_pos
+                  << " with die=" << move.die << " for player " << cur_player_
+                  << " is not valid but action was in legal actions!" << std::endl;
+        std::cout << "Dice: [" << (dice_.size() >= 1 ? std::to_string(dice_[0]) : "none")
+                  << ", " << (dice_.size() >= 2 ? std::to_string(dice_[1]) : "none") << "]" << std::endl;
+        std::cout << "Board state: " << ToString() << std::endl;
+      }
       return false;
     }
   }
@@ -1124,8 +1126,9 @@ void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
   }
 
   // Add specific debugging for the problematic move O: 11 -> 12 and its context
+  bool is_debugging = false; // Keep general debugging off unless needed
   bool specific_debug = (player == kOPlayerId && (move.pos == 11 || move.to_pos == 12 || move.pos == 13 || move.to_pos == 13));
-  if (specific_debug) {
+  if (is_debugging && specific_debug) {
       std::cout << "DEBUG ApplyCheckerMove (O): move=" << move.pos << "->" << move.to_pos << " die=" << move.die << std::endl;
       std::cout << "  Board state BEFORE apply at [11, 12, 13]: O=["
                 << board_[kOPlayerId][11] << "," << board_[kOPlayerId][12] << "," << board_[kOPlayerId][13] << "] X=["
@@ -1151,7 +1154,7 @@ void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
     moved_from_head_ = true;
   }
 
-  if (specific_debug) {
+  if (is_debugging && specific_debug) {
       std::cout << "  Board state AFTER apply at [11, 12, 13]: O=["
                 << board_[kOPlayerId][11] << "," << board_[kOPlayerId][12] << "," << board_[kOPlayerId][13] << "] X=["
                 << board_[kXPlayerId][11] << "," << board_[kXPlayerId][12] << "," << board_[kXPlayerId][13] << "]" << std::endl;
@@ -1164,8 +1167,9 @@ void LongNardeState::UndoCheckerMove(int player, const CheckerMove& move) {
   int next_pos = move.to_pos; // Use the pre-calculated to_pos from CheckerMove
 
   // Add specific debugging for the problematic move O: 11 -> 12 and its context
+  bool is_debugging = false; // Keep general debugging off unless needed
   bool specific_debug = (player == kOPlayerId && (move.pos == 11 || next_pos == 12 || move.pos == 13 || next_pos == 13));
-   if (specific_debug) {
+  if (is_debugging && specific_debug) {
       std::cout << "DEBUG UndoCheckerMove (O): move=" << move.pos << "->" << next_pos << " die=" << move.die << std::endl;
       std::cout << "  Board state BEFORE undo at [11, 12, 13]: O=["
                 << board_[kOPlayerId][11] << "," << board_[kOPlayerId][12] << "," << board_[kOPlayerId][13] << "] X=["
@@ -1180,7 +1184,10 @@ void LongNardeState::UndoCheckerMove(int player, const CheckerMove& move) {
     if (next_pos >= 0 && next_pos < kNumPoints) {
        board_[player][next_pos]--;
     } else {
+      bool is_debugging = false; // Keep general debugging off unless needed
+      if (is_debugging) {
          std::cerr << "Warning: UndoCheckerMove attempting to decrement invalid next_pos " << next_pos << std::endl;
+      }
     }
   }
   // Unmark die used
@@ -1194,15 +1201,12 @@ void LongNardeState::UndoCheckerMove(int player, const CheckerMove& move) {
   if (move.pos >= 0 && move.pos < kNumPoints) {
       board_[player][move.pos]++;
   } else {
-      std::cerr << "Warning: UndoCheckerMove attempting to increment invalid move.pos " << move.pos << std::endl;
+      bool is_debugging = false; // Keep general debugging off unless needed
+      if (is_debugging) {
+        std::cerr << "Warning: UndoCheckerMove attempting to increment invalid move.pos " << move.pos << std::endl;
+      }
   }
   // Note: Undoing moved_from_head_ is handled by restoring the state in RecLegalMoves
-
-   if (specific_debug) {
-      std::cout << "  Board state AFTER undo at [11, 12, 13]: O=["
-                << board_[kOPlayerId][11] << "," << board_[kOPlayerId][12] << "," << board_[kOPlayerId][13] << "] X=["
-                << board_[kXPlayerId][11] << "," << board_[kXPlayerId][12] << "," << board_[kXPlayerId][13] << "]" << std::endl;
-  }
 }
 
 bool LongNardeState::UsableDiceOutcome(int outcome) const {
@@ -1723,8 +1727,8 @@ bool LongNardeState::HasIllegalBridge(int player) const {
       return false;
   }
 
-  bool debugging = true; // Use the existing debug flag
-  if (debugging) {
+  bool is_debugging = false; // Keep general debugging off unless needed
+  if (is_debugging) {
     std::cout << "DEBUG: HasIllegalBridge check for player " << player << "\n";
     std::cout << "DEBUG: Opponent (" << opponent << ") board state (real pos -> count (path idx)):\n";
     std::cout << "  [";
@@ -1750,13 +1754,13 @@ bool LongNardeState::HasIllegalBridge(int player) const {
     }
 
     if (is_block) {
-      if (debugging) {
+      if (is_debugging) {
         std::cout << "DEBUG: Found potential block starting at real pos " << start << "\n";
       }
       
       int block_path_start_on_opp_path_real_pos = GetBlockPathStartRealPos(opponent, start);
       
-      if (debugging) {
+      if (is_debugging) {
         std::cout << "DEBUG: Block path start on opponent's path (real pos): " 
                   << block_path_start_on_opp_path_real_pos << "\n";
         std::cout << "DEBUG: Block path start index on opponent's path: " << GetPathIndex(opponent, block_path_start_on_opp_path_real_pos) << "\n";
@@ -1767,7 +1771,7 @@ bool LongNardeState::HasIllegalBridge(int player) const {
         if (board(opponent, opp_pos) > 0) {
             int opp_real_pos = opp_pos;
             if (IsAhead(opponent, opp_real_pos, block_path_start_on_opp_path_real_pos)) {
-                if (debugging) {
+                if (is_debugging) {
                   std::cout << "DEBUG: Found opponent checker ahead at real pos " << opp_real_pos 
                             << " (path index " << GetPathIndex(opponent, opp_real_pos) << ")\n";
                 }
@@ -1778,7 +1782,7 @@ bool LongNardeState::HasIllegalBridge(int player) const {
       }
 
       if (!opponent_found_ahead) {
-        if (debugging) {
+        if (is_debugging) {
           std::cout << "DEBUG: ILLEGAL BRIDGE DETECTED! No opponent checkers found ahead of block path start\n";
         }
         return true;
@@ -1786,7 +1790,7 @@ bool LongNardeState::HasIllegalBridge(int player) const {
     }
   }
 
-  if (debugging) {
+  if (is_debugging) {
     std::cout << "DEBUG: No illegal bridges found\n";
   }
   return false;
@@ -1795,9 +1799,9 @@ bool LongNardeState::HasIllegalBridge(int player) const {
 // Implement the GenerateAllHalfMoves method
 std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player) const {
   std::set<CheckerMove> half_moves;
-  bool debugging = true;
+  bool is_debugging = false; // Keep general debugging off unless needed
   
-  if (debugging) {
+  if (is_debugging) {
     std::cout << "GenerateAllHalfMoves for player " << player << "\n";
     std::cout << "Dice: " << (dice_.size() > 0 ? std::to_string(dice_[0]) : "none") 
               << ", " << (dice_.size() > 1 ? std::to_string(dice_[1]) : "none") << "\n";
@@ -1815,7 +1819,7 @@ std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player) const {
   for (int pos = 0; pos < kNumPoints; ++pos) {
     if (board(player, pos) <= 0) continue;
     
-    if (debugging) {
+    if (is_debugging) {
       std::cout << "  Found checker at pos " << pos << " (point " << pos+1 << ")\n";
     }
     
@@ -1823,14 +1827,14 @@ std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player) const {
     for (int i = 0; i < dice_.size(); ++i) {
       int outcome = dice_[i];
       if (!UsableDiceOutcome(outcome)) {
-        if (debugging) std::cout << "    Die " << outcome << " not usable, skipping\n";
+        if (is_debugging) std::cout << "    Die " << outcome << " not usable, skipping\n";
         continue; // Skip used dice
       }
       
       int die_value = outcome; // Since UsableDiceOutcome passed, outcome is 1-6
       int to_pos = GetToPos(player, pos, die_value);
       
-      if (debugging) {
+      if (is_debugging) {
         std::cout << "    Checking die " << die_value << ", to_pos=" << to_pos << "\n";
         if (IsOff(player, to_pos)) {
           std::cout << "    This would be a bearing off move\n";
@@ -1840,7 +1844,7 @@ std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player) const {
       // Check if this would be a valid move (including bearing off)
       bool is_valid = IsValidCheckerMove(player, pos, to_pos, die_value, false);
       
-      if (debugging) {
+      if (is_debugging) {
         std::cout << "    IsValidCheckerMove returned " << (is_valid ? "true" : "false") << "\n";
         if (!is_valid) {
           // Log the reason why this move is invalid
@@ -1885,7 +1889,7 @@ std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player) const {
       
       if (is_valid) {
         half_moves.insert(CheckerMove(pos, to_pos, die_value));
-        if (debugging) {
+        if (is_debugging) {
           std::cout << "    Added valid move: pos=" << pos << ", to_pos=" << to_pos 
                     << ", die=" << die_value << "\n";
         }
@@ -1899,14 +1903,14 @@ std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player) const {
       int outcome = dice_[i];
       if (UsableDiceOutcome(outcome)) {
         half_moves.insert(CheckerMove(kPassPos, kPassPos, outcome));
-        if (debugging) {
+        if (is_debugging) {
           std::cout << "  Added pass move with die " << outcome << "\n";
         }
       }
     }
   }
   
-  if (debugging) {
+  if (is_debugging) {
     std::cout << "Generated " << half_moves.size() << " half-moves:\n";
     for (const auto& move : half_moves) {
       std::cout << "  - from=" << move.pos << ", to=" << move.to_pos 

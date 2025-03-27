@@ -153,9 +153,11 @@ void SingleLegalMoveTest() {
   std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, legal_actions[0]);
 
   // DEBUG: Print decoded moves
-  std::cout << "DEBUG: Decoded moves for action " << legal_actions[0] << ":" << std::endl;
-  for(const auto& move : moves) {
-      std::cout << "  pos=" << move.pos << ", to_pos=" << move.to_pos << ", die=" << move.die << std::endl;
+  if (kDebugging) {
+    std::cout << "DEBUG: Decoded moves for action " << legal_actions[0] << ":" << std::endl;
+    for(const auto& move : moves) {
+        std::cout << "  pos=" << move.pos << ", to_pos=" << move.to_pos << ", die=" << move.die << std::endl;
+    }
   }
 
   // Verify the sequence is (1->0, die=1) and (0->-2, die=2)
@@ -414,7 +416,9 @@ void VerifySingleDiePlayBehavior() {
 
   // --- Scenario 1: Both dice individually playable, max_non_pass=1 -> Force Higher ---
   {
-    std::cout << "  Testing Scenario 1 (Both Singles Playable, MaxLen=1, Force Higher)..." << std::endl;
+    if (kDebugging) {
+      std::cout << "  Testing Scenario 1 (Both Singles Playable, MaxLen=1, Force Higher)..." << std::endl;
+    }
     std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
     // Setup: W@8, W@3. B@0. Dice {5,3}.
     // Initial Half Moves:
@@ -469,12 +473,16 @@ void VerifySingleDiePlayBehavior() {
     // Verify the higher die move was found AND the lower die move was NOT found.
     SPIEL_CHECK_TRUE(found_correct_action);
     SPIEL_CHECK_FALSE(found_incorrect_action);
-    std::cout << "  Scenario 1: Passed\n";
+    if (kDebugging) {
+      std::cout << "  Scenario 1: Passed\n";
+    }
   }
 
   // --- Scenario 2: Only Lower Die (3) is playable ---
   {
-    std::cout << "  Testing Scenario 2 (Only Lower Playable, MaxLen=1)..." << std::endl;
+    if (kDebugging) {
+      std::cout << "  Testing Scenario 2 (Only Lower Playable, MaxLen=1)..." << std::endl;
+    }
     std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
     // Setup: W@5, W@8. B@0, B@3. Dice {5,3}. Player X.
     // Analysis:
@@ -521,12 +529,16 @@ void VerifySingleDiePlayBehavior() {
       }
     }
     SPIEL_CHECK_TRUE(all_used_lower_die); // Verify all legal actions used the lower die (3)
-    std::cout << "  Scenario 2: Passed\n";
+    if (kDebugging) {
+      std::cout << "  Scenario 2: Passed\n";
+    }
   }
 
   // --- Scenario 3: Both dice individually playable, max_non_pass=1 -> Force Higher ---
   {
-    std::cout << "  Testing Scenario 3 (Both Singles Playable, MaxLen=1, Force Higher)..." << std::endl;
+    if (kDebugging) {
+      std::cout << "  Testing Scenario 3 (Both Singles Playable, MaxLen=1, Force Higher)..." << std::endl;
+    }
     std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
     // Setup: W@8, W@3. B@0. Dice {5,3}.
     // As analyzed in Scenario 1:
@@ -564,7 +576,9 @@ void VerifySingleDiePlayBehavior() {
     // only actions using die 5 should be present.
     SPIEL_CHECK_TRUE(found_move_d5);  // The higher die move MUST be possible/present
     SPIEL_CHECK_FALSE(found_move_d3); // The lower die move MUST NOT be present
-    std::cout << "  Scenario 3: Passed\n";
+    if (kDebugging) {
+      std::cout << "  Scenario 3: Passed\n";
+    }
   }
 }
 
