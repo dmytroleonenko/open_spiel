@@ -112,7 +112,11 @@ std::string PositionToStringHumanReadable(int pos) {
   } else if (pos == kPassPos) {
     return "Pass";
   } else {
-    return PositionToString(pos);
+    // Convert human-readable point (1-24) to internal index (0-23)
+    SPIEL_CHECK_GE(pos, 1);
+    SPIEL_CHECK_LE(pos, kNumPoints);
+    int internal_pos = pos - 1;
+    return PositionToString(internal_pos);
   }
 }
 
