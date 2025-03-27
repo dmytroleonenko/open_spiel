@@ -411,26 +411,26 @@ void VerifySingleDiePlayBehavior() {
   auto lnstate = static_cast<LongNardeState*>(state.get());
   std::vector<int> dice = {5, 3}; // Higher=5, Lower=3
 
-  // --- Scenario 1: Only Higher Die (5) is playable (due to rule) ---
+  // --- Scenario 1: Both dice individually playable, max_non_pass=1 -> Force Higher ---
   {
     std::cout << "  Testing Scenario 1 (Both Singles Playable, MaxLen=1, Force Higher)..." << std::endl;
     std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
-    board[kXPlayerId][5] = 1; // White checker at pos 5, can move 5->0 (d5)
-    board[kXPlayerId][3] = 1; // White checker at pos 3, can move 3->0 (d3)
-    board[kOPlayerId][2] = 1; // Black blocks 5->2 (d3)
-
-    // Verify sequences are blocked:
-    // 1. Try 5->0 (d5): State W@0,3 B@2. Dice {11, 3}. Next moves:
-    //    - 3->0(d3): Blocked by W@0.
-    //    - 0->-3(d3): Blocked by W@3. -> No 2nd move.
-    // 2. Try 3->0 (d3): State W@0,5 B@2. Dice {5, 9}. Next moves:
-    //    - 5->0(d5): Blocked by W@0.
-    //    - 0->-4(d5): Blocked by W@5. -> No 2nd move.
-    // Result: Max sequence length is 1. max_non_pass = 1. Rule applies.
+    // Setup: W@8, W@3. B@0. Dice {5,3}.
+    // Initial Half Moves:
+    // - W@8: 8->3(d5) valid. 8->5(d3) valid.
+    // - W@3: 3->0(d3) blocked B@0. 3->-2(d5) invalid bear-off.
+    // -> Playable: [8->3, d5], [8->5, d3]. Both dice are possible.
+    // Sequences:
+    // - Try [8->3, d5]: State W@3(x2). B@0. Dice {11,3}. Next Moves(d3): 3->0 blocked B@0. -> Sequence length 1.
+    // - Try [8->5, d3]: State W@3, W@5. B@0. Dice {5,9}. Next Moves(d5): 5->0 blocked B@0. -> Sequence length 1.
+    // Result: longest=1, max_non_pass=1. Higher die rule applies. Must play the move using die 5.
+    board[kXPlayerId][8] = 1;
+    board[kXPlayerId][3] = 1;
+    board[kOPlayerId][0] = 1; // Black checker blocks moves to point 1 (pos 0)
 
     lnstate->SetState(kXPlayerId, false, dice, {0, 0}, board);
 
-    // Expected: Only the higher die move 5->0 (d5) should be legal.
+    // Expected: Only the higher die move 8->3 (d5) should be legal.
     auto legal_actions = lnstate->LegalActions();
     SPIEL_CHECK_FALSE(legal_actions.empty()); // Should have a move
 
@@ -456,8 +456,8 @@ void VerifySingleDiePlayBehavior() {
       // Because max_non_pass is 1, the *encoded action* should represent exactly one non-pass move.
       SPIEL_CHECK_EQ(non_pass_count, 1);
 
-      // Check if this single non-pass move uses the higher die (5) from pos 5.
-      if (non_pass_move.pos == 5 && non_pass_move.die == 5) {
+      // Check if this single non-pass move uses the higher die (5) from pos 8.
+      if (non_pass_move.pos == 8 && non_pass_move.die == 5) {
         found_correct_action = true;
       }
       // Check if it incorrectly uses the lower die (3) from pos 3.
@@ -475,57 +475,70 @@ void VerifySingleDiePlayBehavior() {
   {
     std::cout << "  Testing Scenario 2 (Only Lower Playable, MaxLen=1)..." << std::endl;
     std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
-    board[kXPlayerId][5] = 1; // White checker at pos 5
-    board[kOPlayerId][0] = 1; // Black blocks target of die 5 (5-5=0)
-    // Add another white checker to prevent bear-off after moving 5->2, ensuring max_len=1
-    board[kXPlayerId][3] = 1; // Prevents 2 -> -3 bear off with die 5
+    // Setup: W@5, W@8. B@0, B@3. Dice {5,3}. Player X.
+    // Analysis:
+    // W@5: d5 blocked B@0, d3 to 2 is valid.
+    // W@8: d5 blocked B@3, d3 to 5 is valid.
+    // -> Only d3 is initially playable.
+    // -> Sequences: [5->2, d3] (len 1, next d5 move 8->3 blocked B@3).
+    // ->            [8->5, d3] (len 1, next d5 move 5->0 blocked B@0).
+    // -> longest=1, max_non_pass=1. Rule applies. Only die 3 was ever playable.
+    // -> Legal actions must use die 3.
+    board[kXPlayerId][5] = 1;
+    board[kXPlayerId][8] = 1;
+    board[kOPlayerId][0] = 1; // Blocks W@5 with d5
+    board[kOPlayerId][3] = 1; // Blocks W@8 with d5 AND blocks subsequent d5 move from W@2 if W@5 moved first.
     lnstate->SetState(kXPlayerId, false, dice, {0, 0}, board);
 
     // Expected: Only move possible is 5->2 (d3). Max non-pass = 1. Rule applies.
     auto legal_actions = lnstate->LegalActions();
-    SPIEL_CHECK_FALSE(legal_actions.empty()); // Should have a move
-
-    bool found_correct_action = false;
+    SPIEL_CHECK_FALSE(legal_actions.empty()); // Should have at least one legal action.
+    bool all_used_lower_die = true;
     for (Action action : legal_actions) {
       std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
-      SPIEL_CHECK_EQ(moves.size(), 2); // Encoded action always has 2 moves (1 actual, 1 pass padding)
+      SPIEL_CHECK_GE(moves.size(), 2); // Should have at least 2 moves in encoding
 
       int non_pass_count = 0;
       CheckerMove non_pass_move = kPassMove;
+      bool used_correct_die = false;
       for (const auto& move : moves) {
         if (move.pos != kPassPos) {
           non_pass_count++;
           non_pass_move = move;
+          if (move.die == 3) { // Check if the lower die (3) was used
+              used_correct_die = true;
+          } else {
+              used_correct_die = false; // Found a move using the higher die (5) - incorrect!
+              break;
+          }
         }
       }
-
-      // Expect exactly one non-pass move, using the lower die (3)
-      if (non_pass_count == 1 && non_pass_move.pos == 5 && non_pass_move.die == 3) {
-        found_correct_action = true;
+      SPIEL_CHECK_EQ(non_pass_count, 1); // Verify it's a single move action
+      if (!used_correct_die) {
+          all_used_lower_die = false;
+          break;
       }
     }
-    SPIEL_CHECK_TRUE(found_correct_action); // Verify the correct single move action was generated
+    SPIEL_CHECK_TRUE(all_used_lower_die); // Verify all legal actions used the lower die (3)
     std::cout << "  Scenario 2: Passed\n";
   }
 
   // --- Scenario 3: Both dice individually playable, max_non_pass=1 -> Force Higher ---
-  // This scenario aims to test the case where individual moves with both dice are
-  // possible from the initial state, but no sequence of two moves is possible,
-  // thus max_non_pass = 1. The rule dictates only the higher die move is legal.
   {
     std::cout << "  Testing Scenario 3 (Both Singles Playable, MaxLen=1, Force Higher)..." << std::endl;
     std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
-    // White can play 5->2 (d3) or 8->3 (d5) individually.
-    board[kXPlayerId][5] = 1;
+    // Setup: W@8, W@3. B@0. Dice {5,3}.
+    // As analyzed in Scenario 1:
+    // Initial Half Moves: [8->3, d5], [8->5, d3]. Both dice possible.
+    // Sequences: Only length 1 sequences are possible ([8->3, d5] and [8->5, d3]).
+    // Result: longest=1, max_non_pass=1. Higher die rule applies. Must play the move using die 5 ([8->3, d5]).
     board[kXPlayerId][8] = 1;
-    // Block alternative moves AND sequences
-    board[kOPlayerId][0] = 1; // Blocks 5->0 (d5)
-    board[kOPlayerId][5] = 1; // Blocks 8->5 (d3)
-    // Block positions needed for sequences
-    board[kOPlayerId][3] = 1; // Blocks 8->3(d5) if 5->2(d3) was played first
-    board[kOPlayerId][2] = 1; // Blocks 5->2(d3) if 8->3(d5) was played first
+    board[kXPlayerId][3] = 1;
+    board[kOPlayerId][0] = 1; // Black checker blocks moves to point 1 (pos 0)
+
     lnstate->SetState(kXPlayerId, false, dice, {0, 0}, board);
-    // Expected: Individual moves 5->2(d3) and 8->3(d5) are possible. No sequences possible.
+
+    // Expected: Individual moves 8->3(d5) and 8->5(d3) are possible. No sequences possible.
     // max_non_pass should be 1. Rule applies, force higher die (d5).
 
     auto legal_actions = lnstate->LegalActions();

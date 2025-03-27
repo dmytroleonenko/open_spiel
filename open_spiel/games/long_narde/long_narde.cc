@@ -338,9 +338,14 @@ std::string LongNardeState::ActionToString(Player player,
     SPIEL_CHECK_GE(move_id, 0);
     SPIEL_CHECK_LT(move_id, kChanceOutcomes.size());
     if (turns_ >= 0) {
+      int d1 = (dice_.size() >=1) ? DiceValue(0) : kChanceOutcomeValues[move_id][0];
+      int d2 = (dice_.size() >=2) ? DiceValue(1) : kChanceOutcomeValues[move_id][1];
+      if (dice_.empty()) {
+          d1 = kChanceOutcomeValues[move_id][0];
+          d2 = kChanceOutcomeValues[move_id][1];
+      }
       return absl::StrCat("chance outcome ", move_id,
-                          " (roll: ", kChanceOutcomeValues[move_id][0],
-                          kChanceOutcomeValues[move_id][1], ")");
+                          " (roll: ", d1, d2, ")");
     } else {
       const char* starter = (move_id < kNumNonDoubleOutcomes ? "X starts" : "O starts");
       Action outcome_id = move_id;
@@ -356,60 +361,51 @@ std::string LongNardeState::ActionToString(Player player,
 
   std::vector<CheckerMove> cmoves = SpielMoveToCheckerMoves(player, move_id);
 
-  int cmove0_start, cmove1_start;
-  if (player == kOPlayerId) {
-    cmove0_start = cmoves[0].pos + 1;
-    cmove1_start = cmoves[1].pos + 1;
-  } else {
-    cmove0_start = kNumPoints - cmoves[0].pos;
-    cmove1_start = kNumPoints - cmoves[1].pos;
+  std::string returnVal = absl::StrCat(move_id, " -");
+  bool any_move = false;
+  for (const auto& move : cmoves) {
+    if (move.pos == kPassPos) {
+      bool all_pass = true;
+      for(const auto& m : cmoves) {
+          if (m.pos != kPassPos) {
+              all_pass = false;
+              break;
+          }
+      }
+      if (all_pass) {
+          return absl::StrCat(move_id, " - Pass");
+      }
+      continue;
+    }
+
+    any_move = true;
+    int start_hr, end_hr;
+
+    if (player == kOPlayerId) {
+      start_hr = move.pos + 1;
+    } else {
+      start_hr = kNumPoints - move.pos;
+    }
+
+    if (IsOff(player, move.to_pos)) {
+        end_hr = kNumOffPosHumanReadable;
+    } else {
+         SPIEL_CHECK_GE(move.to_pos, 0);
+         SPIEL_CHECK_LT(move.to_pos, kNumPoints);
+        if (player == kOPlayerId) {
+             end_hr = move.to_pos + 1;
+        } else {
+             end_hr = kNumPoints - move.to_pos;
+        }
+    }
+
+    absl::StrAppend(&returnVal, " ", PositionToStringHumanReadable(start_hr), "/",
+                    PositionToStringHumanReadable(end_hr));
   }
 
-  int cmove0_end = GetMoveEndPosition(&cmoves[0], player, cmove0_start);
-  int cmove1_end = GetMoveEndPosition(&cmoves[1], player, cmove1_start);
-
-  std::string returnVal = "";
-  if (cmove0_start == cmove1_start && cmove0_end == cmove1_end) {
-    if (cmoves[1].pos == kPassPos) {
-      returnVal = "Pass";
-    } else {
-      returnVal = absl::StrCat(move_id, " - ",
-                               PositionToStringHumanReadable(cmove0_start),
-                               "/", PositionToStringHumanReadable(cmove0_end),
-                               "(2)");
-    }
-  } else if ((cmove0_start < cmove1_start ||
-              (cmove0_start == cmove1_start && cmove0_end < cmove1_end) ||
-              cmoves[0].pos == kPassPos) &&
-             cmoves[1].pos != kPassPos) {
-    if (cmove1_end == cmove0_start) {
-      returnVal = absl::StrCat(
-          move_id, " - ", PositionToStringHumanReadable(cmove1_start), "/",
-          PositionToStringHumanReadable(cmove1_end), "/",
-          PositionToStringHumanReadable(cmove0_end));
-    } else {
-      returnVal = absl::StrCat(
-          move_id, " - ", PositionToStringHumanReadable(cmove1_start), "/",
-          PositionToStringHumanReadable(cmove1_end), " ",
-          (cmoves[0].pos != kPassPos) ? PositionToStringHumanReadable(cmove0_start) : "",
-          (cmoves[0].pos != kPassPos) ? "/" : "",
-          PositionToStringHumanReadable(cmove0_end));
-    }
-  } else {
-    if (cmove0_end == cmove1_start) {
-      returnVal = absl::StrCat(
-          move_id, " - ", PositionToStringHumanReadable(cmove0_start), "/",
-          PositionToStringHumanReadable(cmove0_end), "/",
-          PositionToStringHumanReadable(cmove1_end));
-    } else {
-      returnVal = absl::StrCat(
-          move_id, " - ", PositionToStringHumanReadable(cmove0_start), "/",
-          PositionToStringHumanReadable(cmove0_end), " ",
-          (cmoves[1].pos != kPassPos) ? PositionToStringHumanReadable(cmove1_start) : "",
-          (cmoves[1].pos != kPassPos) ? "/" : "",
-          PositionToStringHumanReadable(cmove1_end));
-    }
-  }
+   if (!any_move) {
+       return absl::StrCat(move_id, " - Pass");
+   }
 
   return returnVal;
 }
@@ -692,7 +688,6 @@ bool LongNardeState::IsValidCheckerMove(int player, int from_pos, int to_pos, in
   
   // Only check opponent occupancy if position is on the board
   if (to_pos >= 0 && to_pos < kNumPoints && board(1-player, to_pos) > 0) {
-    if (is_debugging || specific_debug) std::cout << "  -> FAILED: Opponent found at " << to_pos << std::endl;
     return false;
   }
   // *** End Critical Check ***
@@ -1268,44 +1263,10 @@ int LongNardeState::RecLegalMoves(const std::vector<CheckerMove>& moveseq,
 
     // --- Try applying the move and recursing ---
     bool old_moved_from_head = moved_from_head_; // Save state part not handled by Undo
-    bool head_move_would_be_invalid = false;
-    
-    // Check head rule constraints (separately from the standard validation in GenerateAllHalfMoves)
-    if (!is_first_turn_ && IsHeadPos(cur_player_, move.pos) && move.pos != kPassPos) {
-      // For normal turns, limit to one head move per turn
-      if (moved_from_head_) {
-        // Skip this move - would be a second move from head in a normal turn
-        head_move_would_be_invalid = true;
-      }
-    } else if (is_first_turn_ && IsHeadPos(cur_player_, move.pos) && move.pos != kPassPos) {
-      // First turn: track head moves for special doubles check
-      int head_move_count = 0;
-      for (const auto& m : moveseq) {
-        if (IsHeadPos(cur_player_, m.pos) && m.pos != kPassPos) {
-          head_move_count++;
-        }
-      }
-      
-      if (head_move_count > 0) {
-        // Already have one head move - check if this is allowed with special doubles
-        bool is_special_double = (dice_.size() == 2 && 
-                                 DiceValue(0) == DiceValue(1) &&
-                                 (DiceValue(0) == 6 || DiceValue(0) == 4 || DiceValue(0) == 3));
-        if (!is_special_double) {
-          // Not a special double - second head move is not allowed
-          head_move_would_be_invalid = true;
-        }
-      }
-    }
-    
-    // Skip invalid head moves
-    if (head_move_would_be_invalid) {
-      continue;
-    }
 
-    // Apply the move
+    // Apply the move - GenerateAllHalfMoves should have already filtered based on head rule for *this* step.
     new_moveseq.push_back(move);
-    ApplyCheckerMove(cur_player_, move);
+    ApplyCheckerMove(cur_player_, move); // This updates moved_from_head_ if move was from head
 
     // *** Check for momentary illegal bridge ***
     if (HasIllegalBridge(cur_player_)) {

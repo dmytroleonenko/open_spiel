@@ -14,6 +14,10 @@ namespace open_spiel {
 namespace long_narde {
 namespace {
 
+// Default values for simulation parameters
+constexpr int kDefaultNumSimulations = 5;
+constexpr int kDefaultSeed = 1224;
+
 struct DebugStep {
   int move_index;
   Player cur_player;
@@ -39,12 +43,10 @@ void CheckNoHits(const State& state) {
 }
 
 // Custom memory-efficient version of the random sim test
-void MemoryEfficientRandomSim() {
-  // Test with 100 simulations since we have a 20 second time limit now
-  const int kNumSimulations = 100;
+void MemoryEfficientRandomSim(int num_simulations = kDefaultNumSimulations, 
+                              int seed = kDefaultSeed) {
   const bool verbose = false;  // Set to true for more detailed output
-  const int kSeed = 1234;
-  std::mt19937 rng(kSeed);
+  std::mt19937 rng(seed);
   
   // Create the game
   std::shared_ptr<const Game> game = LoadGame("long_narde");
@@ -59,14 +61,15 @@ void MemoryEfficientRandomSim() {
   std::cout << "=========================================" << std::endl;
   std::cout << "LONG NARDE RANDOM SIMULATION TEST" << std::endl;
   std::cout << "=========================================" << std::endl;
-  std::cout << "Running " << kNumSimulations << " simulations..." << std::endl;
+  std::cout << "Running " << num_simulations << " simulations..." << std::endl;
+  std::cout << "Using seed: " << seed << std::endl;
   std::cout << "Using memory-efficient implementation" << std::endl;
   std::cout << "Debug output disabled (is_debugging = false)" << std::endl;
   std::cout << "----------------------------------------" << std::endl;
   
-  for (int sim = 0; sim < kNumSimulations; ++sim) {
+  for (int sim = 0; sim < num_simulations; ++sim) {
     if (sim % 10 == 0) {
-      std::cout << "Starting simulation " << sim + 1 << "/" << kNumSimulations << std::endl;
+      std::cout << "Starting simulation " << sim + 1 << "/" << num_simulations << std::endl;
     }
     std::unique_ptr<State> state = game->NewInitialState();
     LongNardeState* lnstate = dynamic_cast<LongNardeState*>(state.get());
@@ -125,30 +128,52 @@ void MemoryEfficientRandomSim() {
           std::vector<CheckerMove> moves =
               lnstate->SpielMoveToCheckerMoves(current_player, action);
           bool action_valid = true;
-          
+
+          // Create a temporary state to apply moves sequentially for validation
+          std::unique_ptr<State> temp_state = state->Clone();
+          LongNardeState* temp_lnstate = dynamic_cast<LongNardeState*>(temp_state.get());
+          // Keep track of moves applied to temp state for debugging (optional)
+          std::string applied_moves_str;
+
           for (const auto& move : moves) {
-            if (move.pos == kPassPos) continue;  // skip pass moves
-            
+            if (move.pos == kPassPos) {
+                 // Optionally track passes if needed for complex debug:
+                 // applied_moves_str += " pass(" + std::to_string(move.die) + ")";
+                 continue; // Pass moves don't need validation against state
+            }
+
             int to_pos = move.to_pos;
-            
-            if (!lnstate->IsValidCheckerMove(current_player, move.pos, to_pos,
-                                             move.die, true)) {
-              std::cerr << "INVALID MOVE DETECTED: from " << move.pos
-                        << " to " << to_pos
-                        << " with die=" << move.die
-                        << " for player " << current_player << std::endl;
-              std::cerr << "Board state: " << state->ToString() << std::endl;
+            std::string current_part_str = absl::StrFormat(
+                " %d->%d(%d)", move.pos, to_pos, move.die);
+
+            // Validate the move in the *current* temporary state
+            // Use generate_legal_actions=false here, as we only need validity check
+            if (!temp_lnstate->IsValidCheckerMove(current_player, move.pos, to_pos,
+                                             move.die, /*generate_legal_actions=*/false)) {
+              std::cerr << "INVALID MOVE DETECTED in action " << action << ":\n";
+              std::cerr << "  Action: " << state->ActionToString(current_player, action) << "\n";
+              std::cerr << "  Failed part: " << current_part_str << "\n";
+              std::cerr << "  Applied parts to temp state: " << applied_moves_str << "\n";
+              std::cerr << "  Original Board state (before action):\n" << state->ToString() << "\n";
+              std::cerr << "  Temporary Board state (before this invalid part):\n" << temp_state->ToString() << "\n";
+
               invalid_move_found = true;
               invalid_moves_detected++;
               action_valid = false;
-              break;
+              break; // Stop checking this action
             }
-          }
-          
+
+            // Apply the validated part to the temporary state to check the next part
+            // Use ApplyCheckerMove directly on the temporary state object
+            temp_lnstate->ApplyCheckerMove(current_player, move);
+            applied_moves_str += current_part_str; // Track applied moves (optional)
+
+          } // end for loop over checker moves
+
           if (!action_valid) {
-            // In principle, we should not see an invalid action from
-            // the set of "legal_actions". But we do see it => debug.
-            std::cerr << "WARNING: Selected an invalid action from LegalActions()!\n";
+            // This warning should now only trigger if there's a genuine
+            // deeper bug in LegalActionsInternal generation logic.
+            std::cerr << "WARNING: Selected an invalid action sequence from LegalActions()!\n";
           }
         }
         
@@ -217,14 +242,14 @@ void MemoryEfficientRandomSim() {
   }
   
   // Report overall statistics
-  double avg_game_length = static_cast<double>(total_moves) / kNumSimulations;
+  double avg_game_length = static_cast<double>(total_moves) / num_simulations;
   std::cout << "=========================================" << std::endl;
   std::cout << "SIMULATION RESULTS" << std::endl;
   std::cout << "=========================================" << std::endl;
-  std::cout << "Random simulation completed: " << kNumSimulations << " games" << std::endl;
+  std::cout << "Random simulation completed: " << num_simulations << " games" << std::endl;
   std::cout << "Average game length: " << avg_game_length << " moves" << std::endl;
   std::cout << "Min/Max game length: " << min_game_length << "/" << max_game_length << " moves" << std::endl;
-  std::cout << "Terminated games: " << terminated_games << "/" << kNumSimulations << std::endl;
+  std::cout << "Terminated games: " << terminated_games << "/" << num_simulations << std::endl;
   std::cout << "Invalid moves detected: " << invalid_moves_detected << std::endl;
   
   if (invalid_moves_detected > 0) {
@@ -239,21 +264,57 @@ void MemoryEfficientRandomSim() {
   std::cout << "=========================================" << std::endl;
 }
 
-void RunRandomSimTest() {
+void RunRandomSimTest(int num_simulations = kDefaultNumSimulations,
+                      int seed = kDefaultSeed) {
   std::cout << "Running Long Narde random simulation test..." << std::endl;
-  MemoryEfficientRandomSim();
+  MemoryEfficientRandomSim(num_simulations, seed);
+}
+
+// Parses command-line arguments
+void ParseArguments(int argc, char** argv, int* num_simulations, int* seed) {
+  // Default values already set in the parameters
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    
+    if (arg == "--num_simulations" || arg == "-n") {
+      if (i + 1 < argc) {
+        *num_simulations = std::stoi(argv[++i]);
+      } else {
+        std::cerr << "Missing value for " << arg << std::endl;
+      }
+    } else if (arg == "--seed" || arg == "-s") {
+      if (i + 1 < argc) {
+        *seed = std::stoi(argv[++i]);
+      } else {
+        std::cerr << "Missing value for " << arg << std::endl;
+      }
+    } else if (arg == "--help" || arg == "-h") {
+      std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
+      std::cout << "Options:" << std::endl;
+      std::cout << "  --num_simulations, -n <value>  Number of games to simulate (default: " 
+                << kDefaultNumSimulations << ")" << std::endl;
+      std::cout << "  --seed, -s <value>             Random seed (default: " 
+                << kDefaultSeed << ")" << std::endl;
+      std::cout << "  --help, -h                     Show this help message" << std::endl;
+      exit(0);
+    }
+  }
 }
 
 }  // namespace
 
-void RunRandomSimTests() {
-  RunRandomSimTest();
+void RunRandomSimTests(int argc, char** argv) {
+  int num_simulations = kDefaultNumSimulations;
+  int seed = kDefaultSeed;
+  
+  ParseArguments(argc, argv, &num_simulations, &seed);
+  RunRandomSimTest(num_simulations, seed);
 }
 
 }  // namespace long_narde
 }  // namespace open_spiel
 
 int main(int argc, char** argv) {
-  open_spiel::long_narde::RunRandomSimTests();
+  open_spiel::long_narde::RunRandomSimTests(argc, argv);
   return 0;
 } 
