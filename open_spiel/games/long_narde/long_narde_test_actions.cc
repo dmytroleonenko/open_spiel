@@ -380,28 +380,29 @@ void PassMoveBehaviorTest() {
   SPIEL_CHECK_GT(legal_actions.size(), 0);  // Should have at least one legal move
 
   // TEST CASE 3: Doubles with no moves possible
-  // Test with doubles where player cannot use any of the moves
-  std::vector<std::vector<int>> no_moves_doubles_board = {
-    // White blocks positions 4 and 9 (targets for Black's checkers with die 2)
-    {0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13}, // White
-    // Black has checkers at 2 and 7 that could potentially move with die 2
-    {0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13}  // Black
-  };
-  std::vector<int> doubles_dice = {2, 2};  // Double 2s
+  {
+    std::vector<std::vector<int>> no_moves_doubles_board = {
+      // White blocks positions 0, 5, 9 (targets for Black's moves from 2, 7, 11 with die 2)
+      {1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12}, // White (at 0, 5, 9, Head=12)
+      // Black has checkers at 2, 7, and 11(Head)
+      {0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Black (at 2, 7, Head=13)
+    };
+    std::vector<int> doubles_dice = {2, 2};  // Double 2s
 
-  // Set up the state - Black's turn with doubles, no moves possible
-  lnstate->SetState(kOPlayerId, false, doubles_dice, {0, 0}, no_moves_doubles_board);
+    // Set up the state - Black's turn with doubles, no moves possible
+    lnstate->SetState(kOPlayerId, false, doubles_dice, {0, 0}, no_moves_doubles_board);
 
-  // Calculate the expected pass action for dice {2, 2}
-  std::vector<CheckerMove> expected_pass_encoding_2_2 = {{kPassPos, kPassPos, 2}, {kPassPos, kPassPos, 2}};
-  Action expected_pass_action_2_2 = lnstate->CheckerMovesToSpielMove(expected_pass_encoding_2_2);
+    // Calculate the expected pass action for dice {2, 2}
+    std::vector<CheckerMove> expected_pass_encoding_2_2 = {{kPassPos, kPassPos, 2}, {kPassPos, kPassPos, 2}};
+    Action expected_pass_action_2_2 = lnstate->CheckerMovesToSpielMove(expected_pass_encoding_2_2);
 
-  // Get legal actions
-  legal_actions = lnstate->LegalActions();
+    // Get legal actions
+    legal_actions = lnstate->LegalActions();
 
-  // Verify only the pass move is available
-  SPIEL_CHECK_EQ(legal_actions.size(), 1);
-  SPIEL_CHECK_EQ(legal_actions[0], expected_pass_action_2_2); // Compare against specific pass action for {2, 2}
+    // Verify only the pass move is available
+    SPIEL_CHECK_EQ(legal_actions.size(), 1);
+    SPIEL_CHECK_EQ(legal_actions[0], expected_pass_action_2_2); // Compare against specific pass action for {2, 2}
+  }
 }
 
 // Add the new test function in the anonymous namespace

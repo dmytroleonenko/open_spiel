@@ -239,11 +239,24 @@ class LongNardeState : public State {
   // Checks if the current board state contains an illegal bridge for the player.
   bool HasIllegalBridge(int player) const;
   
+  // Helper function to find the real position index within a block
+  // that is encountered first on a given player's path.
+  int GetBlockPathStartRealPos(int player_for_path, int block_lowest_real_idx) const;
+
   // Generate all possible half-moves from the current state
   std::set<CheckerMove> GenerateAllHalfMoves(int player) const;
 
   // Helper function: checks if 'player' has any checker in [startPos, endPos] inclusive.
   bool HasAnyChecker(int player, int startPos, int endPos) const;
+
+  // Translates a real board position to a virtual coordinate for path comparison.
+  int GetVirtualCoords(int player, int real_pos) const;
+
+  // Get the 0-based index along the player's path
+  int GetPathIndex(int player, int real_pos) const;
+
+  // Check if checker_pos is ahead of reference_pos on player's path
+  bool IsAhead(int player, int checker_pos, int reference_pos) const;
 
  protected:
   void DoApplyAction(Action move_id) override;

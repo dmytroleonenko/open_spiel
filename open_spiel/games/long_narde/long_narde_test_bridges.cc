@@ -52,8 +52,9 @@ void TestBridgeFormation() {
     lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
 
     // Simulate move from White's pos 4 to pos 3.
+    // This move forms a 6-block, but is LEGAL because Black has no checkers on board.
     bool bridge_illegal = lnstate->WouldFormBlockingBridge(kXPlayerId, 4, 3);
-    SPIEL_CHECK_TRUE(bridge_illegal);
+    SPIEL_CHECK_FALSE(bridge_illegal); // Must be false (legal) if opponent has no checkers.
   }
 
   // ------------------------------------------------------------
@@ -86,10 +87,10 @@ void TestBridgeFormation() {
     std::vector<int> white_row = {2, 1, 1, 0, 2, 1};
     white_row.resize(23, 0);
     white_row.push_back(8);  // White head.
-    // For Black, put all 15 checkers in a location within White's home board region,
-    // e.g. index 2, so that no Black checker is ahead.
+    // Place all Black checkers at their head (index 11 / vcoord 23).
+    // Since 23 >= 17 (bridge start vcoord), no Black checker is ahead.
     std::vector<int> black_row(24, 0);
-    black_row[2] = 15;
+    black_row[kBlackHeadPos] = 15; // Place all 15 checkers at index 11
     std::vector<std::vector<int>> test_board = {white_row, black_row};
     std::vector<int> dice = {1, 2};
     lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
@@ -101,7 +102,110 @@ void TestBridgeFormation() {
     // create the illegal state momentarily. This test focuses on the
     // direct bridge formation rule application.
     bool direct_move_valid = lnstate->IsValidCheckerMove(kXPlayerId, 4, 3, 1, true);
-    SPIEL_CHECK_FALSE(direct_move_valid); // 4->3 with die 1 should be invalid here.
+    SPIEL_CHECK_FALSE(direct_move_valid); // 4->3 with die 1 should be invalid here (bridge is now illegal).
+  }
+
+  // ------------------------------------------------------------
+  // Test 4: Black forming an illegal bridge 
+  // Similar to Test 1 but for Black player in Black's home region (12-17)
+  // ------------------------------------------------------------
+  {
+    std::vector<int> black_row(24, 0);
+    // Near bridge: points 13-18 (indices 12-17) with a gap at index 15
+    black_row[12] = 2; black_row[13] = 1; black_row[14] = 1; 
+    black_row[16] = 1; black_row[17] = 2;
+    black_row[19] = 1;  // Checker to move into the gap
+    black_row[kBlackHeadPos] = 15 - 8; // Remaining 7 at head (11)
+
+    std::vector<int> white_row(24, 0);
+    // Place White checkers *behind* Black's potential bridge (indices >= 17).
+    // From White's perspective (virtual coords are real coords), these positions have vcoord >= 17.
+    // Therefore, no White checker is "ahead" of the bridge start (vcoord 17).
+    white_row[18] = 5; white_row[19] = 5; white_row[23] = 5; // 15 checkers total at indices >= 18
+
+    std::vector<std::vector<int>> test_board = {white_row, black_row};
+    std::vector<int> dice = {4, 1}; // Use die 4 to move 19->15
+    lnstate->SetState(kOPlayerId, false, dice, {0, 0}, test_board);
+
+    // Check if move 19->15 (die 4) forms illegal bridge
+    bool bridge_illegal = lnstate->WouldFormBlockingBridge(kOPlayerId, 19, 15);
+    SPIEL_CHECK_TRUE(bridge_illegal); // Should be illegal now (White exists but none are ahead: vcoords >= 17)
+
+    // Verify the move is not valid directly
+    bool direct_move_valid = lnstate->IsValidCheckerMove(kOPlayerId, 19, 15, 4, true);
+    SPIEL_CHECK_FALSE(direct_move_valid); // Move should be invalid because it forms an illegal bridge
+  }
+
+  // ------------------------------------------------------------
+  // Test 5: Black forming a legal bridge (White checker ahead)
+  // Similar to Test 2 but for Black player
+  // ------------------------------------------------------------
+  {
+    // Same Black setup as Test 4
+    std::vector<int> black_row(24, 0);
+    black_row[12] = 2; black_row[13] = 1; black_row[14] = 1; 
+    black_row[16] = 1; black_row[17] = 2;
+    black_row[19] = 1;
+    black_row[kBlackHeadPos] = 7;
+
+    std::vector<int> white_row(24, 0);
+    // Place one White checker ahead of the bridge (>=18)
+    white_row[18] = 1; // White checker at point 19 (ahead of Black's home region)
+    white_row[0] = 14; // Rest of White's checkers behind
+
+    std::vector<std::vector<int>> test_board = {white_row, black_row};
+    std::vector<int> dice = {4, 1};
+    lnstate->SetState(kOPlayerId, false, dice, {0, 0}, test_board);
+
+    // Check if move 19->15 (die 4) forms illegal bridge
+    bool bridge_illegal = lnstate->WouldFormBlockingBridge(kOPlayerId, 19, 15);
+    SPIEL_CHECK_FALSE(bridge_illegal); // Should be legal now with White checker ahead
+
+    // Verify the move is now valid directly
+    bool direct_move_valid = lnstate->IsValidCheckerMove(kOPlayerId, 19, 15, 4, true);
+    SPIEL_CHECK_TRUE(direct_move_valid);
+  }
+
+  // Test 6: White forms wrap-around bridge (23-4), Black behind
+  {
+    std::vector<int> white_row(24, 0);
+    white_row[23]=1; white_row[0]=1; white_row[1]=1; white_row[2]=1; white_row[3]=1;
+    white_row[5]=1;
+    white_row[kWhiteHeadPos] = 15 - 6;
+
+    std::vector<int> black_row(24, 0);
+    black_row[12] = 15;
+
+    std::vector<std::vector<int>> test_board = {white_row, black_row};
+    std::vector<int> dice = {1, 2};
+    lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+
+    bool bridge_illegal = lnstate->WouldFormBlockingBridge(kXPlayerId, 5, 4);
+    SPIEL_CHECK_FALSE(bridge_illegal); // Should be legal as Black is ahead (virt 0 < virt 23)
+
+    bool direct_move_valid = lnstate->IsValidCheckerMove(kXPlayerId, 5, 4, 1, true);
+    SPIEL_CHECK_TRUE(direct_move_valid); // Move should be valid now
+  }
+
+  // Test 7: White forms wrap-around bridge, Black ahead
+  {
+    std::vector<int> white_row(24, 0);
+    white_row[23]=1; white_row[0]=1; white_row[1]=1; white_row[2]=1; white_row[3]=1;
+    white_row[5]=1;
+    white_row[kWhiteHeadPos] = 15 - 6;
+
+    std::vector<int> black_row(24, 0);
+    black_row[10] = 15;
+
+    std::vector<std::vector<int>> test_board = {white_row, black_row};
+    std::vector<int> dice = {1, 2};
+    lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+
+    bool bridge_illegal = lnstate->WouldFormBlockingBridge(kXPlayerId, 5, 4);
+    SPIEL_CHECK_TRUE(bridge_illegal); // Should be ILLEGAL (Black at vcoord 22 is NOT ahead of bridge start at vcoord 16)
+
+    bool direct_move_valid = lnstate->IsValidCheckerMove(kXPlayerId, 5, 4, 1, true);
+    SPIEL_CHECK_FALSE(direct_move_valid); // Move should be invalid as it forms an illegal bridge
   }
 }
 

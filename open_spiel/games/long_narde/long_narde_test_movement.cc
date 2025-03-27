@@ -354,6 +354,36 @@ void NoLandingOnOpponentTest() {
   bool is_valid = lnstate->IsValidCheckerMove(kXPlayerId, 19, 15, 4);
   SPIEL_CHECK_FALSE(is_valid);
 
+  // --- Black player perspective test ---
+  // Test that Black cannot land on White's checkers
+  lnstate->SetState(
+      kOPlayerId, false, {3, 1}, {0, 0},
+      {
+          // White: checker at position 18 (point 19)
+          {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 14},
+          // Black: checker at position 15 (point 16)
+          {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}
+      });
+
+  // Check if Black's legal actions include moving from pos 15 to pos 18 (with die 3)
+  la = lnstate->LegalActions();
+  bool found_black_landing_on_white = false;
+  for (Action a : la) {
+    auto moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, a);
+    for (auto &m : moves) {
+      if (m.pos == 15 && m.to_pos == 18 && m.die == 3) {
+        found_black_landing_on_white = true;
+        break;
+      }
+    }
+    if (found_black_landing_on_white) break;
+  }
+  SPIEL_CHECK_FALSE(found_black_landing_on_white);
+
+  // Direct check for Black
+  is_valid = lnstate->IsValidCheckerMove(kOPlayerId, 15, 18, 3);
+  SPIEL_CHECK_FALSE(is_valid);
+
   std::cout << "✓ NoLandingOnOpponentTest passed\n";
 }
 
@@ -551,6 +581,205 @@ void TestHalfMoveGeneration() {
   std::cout << "✓ TestHalfMoveGeneration passed\n";
 }
 
+//------------------------------------------------------------------------------
+// Test: HeadRuleTestBlack
+// Tests the head rule for Black player in both first-turn and non-first-turn scenarios
+//------------------------------------------------------------------------------
+void HeadRuleTestBlack() {
+  std::cout << "\n=== Running HeadRuleTestBlack ===\n";
+
+  {
+    // (A) Black FIRST-TURN scenario with special doubles (6,6)
+    std::shared_ptr<const Game> game = LoadGame("long_narde");
+    std::unique_ptr<State> stA = game->NewInitialState();
+    auto lnA = static_cast<LongNardeState*>(stA.get());
+
+    // Need to get to Black's first turn. First, apply White's first move
+    lnA->ApplyAction(0); // White roll (e.g., 1,2)
+    // Apply any valid White move
+    auto white_actions = lnA->LegalActions();
+    SPIEL_CHECK_FALSE(white_actions.empty());
+    lnA->ApplyAction(white_actions[0]);
+
+    // Now it should be chance node before Black's turn
+    SPIEL_CHECK_TRUE(lnA->IsChanceNode());
+    lnA->ApplyAction(20); // Black rolls 6,6 (special double)
+
+    // Now it's Black's turn, should be marked as first turn for Black
+    SPIEL_CHECK_EQ(lnA->CurrentPlayer(), kOPlayerId);
+    SPIEL_CHECK_TRUE(lnA->IsFirstTurn(kOPlayerId));
+
+    // Check if Black can move 2 checkers from head (pos 11) with 6,6
+    std::vector<Action> black_first_turn_actions = lnA->LegalActions();
+    bool can_move_2_from_head = false;
+    for (Action a : black_first_turn_actions) {
+      std::unique_ptr<State> c = lnA->Clone();
+      auto cst = static_cast<LongNardeState*>(c.get());
+      int init_head_count = cst->board(kOPlayerId, kBlackHeadPos);
+
+      cst->ApplyAction(a);
+      int new_head_count = cst->board(kOPlayerId, kBlackHeadPos);
+      int diff = init_head_count - new_head_count;
+      if (diff >= 2) {
+        can_move_2_from_head = true;
+        break;
+      }
+    }
+    SPIEL_CHECK_TRUE(can_move_2_from_head);
+  }
+
+  {
+    // (B) Black NON-FIRST-TURN scenario with doubles (4,4)
+    // Set up a board where Black has already moved at least one checker
+    std::shared_ptr<const Game> game = LoadGame("long_narde");
+    std::unique_ptr<State> stB = game->NewInitialState();
+    auto lnB = static_cast<LongNardeState*>(stB.get());
+
+    // Board setup with 14 on Black's head, 1 elsewhere
+    std::vector<std::vector<int>> board_non_first = {
+      // White: 15 on 24
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15},
+      // Black: 14 on 12 (head=11), 1 on 15
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}
+    };
+    // Black to move, dice=4,4, scores=0,0 => not first turn
+    lnB->SetState(kOPlayerId, false, {4, 4}, {0, 0}, board_non_first);
+
+    SPIEL_CHECK_FALSE(lnB->IsFirstTurn(kOPlayerId));
+
+    // Check that Black's legal moves do not allow moving 2 from head
+    std::vector<Action> la = lnB->LegalActions();
+    SPIEL_CHECK_FALSE(la.empty());
+    bool found_illegal_2_from_head = false;
+    for (Action move : la) {
+      std::unique_ptr<State> c = lnB->Clone();
+      auto cst = static_cast<LongNardeState*>(c.get());
+      int init_head_count = cst->board(kOPlayerId, kBlackHeadPos);
+
+      cst->ApplyAction(move);
+      int new_head_count = cst->board(kOPlayerId, kBlackHeadPos);
+      int diff = init_head_count - new_head_count;
+      if (diff > 1) {
+        found_illegal_2_from_head = true;
+        break;
+      }
+    }
+    SPIEL_CHECK_FALSE(found_illegal_2_from_head);
+  }
+
+  std::cout << "✓ Black head rule test passed (first-turn vs. non-first-turn)\n";
+}
+
+// Test to verify that half-move generation produces correct moves for Black player
+void TestHalfMoveGenerationBlack() {
+  std::cout << "\n=== Running TestHalfMoveGenerationBlack ===\n";
+  
+  std::shared_ptr<const Game> game = LoadGame("long_narde");
+  std::unique_ptr<State> state = game->NewInitialState();
+  auto lnstate = static_cast<LongNardeState*>(state.get());
+  
+  // Set up a test board state for Black player
+  std::vector<std::vector<int>> test_board = {
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}, // White: all at head
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0}  // Black: one at 11 (head), one at 16 (point 17)
+  };
+  std::vector<int> dice = {4, 2};
+  std::vector<int> scores = {0, 13}; // 13 Black checkers already borne off
+  
+  // Set state with Black to move
+  lnstate->SetState(kOPlayerId, false, dice, scores, test_board);
+  
+  std::cout << "Test setup:\n" << lnstate->ToString() << std::endl;
+  std::cout << "Black's Home: points 13-18 (indices 12-17)\n";
+  std::cout << "Expecting moves: \n"
+            << "1. Point 12 with die 4 (pos=11, die=4)\n"
+            << "2. Point 12 with die 2 (pos=11, die=2)\n"
+            << "3. Point 17 with die 4 (pos=16, die=4)\n"
+            << "4. Point 17 with die 2 (pos=16, die=2)\n";
+  
+  // Generate half-moves for Black (O)
+  std::set<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kOPlayerId);
+  
+  std::cout << "Generated " << half_moves.size() << " half-moves for Black:\n";
+  for (const auto& move : half_moves) {
+    int human_pos = (move.pos >= 0) ? move.pos + 1 : move.pos;
+    int human_to_pos = (move.to_pos >= 0) ? move.to_pos + 1 : (move.to_pos == kPassPos ? move.to_pos : -1);
+    std::cout << "  - Move from pos " << human_pos 
+              << " to pos " << (human_to_pos < 0 ? "Off" : std::to_string(human_to_pos))
+              << " with die " << move.die << "\n";
+  }
+  
+  // Check for each specific expected move
+  bool found_pos11_die4 = false;
+  bool found_pos11_die2 = false;
+  bool found_pos16_die4 = false;
+  bool found_pos16_die2 = false;
+  
+  for (const auto& move : half_moves) {
+    if (move.pos == 11 && move.die == 4) {
+      found_pos11_die4 = true;
+      std::cout << "✓ Found Point 12 with die 4\n";
+    }
+    if (move.pos == 11 && move.die == 2) {
+      found_pos11_die2 = true;
+      std::cout << "✓ Found Point 12 with die 2\n";
+    }
+    if (move.pos == 16 && move.die == 4) {
+      found_pos16_die4 = true;
+      std::cout << "✓ Found Point 17 with die 4\n";
+    }
+    if (move.pos == 16 && move.die == 2) {
+      found_pos16_die2 = true;
+      std::cout << "✓ Found Point 17 with die 2\n";
+    }
+  }
+  
+  // Report individual missing moves
+  if (!found_pos11_die4) std::cout << "✗ Missing: Point 12 with die 4\n";
+  if (!found_pos11_die2) std::cout << "✗ Missing: Point 12 with die 2\n";
+  if (!found_pos16_die4) std::cout << "✗ Missing: Point 17 with die 4\n";
+  if (!found_pos16_die2) std::cout << "✗ Missing: Point 17 with die 2\n";
+  
+  // Expect exactly 4 half-moves for Black
+  SPIEL_CHECK_EQ(half_moves.size(), 4);
+  
+  // Verify all expected moves were found
+  SPIEL_CHECK_TRUE(found_pos11_die4);
+  SPIEL_CHECK_TRUE(found_pos11_die2);
+  SPIEL_CHECK_TRUE(found_pos16_die4);
+  SPIEL_CHECK_TRUE(found_pos16_die2);
+  
+  // Now get legal actions and verify they use the valid half-moves
+  std::vector<Action> legal_actions = lnstate->LegalActions();
+  SPIEL_CHECK_GE(legal_actions.size(), 1);
+  
+  // Verify all actions use at least one valid half-move
+  bool all_valid = true;
+  for (Action action : legal_actions) {
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, action);
+    bool action_valid = false;
+    
+    for (const auto& move : moves) {
+      if (move.pos != kPassPos) {
+        bool is_valid_half_move = half_moves.count(move) > 0;
+        if (is_valid_half_move) {
+          action_valid = true;
+          break;
+        }
+      }
+    }
+    
+    if (!action_valid) {
+      all_valid = false;
+      break;
+    }
+  }
+  
+  SPIEL_CHECK_TRUE(all_valid);
+  
+  std::cout << "✓ TestHalfMoveGenerationBlack passed\n";
+}
+
 }  // namespace testing_internal
 
 //------------------------------------------------------------------------------
@@ -570,6 +799,8 @@ void TestMovementRules() {
   testing_internal::HomeRegionsTest();
   testing_internal::TestIllegalLandingInLegalActions();
   testing_internal::TestHalfMoveGeneration();
+  testing_internal::HeadRuleTestBlack();
+  testing_internal::TestHalfMoveGenerationBlack();
 
   std::cout << "✓ All movement tests passed\n";
 }

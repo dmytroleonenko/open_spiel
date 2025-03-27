@@ -41,6 +41,7 @@ constexpr int kDoublesOffset = 2 * kDigitBase * kDigitBase;  // Offset for doubl
 
 constexpr int kNumOffPosHumanReadable = -2;
 constexpr int kNumBarPosHumanReadable = -3;
+constexpr int kBearOffPos = -1;     // Consistent value for bear-off target
 constexpr int kNumNonDoubleOutcomes = 15;
 
 const std::vector<std::pair<Action, double>> kChanceOutcomes = {
@@ -543,19 +544,39 @@ bool LongNardeState::IsHeadPos(int player, int pos) const {
 }
 
 bool LongNardeState::IsLegalHeadMove(int player, int from_pos) const {
-  bool is_debugging = false;
   bool is_head = IsHeadPos(player, from_pos);
-  bool result = !is_head || is_first_turn_ || !moved_from_head_;
-  if (is_debugging && from_pos == 6) {
-    std::cout << "DEBUG: IsLegalHeadMove for pos 6:" << std::endl;
-    std::cout << "DEBUG:   IsHeadPos(" << player << ", " << from_pos << ") = "
-              << (is_head ? "true" : "false") << std::endl;
-    std::cout << "DEBUG:   head_pos = " << (player == kXPlayerId ? kWhiteHeadPos : kBlackHeadPos) << std::endl;
-    std::cout << "DEBUG:   is_first_turn = " << (is_first_turn_ ? "true" : "false") << std::endl;
-    std::cout << "DEBUG:   moved_from_head = " << (moved_from_head_ ? "true" : "false") << std::endl;
-    std::cout << "DEBUG:   Result = " << (result ? "PASS" : "FAIL") << std::endl;
+  if (!is_head) return true;
+
+  bool is_this_players_first_turn = IsFirstTurn(player);
+
+  // Check for first turn special doubles exception
+  if (is_this_players_first_turn) {
+    bool is_special_double = false;
+    if (dice_.size() == 2 && UsableDiceOutcome(dice_[0]) && UsableDiceOutcome(dice_[1]) && DiceValue(0) == DiceValue(1)) {
+      int die_val = DiceValue(0);
+      if (die_val == 3 || die_val == 4 || die_val == 6) {
+        is_special_double = true;
+      }
+    } else if (dice_.size() == 4 && UsableDiceOutcome(dice_[0])) {
+      int die_val = DiceValue(0);
+      if (die_val == 3 || die_val == 4 || die_val == 6) {
+        bool all_same = true;
+        for(size_t i = 1; i < dice_.size(); ++i) {
+          if (UsableDiceOutcome(dice_[i]) && DiceValue(i) != die_val) {
+            all_same = false;
+            break;
+          }
+        }
+        if (all_same) is_special_double = true;
+      }
+    }
+
+    if (is_special_double) {
+      return true;
+    }
   }
-  return result;
+
+  return !moved_from_head_;
 }
 
 bool LongNardeState::IsFirstTurn(int player) const {
@@ -564,53 +585,57 @@ bool LongNardeState::IsFirstTurn(int player) const {
 }
 
 bool LongNardeState::WouldFormBlockingBridge(int player, int from_pos, int to_pos) const {
-  // Create temporary board state
   std::vector<std::vector<int>> temp_board = board_;
   if (from_pos >= 0 && from_pos < kNumPoints) {
-    temp_board[player][from_pos]--;
+     if (temp_board[player][from_pos] == 0) {
+        SpielFatalError("WouldFormBlockingBridge: Trying to move from empty point.");
+     }
+     temp_board[player][from_pos]--;
   }
   if (to_pos >= 0 && to_pos < kNumPoints) {
     temp_board[player][to_pos]++;
   }
 
-  // Helper function to check for 6 consecutive checkers
-  auto has_six_consecutive = [&](int start) -> bool {
+  int opponent = Opponent(player);
+  bool opponent_exists_on_board = false;
+  for (int i = 0; i < kNumPoints; ++i) {
+    if (temp_board[opponent][i] > 0) {
+        opponent_exists_on_board = true;
+        break;
+    }
+  }
+
+  if (!opponent_exists_on_board) {
+      return false;
+  }
+
+  for (int start = 0; start < kNumPoints; ++start) {
+    bool is_block = true;
     for (int i = 0; i < 6; ++i) {
       int pos = (start + i) % kNumPoints;
-      if (temp_board[player][pos] == 0) return false;
-    }
-    return true;
-  };
-
-  // Check all possible 6-consecutive blocks
-  for (int start = 0; start < kNumPoints; ++start) {
-    if (!has_six_consecutive(start)) continue;
-
-    int end = (start + 5) % kNumPoints;
-    int opponent = Opponent(player);
-    bool any_opponent_ahead = false;
-
-    // Iterate through ALL board positions to find opponent checkers
-    for (int i = 0; i < kNumPoints; ++i) {
-      // Check if the current position 'i' is part of the bridge
-      bool is_part_of_bridge;
-      if (start <= end) { // Bridge does not wrap around
-        is_part_of_bridge = (i >= start && i <= end);
-      } else { // Bridge wraps around (e.g., 22, 23, 0, 1, 2, 3)
-        is_part_of_bridge = (i >= start || i <= end);
-      }
-
-      // If 'i' is NOT part of the bridge AND the opponent occupies it...
-      if (!is_part_of_bridge && temp_board[opponent][i] > 0) {
-        // ...then there is an opponent checker ahead of the bridge.
-        any_opponent_ahead = true;
-        break; // No need to check further
+      if (temp_board[player][pos] == 0) {
+        is_block = false;
+        break;
       }
     }
 
-    // If no opponent checkers were found ahead, this bridge formation is illegal.
-    if (!any_opponent_ahead) {
-      return true;
+    if (is_block) {
+      int block_path_start_on_opp_path_real_pos = GetBlockPathStartRealPos(opponent, start);
+
+      bool opponent_found_ahead = false;
+      for (int opp_pos = 0; opp_pos < kNumPoints; ++opp_pos) {
+        if (temp_board[opponent][opp_pos] > 0) {
+            int opp_real_pos = opp_pos;
+            if (IsAhead(opponent, opp_real_pos, block_path_start_on_opp_path_real_pos)) {
+                opponent_found_ahead = true;
+                break;
+            }
+        }
+      }
+
+      if (!opponent_found_ahead) {
+        return true;
+      }
     }
   }
 
@@ -647,31 +672,56 @@ bool LongNardeState::IsValidCheckerMove(int player, int from_pos, int to_pos, in
   bool is_bearing_off = IsOff(player, to_pos);
   if (is_bearing_off) {
     if (!AllInHome(player)) {
-      if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Cannot bear off, not all checkers in home" << std::endl;
-      return false;
+        if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Cannot bear off, not all checkers in home" << std::endl;
+        return false;
     }
-    int exact_roll = (player == kXPlayerId) ? (from_pos + 1) : (kNumPoints - from_pos);
-    if (die_value == exact_roll) return true;
-    if (die_value > exact_roll) {
+
+    int pips_needed = 0;
+    int temp_pos = from_pos;
+    int target = kBearOffPos;
+    while(temp_pos != target && pips_needed <= 6 ) {
+        pips_needed++;
+        int next_temp_pos;
         if (player == kXPlayerId) {
-            for (int pos = from_pos + 1; pos <= kWhiteHomeEnd; pos++) {
-                if (board(player, pos) > 0) {
-                    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Cannot bear off high (X), checker at " << pos << std::endl;
-                    return false;
-                }
-            }
+            next_temp_pos = temp_pos - 1;
+            if (next_temp_pos < 0) next_temp_pos = target;
         } else {
-            for (int pos = kBlackHomeStart; pos < from_pos; pos++) {
-                if (board(player, pos) > 0) {
-                    if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Cannot bear off high (O), checker at " << pos << std::endl;
-                    return false;
+             int pos_before_step = temp_pos;
+             if (temp_pos == 0) next_temp_pos = 23;
+             else if (temp_pos == 12) next_temp_pos = target;
+             else next_temp_pos = temp_pos - 1;
+
+             if (pos_before_step >= 12 && next_temp_pos < 12 && next_temp_pos != target) {
+                next_temp_pos = target;
+             }
+        }
+        temp_pos = next_temp_pos;
+    }
+    if (temp_pos != target) pips_needed = 99;
+
+    if (die_value == pips_needed) {
+        return true;
+    }
+    if (die_value > pips_needed) {
+        bool further_checker_exists = false;
+        int current_path_idx = GetPathIndex(player, from_pos);
+        for (int p = 0; p < kNumPoints; ++p) {
+            if (p == from_pos) continue;
+            if (board(player, p) > 0) {
+                if (GetPathIndex(player, p) < current_path_idx) {
+                    further_checker_exists = true;
+                    break;
                 }
             }
+        }
+        if (further_checker_exists) {
+             if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Cannot bear off high, checker exists further back on path" << std::endl;
+             return false;
         }
         return true;
     }
     if (is_debugging || specific_debug) std::cout << "DEBUG IsValidCheckerMove: Invalid bearing off move (die too low)" << std::endl;
-    return false; // Die too low
+    return false;
   }
   
   // Check bounds for non-bearing off moves
@@ -886,31 +936,31 @@ bool LongNardeState::IsPosInHome(int player, int pos) const {
   }
 }
 
-bool LongNardeState::AllInHome(int player) const {
-  SPIEL_CHECK_GE(player, 0);
-  SPIEL_CHECK_LE(player, 1);
+bool LongNardeState::AllInHome(Player player) const {
   if (player == kXPlayerId) {
-    // White's home is points 1-6 (indices 0-5).
-    // Check if any checkers are outside this range (indices 6-23).
-    // All checkers must be at index <= 5.
-    for (int i = kWhiteHomeEnd + 1; i < kNumPoints; ++i) { // Check 6 to 23
+    // White's home is points 1-6 (indices 0-5)
+    // Check if any checkers are outside this range
+    for (int i = kWhiteHomeEnd + 1; i < kNumPoints; ++i) {
       if (board(player, i) > 0) {
         return false;
       }
     }
   } else { // kOPlayerId
-    // Black's home starts at point 13 (index 12).
-    // For bearing off eligibility, all checkers must be at index 12 or higher.
-    // Check indices 0 to 11 (before the home stretch).
-    for (int i = 0; i < kBlackHomeStart; ++i) { // Check 0 to 11
+    // Black's home is points 13-18 (indices 12-17)
+    // Check if any checkers are outside this range
+    // Check indices 0-11 (first segment before home)
+    for (int i = 0; i < kBlackHomeStart; ++i) {
       if (board(player, i) > 0) {
-        // Found a checker before the start of the home area (index 12).
         return false;
       }
     }
-    // If no checkers are found in indices 0-11, all must be >= 12.
+    // Check indices 18-23 (second segment before home)
+    for (int i = kBlackHomeEnd + 1; i < kNumPoints; ++i) {
+      if (board(player, i) > 0) {
+        return false;
+      }
+    }
   }
-  // If we reach here, all checkers are in the required zone for bearing off.
   return true;
 }
 
@@ -1360,7 +1410,7 @@ std::vector<Action> LongNardeState::IllegalActions() const {
 }
 
 bool LongNardeState::IsOff(int player, int pos) const {
-  return (player == kXPlayerId) ? pos < 0 : pos >= kNumPoints;
+  return pos == kBearOffPos;
 }
 
 inline int CounterClockwisePos(int from, int pips, int num_points) {
@@ -1370,22 +1420,35 @@ inline int CounterClockwisePos(int from, int pips, int num_points) {
 }
 
 int LongNardeState::GetToPos(int player, int from_pos, int pips) const {
-  if (player == kXPlayerId) {
-    // White moves counter-clockwise (decreasing positions)
-    // A result < 0 means bearing off.
-    return from_pos - pips;
-  } else { // kOPlayerId
-    // Black moves counter-clockwise (increasing positions towards 23, then off)
-    int potential_pos = from_pos + pips;
-    // If the potential position is >= kNumPoints, it means the checker bears off.
-    // We return kNumPoints (or any value >= kNumPoints) to signify this.
-    // The IsOff function checks for pos >= kNumPoints for Black.
-    if (potential_pos >= kNumPoints) {
-       return kNumPoints; // Or potential_pos, as long as it's >= kNumPoints
-    } else {
-       return potential_pos; // Normal move within the board
+  if (player == kXPlayerId) { // White path: 23 -> 0
+    int to_pos = from_pos - pips;
+    if (to_pos < 0) {
+      return kBearOffPos;
     }
-    // Old incorrect logic: return (from_pos + pips) % kNumPoints;
+    return to_pos;
+  } else { // kOPlayerId (Black path: 11 -> 0 -> 23 -> 12)
+    int current_pos = from_pos;
+    for (int i = 0; i < pips; ++i) {
+      if (current_pos == 0) {
+        current_pos = 23;
+      } else if (current_pos == 12) {
+        return kBearOffPos;
+      } else {
+        current_pos--;
+      }
+
+      int pos_before_step = -1;
+      if (current_pos == 23) pos_before_step = 0;
+      else if (current_pos == kBearOffPos) pos_before_step = 12;
+      else pos_before_step = current_pos + 1;
+
+      if (pos_before_step >= 12 && current_pos < 12 && current_pos != kBearOffPos) {
+           return kBearOffPos;
+      }
+    }
+    SPIEL_CHECK_GE(current_pos, 0);
+    SPIEL_CHECK_LT(current_pos, kNumPoints);
+    return current_pos;
   }
 }
 
@@ -1647,51 +1710,86 @@ std::vector<Action> LongNardeState::LegalActions() const {
 // *** NEW HELPER FUNCTION: HasIllegalBridge ***
 // Checks the current board state for an illegal bridge for the given player.
 bool LongNardeState::HasIllegalBridge(int player) const {
-  // Check if player has any 6 consecutive positions, handling wrap-around
+  int opponent = Opponent(player);
+  bool opponent_exists_on_board = false;
+  for (int i = 0; i < kNumPoints; ++i) {
+    if (board(opponent, i) > 0) {
+        opponent_exists_on_board = true;
+        break;
+    }
+  }
+
+  if (!opponent_exists_on_board) {
+      return false;
+  }
+
+  bool debugging = true; // Use the existing debug flag
+  if (debugging) {
+    std::cout << "DEBUG: HasIllegalBridge check for player " << player << "\n";
+    std::cout << "DEBUG: Opponent (" << opponent << ") board state (real pos -> count (path idx)):\n";
+    std::cout << "  [";
+    bool first = true;
+    for (int i = 0; i < kNumPoints; ++i) {
+      if (board(opponent, i) > 0) {
+          if (!first) std::cout << ", ";
+          std::cout << i << "->" << board(opponent, i) << "(" << GetPathIndex(opponent, i) << ")";
+          first = false;
+      }
+    }
+    std::cout << "]\n";
+  }
+
   for (int start = 0; start < kNumPoints; ++start) {
-    bool consecutive = true;
-    
-    // Check 6 consecutive positions, with wrap-around handling
-    for (int offset = 0; offset < 6; ++offset) {
-      int pos = (start + offset) % kNumPoints; // Handle wrap-around
-      if (board_[player][pos] == 0) {
-        consecutive = false;
+    bool is_block = true;
+    for (int i = 0; i < 6; ++i) {
+      int pos = (start + i) % kNumPoints;
+      if (board(player, pos) == 0) {
+        is_block = false;
         break;
       }
     }
-    
-    if (!consecutive) continue;
-    
-    // Found 6 consecutive checkers - determine if bridge is illegal
-    int end = (start + 5) % kNumPoints;
-    int opponent = Opponent(player);
-    bool any_opponent_ahead = false;
 
-    // Iterate through ALL board positions to find opponent checkers
-    for (int i = 0; i < kNumPoints; ++i) {
-      // Check if the current position 'i' is part of the bridge
-      bool is_part_of_bridge;
-      if (start <= end) { // Bridge does not wrap around
-        is_part_of_bridge = (i >= start && i <= end);
-      } else { // Bridge wraps around (e.g., 22, 23, 0, 1, 2, 3)
-        is_part_of_bridge = (i >= start || i <= end);
+    if (is_block) {
+      if (debugging) {
+        std::cout << "DEBUG: Found potential block starting at real pos " << start << "\n";
+      }
+      
+      int block_path_start_on_opp_path_real_pos = GetBlockPathStartRealPos(opponent, start);
+      
+      if (debugging) {
+        std::cout << "DEBUG: Block path start on opponent's path (real pos): " 
+                  << block_path_start_on_opp_path_real_pos << "\n";
+        std::cout << "DEBUG: Block path start index on opponent's path: " << GetPathIndex(opponent, block_path_start_on_opp_path_real_pos) << "\n";
       }
 
-      // If 'i' is NOT part of the bridge AND the opponent occupies it...
-      if (!is_part_of_bridge && board_[opponent][i] > 0) {
-        // ...then there is an opponent checker ahead of the bridge.
-        any_opponent_ahead = true;
-        break; // No need to check further
+      bool opponent_found_ahead = false;
+      for (int opp_pos = 0; opp_pos < kNumPoints; ++opp_pos) {
+        if (board(opponent, opp_pos) > 0) {
+            int opp_real_pos = opp_pos;
+            if (IsAhead(opponent, opp_real_pos, block_path_start_on_opp_path_real_pos)) {
+                if (debugging) {
+                  std::cout << "DEBUG: Found opponent checker ahead at real pos " << opp_real_pos 
+                            << " (path index " << GetPathIndex(opponent, opp_real_pos) << ")\n";
+                }
+                opponent_found_ahead = true;
+                break;
+            }
+        }
       }
-    }
 
-    // If no opponent checkers were found ahead, this bridge formation is illegal.
-    if (!any_opponent_ahead) {
-      return true;
+      if (!opponent_found_ahead) {
+        if (debugging) {
+          std::cout << "DEBUG: ILLEGAL BRIDGE DETECTED! No opponent checkers found ahead of block path start\n";
+        }
+        return true;
+      }
     }
   }
-  
-  return false;  // No illegal bridge found
+
+  if (debugging) {
+    std::cout << "DEBUG: No illegal bridges found\n";
+  }
+  return false;
 }
 
 // Implement the GenerateAllHalfMoves method
@@ -1740,7 +1838,7 @@ std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player) const {
       }
       
       // Check if this would be a valid move (including bearing off)
-      bool is_valid = IsValidCheckerMove(player, pos, to_pos, die_value, true);
+      bool is_valid = IsValidCheckerMove(player, pos, to_pos, die_value, false);
       
       if (debugging) {
         std::cout << "    IsValidCheckerMove returned " << (is_valid ? "true" : "false") << "\n";
@@ -1826,6 +1924,80 @@ bool LongNardeState::HasAnyChecker(int player, int startPos, int endPos) const {
     if (board_[player][p] > 0) return true;
   }
   return false;
+}
+
+int LongNardeState::GetVirtualCoords(int player, int real_pos) const {
+  if (real_pos < 0 || real_pos >= kNumPoints) {
+    SpielFatalError(absl::StrCat("GetVirtualCoords called with invalid real_pos: ", real_pos));
+    return -1;
+  }
+
+  if (player == kXPlayerId) {
+    return real_pos;
+  } else { // kOPlayerId
+    if (real_pos >= 0 && real_pos <= 11) { // Segment 1
+      return real_pos + 12;
+    } else { // Segment 2
+      return real_pos - 12;
+    }
+  }
+}
+
+int LongNardeState::GetPathIndex(int player, int real_pos) const {
+    if (real_pos < 0 || real_pos >= kNumPoints) {
+         SpielFatalError(absl::StrCat("GetPathIndex called with invalid real_pos: ", real_pos));
+         return -1;
+    }
+
+    if (player == kXPlayerId) {
+        return 23 - real_pos;
+    } else {
+        if (real_pos >= 0 && real_pos <= 11) {
+            return 11 - real_pos;
+        } else {
+            return 12 + (23 - real_pos);
+        }
+    }
+}
+
+bool LongNardeState::IsAhead(int player, int checker_pos, int reference_pos) const {
+    // Ensure positions are potentially valid before conversion.
+    if (checker_pos < 0 || reference_pos < 0 || checker_pos >= kNumPoints || reference_pos >= kNumPoints) {
+        return false;
+    }
+
+    // Get the virtual coordinate representation for the player.
+    int vcoord_checker = GetVirtualCoords(player, checker_pos);
+    int vcoord_ref = GetVirtualCoords(player, reference_pos);
+
+    // On both real (White) and virtual (Black) paths, moving "forward"
+    // means decreasing the coordinate value (towards 0).
+    // Therefore, a checker is "ahead" if its virtual coordinate is less than the reference coordinate.
+    return vcoord_checker < vcoord_ref;
+}
+
+int LongNardeState::GetBlockPathStartRealPos(int player_for_path, int block_lowest_real_idx) const {
+    if (block_lowest_real_idx < 0 || block_lowest_real_idx >= kNumPoints) {
+         SpielFatalError(absl::StrCat("GetBlockPathStartRealPos called with invalid block_lowest_real_idx: ", block_lowest_real_idx));
+         return -1;
+    }
+
+    int bridge_path_start_pos = block_lowest_real_idx;
+    int min_path_idx = GetPathIndex(player_for_path, block_lowest_real_idx);
+
+    for (int i = 1; i < 6; ++i) {
+        int current_pos = (block_lowest_real_idx + i) % kNumPoints;
+         if (current_pos < 0 || current_pos >= kNumPoints) {
+            SpielFatalError(absl::StrCat("GetBlockPathStartRealPos calculated invalid current_pos: ", current_pos));
+            continue;
+         }
+        int current_path_idx = GetPathIndex(player_for_path, current_pos);
+        if (current_path_idx < min_path_idx) {
+            min_path_idx = current_path_idx;
+            bridge_path_start_pos = current_pos;
+        }
+    }
+    return bridge_path_start_pos;
 }
 
 }  // namespace long_narde
