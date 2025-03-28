@@ -34,22 +34,19 @@ void TestBridgeFormation() {
   {
     // Build White row:
     // Start with home board: indices 0..5 = {2, 1, 1, 0, 2, 1}
-    std::vector<int> white_row = {2, 1, 1, 0, 2, 1};
-    // Fill indices 6 through 22 with 0.
-    white_row.resize(23, 0);
+    // Initialize with size 25, then set specific values.
+    std::vector<int> white_row(kNumPoints + 1, 0); // Use kNumPoints + 1
+    white_row[0] = 2; white_row[1] = 1; white_row[2] = 1; white_row[3] = 0; white_row[4] = 2; white_row[5] = 1;
     // Set head (index 23) to 15 - (2+1+1+0+2+1) = 15 - 7 = 8.
-    if (white_row.size() < 24) {
-      white_row.push_back(8);
-    } else {
-      white_row[23] = 8;
-    }
+    white_row[kWhiteHeadPos] = 8; // Use constant kWhiteHeadPos (23)
     // Total White checkers: 2+1+1+0+2+1+8 = 15.
     
-    // Black row: all 24 positions zero.
-    std::vector<int> black_row(24, 0);
+    // Black row: all 25 positions zero.
+    std::vector<int> black_row(kNumPoints + 1, 0); // Use kNumPoints + 1
     std::vector<std::vector<int>> test_board = {white_row, black_row};
     std::vector<int> dice = {1, 2};  // Die of 1 will be used.
-    lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+    SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
+    SetupDice(lnstate, dice, false);
 
     // Simulate move from White's pos 4 to pos 3.
     // This move forms a 6-block, but is LEGAL because Black has no checkers on board.
@@ -64,15 +61,16 @@ void TestBridgeFormation() {
   // (so that at least one Black checker is ahead of White's home board).
   // ------------------------------------------------------------
   {
-    std::vector<int> white_row = {2, 1, 1, 0, 2, 1};
-    white_row.resize(23, 0);
-    white_row.push_back(8);  // White head: 8 checkers.
-    std::vector<int> black_row(24, 0);
+    std::vector<int> white_row(kNumPoints + 1, 0); // Use kNumPoints + 1
+    white_row[0] = 2; white_row[1] = 1; white_row[2] = 1; white_row[3] = 0; white_row[4] = 2; white_row[5] = 1;
+    white_row[kWhiteHeadPos] = 8;  // White head: 8 checkers.
+    std::vector<int> black_row(kNumPoints + 1, 0); // Use kNumPoints + 1
     black_row[2] = 14;
     black_row[7] = 1;
     std::vector<std::vector<int>> test_board = {white_row, black_row};
     std::vector<int> dice = {1, 2};
-    lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+    SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
+    SetupDice(lnstate, dice, false);
 
     bool bridge_illegal = lnstate->WouldFormBlockingBridge(kXPlayerId, 4, 3);
     SPIEL_CHECK_FALSE(bridge_illegal);
@@ -84,16 +82,17 @@ void TestBridgeFormation() {
   // the move from pos 4 to pos 3 should be identified as forming an illegal bridge.
   // ------------------------------------------------------------
   {
-    std::vector<int> white_row = {2, 1, 1, 0, 2, 1};
-    white_row.resize(23, 0);
-    white_row.push_back(8);  // White head.
+    std::vector<int> white_row(kNumPoints + 1, 0); // Use kNumPoints + 1
+    white_row[0] = 2; white_row[1] = 1; white_row[2] = 1; white_row[3] = 0; white_row[4] = 2; white_row[5] = 1;
+    white_row[kWhiteHeadPos] = 8;  // White head.
     // Place all Black checkers at their head (index 11 / vcoord 23).
     // Since 23 >= 17 (bridge start vcoord), no Black checker is ahead.
-    std::vector<int> black_row(24, 0);
+    std::vector<int> black_row(kNumPoints + 1, 0); // Use kNumPoints + 1
     black_row[kBlackHeadPos] = 15; // Place all 15 checkers at index 11
     std::vector<std::vector<int>> test_board = {white_row, black_row};
     std::vector<int> dice = {1, 2};
-    lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+    SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
+    SetupDice(lnstate, dice, false);
 
     // Test 3: Verify that the direct move 4->3 is not a valid *single* move
     // in this state (as it would form the illegal bridge).
@@ -110,22 +109,23 @@ void TestBridgeFormation() {
   // Similar to Test 1 but for Black player in Black's home region (12-17)
   // ------------------------------------------------------------
   {
-    std::vector<int> black_row(24, 0);
+    std::vector<int> black_row(kNumPoints + 1, 0); // Use kNumPoints + 1
     // Near bridge: points 13-18 (indices 12-17) with a gap at index 15
     black_row[12] = 2; black_row[13] = 1; black_row[14] = 1; 
     black_row[16] = 1; black_row[17] = 2;
     black_row[19] = 1;  // Checker to move into the gap
     black_row[kBlackHeadPos] = 15 - 8; // Remaining 7 at head (11)
 
-    std::vector<int> white_row(24, 0);
+    std::vector<int> white_row(kNumPoints + 1, 0); // Use kNumPoints + 1
     // Place White checkers *behind* Black's potential bridge (indices >= 17).
     // From White's perspective (virtual coords are real coords), these positions have vcoord >= 17.
     // Therefore, no White checker is "ahead" of the bridge start (vcoord 17).
-    white_row[18] = 5; white_row[19] = 5; white_row[23] = 5; // 15 checkers total at indices >= 18
+    white_row[18] = 5; white_row[19] = 5; white_row[kWhiteHeadPos] = 5; // 15 checkers total at indices >= 18
 
     std::vector<std::vector<int>> test_board = {white_row, black_row};
     std::vector<int> dice = {4, 1}; // Use die 4 to move 19->15
-    lnstate->SetState(kOPlayerId, false, dice, {0, 0}, test_board);
+    SetupBoardState(lnstate, kOPlayerId, test_board, {0, 0});
+    SetupDice(lnstate, dice, false);
 
     // Check if move 19->15 (die 4) forms illegal bridge
     bool bridge_illegal = lnstate->WouldFormBlockingBridge(kOPlayerId, 19, 15);
@@ -142,20 +142,21 @@ void TestBridgeFormation() {
   // ------------------------------------------------------------
   {
     // Same Black setup as Test 4
-    std::vector<int> black_row(24, 0);
+    std::vector<int> black_row(kNumPoints + 1, 0); // Use kNumPoints + 1
     black_row[12] = 2; black_row[13] = 1; black_row[14] = 1; 
     black_row[16] = 1; black_row[17] = 2;
     black_row[19] = 1;
     black_row[kBlackHeadPos] = 7;
 
-    std::vector<int> white_row(24, 0);
+    std::vector<int> white_row(kNumPoints + 1, 0); // Use kNumPoints + 1
     // Place one White checker ahead of the bridge (>=18)
     white_row[18] = 1; // White checker at point 19 (ahead of Black's home region)
     white_row[0] = 14; // Rest of White's checkers behind
 
     std::vector<std::vector<int>> test_board = {white_row, black_row};
     std::vector<int> dice = {4, 1};
-    lnstate->SetState(kOPlayerId, false, dice, {0, 0}, test_board);
+    SetupBoardState(lnstate, kOPlayerId, test_board, {0, 0});
+    SetupDice(lnstate, dice, false);
 
     // Check if move 19->15 (die 4) forms illegal bridge
     bool bridge_illegal = lnstate->WouldFormBlockingBridge(kOPlayerId, 19, 15);
@@ -168,17 +169,18 @@ void TestBridgeFormation() {
 
   // Test 6: White forms wrap-around bridge (23-4), Black behind
   {
-    std::vector<int> white_row(24, 0);
+    std::vector<int> white_row(kNumPoints + 1, 0); // Use kNumPoints + 1
     white_row[23]=1; white_row[0]=1; white_row[1]=1; white_row[2]=1; white_row[3]=1;
     white_row[5]=1;
     white_row[kWhiteHeadPos] = 15 - 6;
 
-    std::vector<int> black_row(24, 0);
+    std::vector<int> black_row(kNumPoints + 1, 0); // Use kNumPoints + 1
     black_row[12] = 15;
 
     std::vector<std::vector<int>> test_board = {white_row, black_row};
     std::vector<int> dice = {1, 2};
-    lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+    SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
+    SetupDice(lnstate, dice, false);
 
     bool bridge_illegal = lnstate->WouldFormBlockingBridge(kXPlayerId, 5, 4);
     SPIEL_CHECK_FALSE(bridge_illegal); // Should be legal as Black is ahead (virt 0 < virt 23)
@@ -189,17 +191,18 @@ void TestBridgeFormation() {
 
   // Test 7: White forms wrap-around bridge, Black ahead
   {
-    std::vector<int> white_row(24, 0);
+    std::vector<int> white_row(kNumPoints + 1, 0); // Use kNumPoints + 1
     white_row[23]=1; white_row[0]=1; white_row[1]=1; white_row[2]=1; white_row[3]=1;
     white_row[5]=1;
     white_row[kWhiteHeadPos] = 15 - 6;
 
-    std::vector<int> black_row(24, 0);
+    std::vector<int> black_row(kNumPoints + 1, 0); // Use kNumPoints + 1
     black_row[10] = 15;
 
     std::vector<std::vector<int>> test_board = {white_row, black_row};
     std::vector<int> dice = {1, 2};
-    lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+    SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
+    SetupDice(lnstate, dice, false);
 
     bool bridge_illegal = lnstate->WouldFormBlockingBridge(kXPlayerId, 5, 4);
     SPIEL_CHECK_TRUE(bridge_illegal); // Should be ILLEGAL (Black at vcoord 22 is NOT ahead of bridge start at vcoord 16)

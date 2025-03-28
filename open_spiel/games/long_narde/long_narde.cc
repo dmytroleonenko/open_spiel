@@ -98,6 +98,7 @@ constexpr int kNumBarPosHumanReadable = -3; // Value used in string formatting (
 
 // constexpr int kDigitBase = 150;   // Base used to combine two half-move "digits". // MOVED TO .h
                                   // Must be >= 150 to accommodate the max digit value (149).
+constexpr int kDigitBase = 150;   // Base used to combine two half-move "digits". // Moved from .h
 constexpr int kPassOffset = 144;  // Offset for encoding pass half-moves.
                                   // Starts after the max regular move digit (143).
 

@@ -1,7 +1,7 @@
 ---
-description: 
+description: If you are Claude
 globs: 
-alwaysApply: true
+alwaysApply: false
 ---
 Claude Think Tool Usage Guidelines
 

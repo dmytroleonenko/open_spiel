@@ -1,7 +1,7 @@
 ---
 description: 
 globs: 
-alwaysApply: true
+alwaysApply: false
 ---
 **CRITICAL: You MUST query the knowledge graph first before ANY other action.**
 

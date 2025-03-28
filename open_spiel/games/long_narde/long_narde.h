@@ -96,7 +96,7 @@ inline constexpr const int kNumDistinctActions = 1250;  // Potential maximum num
 
 // Base used to combine two half-move "digits" in the non-doubles encoding scheme.
 // Must be >= 150 to accommodate the max digit value (149).
-inline constexpr const int kDigitBase = 150;
+// inline constexpr const int kDigitBase = 150; // Moved to long_narde.cc
 
 // Since Long Narde doesn't have hitting, we only need to track:
 // 1) If a point is occupied (and how many checkers)
@@ -195,7 +195,6 @@ class LongNardeState : public State {
   int score(int player) const { return scores_[player]; }
   int dice(int i) const { return dice_[i]; }
   bool double_turn() const { return double_turn_; }
-  bool is_first_turn() const { return is_first_turn_; }
   bool moved_from_head() const { return moved_from_head_; }
 
   // Get the number of checkers on the board in the specified position belonging
@@ -313,6 +312,13 @@ class LongNardeState : public State {
   bool allow_last_roll_tie_;  // Tracks if a last roll for tie is allowed.
 
   friend class LongNardeGame;
+
+  // Friend declarations for test helper functions
+  friend void SetupBoardState(LongNardeState* state, Player player,
+                              const std::vector<std::vector<int>>& board_config,
+                              const std::vector<int>& scores);
+  friend void SetupDice(LongNardeState* state, const std::vector<int>& dice,
+                        bool double_turn);
 };
 
 // Add an overload for the << operator for ScoringType to fix compilation errors

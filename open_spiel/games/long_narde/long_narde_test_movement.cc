@@ -138,7 +138,7 @@ void FirstTurnTest() {
 
   // Roll 6,6 for White
   lnstate->ApplyAction(20);  // outcome with dice=6,6
-  SPIEL_CHECK_TRUE(lnstate->is_first_turn());
+  SPIEL_CHECK_TRUE(lnstate->IsFirstTurn(kXPlayerId));
 
   // Ensure there is at least one action that moves multiple checkers from head:
   std::vector<Action> first_turn_actions = lnstate->LegalActions();
@@ -164,7 +164,7 @@ void FirstTurnTest() {
   if (lnstate->IsChanceNode()) lnstate->ApplyAction(0);  // might need second roll
 
   if (lnstate->CurrentPlayer() == kOPlayerId) {
-    SPIEL_CHECK_FALSE(lnstate->is_first_turn());
+    SPIEL_CHECK_FALSE(lnstate->IsFirstTurn(kOPlayerId));
   }
 
   std::cout << "✓ First turn logic verified\n";
@@ -189,7 +189,7 @@ void HeadRuleTest() {
     // Force the dice roll for 4,4 (index=18 in the outcomes if you look at code).
     // The 6 doubles in the code are in outcomes 15..20 => 4,4 is outcome=18, 6,6=19, etc.
     lnA->ApplyAction(18);  // White has dice=4,4
-    SPIEL_CHECK_TRUE(lnA->is_first_turn());
+    SPIEL_CHECK_TRUE(lnA->IsFirstTurn(kXPlayerId));
 
     // White can legally move 2 checkers from the head on the first turn if 3,3 / 4,4 / 6,6.
     std::vector<Action> first_turn_actions = lnA->LegalActions();
@@ -219,18 +219,18 @@ void HeadRuleTest() {
     std::unique_ptr<State> stB = game->NewInitialState();
     auto lnB = static_cast<LongNardeState*>(stB.get());
 
-    // Build a board to ensure White has already moved 1 checker off head
     // => is_first_turn_ is definitely false for White:
     std::vector<std::vector<int>> board_non_first = {
       // White: 14 on 24, 1 on 23
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 14},
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 14, 0 /* score placeholder */},
       // Black: 15 on 12
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score placeholder */}
     };
     // White to move, dice=4,4, scores=0,0 => definitely not first turn
-    lnB->SetState(kXPlayerId, false, {4, 4}, {0, 0}, board_non_first);
+    SetupBoardState(lnB, kXPlayerId, board_non_first, {0, 0});
+    SetupDice(lnB, {4, 4}, false); // Assume double_turn is false here
 
-    SPIEL_CHECK_FALSE(lnB->is_first_turn());
+    SPIEL_CHECK_FALSE(lnB->IsFirstTurn(kXPlayerId));
 
     // Now see that White's legal moves do not allow 2 from the head.
     std::vector<Action> la = lnB->LegalActions();
@@ -269,14 +269,14 @@ void MovementDirectionTest() {
   LongNardeState* lnstate = static_cast<LongNardeState*>(state.get());
 
   // White to move, dice=3,2 => check White's moves are strictly to lower indices
-  lnstate->SetState(
-      kXPlayerId, false, {3, 2}, {0, 0},
-      {
-          // White:
-          {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 14},
-          // Black:
-          {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-      });
+  std::vector<std::vector<int>> board_white_move = {
+      // White: 1 on 19, 14 on 24
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 14, 0 /* score */},
+      // Black: 1 on 8, 14 on 12
+      {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
+  };
+  SetupBoardState(lnstate, kXPlayerId, board_white_move, {0, 0});
+  SetupDice(lnstate, {3, 2}, false);
 
   std::vector<Action> white_actions = lnstate->LegalActions();
   for (Action a : white_actions) {
@@ -288,14 +288,14 @@ void MovementDirectionTest() {
   }
 
   // Now set Black to move with same board/dice => black's moves also go ccw
-  lnstate->SetState(
-      kOPlayerId, false, {3, 2}, {0, 0},
-      {
-          // White:
-          {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 14},
-          // Black:
-          {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-      });
+  std::vector<std::vector<int>> board_black_move = {
+      // White: 1 on 19, 14 on 24
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 14, 0 /* score */},
+      // Black: 1 on 8, 14 on 12
+      {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
+  };
+  SetupBoardState(lnstate, kOPlayerId, board_black_move, {0, 0});
+  SetupDice(lnstate, {3, 2}, false);
 
   std::vector<Action> black_actions = lnstate->LegalActions();
   for (Action a : black_actions) {
@@ -324,14 +324,14 @@ void NoLandingOnOpponentTest() {
   auto lnstate = static_cast<LongNardeState*>(state.get());
 
   // White with dice=4,2, black has a single checker at point16 => cannot land on 16
-  lnstate->SetState(
-      kXPlayerId, false, {4, 2}, {0, 0},
-      {
-          // White:
-          {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 14},
-          // Black:
-          {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}
-      });
+  std::vector<std::vector<int>> board_white_no_land = {
+      // White: 1 on 20, 14 on 24
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 14, 0 /* score */},
+      // Black: 1 on 16, 14 on 12
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
+  };
+  SetupBoardState(lnstate, kXPlayerId, board_white_no_land, {0, 0});
+  SetupDice(lnstate, {4, 2}, false);
 
   std::vector<Action> la = lnstate->LegalActions();
   bool found_move_landing_16 = false;
@@ -356,14 +356,14 @@ void NoLandingOnOpponentTest() {
 
   // --- Black player perspective test ---
   // Test that Black cannot land on White's checkers
-  lnstate->SetState(
-      kOPlayerId, false, {3, 1}, {0, 0},
-      {
-          // White: checker at position 18 (point 19)
-          {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 14},
-          // Black: checker at position 15 (point 16)
-          {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}
-      });
+  std::vector<std::vector<int>> board_black_no_land = {
+      // White: 1 on 19, 14 on 24
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 14, 0 /* score */},
+      // Black: 1 on 16, 14 on 12
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
+  };
+  SetupBoardState(lnstate, kOPlayerId, board_black_no_land, {0, 0});
+  SetupDice(lnstate, {3, 1}, false);
 
   // Check if Black's legal actions include moving from pos 15 to pos 18 (with die 3)
   la = lnstate->LegalActions();
@@ -445,7 +445,15 @@ void TestIllegalLandingInLegalActions() {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
   };
   // Black (O) to move, dice 1, 1.
-  lnstate->SetState(kOPlayerId, false, {1, 1}, {0, 0}, board_setup);
+  //lnstate->SetState(kOPlayerId, false, {1, 1}, {0, 0}, board_setup);
+  std::vector<std::vector<int>> board_setup_with_scores = {
+      // White (X): 13 at index 23, 2 at index 12
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13, 0 /* score */},
+      // Black (O): 14 at index 11, 1 at index 13
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
+  };
+  SetupBoardState(lnstate, kOPlayerId, board_setup_with_scores, {0, 0});
+  SetupDice(lnstate, {1, 1}, false);
 
   // Get legal actions
   std::vector<Action> legal_actions = lnstate->LegalActions();
@@ -492,15 +500,18 @@ void TestHalfMoveGeneration() {
   auto lnstate = static_cast<LongNardeState*>(state.get());
   
   // Set up a test board state
-  std::vector<std::vector<int>> test_board = {
-    {0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, // White: one at point 1, one at point 24
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Black: one at point 12
-  };
-  std::vector<int> dice = {3, 5};
   std::vector<int> scores = {13, 14}; // Most checkers are already borne off
   
   // Set state
-  lnstate->SetState(kXPlayerId, false, dice, scores, test_board);
+  //lnstate->SetState(kXPlayerId, false, dice, scores, test_board);
+  std::vector<std::vector<int>> test_board_with_scores = {
+      // White: one at point 1 (idx 0), one at point 24 (idx 23)
+      {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0 /* score */},
+      // Black: one at point 12 (idx 11)
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
+  };
+  SetupBoardState(lnstate, kXPlayerId, test_board_with_scores, scores);
+  SetupDice(lnstate, {3, 5}, false);
   
   std::cout << "Test setup:\n" << lnstate->ToString() << std::endl;
   std::cout << "White's Home: points 1-6 (indices 0-5)\n";
@@ -638,12 +649,13 @@ void HeadRuleTestBlack() {
     // Board setup with 14 on Black's head, 1 elsewhere
     std::vector<std::vector<int>> board_non_first = {
       // White: 15 on 24
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15},
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0 /* score placeholder */},
       // Black: 14 on 12 (head=11), 1 on 15
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score placeholder */}
     };
     // Black to move, dice=4,4, scores=0,0 => not first turn
-    lnB->SetState(kOPlayerId, false, {4, 4}, {0, 0}, board_non_first);
+    SetupBoardState(lnB, kOPlayerId, board_non_first, {0, 0});
+    SetupDice(lnB, {4, 4}, false); // Assume double_turn is false here
 
     SPIEL_CHECK_FALSE(lnB->IsFirstTurn(kOPlayerId));
 
@@ -679,15 +691,18 @@ void TestHalfMoveGenerationBlack() {
   auto lnstate = static_cast<LongNardeState*>(state.get());
   
   // Set up a test board state for Black player
-  std::vector<std::vector<int>> test_board = {
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}, // White: all at head
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0}  // Black: one at 11 (head), one at 16 (point 17)
-  };
-  std::vector<int> dice = {4, 2};
   std::vector<int> scores = {0, 13}; // 13 Black checkers already borne off
   
   // Set state with Black to move
-  lnstate->SetState(kOPlayerId, false, dice, scores, test_board);
+  //lnstate->SetState(kOPlayerId, false, dice, scores, test_board);
+  std::vector<std::vector<int>> test_board_with_scores = {
+      // White: all at head
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0 /* score */},
+      // Black: one at 11 (head), one at 16 (point 17)
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
+  };
+  SetupBoardState(lnstate, kOPlayerId, test_board_with_scores, scores);
+  SetupDice(lnstate, {4, 2}, false);
   
   std::cout << "Test setup:\n" << lnstate->ToString() << std::endl;
   std::cout << "Black's Home: points 13-18 (indices 12-17)\n";

@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include "open_spiel/spiel.h"
+#include "open_spiel/games/long_narde/long_narde_test_common.h"
 
 int main(int argc, char** argv) {
   using namespace open_spiel;
@@ -20,7 +21,8 @@ int main(int argc, char** argv) {
   // Set up the test state with white to move, dice 1 and 3
   std::vector<int> dice = {1, 3};
   std::vector<int> scores = {14, 0}; // White has 14 checkers borne off
-  lnstate->SetState(long_narde::kXPlayerId, false, dice, scores, test_board);
+  SetupBoardState(lnstate, long_narde::kXPlayerId, test_board, scores);
+  SetupDice(lnstate, dice, false);
   
   // Get legal actions
   std::vector<Action> legal_actions = lnstate->LegalActions();

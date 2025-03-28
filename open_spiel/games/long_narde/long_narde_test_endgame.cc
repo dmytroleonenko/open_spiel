@@ -17,13 +17,14 @@ void BearingOffBasicTest() {
   
   // Set up a test board where White has all checkers in home (points 0-5)
   std::vector<std::vector<int>> test_board = {
-    {3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White - all 15 checkers in home
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black
+    {3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White - size 25 (incl. head)
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black - size 25 (incl. head)
   };
   std::vector<int> dice = {1, 5};
   
   // Set White to move
-  lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+  SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
+  SetupDice(lnstate, dice, false);
   
   // Check that White can bear off by verifying all checkers are in home
   bool all_checkers_in_home = lnstate->AllInHome(kXPlayerId);
@@ -33,10 +34,11 @@ void BearingOffBasicTest() {
   
   // Now set a checker outside of home
   test_board = {
-    {3, 3, 3, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}, // White (one at 15)
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black
+    {3, 3, 3, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White (one at 15) - size 25
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black - size 25
   };
-  lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+  SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
+  SetupDice(lnstate, dice, false);
   
   // Check that White can't bear off due to checker outside home
   all_checkers_in_home = lnstate->AllInHome(kXPlayerId);
@@ -46,10 +48,11 @@ void BearingOffBasicTest() {
   
   // Check for Black player too - set up board where Black has all checkers in home (indices 12-17)
   test_board = {
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15},  // White
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0} // Black - all 15 in home (points 13-18)
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15},  // White - size 25
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0} // Black - size 25
   };
-  lnstate->SetState(kOPlayerId, false, dice, {0, 0}, test_board);
+  SetupBoardState(lnstate, kOPlayerId, test_board, {0, 0});
+  SetupDice(lnstate, dice, false);
   
   // Check that Black can bear off
   all_checkers_in_home = lnstate->AllInHome(kOPlayerId);
@@ -65,12 +68,13 @@ void BearingOffLogicTest() {
   
   // Setup a board position where White has checkers in position 1, 2
   std::vector<std::vector<int>> test_board = {
-    {0, 1, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Black
+    {0, 1, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White - size 25
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black - size 25
   };
   std::vector<int> dice = {1, 3};
   
-  lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+  SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
+  SetupDice(lnstate, dice, false);
   
   // Get legal actions
   std::vector<Action> legal_actions = lnstate->LegalActions();
@@ -110,11 +114,12 @@ void BearingOffLogicTest() {
   
   // Create a new test board with checkers further back
   test_board = {
-    {0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Black
+    {0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White - size 25
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black - size 25
   };
   
-  lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+  SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
+  SetupDice(lnstate, dice, false);
   
   // Check if any checkers are outside the home region
   bool any_checker_outside_home = false;
@@ -137,12 +142,13 @@ void BearingOffFromPosition1Test() {
   // Setup a board position where White has all checkers in home.
   // Crucially, only checkers are on points 0 and 1 to test bearing off from 1 with a higher roll.
   std::vector<std::vector<int>> test_board = {
-    {14, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White (14 on point 0, 1 on point 1)
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black (all at head)
+    {14, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White - size 25
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black - size 25
   };
   std::vector<int> dice = {1, 3};
   
-  lnstate->SetState(kXPlayerId, false, dice, {0, 0}, test_board);
+  SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
+  SetupDice(lnstate, dice, false);
   
   // Get legal actions
   std::vector<Action> legal_actions = lnstate->LegalActions();
@@ -190,13 +196,14 @@ void BearingOffBlackTest() {
   // Setup board: Black has checkers in home (12-17), including near the end (22, 23)
   // Points 12-17 are Black's home. Points 18-23 are the final quadrant.
   std::vector<std::vector<int>> test_board = {
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}, // White (all at head)
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 3, 0, 0, 0, 0, 0, 0, 0, 1, 1}  // Black (15 checkers in home 12-23)
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}, // White - size 25
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 3, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0}  // Black - size 25
   };
   std::vector<int> dice = {2, 3}; // Dice roll 2, 3
 
   // Set Black (kOPlayerId) to move
-  lnstate->SetState(kOPlayerId, false, dice, {0, 0}, test_board);
+  SetupBoardState(lnstate, kOPlayerId, test_board, {0, 0});
+  SetupDice(lnstate, dice, false);
 
   // Verify all Black checkers are in their home board (12-23 for bearing off)
   // Note: The definition of "home" for bearing off might differ slightly from IsPosInHome.
@@ -262,8 +269,8 @@ void EndgameScoreTest() {
   lnstate->SetState(
       kXPlayerId, true, {1, 2}, {15, 0}, 
       std::vector<std::vector<int>>{
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // Size 25
+        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0}  // Size 25
       });
   
   // Game should be terminal
@@ -284,8 +291,8 @@ void EndgameScoreTest() {
   lnstate->SetState(
       kXPlayerId, true, {1, 2}, {15, 5}, 
       std::vector<std::vector<int>>{
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // Size 25
+        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Size 25
       });
   
   // Game should be terminal
@@ -307,8 +314,8 @@ void EndgameScoreTest() {
   lnstate->SetState(
       kXPlayerId, true, {1, 2}, {15, 15}, 
       std::vector<std::vector<int>>{
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // Size 25
+        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Size 25
       });
   
   // Game should be terminal
@@ -360,7 +367,7 @@ void SingleLegalMoveTestBlack() {
   
   // Setup a board with Black having a single checker at position 22
   // With dice 1,2 and White blocking pos 21, the only legal sequence should be 22->20 (die 2), then 20->19 (die 1)
-  std::vector<std::vector<int>> test_board(2, std::vector<int>(kNumPoints, 0));
+  std::vector<std::vector<int>> test_board(2, std::vector<int>(kNumPoints + 1, 0)); // Use kNumPoints + 1
   test_board[kOPlayerId][22] = 1; // Black checker at position 22 (point 23)
   test_board[kXPlayerId][21] = 1; // White blocks pos 21 (destination for die 1)
   test_board[kXPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer - 1; // Rest of White at head
@@ -368,7 +375,8 @@ void SingleLegalMoveTestBlack() {
   std::vector<int> dice = {1, 2};
   std::vector<int> scores = {0, 14}; // Black has 14 checkers borne off already
   
-  lnstate->SetState(kOPlayerId, false, dice, scores, test_board);
+  SetupBoardState(lnstate, kOPlayerId, test_board, scores);
+  SetupDice(lnstate, dice, false);
   
   // Should have only one legal action
   std::vector<Action> legal_actions = lnstate->LegalActions();
@@ -394,7 +402,7 @@ void SingleLegalMoveTestBlack() {
   SPIEL_CHECK_TRUE(found_20_to_19_with_die1); // Second move uses die 1
 
   // Setup another board for Black single-die max play rule
-  test_board.assign(2, std::vector<int>(kNumPoints, 0));
+  test_board.assign(2, std::vector<int>(kNumPoints + 1, 0)); // Use kNumPoints + 1
   test_board[kOPlayerId][18] = 1; // Black checker at position 18
   test_board[kOPlayerId][20] = 1; // Black checker at position 20
   test_board[kXPlayerId][13] = 1; // White blocks O@18 die 5 (target 13)
@@ -405,7 +413,8 @@ void SingleLegalMoveTestBlack() {
   dice = {5, 2}; // Higher 5, Lower 2
   scores = {0, 13};
 
-  lnstate->SetState(kOPlayerId, false, dice, scores, test_board);
+  SetupBoardState(lnstate, kOPlayerId, test_board, scores);
+  SetupDice(lnstate, dice, false);
 
   legal_actions = lnstate->LegalActions();
   SPIEL_CHECK_FALSE(legal_actions.empty());
@@ -450,7 +459,7 @@ void BearingOffLogicTestBlackNearEnd() {
   auto lnstate = static_cast<LongNardeState*>(state.get());
 
   // Setup: Black has 1 checker at pos 13, 1 at pos 14. 13 already borne off.
-  std::vector<std::vector<int>> test_board(2, std::vector<int>(kNumPoints, 0));
+  std::vector<std::vector<int>> test_board(2, std::vector<int>(kNumPoints + 1, 0)); // Use kNumPoints + 1
   test_board[kOPlayerId][13] = 1; // Black checker at index 13 (needs 2 pips)
   test_board[kOPlayerId][14] = 1; // Black checker at index 14 (needs 3 pips)
   test_board[kXPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer; // White out of the way
@@ -458,7 +467,8 @@ void BearingOffLogicTestBlackNearEnd() {
   std::vector<int> dice = {5, 2}; // Higher 5, Lower 2
   std::vector<int> scores = {0, 13}; // Black has 13 checkers borne off already
 
-  lnstate->SetState(kOPlayerId, false, dice, scores, test_board);
+  SetupBoardState(lnstate, kOPlayerId, test_board, scores);
+  SetupDice(lnstate, dice, false);
 
   // Verify all Black checkers are in the bear-off zone (12+)
   SPIEL_CHECK_TRUE(lnstate->AllInHome(kOPlayerId));
@@ -515,7 +525,7 @@ void CannotBearOffIfNotAllInHomeTest() {
   // - 14 checkers in the respective home area.
   // - 1 checker just outside the home area.
   // - Opponent checkers at head.
-  std::vector<std::vector<int>> test_board(2, std::vector<int>(kNumPoints, 0));
+  std::vector<std::vector<int>> test_board(2, std::vector<int>(kNumPoints + 1, 0)); // Use kNumPoints + 1
 
   // White setup (14 in 0-5, 1 at 6)
   test_board[kXPlayerId][0] = 5;
@@ -534,7 +544,8 @@ void CannotBearOffIfNotAllInHomeTest() {
 
   // --- Test White ---
   std::cout << "Testing White...\n";
-  lnstate->SetState(kXPlayerId, false, dice, scores, test_board);
+  SetupBoardState(lnstate, kXPlayerId, test_board, scores);
+  SetupDice(lnstate, dice, false);
 
   // Verify White is NOT considered all in home
   SPIEL_CHECK_FALSE(lnstate->AllInHome(kXPlayerId));
@@ -566,9 +577,10 @@ void CannotBearOffIfNotAllInHomeTest() {
   // --- Test Black ---
   std::cout << "Testing Black...\n";
   // Reset White checkers to head, keep Black setup
-  test_board[kXPlayerId].assign(kNumPoints, 0);
+  test_board[kXPlayerId].assign(kNumPoints + 1, 0); // Use kNumPoints + 1
   test_board[kXPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer;
-  lnstate->SetState(kOPlayerId, false, dice, scores, test_board);
+  SetupBoardState(lnstate, kOPlayerId, test_board, scores);
+  SetupDice(lnstate, dice, false);
 
   // Verify Black is NOT considered all in home
   bool black_all_in_home = lnstate->AllInHome(kOPlayerId);
