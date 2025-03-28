@@ -609,10 +609,6 @@ std::vector<Action> LongNardeState::LegalActions() const {
   if (IsTerminal()) return {};
   if (IsChanceNode()) return LegalChanceOutcomes();
 
-  std::unique_ptr<State> cstate = this->Clone();
-  LongNardeState* state = dynamic_cast<LongNardeState*>(cstate.get());
-  std::set<std::vector<CheckerMove>> movelist;
-
   // Determine max moves based on dice
   int max_moves = 0;
   if (!dice_.empty()) {
@@ -620,17 +616,19 @@ std::vector<Action> LongNardeState::LegalActions() const {
       max_moves = is_doubles ? 4 : 2; // Allow up to 4 for doubles, 2 otherwise
   }
 
-  // Generate all possible move sequences using the cloned state, limiting depth
-  state->RecLegalMoves({}, &movelist, max_moves);
+  // Generate all possible move sequences
+  std::set<std::vector<CheckerMove>> movelist = GenerateMoveSequences(CurrentPlayer(), max_moves);
 
   // DEBUG: Print movelist contents after generation
   if (kDebugging) {
-    std::cout << "DEBUG LegalActions (Player " << state->CurrentPlayer() << "): Movelist after RecLegalMoves (" << movelist.size() << " entries):" << std::endl;
+    std::cout << "DEBUG LegalActions (Player " << CurrentPlayer() << "): Movelist after GenerateMoveSequences (" << movelist.size() << " entries):" << std::endl;
+    /* Optional detail printout - keep commented unless needed 
     for (const auto& seq : movelist) {
         std::cout << "  Seq: ";
         for(const auto& m : seq) { std::cout << "{" << m.pos << "," << m.to_pos << "," << m.die << "} "; }
         std::cout << std::endl;
     }
+    */
   }
 
   // Find the maximum sequence length achieved
@@ -1444,6 +1442,31 @@ bool LongNardeState::IsOff(int player, int pos) const {
 
 
 // ===== Move Generation =====
+
+// Helper function to generate all valid move sequences.
+std::set<std::vector<CheckerMove>> LongNardeState::GenerateMoveSequences(
+    Player player, int max_moves) const {
+  std::set<std::vector<CheckerMove>> movelist;
+  std::unique_ptr<State> cstate = this->Clone();
+  LongNardeState* state = dynamic_cast<LongNardeState*>(cstate.get());
+
+  // Generate all possible move sequences using the cloned state
+  state->RecLegalMoves({}, &movelist, max_moves);
+
+  // DEBUG: Print movelist contents after generation
+  if (kDebugging) {
+    std::cout << "DEBUG GenerateMoveSequences (Player " << player << "): Movelist size = " << movelist.size() << std::endl;
+    // Optionally print details if needed
+    /*
+    for (const auto& seq : movelist) {
+        std::cout << "  Seq: ";
+        for(const auto& m : seq) { std::cout << "{" << m.pos << "," << m.to_pos << "," << m.die << "} "; }
+        std::cout << std::endl;
+    }
+    */
+  }
+  return movelist;
+}
 
 std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player) const {
   std::set<CheckerMove> half_moves;

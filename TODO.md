@@ -329,10 +329,10 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	Where: long_narde.h and long_narde.cc
 	•	Why: Better organize game rules versus implementation details.
 	•	Tasks:
-	•	[*] Move game rule constants (e.g., board size, home regions, head positions) to the header with clear documentation.
-	•	[*] Move encoding constants (e.g., kDigitBase, kPassOffset, kDoublesOffset) to the implementation file.
-	•	[*] Document the purpose of each constant.
-	•	[*] Update any code references affected by the move.
+	•	[x] Move game rule constants (e.g., board size, home regions, head positions) to the header with clear documentation.
+	•	[x] Move encoding constants (e.g., kDigitBase, kPassOffset, kDoublesOffset) to the implementation file.
+	•	[x] Document the purpose of each constant.
+	•	[x] Update any code references affected by the move.
 
 ## Comments and Documentation
 	6.	Enhance Function Comments
@@ -431,14 +431,13 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
     *   What: Modify test files (starting with `long_narde_test_actions.cc`) to avoid direct state manipulation and usage of internal encoding constants.
     *   Where: `long_narde_test_*.cc`, `long_narde.h`, `long_narde.cc`, `long_narde_test_common.h`
     *   Why: Improve test robustness, maintainability, and encapsulation. Allows internal constants (`kDigitBase`, `kPassOffset`, etc.) to be properly kept internal to `long_narde.cc` (related to Task 5).
-    *   Retrieval Hint: Experience from the initial refactoring session is stored in the knowledge graph. Use query `Task:LongNardeRefactorTask15` to retrieve it.
     *   Tasks:
         *   [x] Analyze all test files (`long_narde_test_*.cc`) for direct use of `SetState`, `MutableIsFirstTurn`, internal constants (`kDigitBase`, `kEncodingBaseDouble`, `kDoublesOffset`), or direct member access. 
             *   [x] `long_narde_test_actions.cc` (Refactored)
             *   [x] `long_narde_test_basic.cc` (Reviewed - OK)
             *   [x] `long_narde_test_movement.cc` (Refactored)
-            *   [x] `long_narde_test_bridges.cc`
-            *   [x] `long_narde_test_endgame.cc`
+            *   [x] `long_narde_test_bridges.cc` (Reviewed - OK)
+            *   [x] `long_narde_test_endgame.cc` (Refactored)
             *   [x] `long_narde_test_legacy.cc`
             *   [x] `bearing_off_test.cc` (Refactored)
             *   [x] `random_sim_test.cc` (Reviewed - OK)
@@ -446,7 +445,7 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
         *   [x] Modify tests currently using `MutableIsFirstTurn` to use the new setup helpers or structure tests to naturally progress past the first turn via applying actions. (Done for `_movement.cc`, others TBD)
         *   [x] Refactor tests (`ActionEncodingTest` initially) that check specific action ID ranges based on internal constants (`kDigitBase`, `kDoublesOffset`). Instead, verify the *behavior* or *properties* of the decoded moves corresponding to those actions (e.g., number of moves, die values used, pass moves present). (`ActionEncodingTest` in `_actions.cc` done, check others)
         *   [x] Once tests are refactored, move `kDigitBase` back to `long_narde.cc`'s anonymous namespace. Ensure `kPassOffset`, `kEncodingBaseDouble`, `kDoublesOffset` remain internal.
-        *   [-] Update Task 5 status in `TODO.md` to 'incomplete' or remove its completed checkmark until this refactoring allows its goal to be met.
+        *   [x] Update Task 5 status in `TODO.md` to 'incomplete' or remove its completed checkmark until this refactoring allows its goal to be met.
 
 ⸻
 

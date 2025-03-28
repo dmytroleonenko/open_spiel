@@ -195,6 +195,7 @@ class LongNardeState : public State {
   int score(int player) const { return scores_[player]; }
   int dice(int i) const { return dice_[i]; }
   bool double_turn() const { return double_turn_; }
+  bool is_first_turn() const { return is_first_turn_; }
   bool moved_from_head() const { return moved_from_head_; }
 
   // Get the number of checkers on the board in the specified position belonging
@@ -310,6 +311,10 @@ class LongNardeState : public State {
   std::vector<int> initial_dice_; // Dice rolled at the start of the current player's turn.
   std::vector<TurnHistoryInfo> turn_history_info_;  // Info needed for Undo.
   bool allow_last_roll_tie_;  // Tracks if a last roll for tie is allowed.
+
+  // Helper function to generate all valid move sequences.
+  std::set<std::vector<CheckerMove>> GenerateMoveSequences(
+      Player player, int max_moves) const;
 
   friend class LongNardeGame;
 

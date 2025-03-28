@@ -266,12 +266,16 @@ void EndgameScoreTest() {
   auto lnstate = static_cast<LongNardeState*>(state.get());
   
   // Set up a position where White has borne off all checkers and Black has none
-  lnstate->SetState(
-      kXPlayerId, true, {1, 2}, {15, 0}, 
-      std::vector<std::vector<int>>{
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // Size 25
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0}  // Size 25
-      });
+  std::vector<std::vector<int>> mars_board = {
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // Size 25
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0}  // Size 25 - Black all on head
+  };
+  std::vector<int> mars_scores = {15, 0};
+  std::vector<int> mars_dice = {1, 2}; // Dice don't matter for terminal state check
+  // Assuming White just finished their turn (so cur_player should be Black, but game ends)
+  // We set current player to White for SetupBoardState, but the terminal check ignores it.
+  SetupBoardState(lnstate, kXPlayerId, mars_board, mars_scores);
+  SetupDice(lnstate, mars_dice, false); // double_turn = false shouldn't matter
   
   // Game should be terminal
   SPIEL_CHECK_TRUE(lnstate->IsTerminal());
@@ -288,12 +292,14 @@ void EndgameScoreTest() {
   lnstate = static_cast<LongNardeState*>(state.get());
   
   // Set up a position where White has borne off all checkers and Black has some
-  lnstate->SetState(
-      kXPlayerId, true, {1, 2}, {15, 5}, 
-      std::vector<std::vector<int>>{
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // Size 25
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Size 25
-      });
+  std::vector<std::vector<int>> oin_board = {
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // Size 25
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Size 25 - Black has 10 on point 11
+  };
+  std::vector<int> oin_scores = {15, 5};
+  std::vector<int> oin_dice = {1, 2};
+  SetupBoardState(lnstate, kXPlayerId, oin_board, oin_scores);
+  SetupDice(lnstate, oin_dice, false);
   
   // Game should be terminal
   SPIEL_CHECK_TRUE(lnstate->IsTerminal());
@@ -311,12 +317,14 @@ void EndgameScoreTest() {
   lnstate = static_cast<LongNardeState*>(state.get());
   
   // Set up a position where both players have borne off all checkers
-  lnstate->SetState(
-      kXPlayerId, true, {1, 2}, {15, 15}, 
-      std::vector<std::vector<int>>{
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // Size 25
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Size 25
-      });
+  std::vector<std::vector<int>> tie_board = {
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // Size 25
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // Size 25
+  };
+  std::vector<int> tie_scores = {15, 15};
+  std::vector<int> tie_dice = {1, 2};
+  SetupBoardState(lnstate, kXPlayerId, tie_board, tie_scores);
+  SetupDice(lnstate, tie_dice, false);
   
   // Game should be terminal
   SPIEL_CHECK_TRUE(lnstate->IsTerminal());
