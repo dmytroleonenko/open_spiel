@@ -5,6 +5,7 @@
 
 #include "open_spiel/spiel.h"
 #include "open_spiel/tests/basic_tests.h"
+#include "open_spiel/games/long_narde/long_narde.h"
 
 namespace open_spiel {
 namespace long_narde {
@@ -152,14 +153,6 @@ void SingleLegalMoveTest() {
   // Decode the single legal action
   std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, legal_actions[0]);
 
-  // DEBUG: Print decoded moves
-  if (kDebugging) {
-    std::cout << "DEBUG: Decoded moves for action " << legal_actions[0] << ":" << std::endl;
-    for(const auto& move : moves) {
-        std::cout << "  pos=" << move.pos << ", to_pos=" << move.to_pos << ", die=" << move.die << std::endl;
-    }
-  }
-
   // Verify the sequence is (1->0, die=1) and (0->-2, die=2)
   // Note: The order within the decoded 'moves' vector depends on the encoding logic
   // (CheckerMovesToSpielMove sorts by die value descending for non-pass),
@@ -175,8 +168,8 @@ void SingleLegalMoveTest() {
           found_1_to_0_d1 = true;
       }
       // Check for the second part of the sequence (bear off from pos 0 with die 2)
-      // IsOff checks the target position based on player.
-      if (move.pos == 0 && move.die == 2 && lnstate->IsOff(kXPlayerId, move.to_pos)) {
+      // Directly check if the decoded to_pos is the bear-off position.
+      if (move.pos == 0 && move.die == 2 && move.to_pos == kBearOffPos) {
           found_0_to_off_d2 = true;
       }
   }
@@ -582,6 +575,274 @@ void VerifySingleDiePlayBehavior() {
   }
 }
 
+// New test for direct bear-off of two checkers
+void DirectBearOffTest() {
+  std::shared_ptr<const Game> game = LoadGame("long_narde");
+  std::unique_ptr<State> state = game->NewInitialState();
+  auto lnstate = static_cast<LongNardeState*>(state.get());
+  std::vector<int> dice = {1, 2}; // Dice 1 and 2
+
+  // --- White Test --- 
+  {
+    if (kDebugging) std::cout << "  Testing DirectBearOffTest (White)..." << std::endl;
+    std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
+    board[kXPlayerId][0] = 1;
+    board[kXPlayerId][1] = 1;
+    board[kOPlayerId][11] = 15; // Irrelevant black checkers
+    std::vector<int> scores = {13, 0}; // White has 13 borne off
+    lnstate->SetState(kXPlayerId, false, dice, scores, board);
+
+    auto legal_actions = lnstate->LegalActions();
+    SPIEL_CHECK_FALSE(legal_actions.empty());
+
+    bool found_direct_bearoff = false;
+    for (Action action : legal_actions) {
+      std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+      if (moves.size() == 2) {
+        bool move1_ok = (moves[0].pos == 0 && moves[0].die == 1 && moves[0].to_pos == kBearOffPos) || \
+                        (moves[1].pos == 0 && moves[1].die == 1 && moves[1].to_pos == kBearOffPos);
+        bool move2_ok = (moves[0].pos == 1 && moves[0].die == 2 && moves[0].to_pos == kBearOffPos) || \
+                        (moves[1].pos == 1 && moves[1].die == 2 && moves[1].to_pos == kBearOffPos);
+        if (move1_ok && move2_ok) {
+          found_direct_bearoff = true;
+          break;
+        }
+      }
+    }
+    // Check if *at least one* of the legal actions corresponds to the direct bear-off.
+    // Note: The test SingleLegalMoveTest currently enforces only the {1->0, 0->off} sequence.
+    // This might need to be relaxed if both sequences are deemed valid outcomes of LegalActions.
+    // For now, just check if the direct bear-off sequence IS generated.
+    SPIEL_CHECK_TRUE(found_direct_bearoff); 
+    if (kDebugging) std::cout << "  White Direct Bear-Off: Passed\n";
+  }
+
+  // --- Black Test --- 
+  {
+    if (kDebugging) std::cout << "  Testing DirectBearOffTest (Black)..." << std::endl;
+    std::vector<int> dice = {1, 2}; // Use dice 1 and 2 for bear off
+    std::vector<int> scores = {0, 13}; // Black has 13 borne off
+
+    // Directly set the state
+    lnstate->board_.assign(2, std::vector<int>(kNumPoints, 0)); // Clear board
+    lnstate->board_[kOPlayerId][12] = 1; // Black checker inside home at point 13 (index 12)
+    lnstate->board_[kOPlayerId][13] = 1; // Black checker inside home at point 14 (index 13)
+    lnstate->dice_ = dice;             // Set dice
+    lnstate->scores_ = scores;         // Set scores
+    lnstate->cur_player_ = kOPlayerId; // Set current player
+    lnstate->is_first_turn_ = false;   // Ensure it's not the first turn
+    lnstate->moved_from_head_ = false; // Reset head move flag
+
+    if (kDebugging) {
+        std::cout << "DEBUG (Black DirectBearOffTest Post-Direct-Set):\n" << lnstate->ToString() << std::endl;
+    }
+
+    auto legal_actions = lnstate->LegalActions();
+    SPIEL_CHECK_FALSE(legal_actions.empty());
+
+    // DEBUG: Print legal actions and decoded moves for Black
+    std::cout << "DEBUG (Black DirectBearOffTest): Found " << legal_actions.size() << " legal actions." << std::endl;
+
+    bool found_direct_bearoff = false;
+    for (Action action : legal_actions) {
+      std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, action);
+      std::cout << "DEBUG (Black DirectBearOffTest): Action " << action << " decodes to:" << std::endl;
+      for(const auto& m : moves) {
+          std::cout << "  pos=" << m.pos << ", to=" << m.to_pos << ", die=" << m.die << std::endl;
+      }
+      if (moves.size() == 2) { // Check for the correct sequence {12->off(d1), 13->off(d2)}
+        bool move1_ok = (moves[0].pos == 12 && moves[0].die == 1 && moves[0].to_pos == kBearOffPos) || \
+                        (moves[1].pos == 12 && moves[1].die == 1 && moves[1].to_pos == kBearOffPos);
+        bool move2_ok = (moves[0].pos == 13 && moves[0].die == 2 && moves[0].to_pos == kBearOffPos) || \
+                        (moves[1].pos == 13 && moves[1].die == 2 && moves[1].to_pos == kBearOffPos); // Check for 13->off(d2)
+        if (move1_ok && move2_ok) {
+          found_direct_bearoff = true;
+          break;
+        }
+      }
+    }
+    SPIEL_CHECK_TRUE(found_direct_bearoff); 
+    if (kDebugging) std::cout << "  Black Direct Bear-Off: Passed\n";
+  }
+}
+
+// New test for single checker bear-off rules (higher die, only die)
+void SingleCheckerBearOffTest() {
+  std::shared_ptr<const Game> game = LoadGame("long_narde");
+  std::unique_ptr<State> state = game->NewInitialState();
+  auto lnstate = static_cast<LongNardeState*>(state.get());
+  
+  // --- Scenario 1: Higher Die Rule (Both playable) ---
+  {
+    if (kDebugging) std::cout << "  Testing SingleCheckerBearOffTest (Higher Die Rule)..." << std::endl;
+    std::vector<int> dice = {1, 6}; // Dice 1 and 6
+    
+    // White Test (Checker at pos 0)
+    std::vector<std::vector<int>> boardW(2, std::vector<int>(kNumPoints, 0));
+    boardW[kXPlayerId][0] = 1;
+    lnstate->SetState(kXPlayerId, false, dice, {14, 0}, boardW);
+    auto legal_actionsW = lnstate->LegalActions();
+    SPIEL_CHECK_EQ(legal_actionsW.size(), 1); // Expect only one action
+    std::vector<CheckerMove> movesW = lnstate->SpielMoveToCheckerMoves(kXPlayerId, legal_actionsW[0]);
+    bool found_die6W = false;
+    for(const auto& m : movesW) { if(m.pos == 0 && m.die == 6 && m.to_pos == kBearOffPos) found_die6W = true; }
+    SPIEL_CHECK_TRUE(found_die6W);
+    if (kDebugging) std::cout << "  White Higher Die: Passed\n";
+
+    // Black Test (Checker at pos 12)
+    std::vector<std::vector<int>> boardB(2, std::vector<int>(kNumPoints, 0));
+    boardB[kOPlayerId][12] = 1;
+    lnstate->SetState(kOPlayerId, false, dice, {0, 14}, boardB);
+    auto legal_actionsB = lnstate->LegalActions();
+    SPIEL_CHECK_EQ(legal_actionsB.size(), 1); // Expect only one action
+    std::vector<CheckerMove> movesB = lnstate->SpielMoveToCheckerMoves(kOPlayerId, legal_actionsB[0]);
+    bool found_die6B = false;
+    for(const auto& m : movesB) { if(m.pos == 12 && m.die == 6 && m.to_pos == kBearOffPos) found_die6B = true; }
+    SPIEL_CHECK_TRUE(found_die6B);
+    if (kDebugging) std::cout << "  Black Higher Die: Passed\n";
+  }
+
+  // --- Scenario 2: Only One Die Playable ---
+  {
+    if (kDebugging) std::cout << "  Testing SingleCheckerBearOffTest (Only One Die Playable)..." << std::endl;
+    std::vector<int> dice = {1, 3}; // Dice 1 and 3
+    
+    // White Test (Checker at pos 0 - only die 1 or 3 works)
+    std::vector<std::vector<int>> boardW(2, std::vector<int>(kNumPoints, 0));
+    boardW[kXPlayerId][0] = 1;
+    lnstate->SetState(kXPlayerId, false, dice, {14, 0}, boardW);
+    auto legal_actionsW = lnstate->LegalActions();
+    SPIEL_CHECK_EQ(legal_actionsW.size(), 1); // Expect only one action
+    std::vector<CheckerMove> movesW = lnstate->SpielMoveToCheckerMoves(kXPlayerId, legal_actionsW[0]);
+    bool found_die3W = false; // Higher die is 3
+    for(const auto& m : movesW) { if(m.pos == 0 && m.die == 3 && m.to_pos == kBearOffPos) found_die3W = true; }
+    SPIEL_CHECK_TRUE(found_die3W);
+    if (kDebugging) std::cout << "  White Only Die (3): Passed\n";
+
+    // Black Test (Checker at pos 12 - only die 1 or 3 works)
+    std::vector<std::vector<int>> boardB(2, std::vector<int>(kNumPoints, 0));
+    boardB[kOPlayerId][12] = 1;
+    lnstate->SetState(kOPlayerId, false, dice, {0, 14}, boardB);
+    auto legal_actionsB = lnstate->LegalActions();
+    SPIEL_CHECK_EQ(legal_actionsB.size(), 1); // Expect only one action
+    std::vector<CheckerMove> movesB = lnstate->SpielMoveToCheckerMoves(kOPlayerId, legal_actionsB[0]);
+    bool found_die1B = false; // For pos 12 (needs 1 pip), die 1 is exact, die 3 is higher. Must use 3.
+    bool found_die3B = false;
+    for(const auto& m : movesB) {
+         if(m.pos == 12 && m.die == 1 && m.to_pos == kBearOffPos) found_die1B = true;
+         if(m.pos == 12 && m.die == 3 && m.to_pos == kBearOffPos) found_die3B = true;
+     }
+    SPIEL_CHECK_FALSE(found_die1B);
+    SPIEL_CHECK_TRUE(found_die3B);
+    if (kDebugging) std::cout << "  Black Only Die (3): Passed\n";
+
+     // Black Test (Checker at pos 14 - needs 3 pips. Only die 3 works)
+     boardB.assign(2, std::vector<int>(kNumPoints, 0)); // Clear board
+     boardB[kOPlayerId][14] = 1;
+     lnstate->SetState(kOPlayerId, false, dice, {0, 14}, boardB);
+     legal_actionsB = lnstate->LegalActions();
+     SPIEL_CHECK_EQ(legal_actionsB.size(), 1); // Expect only one sequence (the two-step one)
+     movesB = lnstate->SpielMoveToCheckerMoves(kOPlayerId, legal_actionsB[0]);
+     // Correctly check for the TWO-STEP sequence: {14,13,1} {13,-1,3}
+     SPIEL_CHECK_EQ(movesB.size(), 2);
+     bool step1_ok = (movesB[0].pos == 14 && movesB[0].to_pos == 13 && movesB[0].die == 1) || \
+                     (movesB[1].pos == 14 && movesB[1].to_pos == 13 && movesB[1].die == 1);
+     bool step2_ok = (movesB[0].pos == 13 && movesB[0].to_pos == kBearOffPos && movesB[0].die == 3) || \
+                     (movesB[1].pos == 13 && movesB[1].to_pos == kBearOffPos && movesB[1].die == 3);
+     SPIEL_CHECK_TRUE(step1_ok && step2_ok);
+     if (kDebugging) std::cout << "  Black Only Die (3 from pos 14): Passed\n";
+
+  }
+}
+
+// New test for bearing off the last checker, forcing a pass on the second die
+void BearOffLastCheckerTest() {
+  if (kDebugging) std::cout << "\n=== Running BearOffLastCheckerTest ===\n";
+  std::shared_ptr<const Game> game = LoadGame("long_narde");
+  std::unique_ptr<State> state = game->NewInitialState();
+  auto lnstate = static_cast<LongNardeState*>(state.get());
+  std::vector<int> dice = {4, 5}; // High dice, either can bear off
+
+  // --- White Test (Last checker at pos 1, needs 2 pips) ---
+  {
+    if (kDebugging) std::cout << "  Testing White Last Checker Bear Off..." << std::endl;
+    std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
+    board[kXPlayerId][1] = 1; // White's last checker at pos 1 (needs 2 pips)
+    board[kOPlayerId][11] = 15; // Irrelevant black checkers
+    std::vector<int> scores = {14, 0}; // White has 14 borne off
+
+    lnstate->SetState(kXPlayerId, false, dice, scores, board);
+
+    auto legal_actions = lnstate->LegalActions();
+    SPIEL_CHECK_EQ(legal_actions.size(), 1); // Should only be one legal action
+
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, legal_actions[0]);
+    SPIEL_CHECK_EQ(moves.size(), 2); // Action encodes two half-moves
+
+    bool found_bear_off = false;
+    bool found_pass = false;
+    int bear_off_die = -1;
+
+    for (const auto& move : moves) {
+      if (move.pos == 1 && move.to_pos == kBearOffPos && (move.die == 4 || move.die == 5)) {
+        // According to rules, higher die (5) should be used if possible
+        SPIEL_CHECK_EQ(move.die, 5); 
+        found_bear_off = true;
+        bear_off_die = move.die;
+      } else if (move.pos == kPassPos) {
+        found_pass = true;
+        // The pass should correspond to the unused die
+        SPIEL_CHECK_NE(move.die, bear_off_die); 
+        SPIEL_CHECK_TRUE(move.die == 4 || move.die == 5);
+      }
+    }
+
+    SPIEL_CHECK_TRUE(found_bear_off);
+    SPIEL_CHECK_TRUE(found_pass);
+    if (kDebugging) std::cout << "  White Last Checker: Passed\n";
+  }
+
+  // --- Black Test (Last checker at pos 13, needs 2 pips) ---
+  {
+    if (kDebugging) std::cout << "  Testing Black Last Checker Bear Off..." << std::endl;
+    std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
+    board[kOPlayerId][13] = 1; // Black's last checker at pos 13 (needs 2 pips)
+    board[kXPlayerId][23] = 15; // Irrelevant white checkers
+    std::vector<int> scores = {0, 14}; // Black has 14 borne off
+
+    lnstate->SetState(kOPlayerId, false, dice, scores, board);
+
+    auto legal_actions = lnstate->LegalActions();
+    SPIEL_CHECK_EQ(legal_actions.size(), 1); // Should only be one legal action
+
+    std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, legal_actions[0]);
+    SPIEL_CHECK_EQ(moves.size(), 2); // Action encodes two half-moves
+
+    bool found_bear_off = false;
+    bool found_pass = false;
+    int bear_off_die = -1;
+
+    for (const auto& move : moves) {
+      if (move.pos == 13 && move.to_pos == kBearOffPos && (move.die == 4 || move.die == 5)) {
+        // According to rules, higher die (5) should be used if possible
+        SPIEL_CHECK_EQ(move.die, 5); 
+        found_bear_off = true;
+        bear_off_die = move.die;
+      } else if (move.pos == kPassPos) {
+        found_pass = true;
+         // The pass should correspond to the unused die
+        SPIEL_CHECK_NE(move.die, bear_off_die);
+        SPIEL_CHECK_TRUE(move.die == 4 || move.die == 5);
+      }
+    }
+
+    SPIEL_CHECK_TRUE(found_bear_off);
+    SPIEL_CHECK_TRUE(found_pass);
+    if (kDebugging) std::cout << "  Black Last Checker: Passed\n";
+  }
+   if (kDebugging) std::cout << "✓ BearOffLastCheckerTest passed\n";
+}
+
 }  // namespace
 }  // namespace long_narde
 }  // namespace open_spiel
@@ -604,6 +865,9 @@ void TestActionEncoding() {
   ConsecutiveMovesTest();
   UndoRedoTest();
   VerifySingleDiePlayBehavior();
+  DirectBearOffTest();
+  SingleCheckerBearOffTest();
+  BearOffLastCheckerTest();
   
   std::cout << "✓ All action encoding tests passed\n";
 }

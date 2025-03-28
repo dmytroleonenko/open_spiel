@@ -4,13 +4,14 @@
 #include "open_spiel/games/long_narde/long_narde.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/tests/basic_tests.h"
+#include "open_spiel/spiel_utils.h"
 
 namespace open_spiel {
 namespace long_narde {
 
-// Additional constants for testing
-constexpr int kBearOffPos = 0;  // Position used for bearing off
-constexpr int kPassDie = 0;    // Die value used for pass moves
+// Common constants for tests
+// constexpr int kNumPoints = 24; // Defined in long_narde.h
+// constexpr int kPassPos = -1;   // Defined in long_narde.h
 
 // Common utility functions
 bool ActionsContains(const std::vector<Action>& legal_actions, Action action);
@@ -30,7 +31,10 @@ void BasicLongNardeTests();
 // TestBasicMovement is implemented in long_narde_test_movement.cc
 void TestBasicMovement();
 
+// Helper function to create a Long Narde game state
+std::unique_ptr<LongNardeState> CreateStateFromString(const std::string& board_string);
+
 }  // namespace long_narde
 }  // namespace open_spiel
 
-#endif  // OPEN_SPIEL_GAMES_LONG_NARDE_TEST_COMMON_H_ 
+#endif  // OPEN_SPIEL_GAMES_LONG_NARDE_TEST_COMMON_H_

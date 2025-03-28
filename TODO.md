@@ -267,3 +267,165 @@ The following tests have differences between the original implementation and the
 # Long Narde Test Cases Review
 
 // ... existing code ... 
+
+# Optimization Tasks
+
+## Code Simplification
+	1.	Refactor LegalActions Function
+	•	What: Break down the complex LegalActions function into smaller, focused helper functions.
+	•	Where: long_narde.cc (lines 1770–1892)
+	•	Why: Improve readability and maintainability by separating move generation, filtering, and higher-die rule logic.
+	•	Tasks:
+	•	[ ] Create a helper for move sequence generation (e.g., GenerateMoveSequences).
+	•	[ ] Create a helper for move sequence filtering (e.g., FilterLongestSequences).
+	•	[ ] Create a helper for higher-die rule application (e.g., ApplyHigherDieRuleIfNeeded).
+	•	[ ] Create a helper for doubles move handling.
+	•	[ ] Use early returns to avoid deeply nested conditions.
+	2.	Simplify RecLegalMoves Function
+	•	What: Convert the recursive RecLegalMoves function to an iterative approach using a stack or queue.
+	•	Where: long_narde.cc (lines 1598–1681)
+	•	Why: Reduce complexity and potential stack overflow risks.
+	•	Tasks:
+	•	[ ] Design an iterative algorithm structure (BFS/DFS style) to generate half-move sequences.
+	•	[ ] Implement stack-based (or queue-based) move generation that mimics the current recursive behavior.
+	•	[ ] Maintain existing pruning optimizations (e.g., bridging checks and head-rule validations) during iteration.
+	•	[ ] Add comprehensive tests to verify equivalence with the recursive approach.
+	3.	Clarify Action Encoding/Decoding
+	•	What: Refactor encoding logic with helper functions and clear documentation.
+	•	Where: long_narde.cc (lines 157–266 for encoding, 268–323 for decoding)
+	•	Why: Make the complex encoding logic more maintainable.
+	•	Tasks:
+	•	[ ] Add detailed documentation of the encoding scheme (normal moves, doubles, pass moves, offsets).
+	•	[ ] Create helpers such as EncodeSingleMove, DecodeSingleMove, EncodeDoubles, and DecodeDoubles.
+	•	[ ] Create additional helpers for pass move handling.
+	•	[ ] Add validation checks for encoding ranges to ensure no collisions.
+
+## Code Structure
+	4.	Group Related Functions
+	•	What: Organize related functions into logical sections.
+	•	Where: long_narde.cc
+	•	Why: Improve code navigation and maintainability.
+	•	Tasks:
+	•	[x] Group validation functions together.
+	•	[x] Group move generation functions (including the new iterative version of move sequence generation).
+	•	[x] Group encoding/decoding functions with their respective constants.
+	•	[x] Add clear section comments (e.g., // ===== Move Generation =====, // ===== Encoding/Decoding =====).
+	5.	Consolidate Constants
+	•	What: Reorganize constants between header and implementation.
+	•	Where: long_narde.h and long_narde.cc
+	•	Why: Better organize game rules versus implementation details.
+	•	Tasks:
+	•	[*] Move game rule constants (e.g., board size, home regions, head positions) to the header with clear documentation.
+	•	[*] Move encoding constants (e.g., kDigitBase, kPassOffset, kDoublesOffset) to the implementation file.
+	•	[*] Document the purpose of each constant.
+	•	[*] Update any code references affected by the move.
+
+## Comments and Documentation
+	6.	Enhance Function Comments
+	•	What: Add detailed comments for complex functions.
+	•	Where: Key functions in long_narde.cc
+	•	Why: Improve code understanding.
+	•	Tasks:
+	•	[ ] Document the logic of the (now iterative) move sequence generation function.
+	•	[ ] Document the checks in IsValidCheckerMove (bounds, head rule, bearing off, opponent occupancy, bridging).
+	•	[ ] Document the bridge rule implementation and the rationale behind it.
+	•	[ ] Add parameter and return documentation using a consistent style (e.g., Doxygen).
+	7.	Document Encoding Logic
+	•	What: Add comprehensive documentation for the encoding scheme.
+	•	Where: long_narde.cc (lines 157–266, 268–323)
+	•	Why: Clarify the complex encoding schemes for normal moves, doubles, and pass moves.
+	•	Tasks:
+	•	[ ] Document normal move encoding (e.g., pos * 6 + (die - 1)).
+	•	[ ] Document doubles move encoding (including use of an offset).
+	•	[ ] Document pass move handling (using kPassOffset + (die - 1)).
+	•	[ ] Add explanations for the encoding ranges and any potential edge cases.
+
+## Performance Optimization
+	8.	Optimize LegalActions Cloning
+	•	What: Reduce state cloning overhead in LegalActions.
+	•	Where: long_narde.cc (lines 1773–1774)
+	•	Why: Improve performance for frequent calls.
+	•	Tasks:
+	•	[ ] Profile the current implementation of state cloning.
+	•	[ ] Explore alternatives to full cloning (e.g., shallow copy of necessary fields or in-place apply/undo).
+	•	[ ] Implement and test the improved approach.
+	•	[ ] Measure and document performance impact.
+	9.	Improve Move Sequence Storage
+	•	What: Replace set-based storage with a vector and post-processing.
+	•	Where: long_narde.cc (lines 1600, 1770–1892)
+	•	Why: Reduce overhead from vector comparisons when storing move sequences.
+	•	Tasks:
+	•	[ ] Implement move sequence storage using a std::vector of sequences.
+	•	[ ] Use sorting and std::unique for duplicate removal after sequence generation.
+	•	[ ] Test performance impact and verify correctness.
+
+## Algorithm Improvements
+	10.	Validate Encoding Schemes
+	•	What: Thoroughly test action encoding edge cases.
+	•	Where: long_narde.cc (lines 157–266, 268–323)
+	•	Why: Ensure robust handling of normal, doubles, and pass move encoding.
+	•	Tasks:
+	•	[ ] Create tests for normal moves encoding.
+	•	[ ] Create tests for doubles moves encoding.
+	•	[ ] Create tests for pass moves encoding.
+	•	[ ] Verify that encoding followed by decoding returns the original moves and that no collisions occur.
+	11.	Enhance Bridge Rule Checks
+	•	What: Improve and verify bridge rule testing.
+	•	Where: long_narde.cc (lines 562–601, 1900–1968)
+	•	Why: Ensure bridge rule correctness, especially for wrap-around cases and different player paths.
+	•	Tasks:
+	•	[ ] Test wrap-around cases (e.g., bridging from point 23 to 0).
+	•	[ ] Test bridging on different player paths (white vs. black).
+	•	[ ] Test cases with partial bridge formation.
+	•	[ ] Confirm that the bridge rule correctly prevents a full trap.
+
+## Testing
+	12.	Add Comprehensive Encoding Tests
+	•	What: Create an encoding/decoding test suite.
+	•	Where: New test file or long_narde_test.cc
+	•	Why: Verify that all encoding cases (normal, doubles, pass) work correctly.
+	•	Tasks:
+	•	[ ] Test encoding/decoding for normal moves.
+	•	[ ] Test encoding/decoding for doubles moves.
+	•	[ ] Test encoding/decoding for pass moves.
+	•	[ ] Test edge cases and validate that decode(encode(…)) equals the original.
+	13.	Expand Movement Direction Tests
+	•	What: Add test cases for movement directions.
+	•	Where: long_narde_test_movement.cc
+	•	Why: Improve coverage of movement logic, including bearing off.
+	•	Tasks:
+	•	[ ] Test various dice combinations.
+	•	[ ] Test moves from different board positions.
+	•	[ ] Test bearing off moves.
+	•	[ ] Test constraints on movement direction (especially for black's wrap-around).
+	14.	Implement Missing Test Cases
+	•	What: Complete test coverage for all rules.
+	•	Where: Test files.
+	•	Why: Ensure full rule coverage and robustness.
+	•	Tasks:
+	•	[*] Implement missing `FirstTurnDoublesExceptionTest` (Covered by HeadRuleTest)
+	•	[*] Ensure all original `BlockingBridgeRuleTest` cases are covered (Covered by TestBridgeFormation in long_narde_test_bridges.cc)
+	•	[ ] Add tests for scoring edge cases (e.g., mars vs. oin scoring, tie scenarios).
+	•	[*] Add comprehensive move validation tests. (Covered by various existing tests: NoLanding, HeadRule, Bridge, Movement, BearingOff, SingleLegal, Pass, HigherDie)
+
+⸻
+
+## Progress Tracking
+	•	[ ] Code Simplification (Tasks 1–3)
+	•	[ ] Code Structure (Tasks 4–5)
+	•	[ ] Documentation (Tasks 6–7)
+	•	[ ] Performance (Tasks 8–9)
+	•	[ ] Algorithms (Tasks 10–11)
+	•	[ ] Testing (Tasks 12–14)
+
+⸻
+
+## Summary of Key Recommendations
+	•	Break large functions into smaller helpers for move generation, filtering, and encoding/decoding.
+	•	Adopt an iterative approach for move sequence generation to simplify recursion and allow early pruning.
+	•	Document thoroughly—especially the complex encoding schemes and bridging logic—to ease future maintenance.
+	•	Group related logic (validation, move generation, encoding) with clear section comments to improve code navigation.
+	•	Reduce cloning overhead and improve move sequence storage using vectors and post-processing instead of sets.
+	•	Expand and automate tests for encoding, movement, and bridging rules to ensure robust functionality.
+
+By addressing these tasks, the Long Narde codebase will become simpler, better organized, more performant, and easier to maintain or extend in the future. 

@@ -79,15 +79,21 @@ inline constexpr const int kBlackHomeStart = 12;  // Point 13 (0-indexed)
 inline constexpr const int kBlackHomeEnd = 17;    // Point 18 (0-indexed)
 
 inline constexpr const int kScorePos = 101;  // Special sentinel value for scored checkers
+inline constexpr const int kBearOffPos = -1; // Canonical value used internally for bearing off. Note: NOT the same as kPassPos.
+inline constexpr const int kNumNonDoubleOutcomes = 15; // Number of non-double dice outcomes (e.g., 1-2, 1-3, ..., 5-6)
 
-// The action encoding stores a number in { 0, 1, ..., 1249 }. If the high
-// roll is to move first, then the number is encoded as a 2-digit number in
-// base 25 ({0, 1, .., 23, Pass}) (=> first 625 numbers). Otherwise,
-// the low die is to move first and, 625 is subtracted and then again the
-// number is encoded as a 2-digit number in base 25.
-inline constexpr const int kNumDistinctActions = 1250;  // Number of distinct
-                                                       // actions = 25*25*2
-                                                       
+// Action Encoding Space:
+// The action encoding aims to represent all possible moves within a single integer.
+// However, the current constant kNumDistinctActions (1250) seems inconsistent with
+// the actual encoding logic implemented in long_narde.cc, which uses:
+// 1. A base-150 system (`kDigitBase`) for combining two half-moves in non-double scenarios.
+//    (Max action value roughly 2 * 150 * 150 = 45000)
+// 2. A base-25 system (`kEncodingBaseDouble`) for encoding up to 4 checker positions during doubles.
+//    (Max action value depends on kDoublesOffset + 25^4)
+// The NumDistinctActions() method calculates the true maximum based on the implementation.
+// This constant might be legacy or require revision.
+inline constexpr const int kNumDistinctActions = 1250;  // Potential maximum number of distinct actions. See comment above.
+
 // Since Long Narde doesn't have hitting, we only need to track:
 // 1) If a point is occupied (and how many checkers)
 // The simplified encoding uses 1 value per point per player
@@ -141,7 +147,7 @@ class LongNardeGame;
 class LongNardeState : public State {
  public:
   LongNardeState(const LongNardeState&) = default;
-  LongNardeState(std::shared_ptr<const Game>);
+  LongNardeState(std::shared_ptr<const Game> game);
 
   Player CurrentPlayer() const override;
   void UndoAction(Player player, Action action) override;
@@ -261,6 +267,14 @@ class LongNardeState : public State {
   // Check if checker_pos is ahead of reference_pos on player's path
   bool IsAhead(int player, int checker_pos, int reference_pos) const;
 
+  // Directly expose board_ for testing/debugging
+  std::vector<std::vector<int>> board_;  // Checkers for each player on points.
+  std::vector<int> dice_; // Current dice roll.
+  std::vector<int> scores_; // Number of checkers borne off by each player.
+  Player cur_player_; // Player whose turn it is.
+  bool is_first_turn_;
+  bool moved_from_head_;
+
  protected:
   void DoApplyAction(Action move_id) override;
 
@@ -284,18 +298,13 @@ class LongNardeState : public State {
 
   ScoringType scoring_type_;  // Which rules apply when scoring the game.
 
-  Player cur_player_;
   Player prev_player_;
   int turns_;
   int x_turns_;
   int o_turns_;
   bool double_turn_;
-  bool is_first_turn_;        // Tracks if this is the first turn
-  bool moved_from_head_;      // Tracks if a checker was moved from the head this turn
   bool is_playing_extra_turn_; // Added: tracks if current turn is an extra turn from doubles
-  std::vector<int> dice_;     // Current dice.
-  std::vector<int> scores_;   // Checkers returned home by each player.
-  std::vector<std::vector<int>> board_;  // Checkers for each player on points.
+  std::vector<int> initial_dice_; // Dice rolled at the start of the current player's turn.
   std::vector<TurnHistoryInfo> turn_history_info_;  // Info needed for Undo.
   bool allow_last_roll_tie_;  // Tracks if a last roll for tie is allowed.
 
