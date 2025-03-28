@@ -2120,9 +2120,9 @@ std::pair<std::set<std::vector<CheckerMove>>, int> LongNardeState::FilterBestMov
       p_die1 = std::max(1, std::min(6, p_die1));
       p_die2 = std::max(1, std::min(6, p_die2));
 
-      // Use the constant kPassMove directly
-      pass_move_seq.push_back(kPassMove); // Represents first die pass
-      pass_move_seq.push_back(kPassMove); // Represents second die pass
+      // Use the actual dice values when creating the pass moves for correct encoding.
+      pass_move_seq.push_back({kPassPos, kPassPos, p_die1}); 
+      pass_move_seq.push_back({kPassPos, kPassPos, p_die2}); 
       
       // Return a set containing just this pass sequence and max_non_pass = 0
       return {{pass_move_seq}, 0};
