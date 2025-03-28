@@ -196,74 +196,161 @@ We will create a copy of "games/backgammon" and modify it to implement the game 
      - Verified tie behavior differences between scoring modes
      - Tested multiple edge cases of the Long Narde endgame scoring rules 
 
-# Long Narde Test Cases TODO
 
-This file contains a list of test cases from the original `long_narde_test.cc` that need to be properly implemented in separate files.
 
-## Missing Test Cases
 
-The following test cases from the original test file have not been properly implemented in separate files:
 
-1. **HeadRuleTest** (Test Case #2)
-   - Original Location: `long_narde_test.cc`
-   - Expected Location: `long_narde_test_movement.cc`
-   - Issue: A different test named `HeadRuleTestInternal` exists in `long_narde_test_movement.cc`, but it uses a different approach and doesn't exactly match the original test. The original test specifically checks for `actual_multi_head_moves` which isn't present in the new implementation.
+# Optimization Tasks
 
-2. **FirstTurnDoublesExceptionTest** (Test Case #3)
-   - Original Location: `long_narde_test.cc`
-   - Expected Location: `long_narde_test_movement.cc` or `long_narde_test_basic.cc`
-   - Issue: This test is completely missing from the separate test files.
+## Code Simplification
+1. **Refactor LegalActions Function**
+   - **What:** Break down the complex `LegalActions` function into smaller, focused helper functions.
+   - **Where:** `long_narde.cc` (lines 1770-1892)
+   - **Why:** Improve readability and maintainability by separating move generation, filtering, and higher-die rule logic.
+   - **Tasks:**
+     - Create helper for move sequence filtering
+     - Create helper for higher-die rule application
+     - Create helper for doubles move handling
 
-3. **BlockingBridgeRuleTest** (Test Case #4)
-   - Original Location: `long_narde_test.cc`
-   - Expected Location: `long_narde_test_bridges.cc`
-   - Issue: While there is a `TestBridgeFormation` test in `long_narde_test_bridges.cc`, it doesn't exactly match the implementation of the original `BlockingBridgeRuleTest`. The original test had 4 specific test cases that aren't all covered.
+2. **Simplify RecLegalMoves Function**
+   - **What:** Convert recursive `RecLegalMoves` function to iterative approach using stack/queue
+   - **Where:** `long_narde.cc` (lines 1598-1681)
+   - **Why:** Reduce complexity and potential stack overflow risks
+   - **Tasks:**
+     - Design iterative algorithm structure
+     - Implement stack-based move generation
+     - Maintain existing pruning optimizations
+     - Add comprehensive tests for equivalence
 
-## Correctly Implemented Tests
+3. **Clarify Action Encoding/Decoding**
+   - **What:** Refactor encoding logic with helper functions and clear documentation
+   - **Where:** `long_narde.cc` (lines 157-266 for encoding, 268-323 for decoding)
+   - **Why:** Make complex encoding logic more maintainable
+   - **Tasks:**
+     - Add detailed encoding scheme documentation
+     - Create helpers for single move encoding/decoding
+     - Create helpers for doubles move handling
+     - Add validation checks for encoding ranges
 
-1. **InitialBoardSetupTest** (Test Case #1)
-   - Original Location: `long_narde_test.cc`
-   - Current Location: `long_narde_test_basic.cc`
-   - Status: Correctly implemented with minor refactoring that preserves the test logic. 
+## Code Structure
+4. **Group Related Functions**
+   - **What:** Organize related functions into logical sections
+   - **Where:** `long_narde.cc`
+   - **Why:** Improve code navigation and maintainability
+   - **Tasks:**
+     - Group validation functions
+     - Group move generation functions
+     - Group encoding/decoding functions
+     - Add section comments
 
-# Test Case Implementation Issues
+5. **Consolidate Constants**
+   - **What:** Reorganize constants between header and implementation
+   - **Where:** `long_narde.h` and `long_narde.cc`
+   - **Why:** Better organize game rules vs implementation details
+   - **Tasks:**
+     - Move game rules to header
+     - Move encoding constants to implementation
+     - Document constant purposes
+     - Update any affected code
 
-The following test cases from the original long_narde_test.cc are not properly implemented in separate files:
+## Comments and Documentation
+6. **Enhance Function Comments**
+   - **What:** Add detailed comments for complex functions
+   - **Where:** Key functions in `long_narde.cc`
+   - **Why:** Improve code understanding
+   - **Tasks:**
+     - Document `RecLegalMoves` logic
+     - Document `IsValidCheckerMove` checks
+     - Document bridge rule implementation
+     - Add parameter/return documentation
 
-1. ~~`HomeRegionsTest` (test case 6) - Not implemented in any separate file~~ - **Fixed**: Implemented in long_narde_test_movement.cc
-2. ~~`BearingOffLogicTest` (test case 7) - Not implemented in bearing_off_test.cc which handles a different bearing off test~~ - **Fixed**: Implemented in long_narde_test_endgame.cc
-3. ~~`ScoringSystemTest` (test case 8) - Not implemented in any separate file, should probably be in long_narde_test_endgame.cc~~ - **Fixed**: Implemented in long_narde_test_endgame.cc
+7. **Document Encoding Logic**
+   - **What:** Add comprehensive encoding documentation
+   - **Where:** `long_narde.cc` (lines 157-266, 268-323)
+   - **Why:** Clarify complex encoding schemes
+   - **Tasks:**
+     - Document normal move encoding
+     - Document doubles move encoding
+     - Document pass move handling
+     - Add encoding range explanations
 
-The following tests have differences between the original implementation and the separate file:
+## Performance Optimization
+8. **Optimize LegalActions Cloning**
+   - **What:** Reduce state cloning overhead in `LegalActions`
+   - **Where:** `long_narde.cc` (lines 1773-1774)
+   - **Why:** Improve performance for frequent calls
+   - **Tasks:**
+     - Profile current implementation
+     - Explore alternatives to full cloning
+     - Implement and test improvements
+     - Measure performance impact
 
-1. ~~`MovementDirectionTest` (test case 5) - Implementation in long_narde_test_movement.cc is different from the original~~ - **Fixed**: Updated in long_narde_test_movement.cc to match original
-2. ~~`NoLandingOnOpponentTest` (test case 9) - Implementation in long_narde_test_movement.cc is different from the original~~ - **Fixed**: Updated in long_narde_test_movement.cc to match original 
+9. **Improve Move Sequence Storage**
+   - **What:** Replace set-based storage with vector and post-processing
+   - **Where:** `long_narde.cc` (lines 1600, 1770-1892)
+   - **Why:** Reduce overhead from vector comparisons
+   - **Tasks:**
+     - Implement vector-based storage
+     - Add efficient duplicate removal
+     - Test performance impact
+     - Verify correctness
 
-# Long Narde Test Implementation TODOs
+## Algorithm Improvements
+10. **Validate Encoding Schemes**
+    - **What:** Test action encoding edge cases
+    - **Where:** `long_narde.cc` (lines 157-266, 268-323)
+    - **Why:** Ensure robust encoding handling
+    - **Tasks:**
+      - Test normal moves encoding
+      - Test doubles moves encoding
+      - Test pass moves encoding
+      - Verify no encoding collisions
 
-## Test Case Implementation Discrepancies
+11. **Enhance Bridge Rule Checks**
+    - **What:** Improve bridge rule testing
+    - **Where:** `long_narde.cc` (lines 562-601, 1900-1968)
+    - **Why:** Verify bridge rule correctness
+    - **Tasks:**
+      - Test wrap-around cases
+      - Test different player paths
+      - Test partial bridge formation
+      - Test bridge prevention
 
-### Test Case #18: BearingOffFromPosition1Test
-~~The implementation in `long_narde_test_endgame.cc` significantly differs from the original test in `long_narde_test.cc`:~~
+## Testing
+12. **Add Comprehensive Encoding Tests**
+    - **What:** Create encoding/decoding test suite
+    - **Where:** New test file or `long_narde_test.cc`
+    - **Why:** Verify encoding correctness
+    - **Tasks:**
+      - Test normal moves
+      - Test doubles moves
+      - Test pass moves
+      - Test edge cases
 
-~~- **Original Test**:~~
-  ~~- Uses a board with White having 7 checkers at position 1~~
-  ~~- Tests bearing off with dice values 1 and 3~~
-  ~~- Checks if bearing off is allowed with both exact roll (1) and higher roll (3)~~
-  ~~- Verifies pass action availability~~
-  ~~- Tests a bug where bearing off should be allowed with any roll but is only working with exact roll~~
+13. **Expand Movement Direction Tests**
+    - **What:** Add movement direction test cases
+    - **Where:** `long_narde_test_movement.cc`
+    - **Why:** Improve movement logic coverage
+    - **Tasks:**
+      - Test various dice combinations
+      - Test different positions
+      - Test bearing off moves
+      - Test direction constraints
 
-~~- **New Implementation**:~~
-  ~~- Uses a different board setup (White has checkers at positions 1, 2, 3, 4, 5)~~
-  ~~- Uses dice 6 and 2 instead of 1 and 3~~
-  ~~- Only tests bearing off with higher roll (6 from position 1)~~
-  ~~- Tests both White and Black bearing off~~
-  ~~- Does not check for pass action~~
+14. **Implement Missing Test Cases**
+    - **What:** Complete test coverage
+    - **Where:** Test files
+    - **Why:** Ensure all rules are tested
+    - **Tasks:**
+      - Add first turn doubles tests
+      - Add bridge rule edge cases
+      - Add scoring edge cases
+      - Add comprehensive move validation
 
-~~**Action Required**: Update `long_narde_test_endgame.cc` to match the original test's logic and edge cases.~~
-
-**Fixed**: Updated BearingOffFromPosition1Test in long_narde_test_endgame.cc to match the original test's implementation.
-
-# Long Narde Test Cases Review
-
-// ... existing code ... 
+## Progress Tracking
+- [ ] Code Simplification (Tasks 1-3)
+- [ ] Code Structure (Tasks 4-5)
+- [ ] Documentation (Tasks 6-7)
+- [ ] Performance (Tasks 8-9)
+- [ ] Algorithms (Tasks 10-11)
+- [ ] Testing (Tasks 12-14) 

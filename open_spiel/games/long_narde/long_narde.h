@@ -54,6 +54,11 @@ struct CheckerMove {
     if (to_pos != rhs.to_pos) return to_pos < rhs.to_pos;
     return die < rhs.die;
   }
+
+  // Add the equality operator
+  bool operator==(const CheckerMove& rhs) const {
+    return pos == rhs.pos && to_pos == rhs.to_pos && die == rhs.die;
+  }
 };
 
 // Constant pass move to avoid repeated construction
@@ -140,6 +145,12 @@ class LongNardeGame;
 
 class LongNardeState : public State {
  public:
+  struct MoveSequenceInfo {
+    std::set<std::vector<CheckerMove>> sequences;
+    int longest_sequence = 0;
+    int max_non_pass = 0;
+  };
+
   LongNardeState(const LongNardeState&) = default;
   LongNardeState(std::shared_ptr<const Game>);
 
@@ -247,7 +258,8 @@ class LongNardeState : public State {
   int GetBlockPathStartRealPos(int player_for_path, int block_lowest_real_idx) const;
 
   // Generate all possible half-moves from the current state
-  std::set<CheckerMove> GenerateAllHalfMoves(int player) const;
+  // std::set<CheckerMove> GenerateAllHalfMoves(int player) const; // Should be commented or removed
+  std::vector<CheckerMove> GenerateAllHalfMoves(int player) const; // Correct signature
 
   // Helper function: checks if 'player' has any checker in [startPos, endPos] inclusive.
   bool HasAnyChecker(int player, int startPos, int endPos) const;
@@ -265,6 +277,38 @@ class LongNardeState : public State {
   void DoApplyAction(Action move_id) override;
 
  private:
+  struct DiceInfo {
+    int max_moves;
+    bool is_doubles;
+    int die1;
+    int die2;
+  };
+
+  MoveSequenceInfo FindMaximalMoveSequencesRecursive(
+      const std::vector<CheckerMove>& current_sequence,
+      int remaining_moves);
+
+  MoveSequenceInfo GenerateAndFilterMoveSequences(
+      int max_moves, LongNardeState* state) const;
+
+  std::vector<Action> ApplyHigherDieRule(
+      const std::vector<Action>& candidate_actions) const;
+
+  std::vector<Action> ConvertSequencesToActions(
+      const std::set<std::vector<CheckerMove>>& sequences,
+      const MoveSequenceInfo& info) const;
+
+  // New helper functions for LegalActions
+  DiceInfo GetDiceInfo() const;
+  
+  Action GeneratePassMove() const;
+
+  bool ShouldGeneratePassMove(const MoveSequenceInfo& info) const;
+
+  // Helper functions for move generation/validation within LegalActions
+  bool IsValidMove(const CheckerMove& move) const;
+  void ApplyMove(const CheckerMove& move);
+
   void SetupInitialBoard();
   void RollDice(int outcome);
   int CheckersInHome(int player) const;
@@ -277,6 +321,7 @@ class LongNardeState : public State {
   // of a move and determine whether it goes off the board.
   int GetMoveEndPosition(CheckerMove* cmove, int player, int start) const;
 
+  // Note: This declaration might be missing or incorrect based on error. Ensure it exists and returns std::set.
   std::set<CheckerMove> LegalCheckerMoves(int player) const;
   int RecLegalMoves(const std::vector<CheckerMove>& moveseq,
                     std::set<std::vector<CheckerMove>>* movelist,

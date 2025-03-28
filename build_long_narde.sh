@@ -7,7 +7,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-echo -e "${YELLOW}Building only Long Narde related code${NC}"
+echo -e "${YELLOW}Building the entire OpenSpiel project in Release mode with -O3 optimization${NC}"
 
 # Get the absolute path to the script directory (project root)
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -20,21 +20,23 @@ if [ ! -d "build" ]; then
   cd build
   # Configure with CMake
   echo -e "${YELLOW}Configuring with CMake...${NC}"
-  cmake -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Testing ../open_spiel
+  cmake -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3" ../open_spiel
 else
   cd build
 fi
 
-# Build only Long Narde related targets
-echo -e "${YELLOW}Building Long Narde targets...${NC}"
-make -j$(nproc) open_spiel_core games long_narde_test
-
-# Build the random_sim_test executable
-echo -e "${YELLOW}Building random simulation test...${NC}"
-make -j$(nproc) random_sim_test
+# Build the entire project
+echo -e "${YELLOW}Building the entire project...${NC}"
+make -j$(nproc)
 
 # Go back to project root
 cd "$SCRIPT_DIR"
+
+echo -e "${GREEN}Build process complete.${NC}"
+
+# --- Long Narde specific tests ---
+# Note: This section runs only Long Narde tests even though the entire project is built
+echo -e "${YELLOW}Running Long Narde specific tests...${NC}"
 
 # Create a log file for failed tests
 FAILED_TESTS_LOG="long_narde_failed_tests.log"

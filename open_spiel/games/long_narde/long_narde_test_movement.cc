@@ -509,7 +509,7 @@ void TestHalfMoveGeneration() {
             << "2. Point 24 with die 5 (pos=23, die=5)\n";
   
   // Generate half-moves for White (X)
-  std::set<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kXPlayerId);
+  std::vector<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kXPlayerId);
   
   std::cout << "Generated " << half_moves.size() << " half-moves:\n";
   for (const auto& move : half_moves) {
@@ -562,7 +562,7 @@ void TestHalfMoveGeneration() {
     
     for (const auto& move : moves) {
       if (move.pos != kPassPos) {
-        bool is_valid_half_move = half_moves.count(move) > 0;
+        bool is_valid_half_move = std::find(half_moves.begin(), half_moves.end(), move) != half_moves.end();
         if (is_valid_half_move) {
           action_valid = true;
           break;
@@ -698,7 +698,7 @@ void TestHalfMoveGenerationBlack() {
             << "4. Point 17 with die 2 (pos=16, die=2)\n";
   
   // Generate half-moves for Black (O)
-  std::set<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kOPlayerId);
+  std::vector<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kOPlayerId);
   
   std::cout << "Generated " << half_moves.size() << " half-moves for Black:\n";
   for (const auto& move : half_moves) {
@@ -761,7 +761,7 @@ void TestHalfMoveGenerationBlack() {
     
     for (const auto& move : moves) {
       if (move.pos != kPassPos) {
-        bool is_valid_half_move = half_moves.count(move) > 0;
+        bool is_valid_half_move = std::find(half_moves.begin(), half_moves.end(), move) != half_moves.end();
         if (is_valid_half_move) {
           action_valid = true;
           break;
