@@ -78,7 +78,7 @@ if(${BUILD_TYPE} STREQUAL "Release")
 endif()
 
 # Specific debug symbols for long_narde code components
-set(DEBUG_FLAGS_LONG_NARDE "-g -O0")
+set(DEBUG_FLAGS_LONG_NARDE "-O3")
 message("${BoldYellow}Debug flags for long_narde: ${DEBUG_FLAGS_LONG_NARDE}${ColourReset}")
 
 if(APPLE)
