@@ -316,6 +316,17 @@ class LongNardeState : public State {
   std::set<std::vector<CheckerMove>> GenerateMoveSequences(
       Player player, int max_moves) const;
 
+  // Helper function to filter generated sequences for the best ones
+  // (longest sequence length, max non-pass moves within that length).
+  // Returns the filtered list and the calculated max_non_pass count.
+  std::pair<std::set<std::vector<CheckerMove>>, int> FilterBestMoveSequences(
+      const std::set<std::vector<CheckerMove>>& movelist) const;
+
+  // Helper function to apply the "play higher die" rule if necessary.
+  std::vector<Action> ApplyHigherDieRuleIfNeeded(
+      const std::vector<Action>& current_legal_moves,
+      const std::set<std::vector<CheckerMove>>& original_movelist) const;
+
   friend class LongNardeGame;
 
   // Friend declarations for test helper functions
