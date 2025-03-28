@@ -16,8 +16,6 @@
 
 #include <algorithm>
 #include <numeric>
-#include <utility>
-#include <vector>
 
 #include "open_spiel/abseil-cpp/absl/random/discrete_distribution.h"
 #include "open_spiel/abseil-cpp/absl/random/distributions.h"
@@ -279,7 +277,7 @@ Action ISMCTSBot::SelectActionTreePolicy(
 }
 
 Action ISMCTSBot::SelectActionUCB(ISMCTSNode* node) {
-  std::vector<std::pair<Action, double>> actions_and_values;
+  std::vector<Action> candidates;
   double max_value = -std::numeric_limits<double>::infinity();
 
   for (const auto& action_and_child : node->child_info) {
@@ -293,14 +291,14 @@ Action ISMCTSBot::SelectActionUCB(ISMCTSNode* node) {
                      uct_c_ * std::sqrt(std::log(node->total_visits) /
                                         action_and_child.second.visits);
 
-    actions_and_values.push_back({action, uct_val});
-    max_value = std::max(max_value, uct_val);
-  }
-
-  std::vector<Action> candidates;
-  for (const auto& action_and_value : actions_and_values) {
-    if (action_and_value.second > max_value - kTieTolerance) {
-      candidates.push_back(action_and_value.first);
+    if (uct_val > max_value + kTieTolerance) {
+      candidates.clear();
+      candidates.push_back(action);
+      max_value = uct_val;
+    } else if (uct_val > max_value - kTieTolerance &&
+               uct_val < max_value + kTieTolerance) {
+      candidates.push_back(action);
+      max_value = uct_val;
     }
   }
 
