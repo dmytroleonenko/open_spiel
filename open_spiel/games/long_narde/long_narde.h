@@ -94,6 +94,10 @@ inline constexpr const int kNumNonDoubleOutcomes = 15; // Number of non-double d
 // This constant might be legacy or require revision.
 inline constexpr const int kNumDistinctActions = 1250;  // Potential maximum number of distinct actions. See comment above.
 
+// Base used to combine two half-move "digits" in the non-doubles encoding scheme.
+// Must be >= 150 to accommodate the max digit value (149).
+inline constexpr const int kDigitBase = 150;
+
 // Since Long Narde doesn't have hitting, we only need to track:
 // 1) If a point is occupied (and how many checkers)
 // The simplified encoding uses 1 value per point per player

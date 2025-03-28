@@ -118,6 +118,211 @@ void ActionEncodingTest() {
   
   SPIEL_CHECK_TRUE(first_pass_found);
   SPIEL_CHECK_TRUE(second_pass_found);
+
+  // Test 3: Regular move encoding (low roll first)
+  // Reset state but with dice 3, 5 (low roll first)
+  lnstate->SetState(kXPlayerId, false, std::vector<int>{3, 5}, scores, modified_board);
+
+  // Use the same moves as Test 1, but expect a different action ID due to the offset
+  // Moves: Position 14 with die 5, position 19 with die 3
+  // Note: CheckerMovesToSpielMove might internally sort these by die value depending on context,
+  // but the key is that the *original roll* was low-die first, so the offset should be applied.
+  Action action_low_roll = lnstate->CheckerMovesToSpielMove(test_moves);
+
+  // Verify the action is different from the high-roll-first action
+  SPIEL_CHECK_NE(action_low_roll, action); // action is from Test 1 (roll 5, 3)
+
+  // Verify the action is within the valid range
+  SPIEL_CHECK_GE(action_low_roll, 0);
+  SPIEL_CHECK_LT(action_low_roll, kNumDistinctActions);
+
+  // Verify the action is in the upper half of the non-doubles range, indicating the offset was applied
+  SPIEL_CHECK_GE(action_low_roll, kDigitBase * kDigitBase);
+
+  // Decode back to checker moves
+  std::vector<CheckerMove> decoded_moves_low_roll = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action_low_roll);
+
+  // Verify decoded moves still match the original logical moves
+  SPIEL_CHECK_EQ(decoded_moves_low_roll.size(), 2);
+  first_move_found = false;
+  second_move_found = false;
+  for (const CheckerMove& move : decoded_moves_low_roll) {
+    if (move.pos == test_moves[0].pos && move.die == test_moves[0].die) {
+      first_move_found = true;
+    }
+    if (move.pos == test_moves[1].pos && move.die == test_moves[1].die) {
+      second_move_found = true;
+    }
+  }
+  SPIEL_CHECK_TRUE(first_move_found);
+  SPIEL_CHECK_TRUE(second_move_found);
+
+  // Test 4: Doubles encoding (4 moves)
+  // Need to set up a board where 4 moves are possible with doubles.
+  // Put 4 checkers near the start for White.
+  std::vector<std::vector<int>> doubles_board(2, std::vector<int>(kNumPoints, 0));
+  doubles_board[kXPlayerId][23] = 1; // Head
+  doubles_board[kXPlayerId][22] = 1;
+  doubles_board[kXPlayerId][21] = 1;
+  doubles_board[kXPlayerId][20] = 1;
+  doubles_board[kXPlayerId][19] = 11; // Remaining checkers
+  doubles_board[kOPlayerId][kBlackHeadPos] = kNumCheckersPerPlayer; // Black checkers out of the way
+
+  // Set state with double 2s (dice {2, 2})
+  // Note: Assume this is NOT the first turn, so head rule applies normally (1 from head max).
+  lnstate->SetState(kXPlayerId, true, std::vector<int>{2, 2}, scores, doubles_board);
+  lnstate->MutableIsFirstTurn() = false; // Ensure it's not the first turn
+
+  // Define the 4 moves (one from head, three others)
+  std::vector<CheckerMove> doubles_moves = {
+    {23, lnstate->GetToPos(kXPlayerId, 23, 2), 2}, // From head
+    {22, lnstate->GetToPos(kXPlayerId, 22, 2), 2},
+    {21, lnstate->GetToPos(kXPlayerId, 21, 2), 2},
+    {20, lnstate->GetToPos(kXPlayerId, 20, 2), 2}
+  };
+
+  // Constants needed from .cc file (Ideally these would be in the header too)
+  const int kEncodingBaseDouble = 25;
+  const int kDoublesOffset = 2 * kDigitBase * kDigitBase;
+
+  // Encode the 4 moves
+  Action doubles_action = lnstate->CheckerMovesToSpielMove(doubles_moves);
+
+  // Verify the action is in the doubles range
+  SPIEL_CHECK_GE(doubles_action, kDoublesOffset);
+  SPIEL_CHECK_LT(doubles_action, kNumDistinctActions);
+
+  // Decode back to checker moves
+  std::vector<CheckerMove> decoded_doubles_moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, doubles_action);
+
+  // Verify decoded moves match the original (might be padded with passes)
+  SPIEL_CHECK_GE(decoded_doubles_moves.size(), 4);
+  int moves_matched = 0;
+  for (size_t i = 0; i < doubles_moves.size(); ++i) {
+    bool match_found = false;
+    for (size_t j = 0; j < decoded_doubles_moves.size(); ++j) {
+      // Check position and die. Die should be 2 for all.
+      if (doubles_moves[i].pos == decoded_doubles_moves[j].pos && 
+          decoded_doubles_moves[j].die == 2) { 
+        match_found = true;
+        break;
+      }
+    }
+    if (match_found) {
+      moves_matched++;
+    }
+  }
+  SPIEL_CHECK_EQ(moves_matched, 4); // Ensure all 4 original moves were found in the decoded action
+
+  // Test 5: Doubles encoding (3 moves + 1 pass)
+  // Modify moves to include a pass
+  std::vector<CheckerMove> doubles_moves_with_pass = {
+      {23, lnstate->GetToPos(kXPlayerId, 23, 2), 2},
+      {22, lnstate->GetToPos(kXPlayerId, 22, 2), 2},
+      {21, lnstate->GetToPos(kXPlayerId, 21, 2), 2},
+      kPassMove // Use the constant pass move {kPassPos, kPassPos, kPassDieValue}
+  };
+
+  // Encode
+  Action doubles_pass_action = lnstate->CheckerMovesToSpielMove(doubles_moves_with_pass);
+
+  // Verify action range
+  SPIEL_CHECK_GE(doubles_pass_action, kDoublesOffset);
+  SPIEL_CHECK_LT(doubles_pass_action, kNumDistinctActions);
+  SPIEL_CHECK_NE(doubles_pass_action, doubles_action); // Should be different from the 4-move action
+
+  // Decode
+  std::vector<CheckerMove> decoded_doubles_pass_moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, doubles_pass_action);
+
+  // Verify: check for 3 specific moves and at least one pass
+  SPIEL_CHECK_GE(decoded_doubles_pass_moves.size(), 4);
+  int regular_moves_matched = 0;
+  int passes_found = 0;
+  for (size_t j = 0; j < decoded_doubles_pass_moves.size(); ++j) {
+    bool is_pass = (decoded_doubles_pass_moves[j].pos == kPassPos);
+    if (is_pass) {
+        passes_found++;
+    } else {
+        for (size_t i = 0; i < 3; ++i) { // Check against the first 3 original moves
+            if (doubles_moves_with_pass[i].pos == decoded_doubles_pass_moves[j].pos &&
+                decoded_doubles_pass_moves[j].die == 2) {
+                regular_moves_matched++;
+                break; // Avoid double counting if checker moved multiple times
+            }
+        }
+    }
+  }
+  // Use a map to count unique positions matched to avoid issues if a checker moves twice
+  std::map<int, int> matched_pos_count;
+  for(const auto& decoded_move : decoded_doubles_pass_moves) {
+      if (decoded_move.pos != kPassPos) {
+          for (size_t i = 0; i < 3; ++i) { // Check against the 3 non-pass moves
+              if (doubles_moves_with_pass[i].pos == decoded_move.pos && decoded_move.die == 2) {
+                  matched_pos_count[decoded_move.pos]++;
+                  break;
+              }
+          }
+      }
+  }
+  SPIEL_CHECK_EQ(matched_pos_count.size(), 3); // Check that 3 unique non-pass starting positions were decoded.
+  SPIEL_CHECK_GE(passes_found, 1); // Check that at least one pass move was decoded.
+
+  // Test 6: Standard encoding: Single move + Pass
+  // Reset state with non-double dice {4, 1}
+  lnstate->SetState(kXPlayerId, false, std::vector<int>{4, 1}, scores, modified_board);
+  
+  // Define moves: pos 14 with die 4, pass with die 1
+  std::vector<CheckerMove> single_move_pass = {
+    {14, lnstate->GetToPos(kXPlayerId, 14, 4), 4},
+    {kPassPos, kPassPos, 1} 
+  };
+
+  Action action_single_pass = lnstate->CheckerMovesToSpielMove(single_move_pass);
+
+  // Verify action range (should be standard range, high roll first -> no offset)
+  SPIEL_CHECK_GE(action_single_pass, 0);
+  SPIEL_CHECK_LT(action_single_pass, kDoublesOffset);
+  SPIEL_CHECK_LT(action_single_pass, kDigitBase * kDigitBase); // Should not have low-roll offset
+
+  // Decode
+  std::vector<CheckerMove> decoded_single_pass = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action_single_pass);
+
+  // Verify decoded moves contain one move from pos 14 (die 4) and one pass (die 1)
+  SPIEL_CHECK_EQ(decoded_single_pass.size(), 2);
+  bool move_14_d4_found = false;
+  bool pass_d1_found = false;
+  for (const auto& move : decoded_single_pass) {
+    if (move.pos == 14 && move.die == 4) move_14_d4_found = true;
+    if (move.pos == kPassPos && move.die == 1) pass_d1_found = true;
+  }
+  SPIEL_CHECK_TRUE(move_14_d4_found);
+  SPIEL_CHECK_TRUE(pass_d1_found);
+
+  // Test 7: Standard encoding: Double Pass (already covered in Test 2, but re-verify)
+  lnstate->SetState(kXPlayerId, false, std::vector<int>{6, 5}, scores, modified_board);
+  std::vector<CheckerMove> double_pass_moves = {
+    {kPassPos, kPassPos, 6},
+    {kPassPos, kPassPos, 5}
+  };
+  Action action_double_pass = lnstate->CheckerMovesToSpielMove(double_pass_moves);
+
+  // Verify range
+  SPIEL_CHECK_GE(action_double_pass, 0);
+  SPIEL_CHECK_LT(action_double_pass, kDoublesOffset);
+  // Double pass should NOT have the low-roll offset even if dice were low-high
+  SPIEL_CHECK_LT(action_double_pass, kDigitBase * kDigitBase);
+
+  // Decode
+  std::vector<CheckerMove> decoded_double_pass = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action_double_pass);
+  SPIEL_CHECK_EQ(decoded_double_pass.size(), 2);
+  bool pass_d6_found = false;
+  bool pass_d5_found = false;
+  for (const auto& move : decoded_double_pass) {
+    if (move.pos == kPassPos && move.die == 6) pass_d6_found = true;
+    if (move.pos == kPassPos && move.die == 5) pass_d5_found = true;
+  }
+  SPIEL_CHECK_TRUE(pass_d6_found);
+  SPIEL_CHECK_TRUE(pass_d5_found);
 }
 
 void SingleLegalMoveTest() {

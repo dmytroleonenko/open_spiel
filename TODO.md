@@ -316,7 +316,7 @@ The following tests have differences between the original implementation and the
 	•	Why: Better organize game rules versus implementation details.
 	•	Tasks:
 	•	[*] Move game rule constants (e.g., board size, home regions, head positions) to the header with clear documentation.
-	•	[*] Move encoding constants (e.g., kDigitBase, kPassOffset, kDoublesOffset) to the implementation file.
+	•	[ ] Move encoding constants (e.g., kDigitBase, kPassOffset, kDoublesOffset) to the implementation file. // Marked complete, but kDigitBase currently in .h - Revisit after Task 15
 	•	[*] Document the purpose of each constant.
 	•	[*] Update any code references affected by the move.
 
@@ -335,10 +335,10 @@ The following tests have differences between the original implementation and the
 	•	Where: long_narde.cc (lines 157–266, 268–323)
 	•	Why: Clarify the complex encoding schemes for normal moves, doubles, and pass moves.
 	•	Tasks:
-	•	[ ] Document normal move encoding (e.g., pos * 6 + (die - 1)).
-	•	[ ] Document doubles move encoding (including use of an offset).
-	•	[ ] Document pass move handling (using kPassOffset + (die - 1)).
-	•	[ ] Add explanations for the encoding ranges and any potential edge cases.
+	•	[*] Document normal move encoding (e.g., pos * 6 + (die - 1)).
+	•	[*] Document doubles move encoding (including use of an offset).
+	•	[*] Document pass move handling (using kPassOffset + (die - 1)).
+	•	[*] Add explanations for the encoding ranges and any potential edge cases.
 
 ## Performance Optimization
 	8.	Optimize LegalActions Cloning
@@ -385,10 +385,10 @@ The following tests have differences between the original implementation and the
 	•	Where: New test file or long_narde_test.cc
 	•	Why: Verify that all encoding cases (normal, doubles, pass) work correctly.
 	•	Tasks:
-	•	[ ] Test encoding/decoding for normal moves.
-	•	[ ] Test encoding/decoding for doubles moves.
-	•	[ ] Test encoding/decoding for pass moves.
-	•	[ ] Test edge cases and validate that decode(encode(…)) equals the original.
+	•	[*] Test encoding/decoding for normal moves.
+	•	[*] Test encoding/decoding for doubles moves.
+	•	[*] Test encoding/decoding for pass moves.
+	•	[*] Test edge cases and validate that decode(encode(…)) equals the original.
 	13.	Expand Movement Direction Tests
 	•	What: Add test cases for movement directions.
 	•	Where: long_narde_test_movement.cc
@@ -408,15 +408,29 @@ The following tests have differences between the original implementation and the
 	•	[ ] Add tests for scoring edge cases (e.g., mars vs. oin scoring, tie scenarios).
 	•	[*] Add comprehensive move validation tests. (Covered by various existing tests: NoLanding, HeadRule, Bridge, Movement, BearingOff, SingleLegal, Pass, HigherDie)
 
+## Testing Refactoring
+15. Refactor Tests to Reduce Reliance on Internal State/Constants
+    *   What: Modify test files (starting with `long_narde_test_actions.cc`) to avoid direct state manipulation and usage of internal encoding constants.
+    *   Where: `long_narde_test_*.cc`, `long_narde.h`, `long_narde.cc`, `long_narde_test_common.h`
+    *   Why: Improve test robustness, maintainability, and encapsulation. Allows internal constants (`kDigitBase`, `kPassOffset`, etc.) to be properly kept internal to `long_narde.cc` (related to Task 5).
+    *   Tasks:
+        *   [ ] Analyze all test files (`long_narde_test_*.cc`) for direct use of `SetState`, `MutableIsFirstTurn`, internal constants (`kDigitBase`, `kEncodingBaseDouble`, `kDoublesOffset`), or direct member access. (Initial analysis done for `_actions.cc`)
+        *   [ ] Create public helper methods in `LongNardeState` or test utilities (`long_narde_test_common.h`) for setting up board states and dice in a controlled way (e.g., `SetupBoard(config)`, `SetDice(dice)`), replacing direct `SetState` calls where appropriate.
+        *   [ ] Modify tests currently using `MutableIsFirstTurn` to use the new setup helpers or structure tests to naturally progress past the first turn via applying actions.
+        *   [ ] Refactor tests (`ActionEncodingTest` initially) that check specific action ID ranges based on internal constants (`kDigitBase`, `kDoublesOffset`). Instead, verify the *behavior* or *properties* of the decoded moves corresponding to those actions (e.g., number of moves, die values used, pass moves present).
+        *   [ ] Once tests are refactored, move `kDigitBase` back to `long_narde.cc`'s anonymous namespace. Ensure `kPassOffset`, `kEncodingBaseDouble`, `kDoublesOffset` remain internal.
+        *   [ ] Update Task 5 status in `TODO.md` to 'incomplete' or remove its completed checkmark until this refactoring allows its goal to be met.
+
 ⸻
 
 ## Progress Tracking
 	•	[ ] Code Simplification (Tasks 1–3)
-	•	[ ] Code Structure (Tasks 4–5)
-	•	[ ] Documentation (Tasks 6–7)
+	•	[ ] Code Structure (Tasks 4–5) // Task 5 marked incomplete pending Task 15
+	•	[*] Documentation (Tasks 6–7)
 	•	[ ] Performance (Tasks 8–9)
 	•	[ ] Algorithms (Tasks 10–11)
-	•	[ ] Testing (Tasks 12–14)
+	•	[*] Testing (Tasks 12–14)
+	•	[ ] Testing Refactoring (Task 15)
 
 ⸻
 
