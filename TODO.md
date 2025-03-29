@@ -290,20 +290,20 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	Why: Reduce complexity and potential stack overflow risks.
 	•	Retrieval Hint: Use query `Task:LongNardeRefactorRecLegalMoves`
 	•	Tasks:
-	•	[ ] Design an iterative algorithm structure (BFS/DFS style) to generate half-move sequences.
-	•	[ ] Implement stack-based (or queue-based) move generation that mimics the current recursive behavior.
-	•	[ ] Maintain existing pruning optimizations (e.g., bridging checks and head-rule validations) during iteration.
-	•	[ ] Add comprehensive tests to verify equivalence with the recursive approach.
+	•	[x] Design an iterative algorithm structure (BFS/DFS style) to generate half-move sequences.
+	•	[x] Implement stack-based (or queue-based) move generation that mimics the current recursive behavior.
+	•	[x] Maintain existing pruning optimizations (e.g., bridging checks and head-rule validations) during iteration.
+	•	[x] Add comprehensive tests to verify equivalence with the recursive approach.
 	3.	Clarify Action Encoding/Decoding
 	•	What: Refactor encoding logic with helper functions and clear documentation.
 	•	Where: long_narde.cc (lines 157–266 for encoding, 268–323 for decoding)
 	•	Why: Make the complex encoding logic more maintainable.
 	•	Retrieval Hint: Use query `Task:LongNardeRefactorEncodingDecoding`
 	•	Tasks:
-	•	[ ] Add detailed documentation of the encoding scheme (normal moves, doubles, pass moves, offsets).
-	•	[ ] Create helpers such as EncodeSingleMove, DecodeSingleMove, EncodeDoubles, and DecodeDoubles.
-	•	[ ] Create additional helpers for pass move handling.
-	•	[ ] Add validation checks for encoding ranges to ensure no collisions.
+	•	[x] Add detailed documentation of the encoding scheme (normal moves, doubles, pass moves, offsets).
+	•	[x] Create helpers such as EncodeSingleMove, DecodeSingleMove, EncodeDoubles, and DecodeDoubles.
+	•	[x] Create additional helpers for pass move handling. (Integrated into main helpers)
+	•	[x] Add validation checks for encoding ranges to ensure no collisions. (Handled by design and SPIEL_CHECKs)
 	3a. Simplify IsFirstTurn Access
 	•   What: Remove the redundant `is_first_turn()` method, keeping only `IsFirstTurn(Player player)`.
 	•   Where: `long_narde.h`, `long_narde.cc`, and any calling code (tests).
@@ -322,7 +322,7 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	Tasks:
 	•	[x] Group validation functions together.
 	•	[x] Group move generation functions (including the new iterative version of move sequence generation).
-	•	[x] Group encoding/decoding functions with their respective constants.
+	•	[x] Group encoding/decoding functions with their respective constants. (Done via file splitting)
 	•	[x] Add clear section comments (e.g., // ===== Move Generation =====, // ===== Encoding/Decoding =====).
 	5.	Consolidate Constants
 	•	What: Reorganize constants between header and implementation.
@@ -330,7 +330,7 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	Why: Better organize game rules versus implementation details.
 	•	Tasks:
 	•	[x] Move game rule constants (e.g., board size, home regions, head positions) to the header with clear documentation.
-	•	[x] Move encoding constants (e.g., kDigitBase, kPassOffset, kDoublesOffset) to the implementation file.
+	•	[x] Move encoding constants (e.g., kDigitBase, kPassOffset, kDoublesOffset) to the implementation file. (Done for encoding constants)
 	•	[x] Document the purpose of each constant.
 	•	[x] Update any code references affected by the move.
 	6.	Split long_narde.cc into Smaller Files
@@ -386,7 +386,7 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 			*   [x] Build/test after moving API functions.
 			*   [x] Build/test after moving utility functions.
 			*   [x] Build/test after moving game class functions.
-	•	[ ] Refactor remaining code in `long_narde.cc` (likely containing `LongNardeGame` class and main state methods) for clarity.
+	•	[x] Refactor remaining code in `long_narde.cc` (likely containing `LongNardeGame` class and main state methods) for clarity.
 
 ## Comments and Documentation
 	7.	Enhance Function Comments
@@ -394,23 +394,23 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	Where: Key functions in long_narde.cc
 	•	Why: Improve code understanding.
 	•	Tasks:
-	•	[ ] Document the logic of the (now iterative) move sequence generation function.
-	•	[ ] Document the checks in IsValidCheckerMove (bounds, head rule, bearing off, opponent occupancy, bridging).
-	•	[ ] Document the bridge rule implementation and the rationale behind it.
+	•	[x] Document the logic of the (now iterative) move sequence generation function.
+	•	[x] Document the checks in IsValidCheckerMove (bounds, head rule, bearing off, opponent occupancy, bridging).
+	•	[x] Document the bridge rule implementation and the rationale behind it.
 	•	[ ] Add parameter and return documentation using a consistent style (e.g., Doxygen).
 	8.	Document Encoding Logic
 	•	What: Add comprehensive documentation for the encoding scheme.
 	•	Where: long_narde.cc (lines 157–266, 268–323)
 	•	Why: Clarify the complex encoding schemes for normal moves, doubles, and pass moves.
 	•	Tasks:
-	•	[*] Document normal move encoding (e.g., pos * 6 + (die - 1)).
-	•	[*] Document doubles move encoding (including use of an offset).
-	•	[*] Document pass move handling (using kPassOffset + (die - 1)).
-	•	[*] Add explanations for the encoding ranges and any potential edge cases.
+	•	[x] Document normal move encoding (e.g., pos * 6 + (die - 1)).
+	•	[x] Document doubles move encoding (including use of an offset).
+	•	[x] Document pass move handling (using kPassOffset + (die - 1)).
+	•	[x] Add explanations for the encoding ranges and any potential edge cases.
 
 ## Progress Tracking
-	•	[*] Code Simplification (Tasks 1–3, 3a)
-	•	[*] Code Structure (Tasks 4–6)
+	•	[x] Code Simplification (Tasks 1–3, 3a)
+	•	[x] Code Structure (Tasks 4–6)
 	•	[*] Documentation (Tasks 7–8)
 	•	[ ] Performance (Tasks 9–10)
 	•	[ ] Algorithms (Tasks 11–12)

@@ -62,6 +62,23 @@ bool LongNardeState::IsLegalHeadMove(int player, int from_pos) const {
   return !moved_from_head_;
 }
 
+/**
+ * @brief Checks if a given move would result in an illegal 6-point blocking bridge.
+ *
+ * Rationale: In Long Narde, forming a prime (a block of 6 consecutive points)
+ * is illegal if it completely traps all of the opponent's checkers behind it.
+ * A bridge is considered legal only if at least one opposing checker is ahead of
+ * (further along the opponent's path than) the block's starting point.
+ *
+ * This function simulates the move on a temporary board and then checks all possible
+ * 6-point spans. For each 6-block found, it verifies if any opponent checker
+ * exists ahead of the block's effective start point (relative to the opponent's path).
+ *
+ * @param player The player proposing the move.
+ * @param from_pos The starting position of the move (0-23), or -1 to check the current board state.
+ * @param to_pos The destination position of the move (0-23 or bear-off), or -1 to check the current board state.
+ * @return True if the move (or current state if from/to are -1) results in an illegal blocking bridge, false otherwise.
+ */
 bool LongNardeState::WouldFormBlockingBridge(int player, int from_pos, int to_pos) const {
   // Create a temporary board reflecting the potential move
   std::vector<std::vector<int>> temp_board = board_;
@@ -143,6 +160,25 @@ bool LongNardeState::HasIllegalBridge(int player) const {
    return WouldFormBlockingBridge(player, /*from_pos=*/-1, /*to_pos=*/-1);
 }
 
+/**
+ * @brief Checks if a single proposed checker move is valid according to Long Narde rules.
+ *
+ * This function validates a single step (half-move) of moving one checker based on a die roll.
+ * It performs several checks:
+ * 1.  Basic validity (non-pass move, valid positions, checker exists at start).
+ * 2.  Correctness of the destination position based on the die roll.
+ * 3.  Head Rule: Ensures the move doesn't violate restrictions on moving from the head position (if check_head_rule is true).
+ * 4.  Bearing Off: Validates bear-off moves, checking if all checkers are home, if the roll is exact or higher, and if higher rolls are permitted (no checkers further back).
+ * 5.  Opponent Occupancy: Ensures the destination point is not occupied by an opponent's checker.
+ * 6.  Bridging Rule: Checks if making this move would create an illegal 6-point block that traps the opponent.
+ *
+ * @param player The player making the move (kXPlayerId or kOPlayerId).
+ * @param from_pos The starting board position index (0-23), or kPassPos (-1).
+ * @param to_pos The target board position index (0-23), or kBearOffPos (-1 or -2 depending on player).
+ * @param die_value The value of the die used for this move (1-6).
+ * @param check_head_rule If true, enforces the head movement rule for this move. Should generally be true, except when validating individual steps within a pre-validated sequence.
+ * @return True if the single checker move is valid, false otherwise.
+ */
 bool LongNardeState::IsValidCheckerMove(int player, int from_pos, int to_pos, int die_value, bool check_head_rule) const {
   // --- Basic Checks ---
   if (from_pos == kPassPos) return true; // Pass is always valid in isolation.
@@ -342,6 +378,67 @@ bool LongNardeState::IsOff(int player, int pos) const {
   return pos == kBearOffPos; // kBearOffPos is the special value indicating off the board
 }
 
+// ===== Home Region Checks =====
+
+bool LongNardeState::IsPosInHome(int player, int pos) const {
+  switch (player) {
+    case kXPlayerId:
+      // White's home: points 1-6 (indices 0-5)
+      return (pos >= kWhiteHomeStart && pos <= kWhiteHomeEnd);
+    case kOPlayerId:
+      // Black's home: points 13-18 (indices 12-17)
+      return (pos >= kBlackHomeStart && pos <= kBlackHomeEnd);
+    default:
+      SpielFatalError(absl::StrCat("Unknown player ID in IsPosInHome: ", player));
+      return false; // Should be unreachable
+  }
+}
+
+bool LongNardeState::AllInHome(Player player) const {
+  int checkers_on_board = 0;
+  if (player == kXPlayerId) {
+    // White's home is points 1-6 (indices 0-5)
+    // Check if any checkers are *outside* this range (points 7-24, indices 6-23)
+    for (int i = kWhiteHomeEnd + 1; i < kNumPoints; ++i) {
+      if (board(player, i) > 0) {
+        return false; // Found checker outside home
+      }
+      // Note: We don't need to sum checkers_on_board here as the return false above handles it.
+    }
+     // Also count checkers *inside* home
+     for (int i = kWhiteHomeStart; i <= kWhiteHomeEnd; ++i) {
+        checkers_on_board += board(player, i);
+     }
+
+  } else { // kOPlayerId
+    // Black's home is points 13-18 (indices 12-17)
+    // Check if any checkers are *outside* this range
+    // Check indices 0-11 (points 1-12)
+    for (int i = 0; i < kBlackHomeStart; ++i) {
+      if (board(player, i) > 0) {
+        return false; // Found checker outside home
+      }
+       // Note: We don't need to sum checkers_on_board here.
+    }
+    // Check indices 18-23 (points 19-24)
+    for (int i = kBlackHomeEnd + 1; i < kNumPoints; ++i) {
+      if (board(player, i) > 0) {
+        return false; // Found checker outside home
+      }
+        // Note: We don't need to sum checkers_on_board here.
+    }
+    // Also count checkers *inside* home
+    for (int i = kBlackHomeStart; i <= kBlackHomeEnd; ++i) {
+        checkers_on_board += board(player, i);
+    }
+  }
+  
+  // Final check: Ensure the total count of checkers IN HOME + checkers BORNE OFF equals total checkers.
+  return (checkers_on_board + scores_[player] == kNumCheckersPerPlayer);
+}
+
+
+// ===== Bridge Rule Checks =====
 
 } // namespace long_narde
 } // namespace open_spiel

@@ -238,5 +238,65 @@ ScoringType ParseScoringType(const std::string& st_str) {
   }
 }
 
+// ===== Path and Position Utilities =====
+
+int LongNardeState::GetPathIndex(int player, int real_pos) const {
+    // Returns the 0-based index along the player's path.
+    // 0 = start (head), 23 = point just before bearoff.
+    if (real_pos < 0 || real_pos >= kNumPoints) {
+         SpielFatalError(absl::StrCat("GetPathIndex called with invalid real_pos: ", real_pos));
+         return -1; // Should be unreachable
+    }
+
+    if (player == kXPlayerId) { // Path: 23 -> 0
+        // Index 0 = pos 23, Index 1 = pos 22, ..., Index 23 = pos 0
+        return 23 - real_pos;
+    } else { // Path: 11 -> 0 -> 23 -> 12
+        if (real_pos >= 0 && real_pos <= 11) { // First half: 11 down to 0
+            // Index 0 = pos 11, Index 1 = pos 10, ..., Index 11 = pos 0
+            return 11 - real_pos;
+        } else { // Second half: 23 down to 12
+            // Index 12 = pos 23, Index 13 = pos 22, ..., Index 23 = pos 12
+            return 12 + (23 - real_pos);
+        }
+    }
+}
+
+bool LongNardeState::IsAhead(int player, int checker_pos_idx, int reference_pos_idx) const {
+    // Checks if checker_pos_idx is *further along* the path than reference_pos_idx for 'player'.
+    // Further along means closer to home / bear-off, which corresponds to a *higher* path index.
+    SPIEL_CHECK_GE(checker_pos_idx, 0);
+    SPIEL_CHECK_LT(checker_pos_idx, kNumPoints);
+    SPIEL_CHECK_GE(reference_pos_idx, 0);
+    SPIEL_CHECK_LT(reference_pos_idx, kNumPoints);
+
+    return GetPathIndex(player, checker_pos_idx) > GetPathIndex(player, reference_pos_idx);
+}
+
+int LongNardeState::GetBlockPathStartRealPos(int player_for_path, int block_lowest_real_idx) const {
+    // Given the lowest real index (0-23) of a 6-block, finds which of the 6 points
+    // forming the block is *furthest back* along the path of 'player_for_path'.
+    // Furthest back corresponds to the *lowest* path index.
+    if (block_lowest_real_idx < 0 || block_lowest_real_idx >= kNumPoints) {
+         SpielFatalError(absl::StrCat("GetBlockPathStartRealPos called with invalid block_lowest_real_idx: ", block_lowest_real_idx));
+         return -1; // Should be unreachable
+    }
+
+    int furthest_back_real_pos = block_lowest_real_idx; // Start assumption
+    int min_path_idx = GetPathIndex(player_for_path, block_lowest_real_idx);
+
+    // Check the other 5 points in the block
+    for (int i = 1; i < 6; ++i) {
+        int current_real_pos = (block_lowest_real_idx + i) % kNumPoints; // Handle wrap-around
+        
+        int current_path_idx = GetPathIndex(player_for_path, current_real_pos);
+        if (current_path_idx < min_path_idx) {
+            min_path_idx = current_path_idx;
+            furthest_back_real_pos = current_real_pos;
+        }
+    }
+    return furthest_back_real_pos;
+}
+
 } // namespace long_narde
 } // namespace open_spiel 

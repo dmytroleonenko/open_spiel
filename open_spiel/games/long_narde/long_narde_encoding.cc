@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 #include <algorithm> // For std::max, std::min
+#include <array>     // For std::array (needed for kDoublesBasePower)
 
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
 #include "open_spiel/spiel_utils.h"
@@ -10,55 +11,58 @@
 namespace open_spiel {
 namespace long_narde {
 
-// ===== Encoding/Decoding Constants (Implementation Details) =====
+// ===== Encoding/Decoding Constants =====
 
-// Base for standard encoding (2 moves max). Based on 24 points * 6 dice + 6 pass moves.
-const int kDigitBase = kNumPoints * 6 + 6; // 24 * 6 + 6 = 144 + 6 = 150
+// Long Narde uses a complex encoding scheme to represent a player's full turn
+// (potentially involving multiple checker movements) as a single integer Action.
+// There are two main schemes used:
 
-// Offset within the standard encoding range to distinguish pass moves.
-const int kPassOffset = kNumPoints * 6; // 24 * 6 = 144
+// --- Scheme 1: Encoding for Non-Doubles Turns (or Doubles with <= 2 moves) ---
+// Each individual half-move (moving one checker by one die's value) is encoded
+// into a "digit".
+// - Regular move: digit = `pos * 6 + (die - 1)`. `pos` is 0-23, `die` is 1-6.
+//   Range: 0 * 6 + (1 - 1) = 0  to  23 * 6 + (6 - 1) = 138 + 5 = 143.
+// - Pass move: digit = `kPassOffset + (die - 1)`. `die` is 1-6.
+//   `kPassOffset` is chosen to be 144, so the range is 144 to 149.
+// A full turn consists of up to two such half-moves. These two "digits" (d0, d1)
+// are combined using a base, `kDigitBase`.
+// The action is roughly `d1 * kDigitBase + d0`.
+// An additional offset (`kDigitBase * kDigitBase`) can be added to indicate
+// if the higher or lower die was used first, if necessary.
 
-// Base for doubles encoding (4 moves max). Need 25 values: 0 for pass/unused, 1-24 for points.
-const int kDoublesBase = kNumPoints + 1; // 24 + 1 = 25
+constexpr int kDigitBase = 150;   // Base used to combine two half-move "digits".
+                                  // Must be >= 150 to accommodate the max digit value (149).
+constexpr int kPassOffset = 144;  // Offset for encoding pass half-moves.
+                                  // Starts after the max regular move digit (143).
 
-// Precomputed powers of kDoublesBase (25) for efficient encoding/decoding.
+// --- Scheme 2: Encoding for Doubles Turns (with > 2 moves) ---
+// When a player rolls doubles and can make more than two moves (up to four),
+// a different encoding is used. This scheme encodes the *starting positions*
+// of the checkers being moved.
+// It uses base-25 (`kEncodingBaseDouble`) because there are 24 board points (0-23)
+// plus a special value (24) to represent a pass or unused move slot.
+// The four positions (p0, p1, p2, p3, with p0 being the least significant)
+// are combined: `p3*B^3 + p2*B^2 + p1*B^1 + p0*B^0`, where B = `kEncodingBaseDouble`.
+// An offset (`kDoublesOffset`) is added to distinguish these doubles actions
+// from the non-doubles actions encoded using Scheme 1.
+
+constexpr int kEncodingBaseDouble = 25;  // Base for encoding the *positions* in doubles moves (0-23 for points, 24 for pass).
+constexpr int kDoublesOffset = 2 * kDigitBase * kDigitBase; // Offset added to doubles actions.
+                                                           // Chosen to be larger than the maximum possible non-doubles action
+                                                           // (which is approx. `1 * kDigitBase^2 + (kDigitBase-1)*kDigitBase + (kDigitBase-1)`).
+
+// ===== Encoding/Decoding Helper Functions (Internal) =====
+namespace {
+
+// Precomputed powers of kEncodingBaseDouble (25) for efficient encoding/decoding.
 // kDoublesBasePower[0] = 25^0 = 1
 // kDoublesBasePower[1] = 25^1 = 25
 // kDoublesBasePower[2] = 25^2 = 625
 // kDoublesBasePower[3] = 25^3 = 15625
-// kDoublesBasePower[4] = 25^4 = 390625 (used for encoding the die value)
+// kDoublesBasePower[4] = 25^4 = 390625 (used for encoding the die value in DecodeDoubles)
 const std::array<Action, 5> kDoublesBasePower = {
     1L, 25L, 625L, 15625L, 390625L
 };
-
-// Offset to distinguish doubles encoding range from standard encoding range.
-// Calculated as the maximum standard action value + 1.
-// Max standard action = (kDigitBase - 1) * kDigitBase + (kDigitBase - 1)
-//                    = (149 * 150) + 149 = 22350 + 149 = 22499
-// We also add the low_roll_first offset, which is kDigitBase^2 = 150^2 = 22500
-// So, max standard action = 22499 + 22500 = 44999.
-// kDoublesOffset must be >= 45000.
-constexpr Action kDoublesOffset = 45000;
-
-// --- Special Doubles Encoding (> 2 moves) ---
-
-// Base used for encoding up to 4 checker source positions in the special doubles encoding scheme.
-// Each position digit represents a source point (0-23) or a pass (encoded as 24).
-// Value must be >= kNumPoints + 1 (24 + 1 = 25) to represent 24 points + pass.
-constexpr int kEncodingBaseDouble = 25;
-
-// --- Low-Roll-First Offset (Standard Encoding Only) ---
-// In the standard encoding, an additional offset (kDigitBase * kDigitBase = 22500) is added
-// if the *original* dice roll had the lower die value rolled first (e.g., 3 then 5).
-// This distinguishes sequences resulting from low-roll-first vs. high-roll-first, even if
-// the sequence of moves played is the same (e.g., playing the 5 first).
-// This offset ensures that LegalActions which might always list the higher-die move first
-// still produce distinct action IDs based on the underlying dice roll order.
-// Max standard action = (149 * 150 + 149) + 22500 = 22499 + 22500 = 44999.
-// kDoublesOffset (45000) starts just above this range.
-
-// ===== Encoding/Decoding Helper Functions (Internal) =====
-namespace {
 
 // Encodes a single CheckerMove (normal or pass) into an integer digit.
 // Used by the standard encoding scheme.

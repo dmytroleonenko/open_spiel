@@ -261,5 +261,73 @@ std::unique_ptr<State> LongNardeState::Clone() const {
   return new_state;
 }
 
+// ===== Chance Node Handling =====
+
+void LongNardeState::ProcessChanceRoll(Action move_id) {
+  SPIEL_CHECK_GE(move_id, 0);
+  SPIEL_CHECK_LT(move_id, game_->MaxChanceOutcomes());
+
+  // Record the chance outcome in turn history.
+  turn_history_info_.push_back(
+      TurnHistoryInfo(kChancePlayerId, prev_player_, dice_,
+                      move_id, double_turn_, is_first_turn_, moved_from_head_,
+                      is_playing_extra_turn_));
+
+  // Ensure we have no dice set yet, then apply this new roll.
+  SPIEL_CHECK_TRUE(dice_.empty());
+  RollDice(move_id); // Sets dice_ based on outcome
+  initial_dice_ = dice_; // Store the roll in initial_dice_
+
+  // Decide which player moves next.
+  if (turns_ < 0) {
+    // Initial state: White always starts in this implementation.
+    turns_ = 0;
+    cur_player_ = kXPlayerId; // White goes first
+    prev_player_ = kChancePlayerId; // Previous was chance
+    is_playing_extra_turn_ = false; // Not an extra turn
+    is_first_turn_ = true; // It's the first turn for White
+  } else if (double_turn_) {
+    // Rolled doubles on the *previous* turn, granting an extra roll *now*.
+    // Player remains the same.
+    cur_player_ = prev_player_; // Player who rolled doubles continues
+    is_playing_extra_turn_ = true;  // Mark that this roll is for an extra turn
+    is_first_turn_ = false; // Cannot be the first turn if it's an extra turn
+  } else {
+    // Normal turn progression: pass to the opponent.
+    cur_player_ = Opponent(prev_player_);
+    is_playing_extra_turn_ = false;  // Reset for normal turn
+    // Determine if it's the new player's first turn
+    is_first_turn_ = IsFirstTurn(cur_player_); 
+  }
+  
+  // Reset double_turn_ flag; it indicated the *previous* roll was doubles.
+  // The current roll's nature (double or not) will determine the *next* state transition.
+  double_turn_ = false; 
+  moved_from_head_ = false; // Reset for the start of the new player's turn
+
+  // Check special condition for last-roll tie possibility
+  // If player X just finished (score=15) and player O has 14 or 15 checkers off,
+  // AND player O is the current player (meaning it's their turn to roll for the tie),
+  // set the flag.
+  if (scoring_type_ == ScoringType::kWinLossTieScoring) {
+      if (scores_[kXPlayerId] == kNumCheckersPerPlayer &&
+          scores_[kOPlayerId] >= 14 && scores_[kOPlayerId] < kNumCheckersPerPlayer &&
+          cur_player_ == kOPlayerId) { // Check if O is about to roll for the tie
+        allow_last_roll_tie_ = true;
+      }
+      // Symmetrical check if O finished and X might tie
+       else if (scores_[kOPlayerId] == kNumCheckersPerPlayer &&
+                scores_[kXPlayerId] >= 14 && scores_[kXPlayerId] < kNumCheckersPerPlayer &&
+                cur_player_ == kXPlayerId) { // Check if X is about to roll for the tie
+         allow_last_roll_tie_ = true;
+       } else {
+         allow_last_roll_tie_ = false; // Reset if conditions not met
+       }
+  } else {
+      allow_last_roll_tie_ = false; // Rule not active
+  }
+
+}
+
 } // namespace long_narde
 } // namespace open_spiel 
