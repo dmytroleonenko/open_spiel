@@ -10,6 +10,11 @@ namespace long_narde {
 
 // ===== General Utility Functions =====
 
+/**
+ * @brief Converts an internal board position index (0-23) or pass (-1) to a string.
+ * @param pos The internal position index or kPassPos.
+ * @return A string representation (e.g., "1", "24", "Pass").
+ */
 std::string PositionToString(int pos) {
   if (pos == kPassPos) return "Pass";
   SPIEL_CHECK_GE(pos, 0);
@@ -17,6 +22,11 @@ std::string PositionToString(int pos) {
   return absl::StrCat(pos + 1);
 }
 
+/**
+ * @brief Converts a human-readable board position (1-24), off (-2), or pass (-1) to a string.
+ * @param pos The human-readable position (1-24), kNumOffPosHumanReadable (-2), or kPassPos (-1).
+ * @return A string representation (e.g., "1", "24", "Off", "Pass").
+ */
 std::string PositionToStringHumanReadable(int pos) {
   if (pos == kNumOffPosHumanReadable) {
     return "Off";
@@ -31,6 +41,11 @@ std::string PositionToStringHumanReadable(int pos) {
   }
 }
 
+/**
+ * @brief Converts a Player ID to a single-character string representation.
+ * @param cur_player The Player ID (kXPlayerId, kOPlayerId, kChancePlayerId, kTerminalPlayerId).
+ * @return A string ("x", "o", "*", "T").
+ */
 std::string CurPlayerToString(Player cur_player) {
   switch (cur_player) {
     case kXPlayerId: return "x";
@@ -42,6 +57,15 @@ std::string CurPlayerToString(Player cur_player) {
   }
 }
 
+/**
+ * @brief Generates a detailed string representation of the current game state.
+ *
+ * Includes a visual board layout, current turn player (with first turn/extra turn
+ * indicators), dice state (rolled values, used dice), player scores, and status flags
+ * (head moved, extra turn pending, last roll tie allowed).
+ *
+ * @return A multi-line string describing the game state.
+ */
 std::string LongNardeState::ToString() const {
   std::vector<std::string> board_array = {
       "+-------------------------------------+", // Exactly matches expected width
@@ -140,6 +164,19 @@ std::string LongNardeState::ToString() const {
   return board_str;
 }
 
+/**
+ * @brief Converts a Spiel action (move ID) into a human-readable string.
+ *
+ * Handles both chance outcomes (dice rolls) and player moves.
+ * For chance outcomes, it shows the roll (e.g., "chance outcome 5 (roll: 13)").
+ * For player moves, it decodes the action into checker moves and formats them
+ * (e.g., "123 - 24/21 24/19"). A pass action is represented as "Pass".
+ * Note: Human-readable positions (1-24) are used.
+ *
+ * @param player The player whose action is being converted.
+ * @param move_id The Spiel action (move ID) to convert.
+ * @return A string representation of the action.
+ */
 std::string LongNardeState::ActionToString(Player player,
                                             Action move_id) const {
   if (IsChanceNode()) {
