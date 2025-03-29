@@ -301,6 +301,13 @@ class LongNardeState : public State {
   bool is_first_turn_;
   bool moved_from_head_;
 
+  int FurthestChecker(Player player) const; // Furthest checker from 0 (home)
+
+  // Iterative helper for LegalActions
+  int IterativeLegalMoves(const std::vector<CheckerMove>& initial_moveseq,
+                          std::set<std::vector<CheckerMove>>* movelist,
+                          int max_moves_param) const;
+
  protected:
   void DoApplyAction(Action move_id) override;
 
@@ -318,9 +325,6 @@ class LongNardeState : public State {
   int GetMoveEndPosition(CheckerMove* cmove, int player, int start) const;
 
   std::set<CheckerMove> LegalCheckerMoves(int player) const;
-  int RecLegalMoves(const std::vector<CheckerMove>& moveseq,
-                    std::set<std::vector<CheckerMove>>* movelist,
-                    int max_depth = 10);
 
   ScoringType scoring_type_;  // Which rules apply when scoring the game.
 
