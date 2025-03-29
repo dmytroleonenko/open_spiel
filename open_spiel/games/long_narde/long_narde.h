@@ -380,6 +380,16 @@ class LongNardeGame : public Game {
  public:
   explicit LongNardeGame(const GameParameters& params);
   int NumDistinctActions() const override { return kNumDistinctActions; }
+  /**
+   * @brief Creates and returns a new initial state for the Long Narde game.
+   *
+   * This function is responsible for initializing the game board to its starting
+   * configuration according to the rules of Long Narde. It allocates a new
+   * `LongNardeState` object on the heap and returns it wrapped in a
+   * `std::unique_ptr`.
+   *
+   * @return A unique pointer to the newly created initial `LongNardeState`.
+   */
   std::unique_ptr<State> NewInitialState() const override {
     return std::unique_ptr<State>(
         new LongNardeState(shared_from_this()));

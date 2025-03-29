@@ -44,7 +44,10 @@ RegisterSingleTensorObserver single_tensor(kGameType.short_name);
 
 // ===== Game Class Methods =====
 
-// Moved from long_narde.cc
+/**
+ * @brief Constructs a LongNardeGame instance.
+ * @param params The game parameters.
+ */
 LongNardeGame::LongNardeGame(const GameParameters& params)
     : Game(kGameType, params),
       scoring_type_(ParseScoringType(
@@ -56,12 +59,6 @@ LongNardeGame::LongNardeGame(const GameParameters& params)
 double LongNardeGame::MaxUtility() const {
   return 2.0; // Max score is 2 for mars/gammon
 }
-
-// Note: NewInitialState is defined in the header long_narde.h 
-// because it's often needed by derived classes or other parts of the framework.
-// std::unique_ptr<State> LongNardeGame::NewInitialState() const {
-//   return std::unique_ptr<State>(new LongNardeState(shared_from_this(), scoring_type_));
-// }
 
 } // namespace long_narde
 } // namespace open_spiel
