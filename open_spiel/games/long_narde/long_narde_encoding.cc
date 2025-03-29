@@ -12,26 +12,170 @@ namespace long_narde {
 
 // ===== Encoding/Decoding Constants (Implementation Details) =====
 
-// Base used to combine two half-move "digits" in the non-doubles encoding scheme.
-// Must be >= 150 to accommodate the max digit value (149).
-constexpr int kDigitBase = 150;
+// Base for standard encoding (2 moves max). Based on 24 points * 6 dice + 6 pass moves.
+const int kDigitBase = kNumPoints * 6 + 6; // 24 * 6 + 6 = 144 + 6 = 150
 
-// Offset used to distinguish pass moves from normal moves in the non-doubles encoding.
-// Must be > max normal move value (143).
-constexpr int kPassOffset = 144;
+// Offset within the standard encoding range to distinguish pass moves.
+const int kPassOffset = kNumPoints * 6; // 24 * 6 = 144
 
-// Base used for encoding up to 4 checker positions in the special doubles encoding scheme.
+// Base for doubles encoding (4 moves max). Need 25 values: 0 for pass/unused, 1-24 for points.
+const int kDoublesBase = kNumPoints + 1; // 24 + 1 = 25
+
+// Precomputed powers of kDoublesBase (25) for efficient encoding/decoding.
+// kDoublesBasePower[0] = 25^0 = 1
+// kDoublesBasePower[1] = 25^1 = 25
+// kDoublesBasePower[2] = 25^2 = 625
+// kDoublesBasePower[3] = 25^3 = 15625
+// kDoublesBasePower[4] = 25^4 = 390625 (used for encoding the die value)
+const std::array<Action, 5> kDoublesBasePower = {
+    1L, 25L, 625L, 15625L, 390625L
+};
+
+// Offset to distinguish doubles encoding range from standard encoding range.
+// Calculated as the maximum standard action value + 1.
+// Max standard action = (kDigitBase - 1) * kDigitBase + (kDigitBase - 1)
+//                    = (149 * 150) + 149 = 22350 + 149 = 22499
+// We also add the low_roll_first offset, which is kDigitBase^2 = 150^2 = 22500
+// So, max standard action = 22499 + 22500 = 44999.
+// kDoublesOffset must be >= 45000.
+constexpr Action kDoublesOffset = 45000;
+
+// --- Special Doubles Encoding (> 2 moves) ---
+
+// Base used for encoding up to 4 checker source positions in the special doubles encoding scheme.
+// Each position digit represents a source point (0-23) or a pass (encoded as 24).
 // Value must be >= kNumPoints + 1 (24 + 1 = 25) to represent 24 points + pass.
 constexpr int kEncodingBaseDouble = 25;
 
-// Offset added to actions encoded using the special doubles scheme to distinguish them
-// from the standard (non-doubles) encoding scheme.
-// This is set to 2 * kDigitBase * kDigitBase, which is the theoretical max of the standard scheme + 1.
-constexpr Action kDoublesOffset = 2 * kDigitBase * kDigitBase; // 2 * 150 * 150 = 45000
+// --- Low-Roll-First Offset (Standard Encoding Only) ---
+// In the standard encoding, an additional offset (kDigitBase * kDigitBase = 22500) is added
+// if the *original* dice roll had the lower die value rolled first (e.g., 3 then 5).
+// This distinguishes sequences resulting from low-roll-first vs. high-roll-first, even if
+// the sequence of moves played is the same (e.g., playing the 5 first).
+// This offset ensures that LegalActions which might always list the higher-die move first
+// still produce distinct action IDs based on the underlying dice roll order.
+// Max standard action = (149 * 150 + 149) + 22500 = 22499 + 22500 = 44999.
+// kDoublesOffset (45000) starts just above this range.
 
+// ===== Encoding/Decoding Helper Functions (Internal) =====
+namespace {
+
+// Encodes a single CheckerMove (normal or pass) into an integer digit.
+// Used by the standard encoding scheme.
+int EncodeSingleMove(const CheckerMove& move) {
+  if (move.pos == kPassPos) {
+    // Encode a pass move: kPassOffset + (die - 1), range 144-149.
+    SPIEL_CHECK_GE(move.die, 1);
+    SPIEL_CHECK_LE(move.die, 6);
+    return kPassOffset + (move.die - 1);
+  } else {
+    // Encode a normal move: pos * 6 + (die - 1), range 0-143.
+    SPIEL_CHECK_GE(move.pos, 0);
+    SPIEL_CHECK_LT(move.pos, kNumPoints);
+    SPIEL_CHECK_GE(move.die, 1);
+    SPIEL_CHECK_LE(move.die, 6);
+    return move.pos * 6 + (move.die - 1);
+  }
+}
+
+// Decodes a single integer digit back into a CheckerMove.
+// Used by the standard decoding scheme.
+CheckerMove DecodeSingleDigit(int digit, Player player, const LongNardeState* state) {
+  if (digit >= kPassOffset) { // Pass range (144-149)
+    int die = (digit - kPassOffset) + 1;
+    return CheckerMove(kPassPos, kPassPos, die);
+  } else { // Normal move range (0-143)
+    int pos = digit / 6;
+    int die = (digit % 6) + 1;
+    // Need the state context to calculate to_pos
+    SPIEL_CHECK_TRUE(state != nullptr);
+    int to_pos = state->GetToPos(player, pos, die);
+    return CheckerMove(pos, to_pos, die);
+  }
+}
+
+// Encodes up to four CheckerMoves (for a doubles roll) into a single integer.
+// Uses a base-25 encoding scheme.
+Action EncodeDoubles(const std::vector<CheckerMove>& moves, int die)
+{
+  // Doubles encoding: Base 25 encoding for up to 4 moves.
+  // Each move is encoded as pos + 1 (1-24), or 0 for pass/unused.
+  Action encoded_action = 0;
+  for (int i = 0; i < 4; ++i) {
+    int val = 0;
+    if (i < moves.size() && moves[i].pos != kPassPos) {
+      // Encode actual move: pos + 1 (range 1-24)
+      SPIEL_CHECK_GE(moves[i].pos, 0);
+      SPIEL_CHECK_LT(moves[i].pos, kNumPoints);
+      val = moves[i].pos + 1;
+    } // Otherwise, val remains 0 for pass/unused move
+
+    // Add the encoded move value to the total action, scaled by base 25^i.
+    encoded_action += val * kDoublesBasePower[i];
+  }
+
+  // Add the die value (0-5) scaled by the highest power of 25.
+  encoded_action += (die - 1) * kDoublesBasePower[4];
+
+  // Apply the final offset for the doubles range.
+  return encoded_action + kDoublesOffset;
+}
+
+// Decodes a Spiel action (in the doubles range) back into a vector of CheckerMoves.
+std::vector<CheckerMove> DecodeDoubles(Action spiel_move, Player player, const LongNardeState* state)
+{
+  // Adjust the action value by removing the doubles offset.
+  Action adjusted_action = spiel_move - kDoublesOffset;
+
+  // Extract the die value (1-6) encoded with the highest power of 25.
+  int die = (adjusted_action / kDoublesBasePower[4]) + 1;
+  SPIEL_CHECK_GE(die, 1);
+  SPIEL_CHECK_LE(die, 6);
+
+  // Extract the encoded move values (0-24) for each of the 4 potential moves.
+  std::vector<CheckerMove> cmoves;
+  Action remainder = adjusted_action % kDoublesBasePower[4];
+
+  for (int i = 0; i < 4; ++i) {
+    // Calculate the index for accessing powers in reverse order (3 down to 0)
+    int power_index = 3 - i;
+    // Extract the encoded value (0-24) for this move position.
+    int val = remainder / kDoublesBasePower[power_index];
+    remainder %= kDoublesBasePower[power_index]; // Update remainder
+
+    if (val > 0) { // Encoded value > 0 corresponds to a normal move
+      // Decode the source position (pos = val - 1).
+      int pos = val - 1;
+      SPIEL_CHECK_GE(pos, 0);
+      SPIEL_CHECK_LT(pos, kNumPoints);
+      // Calculate the destination position using the state context.
+      SPIEL_CHECK_TRUE(state != nullptr);
+      int to_pos = state->GetToPos(player, pos, die);
+      // Add the decoded move to the list.
+      cmoves.push_back(CheckerMove(pos, to_pos, die));
+    } else {
+      // Encoded value 0 means this move slot was unused or a pass.
+      // We don't add pass moves explicitly here; the absence indicates pass/unused.
+      // If no moves are decoded, it implies all 4 were passed.
+    }
+  }
+  return cmoves;
+}
+
+} // namespace
 
 // ===== Encoding/Decoding Functions =====
 
+// Encodes a sequence of checker moves (up to 4) into a single Spiel Action (int).
+// It uses two distinct schemes:
+// 1. Standard Scheme: For non-doubles rolls, or doubles rolls resulting in <= 2 moves.
+//    - Encodes exactly two CheckerMoves (padding with Passes if needed).
+//    - Uses kDigitBase and potentially a low-roll-first offset.
+//    - Resulting action is in the range [0, kDoublesOffset - 1].
+// 2. Special Doubles Scheme: For doubles rolls resulting in > 2 moves (typically 3 or 4).
+//    - Encodes up to 4 source positions (0-23, or 24 for Pass).
+//    - Uses kEncodingBaseDouble and adds kDoublesOffset.
+//    - Resulting action is in the range [kDoublesOffset, NumDistinctActions() - 1].
 Action LongNardeState::CheckerMovesToSpielMove(
     const std::vector<CheckerMove>& moves) const {
   SPIEL_CHECK_LE(moves.size(), 4);  // Allow up to 4 moves for doubles
@@ -118,7 +262,7 @@ Action LongNardeState::CheckerMovesToSpielMove(
         // Encode a normal move from a board position.
         // The value is pos * 6 + (die - 1).
         // pos is 0-23, die is 1-6.
-        // Max value is 23 * 6 + 5 = 138 + 5 = 143.
+        // Max value is 23 * 6 + 5 = 143.
         // This ensures no overlap with the pass encoding range (144-149).
         SPIEL_CHECK_GE(move.pos, 0);
         SPIEL_CHECK_LT(move.pos, kNumPoints);
@@ -128,9 +272,9 @@ Action LongNardeState::CheckerMovesToSpielMove(
       }
     };
 
-    // Encode the first two (potentially padded) moves.
-    int dig0 = encode_move(encoded_moves[0]); // First half-move
-    int dig1 = encode_move(encoded_moves[1]); // Second half-move
+    // Encode the first two (potentially padded) moves using the helper.
+    int dig0 = EncodeSingleMove(encoded_moves[0]); // First half-move
+    int dig1 = EncodeSingleMove(encoded_moves[1]); // Second half-move
 
     // Combine the two digits into a single action using base kDigitBase (150).
     // dig0 is the least significant digit, dig1 is the most significant.
@@ -172,6 +316,8 @@ Action LongNardeState::CheckerMovesToSpielMove(
   }
 }
 
+// Decodes a Spiel Action (int) back into a sequence of checker moves.
+// Handles both the standard and special doubles encoding schemes based on the action value.
 std::vector<CheckerMove> LongNardeState::SpielMoveToCheckerMoves(
     Player player, Action spiel_move) const {
   // Check if the action falls within the special doubles encoding range.
@@ -250,14 +396,11 @@ std::vector<CheckerMove> LongNardeState::SpielMoveToCheckerMoves(
       }
     };
 
-    // Decode the two digits back into CheckerMoves.
+    // Decode the two digits using the helper.
     std::vector<CheckerMove> cmoves;
-    cmoves.push_back(decode_digit(dig0)); // Decode first move
-    cmoves.push_back(decode_digit(dig1)); // Decode second move
-    
-    // The order in cmoves matches the order they were encoded (e.g., highest die first if applied).
-    // The 'high_roll_first' flag (derived from the offset) indicates the original dice roll order,
-    // but the returned moves are in the potentially reordered sequence used for the action.
+    cmoves.push_back(DecodeSingleDigit(dig0, player, this));
+    cmoves.push_back(DecodeSingleDigit(dig1, player, this));
+
     return cmoves;
   }
 }
@@ -286,7 +429,6 @@ int LongNardeState::NumDistinctActions() const {
   // This gives the upper bound for the highest possible action value.
   return kDoublesOffset + double_range_size; // 45000 + 390625 = 435625
 }
-
 
 } // namespace long_narde
 } // namespace open_spiel
