@@ -27,15 +27,12 @@ void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
   // The head rule is context-dependent (how many moved *before* this one)
   // and is handled during sequence generation (GenerateAllHalfMoves/RecLegalMoves).
   // This check ensures basic validity (on board, not blocked, valid destination).
-  if (!IsValidCheckerMove(player, move.pos, move.to_pos, move.die, /*check_head_rule=*/false)) {
+  if (!IsValidCheckerMoveNew(player, move, /*moved_from_head_this_sequence=*/false)) {
     std::string error_message = absl::StrCat("ApplyCheckerMove: Invalid checker move provided! ",
                                            "Player ", player, " Move: ", move.pos, "->", move.to_pos, "/", move.die);
      error_message += "\nBoard state:\n" + ToString();
      error_message += "\nDice: ";
-      for (int i = 0; i < dice_.size(); ++i) {
-          int raw_value = dice_[i];
-          error_message += absl::StrCat(DiceValue(i), UsableDiceOutcome(raw_value) ? " " : "u ");
-      }
+      for (int d : dice_) { error_message += absl::StrCat(DiceValue(d), UsableDiceOutcome(d)?" ":"u "); }
      error_message += "\nMoved from head? ", (moved_from_head_?"Y":"N");
      error_message += "\nIs first turn? ", (is_first_turn_?"Y":"N");
     SpielFatalError(error_message);
@@ -50,8 +47,6 @@ void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
   // Mark the die used (find the first usable die with that value)
   bool die_marked = false;
   for (int i = 0; i < dice_.size(); ++i) {
-    // Defensive check added
-    SPIEL_CHECK_LT(i, dice_.size()); 
     if (UsableDiceOutcome(dice_[i]) && dice_[i] == move.die) {
       dice_[i] += 6; // Mark as used by adding 6
       die_marked = true;
@@ -73,9 +68,10 @@ void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
   }
 
   // Update head move status *for the current turn's sequence*
-  if (IsHeadPos(player, move.pos)) {
-    moved_from_head_ = true;
-  }
+  // REMOVED: This is now handled by the caller (IterativeLegalMoves)
+  // if (IsHeadPos(player, move.pos)) {
+  //   moved_from_head_ = true;
+  // }
 }
 
 /**

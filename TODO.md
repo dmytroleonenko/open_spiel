@@ -292,8 +292,16 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	Tasks:
 	•	[x] Design an iterative algorithm structure (BFS/DFS style) to generate half-move sequences.
 	•	[x] Implement stack-based (or queue-based) move generation that mimics the current recursive behavior.
-	•	[x] Maintain existing pruning optimizations (e.g., bridging checks and head-rule validations) during iteration.
-	•	[x] Add comprehensive tests to verify equivalence with the recursive approach.
+	•	[?] Maintain existing pruning optimizations (e.g., bridging checks and head-rule validations) during iteration. (**Current Issue:** Head rule check interaction with iterative state management is problematic).
+	•	[ ] Add comprehensive tests to verify equivalence with the recursive approach. (**Current Issue:** Iterative version fails basic movement tests).
+    •   **Note:** The iterative approach using a single clone with apply/undo (`IterativeLegalMoves`) has proven highly problematic for managing state consistency (especially `moved_from_head_` and intermediate board states needed for subsequent move generation). It currently fails tests (`TestBasicMovement`) by generating invalid sequences or empty move lists. Recommend reverting to the recursive approach (`RecLegalMoves`) and adapting it, or significantly refactoring the iterative method to use cloning per branch.
+    •   **Update (Debugging FirstTurnTest):**
+        *   Identified `FirstTurnTest` failure: `IterativeLegalMoves` did not generate valid 2-checker head moves for special first-turn doubles (e.g., 6-6).
+        *   Root cause: Incorrect management of `moved_from_head_` state within the iterative simulation using cloned states.
+        *   Approach: Refactored `IterativeLegalMoves` and its helper struct (`ExplorationState`) to explicitly track `moved_from_head_in_sequence`. Modified `IsValidCheckerMove` and `GenerateAllHalfMoves` to use this passed flag instead of the member variable. Removed `moved_from_head_` update from `ApplyCheckerMove`.
+        *   Difficulties: Encountered problems applying automated edits to `.h` and `.cc` files, requiring manual intervention for some changes.
+        *   Status: Fix implemented, awaiting build/test results.
+        *   Next Step: Analyze test results. If `FirstTurnTest` passes, proceed. If fails, further debug state propagation in `IterativeLegalMoves` / `IsValidCheckerMove`.
 	3.	Clarify Action Encoding/Decoding
 	•	What: Refactor encoding logic with helper functions and clear documentation.
 	•	Where: long_narde.cc (lines 157–266 for encoding, 268–323 for decoding)
@@ -417,7 +425,7 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	Tasks:
 		*   [x] Change `movelist` types from `set` to `vector` in relevant functions.
 		*   [x] Replace `insert` with `push_back` in `IterativeLegalMoves`.
-		*   [x] Add `std::sort` and `std::unique` in `GenerateMoveSequences` to maintain uniqueness after collection.
+		*   [ ] Add `std::sort` and `std::unique` in `GenerateMoveSequences` to maintain uniqueness after collection. (**Note:** This was planned but likely needs doing in `LegalActions` after `IterativeLegalMoves` returns the raw list).
 		*   [x] Update function declarations in `long_narde.h`.
 		*   [x] Verify `CheckerMove::operator<` exists for sorting.
 		*   [x] Build and test successfully.
@@ -427,10 +435,10 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	Why: Avoid expensive `Clone()` calls during the depth-first search.
 	•	Retrieval Hint: Use query `Task:LongNardeReduceCloning`
 	•	Tasks:
-		*   [ ] Refactor the loop in `IterativeLegalMoves` to apply a move, push state parameters (or a lighter context object), explore, and then undo the move.
+		*   [?] Refactor the loop in `IterativeLegalMoves` to apply a move, push state parameters (or a lighter context object), explore, and then undo the move. (**Current Issue:** This apply/undo approach on a single clone is causing state inconsistencies).
 		*   [ ] Only clone when necessary (potentially never if using a purely recursive approach or if state needs to be preserved across stack unwinds).
-		*   [ ] Ensure `UndoCheckerMove` correctly restores all relevant state.
-		*   [ ] Build and test successfully.
+		*   [x] Ensure `UndoCheckerMove` correctly restores all relevant state (except `moved_from_head_`, which needs careful handling).
+		*   [ ] Build and test successfully. (**Current Issue:** Fails `TestBasicMovement`).
 
 ## Testing Refactoring
 	11.	Consolidate Test Helper Functions

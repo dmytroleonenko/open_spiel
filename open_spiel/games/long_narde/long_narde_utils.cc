@@ -143,7 +143,7 @@ std::string LongNardeState::ToString() const {
       for (size_t i = 0; i < dice_.size(); ++i) {
         if (i > 0) absl::StrAppend(&board_str, " ");
         absl::StrAppend(&board_str, std::to_string(DiceValue(i)));
-        if (!UsableDiceOutcome(dice_[i])) absl::StrAppend(&board_str, "(u)"); // Mark used dice
+        if (!IsDieUsable(i)) absl::StrAppend(&board_str, "(u)");
       }
   }
   absl::StrAppend(&board_str, "\n");

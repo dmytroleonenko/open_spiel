@@ -1,7 +1,7 @@
 ---
 description: 
-globs: *.cc,*.h
-alwaysApply: false
+globs: 
+alwaysApply: true
 ---
 1. We implement in small increments only.
 2. IMPORTANT!!! We test after each incremental change. You ask me to build/test. I give you results

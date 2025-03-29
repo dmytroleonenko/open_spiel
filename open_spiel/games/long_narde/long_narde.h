@@ -235,7 +235,6 @@ class LongNardeState : public State {
   // Action encoding / decoding functions. Note, the converted checker moves
   // do not contain the hit information; use the AddHitInfo function to get the
   // hit information.
-  Action CheckerMovesToSpielMove(const std::vector<CheckerMove>& moves) const;
   std::vector<CheckerMove> SpielMoveToCheckerMoves(Player player,
                                                    Action spiel_move) const;
   Action TranslateAction(int from1, int from2, bool use_high_die_first) const;
@@ -247,16 +246,18 @@ class LongNardeState : public State {
   bool& MutableIsFirstTurn() { return is_first_turn_; }
 
   // Centralized function to check if a checker move is valid
+  // Original signature for compatibility with tests.
   bool IsValidCheckerMove(int player, int from_pos, int to_pos, int die_value, bool check_head_rule = true) const;
+
+  // New implementation with updated signature.
+  bool IsValidCheckerMoveNew(int player, const CheckerMove& move, bool moved_from_head_this_sequence) const;
 
   // Returns the position of the furthest checker in the home of this player.
   // Returns -1 if none found.
-  int FurthestCheckerInHome(int player) const;
 
   void ApplyCheckerMove(int player, const CheckerMove& move);
   void UndoCheckerMove(int player, const CheckerMove& move);
 
-  bool UsableDiceOutcome(int outcome) const;
   std::vector<Action> ProcessLegalMoves(int max_moves,
                                       const std::vector<std::vector<CheckerMove>>& movelist) const;
 
@@ -273,8 +274,6 @@ class LongNardeState : public State {
   // Process a chance roll (dice roll) action.
   void ProcessChanceRoll(Action move_id);
 
-  bool AllInHome(int player) const;
-
   // Checks if the current board state contains an illegal bridge for the player.
   bool HasIllegalBridge(int player) const;
   
@@ -283,7 +282,12 @@ class LongNardeState : public State {
   int GetBlockPathStartRealPos(int player_for_path, int block_lowest_real_idx) const;
 
   // Generate all possible half-moves from the current state
+  // Original signature for compatibility with tests.
   std::set<CheckerMove> GenerateAllHalfMoves(int player) const;
+
+  // New implementation with updated signature.
+  // Accepts a flag indicating if a checker has already moved from the head *in this sequence*.
+  std::set<CheckerMove> GenerateAllHalfMovesNew(int player, bool moved_from_head_this_sequence) const;
 
   // Helper function: checks if 'player' has any checker in [startPos, endPos] inclusive.
   bool HasAnyChecker(int player, int startPos, int endPos) const;
@@ -311,6 +315,34 @@ class LongNardeState : public State {
   int IterativeLegalMoves(const std::vector<CheckerMove>& initial_moveseq,
                           std::vector<std::vector<CheckerMove>>* movelist,
                           int max_moves) const;
+
+  // Returns the position on the board for a given point number (1-24).
+  int PointToPos(int point) const;
+
+  // Returns the point number (1-24) for a given board position.
+  int PosToPoint(int pos) const;
+
+  // Finds the position of the furthest checker in the home board. Returns -1 if empty.
+  int FurthestCheckerInHome(Player player) const;
+
+  // Checks if all checkers of a player are in their home board.
+  bool AllInHome(Player player) const;
+
+  // Checks if a given die *outcome* (1-6, or potentially a marker for used) is usable.
+  bool UsableDiceOutcome(int outcome) const;
+
+  // Checks if the die at a specific *index* in the dice_ vector is usable.
+  bool IsDieUsable(int index) const;
+
+  // Returns the dice values as a string.
+  std::string DiceToString() const;
+
+  // Returns the board configuration as a string.
+  std::string BoardToString() const;
+
+  // Encodes a sequence of checker moves into a Spiel action.
+  Action CheckerMovesToSpielMove(
+      const std::vector<CheckerMove>& move_list) const;
 
  protected:
   void DoApplyAction(Action move_id) override;
@@ -348,11 +380,9 @@ class LongNardeState : public State {
 
   // Helper function to filter generated sequences for the best ones
   // (longest sequence length, max non-pass moves within that length).
-  // Now modifies the provided filtered_movelist directly.
-  void FilterBestMoveSequences(
-      const std::vector<std::vector<CheckerMove>>& movelist,
-      std::vector<std::vector<CheckerMove>>* filtered_movelist,
-      int max_non_pass_moves) const;
+  // Returns the filtered list and the calculated max_non_pass count.
+  std::pair<std::vector<std::vector<CheckerMove>>, int> FilterBestMoveSequences(
+      const std::vector<std::vector<CheckerMove>>& movelist) const;
 
   // Helper function to apply the "play higher die" rule if necessary.
   std::vector<Action> ApplyHigherDieRuleIfNeeded(

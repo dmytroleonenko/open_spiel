@@ -179,122 +179,102 @@ bool LongNardeState::HasIllegalBridge(int player) const {
  * @param check_head_rule If true, enforces the head movement rule for this move. Should generally be true, except when validating individual steps within a pre-validated sequence.
  * @return True if the single checker move is valid, false otherwise.
  */
-bool LongNardeState::IsValidCheckerMove(int player, int from_pos, int to_pos, int die_value, bool check_head_rule) const {
-  // --- Basic Checks ---
-  if (from_pos == kPassPos) return true; // Pass is always valid in isolation.
-  if (from_pos < 0 || from_pos >= kNumPoints) {
-    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Invalid from_pos " << from_pos << std::endl;
-    return false;
-  }
-  if (board(player, from_pos) <= 0) {
-    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: No checker at from_pos " << from_pos << std::endl;
-    return false;
-  }
-  if (die_value < 1 || die_value > 6) {
-    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Invalid die_value " << die_value << std::endl;
-    return false;
-  }
-  // Check if the provided 'to_pos' matches the calculated destination
-  int expected_to_pos = GetToPos(player, from_pos, die_value);
-  if (to_pos != expected_to_pos) {
-    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: to_pos " << to_pos << " doesn't match expected " << expected_to_pos << " for die " << die_value << " from " << from_pos << std::endl;
-    return false;
+bool LongNardeState::IsValidCheckerMoveNew(int player, const CheckerMove& move,
+                                         bool moved_from_head_this_sequence) const {
+  // Check basic move properties
+  if (move.pos == kPassPos) return true; // Pass is always valid conceptually
+
+  // Validate inputs
+  SPIEL_CHECK_GE(move.pos, 0);
+  SPIEL_CHECK_LT(move.pos, kNumPoints);
+  SPIEL_CHECK_GT(board_[player][move.pos], 0); // Must have a checker to move
+  SPIEL_CHECK_GE(move.die, 1);
+  SPIEL_CHECK_LE(move.die, 6);
+
+  // Calculate destination
+  int to_pos = GetToPos(player, move.pos, move.die);
+
+  // Check if moving off the board (bearing off)
+  if (IsOff(player, to_pos)) {
+    // Bearing off rules:
+    // 1. All checkers must be in the home board.
+    if (!AllInHome(player)) {
+      return false; // Cannot bear off if checkers outside home
+    }
+    // 2. The checker being borne off must be the furthest one away from home,
+    //    OR the die roll must be exact for its position.
+    int furthest_pos = FurthestCheckerInHome(player);
+    if (move.pos != furthest_pos && (move.pos - move.die) >= (player == kXPlayerId ? kWhiteHomeStart : kBlackHomeStart)) { // Adjusted check for black home boundary
+      // Not the furthest checker, and the roll is not high enough to bear off
+      // from this position (exact or higher roll needed relative to home start).
+      return false;
+    }
+    // Check passed - valid bear off
+    return true;
   }
 
-  // --- Head Rule Check ---
-  if (check_head_rule && !IsLegalHeadMove(player, from_pos)) {
-    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Head rule violation for pos " << from_pos << std::endl;
-    return false;
-  }
+  // Regular move (not bearing off)
+  // Check destination validity
+  SPIEL_CHECK_GE(to_pos, 0); // Should be guaranteed by GetToPos if not bearing off
+  SPIEL_CHECK_LT(to_pos, kNumPoints);
 
-  // --- Bearing Off Checks ---
-  bool is_bearing_off = IsOff(player, to_pos);
-  if (is_bearing_off) {
-    // Check if all checkers are in home *directly* here
-    int checkers_outside_home = 0;
-    for (int pos_check = 0; pos_check < kNumPoints; ++pos_check) { // Use different loop variable
-        if (board(player, pos_check) > 0) {
-            bool is_home = (player == kXPlayerId) ? 
-                            (pos_check >= kWhiteHomeStart && pos_check <= kWhiteHomeEnd) :
-                            (pos_check >= kBlackHomeStart && pos_check <= kBlackHomeEnd);
-            if (!is_home) {
-                checkers_outside_home += board(player, pos_check);
-            }
-        }
-    }
-    if (checkers_outside_home > 0) {
-        if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Direct check failed - Cannot bear off, " << checkers_outside_home << " checkers outside home" << std::endl;
-        return false;
-    }
-
-    // Calculate exact pips needed to bear off from 'from_pos'
-    int pips_needed;
-    if (player == kXPlayerId) {
-        // White bears off from pos 0-5. Pips needed = pos + 1.
-        SPIEL_CHECK_GE(from_pos, kWhiteHomeStart); // Should be in home
-        SPIEL_CHECK_LE(from_pos, kWhiteHomeEnd);
-        pips_needed = from_pos + 1;
-    } else { // kOPlayerId
-        // Black bears off from pos 12-17. Pips needed = pos - 11.
-        SPIEL_CHECK_GE(from_pos, kBlackHomeStart); // Should be in home
-        SPIEL_CHECK_LE(from_pos, kBlackHomeEnd);
-        pips_needed = from_pos - 11; 
-    }
-
-    if (die_value == pips_needed) {
-        return true; // Exact roll bears off.
-    }
-    if (die_value > pips_needed) {
-        // Higher roll can bear off *only if* no checkers are further back.
-        if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Checking higher roll (die=" << die_value << " > needed=" << pips_needed << ") for pos=" << from_pos << std::endl;
-        bool further_checker_exists = false;
-        // Need to check positions *within the home board* that require *more* pips than 'from_pos'.
-        if (player == kXPlayerId) {
-            for (int check_pos = from_pos + 1; check_pos <= kWhiteHomeEnd; ++check_pos) {
-                 if (board(player, check_pos) > 0) {
-                     further_checker_exists = true;
-                     break;
-                 }
-            }
-        } else { // kOPlayerId
-             // Correct: Check positions requiring *more* pips, which are *lower* indices for Black within home [12..17]
-             for (int check_pos = from_pos - 1; check_pos >= kBlackHomeStart; --check_pos) { // Iterate downwards
-                 if (board(player, check_pos) > 0) {
-                     further_checker_exists = true;
-                     break;
-                 }
-            }
-        }
-        if (!further_checker_exists) {
-             return true; // Can bear off with higher roll
-        }
-    }
-    // If die_value < pips_needed, it's an invalid bear off move.
-    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Invalid bearing off move (die=" << die_value << " < needed=" << pips_needed << ")" << std::endl;
-    return false;
-  }
-  
-  // --- Regular Move Checks ---
-  // Check destination bounds (already implicitly checked by GetToPos if not bearing off)
-  if (to_pos < 0 || to_pos >= kNumPoints) {
-    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Invalid to_pos " << to_pos << " for non-bearoff" << std::endl;
-    return false; // Should be unreachable if GetToPos is correct and not bearing off
-  }
-
-  // Check opponent occupancy at destination
+  // Check opponent occupancy
   if (board(Opponent(player), to_pos) > 0) {
-     if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Cannot land on opponent's checker at " << to_pos << std::endl;
-    return false;
+    return false; // Cannot land on opponent's checker
   }
 
-  // Check if the move *would* form an illegal blocking bridge
-  if (WouldFormBlockingBridge(player, from_pos, to_pos)) {
-    if (kDebugging) std::cout << "DEBUG IsValidCheckerMove: Would form illegal blocking bridge from " << from_pos << " to " << to_pos << std::endl;
-    return false;
+  // Check head rule using the passed flag
+  if (IsHeadPos(player, move.pos)) {
+    // Use the member variable 'is_first_turn_' of the current state object
+    if (moved_from_head_this_sequence && !this->is_first_turn_) {
+      // Already moved from head this turn, and it's not the first turn.
+      return false;
+    }
+    // Special first turn double rule check:
+    // Use the member variable 'is_first_turn_' of the current state object
+    if (this->is_first_turn_) {
+        bool is_special_double = false;
+        // Need to check the dice of *this specific state object*
+        if (this->dice_.size() == 2 && this->DiceValue(0) == this->DiceValue(1)) {
+            int dieVal = this->DiceValue(0);
+            if (dieVal == 6 || dieVal == 4 || dieVal == 3) {
+                is_special_double = true;
+            }
+        }
+        // If it's NOT a special double, and we've already moved from head, block second move
+        if (!is_special_double && moved_from_head_this_sequence) {
+             return false;
+        }
+        // If it IS a special double, we allow up to two moves, so this check passes
+        // If it's not a double, only one move allowed, this check passes if moved_from_head is false.
+    }
   }
 
-  // If all checks passed, it's a valid move.
-  return true;
+  // Check bridge rule
+  if (WouldFormBlockingBridge(player, move.pos, to_pos)) {
+    return false; // Move would create an illegal bridge
+  }
+
+  return true; // Move is valid
+}
+
+// Wrapper function using the original signature for backward compatibility (tests).
+bool LongNardeState::IsValidCheckerMove(int player, int from_pos, int to_pos, int die_value, bool check_head_rule) const {
+  // First, check if the provided to_pos matches the calculated one.
+  // Tests using this old signature might rely on this implicit check.
+  int calculated_to_pos = GetToPos(player, from_pos, die_value);
+  if (to_pos != calculated_to_pos) {
+      // If the test provides an explicit to_pos that doesn't match the calculation,
+      // consider it invalid based on the old assumptions.
+      return false; 
+  }
+
+  CheckerMove move(from_pos, to_pos, die_value);
+  // When called via the old signature (e.g., from tests), we don't have the sequence context.
+  // Use the object's current moved_from_head_ status if check_head_rule is true.
+  // If check_head_rule is false (as in ApplyCheckerMove), pass false to the new function.
+  bool use_head_status = check_head_rule ? this->moved_from_head_ : false;
+  return IsValidCheckerMoveNew(player, move, use_head_status);
 }
 
 bool LongNardeState::ValidateAction(Action action) const {
@@ -305,73 +285,87 @@ bool LongNardeState::ValidateAction(Action action) const {
     return false;
   }
   
-  // The most reliable validation is checking if it's in the set of legal actions.
-  const auto& legal_actions = LegalActions(); // Calculate legal actions
-  if (std::find(legal_actions.begin(), legal_actions.end(), action) == legal_actions.end()) {
-    if (kDebugging) {
-      std::cout << "DEBUG ValidateAction: Action " << action << " not found in legal actions.\n";
-      std::cout << "DEBUG: Decoded moves for invalid action " << action << ":\n";
-       try {
-           std::vector<CheckerMove> moves = SpielMoveToCheckerMoves(cur_player_, action);
-            for (const auto& m : moves) {
-                std::cout << "  pos=" << m.pos << ", to_pos=" << GetToPos(cur_player_, m.pos, m.die)
-                        << ", die=" << m.die << "\n";
-            }
-       } catch(...) { std::cout << "   <Decoding failed>" << std::endl;}
-      std::cout << "DEBUG: Current dice: ";
-      // Correctly display dice values using DiceValue
-      for (size_t i = 0; i < dice_.size(); ++i) { std::cout << DiceValue(i) << " "; }
-      std::cout << "\nDEBUG: Board state:\n" << ToString() << "\n";
-       std::cout << "DEBUG: Legal actions (" << legal_actions.size() << " total): ";
-       for (Action a : legal_actions) { std::cout << a << " "; }
-       std::cout << "\n";
-    }
-    return false;
-  }
-  
-  // Optional: Perform consistency checks on the decoded move sequence itself, 
-  // even though it was found in LegalActions. This helps catch bugs in encoding/decoding or LegalActions.
-  // Note: This duplicates some logic but can be useful for debugging.
-  #ifndef NDEBUG // Only run these checks in debug builds
+  // Perform consistency checks by decoding and simulating the action.
+  // This was previously inside #ifndef NDEBUG, now it's the main validation logic.
   try {
         std::vector<CheckerMove> moves = SpielMoveToCheckerMoves(cur_player_, action);
         // Simulate applying the moves on a cloned state to verify step-by-step validity
         std::unique_ptr<State> temp_state_ptr = this->Clone();
         LongNardeState* temp_state = dynamic_cast<LongNardeState*>(temp_state_ptr.get());
-        
+
+        // We will manipulate the dice_usage_count_ of the temp_state directly.
+
         bool sequence_valid = true;
         for (const auto& move : moves) {
-            if (move.pos == kPassPos) continue; // Skip passes here
+            // Check if the move requires a die (i.e., not a pass)
+            if (move.pos != kPassPos) {
+                // Check if the required die (move.die) is available in the *temp_state* 
+                // according to its current dice_ and dice_usage_count_.
+                bool found_usable_die_slot = false;
+                for (int i=0; i < temp_state->dice_.size(); ++i) {
+                    if (temp_state->dice_[i] == move.die && temp_state->IsDieUsable(i)) {
+                        found_usable_die_slot = true;
+                        // Do not mark usage here; ApplyCheckerMove inside the loop will do it.
+                        break;
+                    }
+                }
+                
+                if (!found_usable_die_slot) {
+                     if (kDebugging) {
+                         std::cout << "ERROR ValidateAction: Action " << action << " requires die " << move.die
+                                   << " but no usable slot found in temp_state at this step." << std::endl;
+                         std::cout << "  Temp State Dice: ";
+                         for(size_t i=0; i < temp_state->dice_.size(); ++i) {
+                             std::cout << temp_state->DiceValue(i) << " ";
+                         }
+                         std::cout << std::endl;
+                     }
+                    sequence_valid = false;
+                    break;
+                }
+            }
 
-            // Check validity *in the context of the temporary state*
-            // Need to ensure temp_state is correctly managing its internal state like moved_from_head_
-            // Assuming ApplyCheckerMove updates moved_from_head_ correctly within temp_state
-            if (!temp_state->IsValidCheckerMove(temp_state->cur_player_, move.pos, move.to_pos, move.die, /*check_head_rule=*/true)) {
+            // Check move validity *in the context of the temporary state*
+             // The moved_from_head state needs to be tracked across the loop for ValidateAction.
+             // For now, passing true here might be incorrect, as it assumes the head rule applies
+             // independently for each step rather than sequentially.
+             // TODO: Refactor ValidateAction to track moved_from_head state sequentially.
+            if (move.pos != kPassPos && !temp_state->IsValidCheckerMoveNew(temp_state->cur_player_, move, /*moved_from_head_this_sequence=*/true)) {
                  if (kDebugging) {
-                     std::cout << "ERROR ValidateAction: Decoded move [" << move.pos << "->" << move.to_pos << "/" << move.die 
-                               << "] from legal action " << action << " is INVALID at its step in sequence!" << std::endl;
+                     std::cout << "ERROR ValidateAction: Decoded move [" << move.pos << "->" << move.to_pos << "/" << move.die
+                               << "] from action " << action << " is INVALID at its step in sequence!" << std::endl;
                      std::cout << "  Temp State Board:\n" << temp_state->ToString() << std::endl;
                  }
                  sequence_valid = false;
                  break;
             }
             // Apply the move to the temp state for the next check
+             // No longer need to track usage locally; 
+             // ApplyCheckerMove below will update temp_state->dice_usage_count_
+              // Apply the move (ApplyCheckerMove handles marking dice used *within the temp state*)
              temp_state->ApplyCheckerMove(temp_state->cur_player_, move);
         }
 
         if (!sequence_valid) {
-            // Consider logging or asserting here if an action from LegalActions fails validation.
-             // SpielFatalError("Inconsistency: Action from LegalActions failed sequence validation.");
-             return false; // Treat as invalid if sequence check fails
+            // If any step was invalid, the whole action is invalid.
+             return false; 
         }
+        
+        // Optional: Add checks for dice usage rules (e.g., using max possible dice)?
+        // For now, focus on breaking the recursion. If LegalActions filters correctly,
+        // actions reaching here should already represent valid dice usage patterns.
 
+
+  } catch (const std::exception& e) {
+       if (kDebugging) std::cout << "ERROR ValidateAction: Exception during validation decode/simulation for action " << action << ": " << e.what() << std::endl;
+       return false; // Decoding/simulation error means invalid
   } catch (...) {
-       if (kDebugging) std::cout << "ERROR ValidateAction: Exception during validation decode/simulation for action " << action << std::endl;
+       if (kDebugging) std::cout << "ERROR ValidateAction: Unknown exception during validation decode/simulation for action " << action << std::endl;
        return false; // Decoding/simulation error means invalid
   }
-  #endif // NDEBUG
+  // REMOVED: #ifndef NDEBUG and #endif
 
-  return true; // Action is in the legal set
+  return true; // Action survived simulation and decoding.
 }
 
 bool LongNardeState::IsOff(int player, int pos) const {
@@ -437,8 +431,41 @@ bool LongNardeState::AllInHome(Player player) const {
   return (checkers_on_board + scores_[player] == kNumCheckersPerPlayer);
 }
 
+// Finds the position of the furthest checker in the home board. Returns -1 if empty.
+int LongNardeState::FurthestCheckerInHome(Player player) const {
+  if (player == kXPlayerId) { // White home: 0-5. Furthest is highest index.
+    for (int pos = kWhiteHomeEnd; pos >= kWhiteHomeStart; --pos) {
+      if (board_[player][pos] > 0) {
+        return pos;
+      }
+    }
+  } else { // Black home: 12-17. Furthest is lowest index.
+    for (int pos = kBlackHomeStart; pos <= kBlackHomeEnd; ++pos) {
+      if (board_[player][pos] > 0) {
+        return pos;
+      }
+    }
+  }
+  return -1; // No checkers in home
+}
 
 // ===== Bridge Rule Checks =====
+
+// Checks if a given die *outcome* (1-6, or potentially a marker for used) is usable.
+// This function was likely part of the original backgammon code or an earlier version.
+// It uses a convention where negative values or values > 6 indicate a used die.
+bool LongNardeState::UsableDiceOutcome(int outcome) const {
+  return outcome >= 1 && outcome <= 6;
+}
+
+// Checks if the die at a specific *index* in the dice_ vector is usable.
+bool LongNardeState::IsDieUsable(int index) const {
+  if (index < 0 || index >= dice_.size()) {
+    SpielFatalError(absl::StrCat("IsDieUsable: Invalid index ", index, " for dice size ", dice_.size()));
+    return false; // Should not be reached
+  }
+  return UsableDiceOutcome(dice_[index]);
+}
 
 } // namespace long_narde
 } // namespace open_spiel

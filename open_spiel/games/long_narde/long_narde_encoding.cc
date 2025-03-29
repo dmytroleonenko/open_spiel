@@ -68,8 +68,8 @@ const std::array<Action, 5> kDoublesBasePower = {
  * @brief Encodes a single CheckerMove (normal or pass) into an integer digit.
  *
  * This is used by the standard encoding scheme (non-doubles or doubles <= 2 moves).
- * - Normal move (pos 0-23, die 1-6): Encoded as `pos * 6 + (die - 1)`, range [0, 143].
- * - Pass move (pos kPassPos, die 1-6): Encoded as `kPassOffset + (die - 1)`, range [144, 149].
+ * - Normal move: digit = `pos * 6 + (die - 1)`, range [0, 143].
+ * - Pass move: digit = `kPassOffset + (die - 1)`, range [144, 149].
  *
  * @param move The CheckerMove to encode.
  * @return The encoded integer digit.
@@ -278,25 +278,44 @@ Action LongNardeState::CheckerMovesToSpielMove(
 
     // Ensure we always encode exactly two half-moves by adding Pass moves if necessary.
     while (encoded_moves.size() < 2) {
-      // Add pass moves as padding.
-      int die_val = 1;  // Default die value for padding.
-      // Try to find an *unused* die value if possible for the pass padding.
-      // This helps preserve information if decoding is done without full state context,
-      // although full state context is generally assumed.
-      int available_die = -1;
-      if (dice_.size() >= 1 && UsableDiceOutcome(dice_[0])) available_die = DiceValue(0);
-      else if (dice_.size() >= 2 && UsableDiceOutcome(dice_[1])) available_die = DiceValue(1);
+      int pass_die = kPassDieValue; // Default pass value (1)
 
-      if (available_die != -1) {
-          die_val = available_die;
-      } else if (!encoded_moves.empty() && encoded_moves[0].die > 0) {
-          // Fallback: use the die from the first move if no dice info available (should not happen in normal flow).
-          die_val = encoded_moves[0].die;
+      if (encoded_moves.size() == 1) {
+        // If exactly one move was made, the pass MUST use the other die.
+        SPIEL_CHECK_EQ(dice_.size(), 2); // Should have two dice in this scenario
+        int first_move_die = encoded_moves[0].die;
+        int die0_val = DiceValue(0);
+        int die1_val = DiceValue(1);
+        // Find the die value that was NOT used by the first move.
+        pass_die = (first_move_die == die0_val) ? die1_val : die0_val;
+      } else { // encoded_moves.size() == 0 (need to pad two passes)
+        // Find a usable die index to use for the pass move.
+        // Prioritize index 1 if both usable and different.
+        int usable_idx = -1;
+        if (dice_.size() >= 2 && IsDieUsable(1)) {
+            usable_idx = 1;
+            if (IsDieUsable(0) && DiceValue(0) != DiceValue(1)) {
+               // No change needed, usable_idx is already 1 (prefer higher die)
+            } else if (!IsDieUsable(0)){
+               // Only index 1 is usable
+            } else {
+               // Both usable, but same value or 0 is higher/only one usable.
+               if (!IsDieUsable(1)) usable_idx = 0; 
+            }
+        } else if (dice_.size() >= 1 && IsDieUsable(0)) {
+            usable_idx = 0;
+        }
+        // If a usable die was found, use its value.
+        if (usable_idx != -1) {
+            pass_die = DiceValue(usable_idx);
+        }
+        // Otherwise, pass_die remains the default kPassDieValue (1).
       }
-      // Ensure die_val is valid (1-6).
-      die_val = std::max(1, std::min(6, die_val));
+
+      // Ensure die_val is valid (1-6) - safety check
+      pass_die = std::max(1, std::min(6, pass_die));
       // Add a pass move with the chosen die value.
-      encoded_moves.push_back(CheckerMove(kPassPos, kPassPos, die_val));
+      encoded_moves.push_back(CheckerMove(kPassPos, kPassPos, pass_die));
     }
 
     // Helper function to encode a single half-move (CheckerMove) into an integer digit.

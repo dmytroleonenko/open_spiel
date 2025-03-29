@@ -370,8 +370,7 @@ void LongNardeState::ProcessChanceRoll(Action move_id) {
 
   // Ensure we have no dice set yet, then apply this new roll.
   SPIEL_CHECK_TRUE(dice_.empty());
-  RollDice(move_id); // Sets dice_ based on outcome
-  initial_dice_ = dice_; // Store the roll in initial_dice_
+  RollDice(move_id); // Sets dice_ and dice_usage_count_ based on outcome
 
   // Decide which player moves next.
   if (turns_ < 0) {
