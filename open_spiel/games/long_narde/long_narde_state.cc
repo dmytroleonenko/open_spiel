@@ -101,6 +101,16 @@ void LongNardeState::RollDice(int outcome) {
  * @return The face value of the die (1-6).
  */
 int LongNardeState::DiceValue(int i) const {
+  // Added debug print to trace calls
+  if (i < 0 || i >= dice_.size()) { // Check condition before the SPIEL_CHECK
+    std::cerr << "!!! DEBUG: DiceValue called with invalid index i=" << i 
+              << " when dice_.size()=" << dice_.size() 
+              << ". Current player: " << cur_player_ 
+              << ". Dice state: { ";
+    for(int idx=0; idx < dice_.size(); ++idx) { std::cerr << dice_[idx] << " "; }
+    std::cerr << "}" << std::endl;
+    // Optionally print stack trace here if possible/needed
+  }
   SPIEL_CHECK_GE(i, 0);
   SPIEL_CHECK_LT(i, dice_.size());
   int raw_value = dice_[i];

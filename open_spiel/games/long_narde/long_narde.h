@@ -348,9 +348,11 @@ class LongNardeState : public State {
 
   // Helper function to filter generated sequences for the best ones
   // (longest sequence length, max non-pass moves within that length).
-  // Returns the filtered list and the calculated max_non_pass count.
-  std::pair<std::vector<std::vector<CheckerMove>>, int> FilterBestMoveSequences(
-      const std::vector<std::vector<CheckerMove>>& movelist) const;
+  // Now modifies the provided filtered_movelist directly.
+  void FilterBestMoveSequences(
+      const std::vector<std::vector<CheckerMove>>& movelist,
+      std::vector<std::vector<CheckerMove>>* filtered_movelist,
+      int max_non_pass_moves) const;
 
   // Helper function to apply the "play higher die" rule if necessary.
   std::vector<Action> ApplyHigherDieRuleIfNeeded(

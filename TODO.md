@@ -408,14 +408,47 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	[x] Document pass move handling (using kPassOffset + (die - 1)).
 	•	[x] Add explanations for the encoding ranges and any potential edge cases.
 
+## Performance
+	9.	Optimize Move Sequence Storage
+	•	What: Replace `std::set<std::vector<CheckerMove>>` with `std::vector` to potentially reduce overhead in move generation.
+	•	Where: `long_narde_legal_actions.cc` (specifically `GenerateMoveSequences`, `IterativeLegalMoves`, `FilterBestMoveSequences`, `LegalActions`, `ApplyHigherDieRuleIfNeeded`), `long_narde.h` (declarations).
+	•	Why: Reduce overhead from `std::set` operations (insertion, uniqueness checks).
+	•	Retrieval Hint: Use query `Task:LongNardeOptimizeMoveStorage`
+	•	Tasks:
+		*   [x] Change `movelist` types from `set` to `vector` in relevant functions.
+		*   [x] Replace `insert` with `push_back` in `IterativeLegalMoves`.
+		*   [x] Add `std::sort` and `std::unique` in `GenerateMoveSequences` to maintain uniqueness after collection.
+		*   [x] Update function declarations in `long_narde.h`.
+		*   [x] Verify `CheckerMove::operator<` exists for sorting.
+		*   [x] Build and test successfully.
+	10.	Reduce Cloning in Move Generation
+	•	What: Modify `IterativeLegalMoves` to use apply/undo on the current state instead of cloning for most branches.
+	•	Where: `long_narde_legal_actions.cc` (within `IterativeLegalMoves`).
+	•	Why: Avoid expensive `Clone()` calls during the depth-first search.
+	•	Retrieval Hint: Use query `Task:LongNardeReduceCloning`
+	•	Tasks:
+		*   [ ] Refactor the loop in `IterativeLegalMoves` to apply a move, push state parameters (or a lighter context object), explore, and then undo the move.
+		*   [ ] Only clone when necessary (potentially never if using a purely recursive approach or if state needs to be preserved across stack unwinds).
+		*   [ ] Ensure `UndoCheckerMove` correctly restores all relevant state.
+		*   [ ] Build and test successfully.
+
+## Testing Refactoring
+	11.	Consolidate Test Helper Functions
+	•	What: Move common test setup functions (e.g., board setup, action application) into a shared test utility file.
+	•	Where: Create `long_narde_test_utils.h/cc`.
+	•	Why: Reduce code duplication in test files.
+	•	Tasks:
+		*   [x] Identify common setup patterns in existing tests.
+		*   [x] Create helper functions in a new utility file.
+		*   [x] Refactor existing tests to use the shared utilities.
+		*   [x] Update `CMakeLists.txt` to include the new test utility files.
+
 ## Progress Tracking
-	•	[x] Code Simplification (Tasks 1–3, 3a)
+	•	[x] Code Simplification (Tasks 1–3a)
 	•	[x] Code Structure (Tasks 4–6)
 	•	[x] Documentation (Tasks 7–8)
-	•	[ ] Performance (Tasks 9–10)
-	•	[ ] Algorithms (Tasks 11–12)
-	•	[*] Testing (Tasks 13–14)
-	•	[x] Testing Refactoring (Task 15)
+	•	[*] Performance (Tasks 9–10)
+	•	[x] Testing Refactoring (Task 11)
 
 ## Summary of Key Recommendations
 	•	Break large functions into smaller helpers for move generation, filtering, and encoding/decoding.
