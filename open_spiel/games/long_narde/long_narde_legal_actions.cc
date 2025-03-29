@@ -50,7 +50,13 @@ std::vector<Action> LongNardeState::LegalActions() const {
   // If filtering resulted in only a pass sequence (and original was pass-only), convert and return it.
   if (max_non_pass == 0 && !filtered_movelist.empty()) {
     // FilterBestMoveSequences guarantees the set contains one canonical pass sequence here.
-     return {CheckerMovesToSpielMove(*filtered_movelist.begin())};
+    // HOWEVER, that sequence might just be the placeholder {kPassPos, kPassPos, 0} or {kPassPos, kPassPos, 1}.
+    // We need to construct the *correct* pass sequence using the actual dice for encoding.
+    SPIEL_CHECK_GE(dice_.size(), 2); // Should have dice if we reached here needing to pass.
+    std::vector<CheckerMove> actual_pass_sequence;
+    actual_pass_sequence.push_back({kPassPos, kPassPos, DiceValue(0)}); // Use first die value
+    actual_pass_sequence.push_back({kPassPos, kPassPos, DiceValue(1)}); // Use second die value
+    return {CheckerMovesToSpielMove(actual_pass_sequence)}; // Encode the correct sequence
   }
   
   // Convert filtered move sequences to Spiel Actions
@@ -442,45 +448,75 @@ std::pair<std::set<std::vector<CheckerMove>>, int> LongNardeState::FilterBestMov
       }
   }
 
-  // DEBUG: Print filtering criteria
-  if (kDebugging) {
-    std::cout << "DEBUG FilterBestMoveSequences: longest_sequence = " << longest_sequence 
-              << ", max_non_pass = " << max_non_pass << std::endl;
-  }
-
-  // If max_non_pass is 0, it means only pass moves are possible (or movelist was empty initially)
-  if (max_non_pass == 0) {
-      // Create a canonical pass sequence (length 2, using dice or defaults)
-      std::vector<CheckerMove> pass_move_seq;
-      int p_die1 = (dice_.size() >= 1 && UsableDiceOutcome(dice_[0])) ? DiceValue(0) : kPassDieValue;
-      int p_die2 = (dice_.size() >= 2 && UsableDiceOutcome(dice_[1])) ? DiceValue(1) : p_die1;
-      // Ensure dice are valid (1-6), clamp if necessary (should ideally not happen with kPassDieValue)
-      p_die1 = std::max(1, std::min(6, p_die1));
-      p_die2 = std::max(1, std::min(6, p_die2));
-
-      // Use the actual dice values when creating the pass moves for correct encoding.
-      pass_move_seq.push_back({kPassPos, kPassPos, p_die1}); 
-      pass_move_seq.push_back({kPassPos, kPassPos, p_die2}); 
-      
-      // Return a set containing just this pass sequence and max_non_pass = 0
-      return {{pass_move_seq}, 0};
-  }
-
-  // Filter the movelist to keep only sequences with max length AND max non-pass moves
+  // Filter the sequences: keep only those with the longest length AND max non-pass moves
   std::set<std::vector<CheckerMove>> filtered_movelist;
+  bool pass_possible = false; // Track if pass is a potentially valid "best" move
+
   for (const auto& moveseq : movelist) {
-      if (moveseq.size() == longest_sequence) {
-          int current_non_pass = 0;
-          for (const auto& move : moveseq) {
-              if (move.pos != kPassPos) {
-                  current_non_pass++;
-              }
+      int current_non_pass = 0;
+      bool is_pass_sequence = true;
+      for (const auto& move : moveseq) {
+          if (move.pos != kPassPos) {
+              current_non_pass++;
+              is_pass_sequence = false;
           }
-          if (current_non_pass == max_non_pass) {
-              filtered_movelist.insert(moveseq);
+      }
+
+      if (moveseq.size() == longest_sequence && current_non_pass == max_non_pass) {
+          filtered_movelist.insert(moveseq);
+          if (is_pass_sequence) {
+             pass_possible = true; // A pass sequence is among the best
+          }
+      } else if (is_pass_sequence && max_non_pass == 0 && longest_sequence <= 1) {
+         // Special case: If the best move is "pass" (max_non_pass = 0) and
+         // the longest sequences are size 0 or 1, ensure the explicit pass
+         // sequence {kPassMove} is included if it exists in the original list.
+         // This handles the scenario where the *only* possible action is Pass.
+         if (moveseq.size() == 1 && moveseq[0].pos == kPassPos) {
+           filtered_movelist.insert(moveseq);
+           pass_possible = true;
+         }
+      }
+  }
+
+  // If the filtered list is empty AND the original list only contained sequences
+  // ending because no moves were possible from the start, we need to check
+  // if a single pass move is valid.
+  if (filtered_movelist.empty() && max_non_pass == 0 && longest_sequence == 0) {
+      if (kDebugging) std::cout << "FilterBest: Filtered list empty, checking for pass validity." << std::endl;
+
+      // Avoid cloning: Save relevant state, call GenerateAllHalfMoves, restore state.
+      // Store potentially modified state variables
+      auto original_dice = this->dice_;
+      bool original_moved_from_head = this->moved_from_head_;
+      Player current_player = this->cur_player_; // Use member variable
+
+      // Temporarily modify 'this' state for the check
+      // Need a non-const version of 'this' to modify members and call non-const GenerateAllHalfMoves
+      LongNardeState* mutable_this = const_cast<LongNardeState*>(this);
+
+      // Reset potentially affected state for the check
+      mutable_this->moved_from_head_ = false; // Reset head move status for the check
+
+      // Generate moves directly on the (temporarily modified) current state
+      std::set<CheckerMove> all_half_moves = mutable_this->GenerateAllHalfMoves(current_player);
+
+      // Restore the original state immediately after the call
+      mutable_this->dice_ = original_dice;
+      mutable_this->moved_from_head_ = original_moved_from_head;
+
+      if (all_half_moves.size() == 1 && all_half_moves.begin()->pos == kPassPos) {
+          if (kDebugging) std::cout << "FilterBest: Only pass move is valid. Adding pass sequence." << std::endl;
+          filtered_movelist.insert({kPassMove});
+          pass_possible = true; // Pass is the only option
+      } else if (kDebugging) {
+          std::cout << "FilterBest: Pass check - found " << all_half_moves.size() << " half moves. Pass not added." << std::endl;
+          for(const auto& mv : all_half_moves) {
+             std::cout << "  - Move:{" << mv.pos << "," << mv.to_pos << "," << mv.die << "}" << std::endl;
           }
       }
   }
+
 
   return {filtered_movelist, max_non_pass};
 }
@@ -513,10 +549,10 @@ std::vector<Action> LongNardeState::ApplyHigherDieRuleIfNeeded(
         }
     }
   }
-  
+
   bool is_doubles = (dice_.size() == 2 && DiceValue(0) == DiceValue(1));
 
-  // Only apply the rule if exactly one die was playable (max_non_pass == 1) 
+  // Only apply the rule if exactly one die was playable (max_non_pass == 1)
   // AND it's not doubles AND we have exactly 2 dice.
   if (max_non_pass == 1 && !is_doubles && dice_.size() == 2) {
       int d1 = DiceValue(0);
@@ -529,10 +565,12 @@ std::vector<Action> LongNardeState::ApplyHigherDieRuleIfNeeded(
       std::unique_ptr<State> temp_state = this->Clone();
       LongNardeState* cloned_state = dynamic_cast<LongNardeState*>(temp_state.get());
       // Ensure the cloned state has the original dice values (unmarked)
-      std::vector<int> original_dice;
-      if (dice_.size() >= 1) original_dice.push_back(DiceValue(0));
-      if (dice_.size() >= 2) original_dice.push_back(DiceValue(1));
-      cloned_state->dice_ = original_dice;
+      std::vector<int> original_dice_vals;
+      if (dice_.size() >= 1) original_dice_vals.push_back(DiceValue(0));
+      if (dice_.size() >= 2) original_dice_vals.push_back(DiceValue(1));
+      // Convert dice values back to raw outcomes if needed (assuming they are 1-6 already)
+      std::vector<int> raw_original_dice = original_dice_vals; // Assuming dice_ already stores 1-6
+      cloned_state->dice_ = raw_original_dice;
       cloned_state->moved_from_head_ = false; // Reset head move status for the check
 
       std::set<CheckerMove> all_half_moves = cloned_state->GenerateAllHalfMoves(cur_player_);
@@ -561,8 +599,8 @@ std::vector<Action> LongNardeState::ApplyHigherDieRuleIfNeeded(
                      single_played_move = m;
                   }
                   actual_non_pass_count++;
-              }
-          }
+               }
+           }
 
           if (actual_non_pass_count == 1) {
               if (single_played_move.die == higher_die) {
@@ -579,12 +617,15 @@ std::vector<Action> LongNardeState::ApplyHigherDieRuleIfNeeded(
       // Apply the rule based on which dice were ever playable:
       if (higher_die_ever_playable && lower_die_ever_playable) {
           // Both were playable, must use higher die
+          if (kDebugging) std::cout << "ApplyHigherDieRule: Both dice playable, forcing higher die (" << higher_die << ")" << std::endl;
           return actions_using_higher;
       } else if (higher_die_ever_playable) {
           // Only higher was playable
+           if (kDebugging) std::cout << "ApplyHigherDieRule: Only higher die (" << higher_die << ") playable." << std::endl;
           return actions_using_higher;
       } else if (lower_die_ever_playable) {
           // Only lower was playable
+           if (kDebugging) std::cout << "ApplyHigherDieRule: Only lower die (" << lower_die << ") playable." << std::endl;
           return actions_using_lower;
       } else {
           // This state should not be reachable if max_non_pass == 1
