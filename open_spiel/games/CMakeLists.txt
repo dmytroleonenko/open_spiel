@@ -199,6 +199,14 @@ set(GAME_SOURCES
   y/y.h
   long_narde/long_narde.cc
   long_narde/long_narde.h
+  long_narde/long_narde_state.cc
+  long_narde/long_narde_moves.cc
+  long_narde/long_narde_encoding.cc
+  long_narde/long_narde_validation.cc
+  long_narde/long_narde_legal_actions.cc
+  long_narde/long_narde_api.cc
+  long_narde/long_narde_utils.cc
+  long_narde/long_narde_game.cc
 )
 
 if (${OPEN_SPIEL_BUILD_WITH_HANABI})
@@ -216,6 +224,14 @@ target_include_directories (games PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # Set debug symbols for long_narde files
 set_source_files_properties(
   long_narde/long_narde.cc 
+  long_narde/long_narde_state.cc
+  long_narde/long_narde_moves.cc
+  long_narde/long_narde_encoding.cc
+  long_narde/long_narde_validation.cc
+  long_narde/long_narde_legal_actions.cc
+  long_narde/long_narde_api.cc
+  long_narde/long_narde_utils.cc
+  long_narde/long_narde_game.cc
   long_narde/long_narde.h
   PROPERTIES COMPILE_FLAGS ${DEBUG_FLAGS_LONG_NARDE}
 )

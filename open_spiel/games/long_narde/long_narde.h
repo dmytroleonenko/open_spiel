@@ -6,6 +6,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include "open_spiel/spiel.h"
 
@@ -18,6 +19,24 @@
 
 namespace open_spiel {
 namespace long_narde {
+
+// ===== Game Constants =====
+
+// Placed here as it's fundamental to chance node behavior
+inline const std::vector<std::pair<Action, double>> kChanceOutcomes = {
+    {0, 1.0 / 18}, {1, 1.0 / 18}, {2, 1.0 / 18}, {3, 1.0 / 18},
+    {4, 1.0 / 18}, {5, 1.0 / 18}, {6, 1.0 / 18}, {7, 1.0 / 18},
+    {8, 1.0 / 18}, {9, 1.0 / 18}, {10, 1.0 / 18}, {11, 1.0 / 18},
+    {12, 1.0 / 18}, {13, 1.0 / 18}, {14, 1.0 / 18}, {15, 1.0 / 36},
+    {16, 1.0 / 36}, {17, 1.0 / 36}, {18, 1.0 / 36}, {19, 1.0 / 36},
+    {20, 1.0 / 36},
+};
+
+// Corresponds to kChanceOutcomes, providing the actual dice values.
+inline const std::vector<std::vector<int>> kChanceOutcomeValues = {
+    {1, 2}, {1, 3}, {1, 4}, {1, 5}, {1, 6}, {2, 3}, {2, 4},
+    {2, 5}, {2, 6}, {3, 4}, {3, 5}, {3, 6}, {4, 5}, {4, 6},
+    {5, 6}, {1, 1}, {2, 2}, {3, 3}, {4, 4}, {5, 5}, {6, 6}};
 
 inline constexpr const int kNumPlayers = 2;
 inline constexpr const int kNumChanceOutcomes = 21;
@@ -61,6 +80,9 @@ inline constexpr const CheckerMove kPassMove(kPassPos, kPassPos, kPassDieValue);
 
 // Constant vector of two pass moves
 inline const std::vector<CheckerMove> kDoublePassMove = {kPassMove, kPassMove};
+
+// Special constant for human-readable output of borne-off checkers
+inline constexpr const int kNumOffPosHumanReadable = -2;
 
 // Number of checkers per player
 inline constexpr const int kNumCheckersPerPlayer = 15;

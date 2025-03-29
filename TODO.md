@@ -27,7 +27,7 @@ We will create a copy of "games/backgammon" and modify it to implement the game 
 - [*] Update documentation to reflect all changes.
 - [*] Add the Long Narde game to the CMakeLists.txt
 - [*] Implement last roll tie rule to allow a final chance for a player who has at least 14 checkers off
-- [ ] Successfully build and run all tests to ensure the new rules are correctly implemented.
+- [*] Successfully build and run all tests to ensure the new rules are correctly implemented.
 - [ ] Commit changes following TDD principles.
 
 ## Specific Code Changes Completed
@@ -275,15 +275,15 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 ## Code Simplification
 	1.	Refactor LegalActions Function
 	•	What: Break down the complex LegalActions function into smaller, focused helper functions.
-	•	Where: long_narde.cc (lines 1770–1892)
+	•	Where: long_narde.cc (updated lines ~607-777)
 	•	Why: Improve readability and maintainability by separating move generation, filtering, and higher-die rule logic.
 	•	Retrieval Hint: Use query `Task:LongNardeRefactorLegalActions`
 	•	Tasks:
-	•	[ ] Create a helper for move sequence generation (e.g., GenerateMoveSequences).
-	•	[ ] Create a helper for move sequence filtering (e.g., FilterLongestSequences).
-	•	[ ] Create a helper for higher-die rule application (e.g., ApplyHigherDieRuleIfNeeded).
-	•	[ ] Create a helper for doubles move handling.
-	•	[ ] Use early returns to avoid deeply nested conditions.
+	•	[*] Create a helper for move sequence generation (e.g., `GenerateMoveSequences`).
+	•	[*] Create a helper for move sequence filtering (e.g., `FilterBestMoveSequences`).
+	•	[*] Create a helper for higher-die rule application (e.g., `ApplyHigherDieRuleIfNeeded`).
+	•	[ ] Create a helper for doubles move handling. (Deferred - may fit better in RecLegalMoves/Encoding refactor)
+	•	[ ] Use early returns to avoid deeply nested conditions. (Deferred - current structure is fairly linear)
 	2.	Simplify RecLegalMoves Function
 	•	What: Convert the recursive RecLegalMoves function to an iterative approach using a stack or queue.
 	•	Where: long_narde.cc (lines 1598–1681)
@@ -333,9 +333,63 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	[x] Move encoding constants (e.g., kDigitBase, kPassOffset, kDoublesOffset) to the implementation file.
 	•	[x] Document the purpose of each constant.
 	•	[x] Update any code references affected by the move.
+	6.	Split long_narde.cc into Smaller Files
+	•	What: Divide the large `long_narde.cc` file into smaller, more manageable units based on functionality.
+	•	Where: `open_spiel/games/long_narde/` directory.
+	•	Why: Improve build times, reduce cognitive load, enhance maintainability, and facilitate parallel development. Target ~300 lines per file.
+	•	Retrieval Hint: Use query `Task:LongNardeSplitFile`
+	•	Tasks:
+	•	[ ] Identify logical functional groups (e.g., state_setup, movement, move_generation, encoding, validation, game_logic, string_utils).
+	•	[*] Plan the new file structure (e.g., `long_narde_state.cc`, `long_narde_moves.cc`, `long_narde_encoding.cc`, etc.).
+	•	[*] Create new `.cc` files for each group.
+			*   [x] `long_narde_state.cc`: Contains `LongNardeState` constructor and `SetupInitialBoard`.
+			*   [x] `long_narde_moves.cc`: Contains movement-related functions (`ApplyCheckerMove`, `UndoCheckerMove`, `GetToPos`).
+			*   [x] `long_narde_encoding.cc`: Will contain encoding/decoding functions (`CheckerMovesToSpielMove`, `SpielMoveToCheckerMoves`, `NumDistinctActions`, etc.).
+			*   [x] `long_narde_validation.cc`: Will contain validation functions (`IsValidCheckerMove`, `WouldFormBridge`, `IsHeadPos`, `IsLegalHeadMove`, `IsFirstTurn`, etc.).
+			*   [x] `long_narde_legal_actions.cc`: Will contain `LegalActions` and its helpers (`GenerateMoveSequences`, `FilterBestMoveSequences`, `ApplyHigherDieRuleIfNeeded`, `RecLegalMoves` [iterative version later]).
+			*   [x] `long_narde_api.cc`: Will contain core Spiel API implementations (`CurrentPlayer`, `DoApplyAction`, `UndoAction`, `IsTerminal`, `Returns`, `ObservationString`, `ObservationTensor`, `Clone`, `ChanceOutcomes`).
+			*   [x] `long_narde_utils.cc`: Will contain general utility functions (`ToString`, `ActionToString`, `DiceToString`, `ParseScoringType`, etc.).
+			*   [x] `long_narde_game.cc`: Will contain the `LongNardeGame` class definition and factory function.
+	•	[*] Move corresponding function implementations from `long_narde.cc` to the new files.
+			*   [x] Moved `LongNardeState::LongNardeState`, `LongNardeState::SetupInitialBoard` to `long_narde_state.cc`.
+			*   [x] Moved movement functions to `long_narde_moves.cc`.
+			*   [x] Moved encoding functions to `long_narde_encoding.cc`.
+			*   [x] Moved validation functions to `long_narde_validation.cc`.
+			*   [x] Moved legal action generation functions to `long_narde_legal_actions.cc`.
+			*   [x] Move core API functions to `long_narde_api.cc`.
+			*   [x] Move utility functions to `long_narde_utils.cc`.
+			*   [x] Move `LongNardeGame` class and factory to `long_narde_game.cc`.
+	•	[*] Ensure necessary includes (`long_narde.h`, etc.) are added to each new file.
+			*   [x] Added includes to `long_narde_state.cc`.
+			*   [x] Added includes to `long_narde_moves.cc`.
+			*   [x] Added includes to `long_narde_encoding.cc`.
+			*   [x] Added includes to `long_narde_validation.cc`.
+			*   [x] Added includes to `long_narde_legal_actions.cc`.
+			*   [x] Add includes to `long_narde_api.cc`.
+			*   [x] Add includes to `long_narde_utils.cc`.
+			*   [x] Add includes to `long_narde_game.cc`.
+	•	[*] Update `CMakeLists.txt` to include the new source files in the `open_spiel_long_narde` target.
+			*   [x] Added `long_narde_state.cc` to `open_spiel/games/CMakeLists.txt`.
+			*   [x] Added `long_narde_moves.cc` to `CMakeLists.txt`.
+			*   [x] Added `long_narde_encoding.cc` to `CMakeLists.txt`.
+			*   [x] Added `long_narde_validation.cc` to `CMakeLists.txt`.
+            *   [x] Added `long_narde_legal_actions.cc` to `CMakeLists.txt`.
+			*   [x] Add `long_narde_api.cc` to `CMakeLists.txt`.
+			*   [x] Add `long_narde_utils.cc` to `CMakeLists.txt`.
+			*   [x] Add `long_narde_game.cc` to `CMakeLists.txt`.
+	•	[*] Perform incremental builds and tests after moving each functional group to ensure correctness.
+			*   [x] Build/test successful after moving state setup functions.
+			*   [x] Build/test successful after moving movement functions.
+			*   [x] Build/test successful after moving encoding functions.
+			*   [x] Build/test successful after moving validation functions.
+			*   [x] Build/test successful after moving legal action functions.
+			*   [x] Build/test after moving API functions.
+			*   [x] Build/test after moving utility functions.
+			*   [x] Build/test after moving game class functions.
+	•	[ ] Refactor remaining code in `long_narde.cc` (likely containing `LongNardeGame` class and main state methods) for clarity.
 
 ## Comments and Documentation
-	6.	Enhance Function Comments
+	7.	Enhance Function Comments
 	•	What: Add detailed comments for complex functions.
 	•	Where: Key functions in long_narde.cc
 	•	Why: Improve code understanding.
@@ -344,7 +398,7 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	[ ] Document the checks in IsValidCheckerMove (bounds, head rule, bearing off, opponent occupancy, bridging).
 	•	[ ] Document the bridge rule implementation and the rationale behind it.
 	•	[ ] Add parameter and return documentation using a consistent style (e.g., Doxygen).
-	7.	Document Encoding Logic
+	8.	Document Encoding Logic
 	•	What: Add comprehensive documentation for the encoding scheme.
 	•	Where: long_narde.cc (lines 157–266, 268–323)
 	•	Why: Clarify the complex encoding schemes for normal moves, doubles, and pass moves.
@@ -354,108 +408,13 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	[*] Document pass move handling (using kPassOffset + (die - 1)).
 	•	[*] Add explanations for the encoding ranges and any potential edge cases.
 
-## Performance Optimization
-	8.	Optimize LegalActions Cloning
-	•	What: Reduce state cloning overhead in LegalActions.
-	•	Where: long_narde.cc (lines 1773–1774)
-	•	Why: Improve performance for frequent calls.
-	•	Retrieval Hint: Use query `Task:LongNardePerfOptCloning`
-	•	Tasks:
-	•	[ ] Profile the current implementation of state cloning.
-	•	[ ] Explore alternatives to full cloning (e.g., shallow copy of necessary fields or in-place apply/undo).
-	•	[ ] Implement and test the improved approach.
-	•	[ ] Measure and document performance impact.
-	9.	Improve Move Sequence Storage
-	•	What: Replace set-based storage with a vector and post-processing.
-	•	Where: long_narde.cc (lines 1600, 1770–1892)
-	•	Why: Reduce overhead from vector comparisons when storing move sequences.
-	•	Retrieval Hint: Use query `Task:LongNardePerfOptMoveStorage`
-	•	Tasks:
-	•	[ ] Implement move sequence storage using a std::vector of sequences.
-	•	[ ] Use sorting and std::unique for duplicate removal after sequence generation.
-	•	[ ] Test performance impact and verify correctness.
-
-## Algorithm Improvements
-	10.	Validate Encoding Schemes
-	•	What: Thoroughly test action encoding edge cases.
-	•	Where: long_narde.cc (lines 157–266, 268–323)
-	•	Why: Ensure robust handling of normal, doubles, and pass move encoding.
-	•	Retrieval Hint: Use query `Task:LongNardeAlgoValidateEncoding`
-	•	Tasks:
-	•	[ ] Create tests for normal moves encoding.
-	•	[ ] Create tests for doubles moves encoding.
-	•	[ ] Create tests for pass moves encoding.
-	•	[ ] Verify that encoding followed by decoding returns the original moves and that no collisions occur.
-	11.	Enhance Bridge Rule Checks
-	•	What: Improve and verify bridge rule testing.
-	•	Where: long_narde.cc (lines 562–601, 1900–1968)
-	•	Why: Ensure bridge rule correctness, especially for wrap-around cases and different player paths.
-	•	Retrieval Hint: Use query `Task:LongNardeAlgoBridgeChecks`
-	•	Tasks:
-	•	[ ] Test wrap-around cases (e.g., bridging from point 23 to 0).
-	•	[ ] Test bridging on different player paths (white vs. black).
-	•	[ ] Test cases with partial bridge formation.
-	•	[ ] Confirm that the bridge rule correctly prevents a full trap.
-
-## Testing
-	12.	Add Comprehensive Encoding Tests
-	•	What: Create an encoding/decoding test suite.
-	•	Where: New test file or long_narde_test.cc
-	•	Why: Verify that all encoding cases (normal, doubles, pass) work correctly.
-	•	Tasks:
-	•	[*] Test encoding/decoding for normal moves.
-	•	[*] Test encoding/decoding for doubles moves.
-	•	[*] Test encoding/decoding for pass moves.
-	•	[*] Test edge cases and validate that decode(encode(…)) equals the original.
-	13.	Expand Movement Direction Tests
-	•	What: Add test cases for movement directions.
-	•	Where: long_narde_test_movement.cc
-	•	Why: Improve coverage of movement logic, including bearing off.
-	•	Tasks:
-	•	[ ] Test various dice combinations.
-	•	[ ] Test moves from different board positions.
-	•	[ ] Test bearing off moves.
-	•	[ ] Test constraints on movement direction (especially for black's wrap-around).
-	14.	Implement Missing Test Cases
-	•	What: Complete test coverage for all rules.
-	•	Where: Test files.
-	•	Why: Ensure full rule coverage and robustness.
-	•	Tasks:
-	•	[*] Implement missing `FirstTurnDoublesExceptionTest` (Covered by HeadRuleTest)
-	•	[*] Ensure all original `BlockingBridgeRuleTest` cases are covered (Covered by TestBridgeFormation in long_narde_test_bridges.cc)
-	•	[ ] Add tests for scoring edge cases (e.g., mars vs. oin scoring, tie scenarios).
-	•	[*] Add comprehensive move validation tests. (Covered by various existing tests: NoLanding, HeadRule, Bridge, Movement, BearingOff, SingleLegal, Pass, HigherDie)
-
-## Testing Refactoring
-15. Refactor Tests to Reduce Reliance on Internal State/Constants
-    *   What: Modify test files (starting with `long_narde_test_actions.cc`) to avoid direct state manipulation and usage of internal encoding constants.
-    *   Where: `long_narde_test_*.cc`, `long_narde.h`, `long_narde.cc`, `long_narde_test_common.h`
-    *   Why: Improve test robustness, maintainability, and encapsulation. Allows internal constants (`kDigitBase`, `kPassOffset`, etc.) to be properly kept internal to `long_narde.cc` (related to Task 5).
-    *   Tasks:
-        *   [x] Analyze all test files (`long_narde_test_*.cc`) for direct use of `SetState`, `MutableIsFirstTurn`, internal constants (`kDigitBase`, `kEncodingBaseDouble`, `kDoublesOffset`), or direct member access. 
-            *   [x] `long_narde_test_actions.cc` (Refactored)
-            *   [x] `long_narde_test_basic.cc` (Reviewed - OK)
-            *   [x] `long_narde_test_movement.cc` (Refactored)
-            *   [x] `long_narde_test_bridges.cc` (Reviewed - OK)
-            *   [x] `long_narde_test_endgame.cc` (Refactored)
-            *   [x] `long_narde_test_legacy.cc`
-            *   [x] `bearing_off_test.cc` (Refactored)
-            *   [x] `random_sim_test.cc` (Reviewed - OK)
-        *   [x] Create public helper methods in `LongNardeState` or test utilities (`long_narde_test_common.h`) for setting up board states and dice in a controlled way (e.g., `SetupBoard(config)`, `SetDice(dice)`), replacing direct `SetState` calls where appropriate. (Done: `SetupBoardState`, `SetupDice` created and used)
-        *   [x] Modify tests currently using `MutableIsFirstTurn` to use the new setup helpers or structure tests to naturally progress past the first turn via applying actions. (Done for `_movement.cc`, others TBD)
-        *   [x] Refactor tests (`ActionEncodingTest` initially) that check specific action ID ranges based on internal constants (`kDigitBase`, `kDoublesOffset`). Instead, verify the *behavior* or *properties* of the decoded moves corresponding to those actions (e.g., number of moves, die values used, pass moves present). (`ActionEncodingTest` in `_actions.cc` done, check others)
-        *   [x] Once tests are refactored, move `kDigitBase` back to `long_narde.cc`'s anonymous namespace. Ensure `kPassOffset`, `kEncodingBaseDouble`, `kDoublesOffset` remain internal.
-        *   [x] Update Task 5 status in `TODO.md` to 'incomplete' or remove its completed checkmark until this refactoring allows its goal to be met.
-
-⸻
-
 ## Progress Tracking
-	•	[ ] Code Simplification (Tasks 1–3, 3a)
-	•	[x] Code Structure (Tasks 4–5)
-	•	[*] Documentation (Tasks 6–7)
-	•	[ ] Performance (Tasks 8–9)
-	•	[ ] Algorithms (Tasks 10–11)
-	•	[*] Testing (Tasks 12–14)
+	•	[*] Code Simplification (Tasks 1–3, 3a)
+	•	[*] Code Structure (Tasks 4–6)
+	•	[*] Documentation (Tasks 7–8)
+	•	[ ] Performance (Tasks 9–10)
+	•	[ ] Algorithms (Tasks 11–12)
+	•	[*] Testing (Tasks 13–14)
 	•	[x] Testing Refactoring (Task 15)
 
 ⸻
