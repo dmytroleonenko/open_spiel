@@ -245,12 +245,9 @@ class LongNardeState : public State {
   bool IsFirstTurn(int player) const;
   bool& MutableIsFirstTurn() { return is_first_turn_; }
 
-  // Centralized function to check if a checker move is valid
-  // Original signature for compatibility with tests.
-  bool IsValidCheckerMove(int player, int from_pos, int to_pos, int die_value, bool check_head_rule = true) const;
-
-  // New implementation with updated signature.
-  bool IsValidCheckerMoveNew(int player, const CheckerMove& move, bool moved_from_head_this_sequence) const;
+  // Takes sequence context for head rule.
+  bool IsValidCheckerMove(int player, const CheckerMove& move,
+                          bool moved_from_head_this_sequence) const;
 
   // Returns the position of the furthest checker in the home of this player.
   // Returns -1 if none found.
@@ -281,13 +278,9 @@ class LongNardeState : public State {
   // that is encountered first on a given player's path.
   int GetBlockPathStartRealPos(int player_for_path, int block_lowest_real_idx) const;
 
-  // Generate all possible half-moves from the current state
-  // Original signature for compatibility with tests.
-  std::set<CheckerMove> GenerateAllHalfMoves(int player) const;
-
-  // New implementation with updated signature.
-  // Accepts a flag indicating if a checker has already moved from the head *in this sequence*.
-  std::set<CheckerMove> GenerateAllHalfMovesNew(int player, bool moved_from_head_this_sequence) const;
+  // Generates all valid single half-moves based on current dice and board.
+  // Takes sequence context for head rule.
+  std::set<CheckerMove> GenerateAllHalfMoves(int player, bool moved_from_head_this_sequence) const;
 
   // Helper function: checks if 'player' has any checker in [startPos, endPos] inclusive.
   bool HasAnyChecker(int player, int startPos, int endPos) const;

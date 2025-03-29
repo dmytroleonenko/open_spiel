@@ -165,17 +165,19 @@ std::vector<std::vector<CheckerMove>> LongNardeState::GenerateMoveSequences(
   return movelist;
 }
 
-// Wrapper function using the original signature for backward compatibility (tests).
+// REMOVED: Wrapper function using the original signature for backward compatibility (tests).
+/*
 std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player) const {
   // When called via the old signature (e.g., from tests), use the object's current moved_from_head_ status.
   return GenerateAllHalfMovesNew(player, this->moved_from_head_);
 }
+*/
 
-std::set<CheckerMove> LongNardeState::GenerateAllHalfMovesNew(int player, bool moved_from_head_this_sequence) const {
+std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player, bool moved_from_head_this_sequence) const {
   std::set<CheckerMove> half_moves;
-  bool is_debugging = false; // Keep general debugging off unless needed
+  //bool is_debugging = false; // Keep general debugging off unless needed
   
-  if (is_debugging) {
+  /*if (is_debugging) { // Remove debug block
     std::cout << "GenerateAllHalfMoves for player " << player << "\n";
     std::cout << "Dice: "; 
     for(int d : dice_) { std::cout << DiceValue(d) << (UsableDiceOutcome(d)?"":"(used)") << " "; }
@@ -184,43 +186,43 @@ std::set<CheckerMove> LongNardeState::GenerateAllHalfMovesNew(int player, bool m
     std::cout << "All checkers in home? " << (AllInHome(player) ? "YES" : "NO") << "\n";
     std::cout << "Moved from head this turn? " << (moved_from_head_ ? "YES" : "NO") << "\n";
     std::cout << "Is first turn? " << (is_first_turn_ ? "YES" : "NO") << "\n";
-  }
+  }*/ // Remove debug block
   
   // For each checker belonging to the player
   for (int pos = 0; pos < kNumPoints; ++pos) {
     if (board(player, pos) <= 0) continue;
     
-    if (is_debugging) {
+    /*if (is_debugging) { // Remove debug block
       std::cout << "  Checking checker at pos " << pos << " (point " << (player==kXPlayerId ? 24-pos : (pos<=11?12-pos:36-pos)) << ")\n";
-    }
+    }*/ // Remove debug block
     
     // For each usable die
     for (int i = 0; i < dice_.size(); ++i) {
       int outcome = dice_[i];
       if (!UsableDiceOutcome(outcome)) {
-        if (is_debugging) std::cout << "    Die " << DiceValue(outcome) << " (raw " << outcome <<") not usable, skipping\n";
+        /*if (is_debugging) std::cout << "    Die " << DiceValue(outcome) << " (raw " << outcome <<") not usable, skipping\n";*/ // Remove debug block
         continue; // Skip used dice
       }
       
       int die_value = outcome; // Since UsableDiceOutcome passed, outcome is 1-6
       int to_pos = GetToPos(player, pos, die_value);
       
-      if (is_debugging) {
+      /*if (is_debugging) { // Remove debug block
         std::cout << "    Checking die " << die_value << ", calculated to_pos=" << to_pos 
                   << (IsOff(player, to_pos) ? " (Bear Off)" : "") << "\n";
-      }
+      }*/ // Remove debug block
       
       // Check if this specific half-move is valid *now*
       // Crucially includes the head rule check based on the *passed* sequence state.
       CheckerMove current_move(pos, to_pos, die_value); // Create the move struct
-      bool is_valid = IsValidCheckerMoveNew(player, current_move, moved_from_head_this_sequence);
+      bool is_valid = IsValidCheckerMove(player, current_move, moved_from_head_this_sequence);
       
       if (is_valid) {
         half_moves.insert(current_move);
-        if (is_debugging) {
+        /*if (is_debugging) { // Remove debug block
           std::cout << "    Added valid move: pos=" << pos << ", to_pos=" << to_pos 
                     << ", die=" << die_value << "\n";
-        }
+        }*/ // Remove debug block
       }
     }
   }
@@ -232,18 +234,18 @@ std::set<CheckerMove> LongNardeState::GenerateAllHalfMovesNew(int player, bool m
        // Add a single pass move. LegalActions/Encoding will handle using correct dice.
        // Use die=1 as a placeholder.
       half_moves.insert(CheckerMove(kPassPos, kPassPos, 1)); 
-      if (is_debugging) {
+      /*if (is_debugging) { // Remove debug block
          std::cout << "  No regular moves found. Added placeholder pass move.\n";
-      }
+      }*/ // Remove debug block
   }
   
-  if (is_debugging) {
+  /*if (is_debugging) { // Remove debug block
     std::cout << "Generated " << half_moves.size() << " potential half-moves for this step:\n";
     for (const auto& move : half_moves) {
       std::cout << "  - from=" << move.pos << ", to=" << move.to_pos 
                 << ", die=" << move.die << "\n";
     }
-  }
+  }*/ // Remove debug block
   
   return half_moves;
 }
@@ -349,9 +351,9 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
          int non_pass = 0;
          for(const auto& m : current_sequence) if(m.pos != kPassPos) non_pass++;
          max_non_pass_found = std::max(max_non_pass_found, non_pass);
-         if (kDebugging) std::cout << "  Iterative: End of path (Terminal state). Added seq. Non-pass: " << non_pass << std::endl;
+         //if (kDebugging) std::cout << "  Iterative: End of path (Terminal state). Added seq. Non-pass: " << non_pass << std::endl;
       } else {
-         if (kDebugging) std::cout << "  Iterative: End of path (Terminal state from start). Not adding." << std::endl;
+         //if (kDebugging) std::cout << "  Iterative: End of path (Terminal state from start). Not adding." << std::endl;
       }
       // No need to undo here
       continue; // Stop exploring this path
@@ -361,7 +363,7 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
     // Generate all valid *single* moves from the *current* state
     // Pass the current sequence's head move status to influence head rule checking
     bool current_moved_from_head = current_exploration.moved_from_head_in_sequence;
-    std::set<CheckerMove> half_moves = current_state->GenerateAllHalfMovesNew(current_state->CurrentPlayer(), current_moved_from_head);
+    std::set<CheckerMove> half_moves = current_state->GenerateAllHalfMoves(current_state->CurrentPlayer(), current_moved_from_head);
 
     bool only_pass_available = half_moves.size() == 1 && half_moves.begin()->pos == kPassPos;
     // Replicate HasUsableDice logic:
@@ -381,17 +383,17 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
           int non_pass = 0;
           for(const auto& m : current_sequence) if(m.pos != kPassPos) non_pass++;
           max_non_pass_found = std::max(max_non_pass_found, non_pass);
-          if (kDebugging) std::cout << "  Iterative: End of path (pass/no dice/no moves/max len). Added seq. Non-pass: " << non_pass << std::endl;
+          //if (kDebugging) std::cout << "  Iterative: End of path (pass/no dice/no moves/max len). Added seq. Non-pass: " << non_pass << std::endl;
       } else if (only_pass_available) {
           // If sequence is empty and only pass is available, add the pass sequence
           // GenerateAllHalfMoves gives {kPassPos, kPassPos, 1} as placeholder.
           // FilterBestMoveSequences and LegalActions handle correct dice encoding later.
           movelist->push_back({CheckerMove{kPassPos, kPassPos, 1}}); // Changed from insert; Use placeholder
           // max_non_pass_found remains 0
-          if (kDebugging) std::cout << "  Iterative: End of path (only pass available from start). Added placeholder pass sequence." << std::endl;
+          //if (kDebugging) std::cout << "  Iterative: End of path (only pass available from start). Added placeholder pass sequence." << std::endl;
       } else {
           // No moves possible from start, or other terminal condition with empty sequence
-           if (kDebugging) std::cout << "  Iterative: End of path (no moves from start or other). Not adding." << std::endl;
+           //if (kDebugging) std::cout << "  Iterative: End of path (no moves from start or other). Not adding." << std::endl;
       }
       // No need to undo here
       continue; // Finished exploring this path
@@ -433,30 +435,39 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
       // Calculate the head move status for the next state
       bool next_moved_from_head = current_exploration.moved_from_head_in_sequence || current_state->IsHeadPos(player, next_move.pos);
 
-      bool is_last_move = (i == moves_to_explore.size() - 1);
-
-      if (!is_last_move) {
-          // --- Push Cloned State (Not Last Move) ---
-          // Clone the modified state for the stack
-          std::unique_ptr<LongNardeState> next_state_for_stack(
-              static_cast<LongNardeState*>(current_state->Clone().release())
-          );
-          // Pass the calculated next_moved_from_head flag
-          exploration_stack.emplace(std::move(next_state_for_stack), next_sequence, next_move, current_depth + 1, next_moved_from_head);
-          if (kDebugging) std::cout << "  Iterative (Clone): Pushed state for move {" << next_move.pos << "," << next_move.to_pos << "," << next_move.die << "} at depth " << current_depth + 1 << std::endl;
-
-          // --- Undo Move ---
-          // Undo the move on the *current_state* to prepare for the next iteration
-          current_state->UndoCheckerMove(player, next_move);
+      // **** Check if applying this move resulted in a terminal state ****
+      if (current_state->IsTerminal()) {
+          // If terminal, add this completed sequence and don't push state to stack.
+          movelist->push_back(next_sequence); 
+          int non_pass = 0;
+          for(const auto& m : next_sequence) if(m.pos != kPassPos) non_pass++;
+          max_non_pass_found = std::max(max_non_pass_found, non_pass);
+          //if (kDebugging) std::cout << "  Iterative: End of path (Terminal after move). Added seq. Non-pass: " << non_pass << std::endl;
+          // Need to undo the move if we are not transferring ownership (i.e., not the last move)
+          if (i != moves_to_explore.size() - 1) {
+              current_state->UndoCheckerMove(player, next_move);
+          }
+          // If it *was* the last move, ownership will be transferred implicitly when current_state_ptr goes out of scope if not moved.
       } else {
-          // --- Push Original State (Last Move) ---
-          // Transfer ownership of the original current_state_ptr to the stack
-          // Pass the calculated next_moved_from_head flag
-          exploration_stack.emplace(std::move(current_state_ptr), next_sequence, next_move, current_depth + 1, next_moved_from_head);
-          ownership_transferred = true; // Mark that ownership was transferred
-          if (kDebugging) std::cout << "  Iterative (Move): Pushed state for move {" << next_move.pos << "," << next_move.to_pos << "," << next_move.die << "} at depth " << current_depth + 1 << std::endl;
-          // No Undo needed here, state ownership transferred.
-          // Break implicitly handled as it's the last iteration.
+        // **** If not terminal, proceed with pushing to stack ****
+        bool is_last_move = (i == moves_to_explore.size() - 1);
+
+        if (!is_last_move) {
+            // --- Push Cloned State (Not Last Move) ---
+            std::unique_ptr<LongNardeState> next_state_for_stack(
+                static_cast<LongNardeState*>(current_state->Clone().release())
+            );
+            exploration_stack.emplace(std::move(next_state_for_stack), next_sequence, next_move, current_depth + 1, next_moved_from_head);
+            //if (kDebugging) std::cout << "  Iterative (Clone): Pushed state for move {" << next_move.pos << "," << next_move.to_pos << "," << next_move.die << "} at depth " << current_depth + 1 << std::endl;
+
+            // --- Undo Move --- 
+            current_state->UndoCheckerMove(player, next_move);
+        } else {
+            // --- Push Original State (Last Move) ---
+            exploration_stack.emplace(std::move(current_state_ptr), next_sequence, next_move, current_depth + 1, next_moved_from_head);
+            ownership_transferred = true; 
+            //if (kDebugging) std::cout << "  Iterative (Move): Pushed state for move {" << next_move.pos << "," << next_move.to_pos << "," << next_move.die << "} at depth " << current_depth + 1 << std::endl;
+        }
       }
 
       explored_branches++;
@@ -468,7 +479,7 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
          int non_pass = 0;
          for(const auto& m : current_sequence) if(m.pos != kPassPos) non_pass++;
          max_non_pass_found = std::max(max_non_pass_found, non_pass);
-         if (kDebugging) std::cout << "  Iterative: End of path (no branches explored). Added current seq. Non-pass: " << non_pass << std::endl;
+         //if (kDebugging) std::cout << "  Iterative: End of path (no branches explored). Added current seq. Non-pass: " << non_pass << std::endl;
      }
      
      // If ownership wasn't transferred in the loop, the unique_ptr (current_state_ptr) 
@@ -476,7 +487,7 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
 
   } // End while loop
 
-  if (kDebugging) std::cout << "IterativeLegalMoves finished. Total sequences added: " << movelist->size() << ", Max non-pass found: " << max_non_pass_found << std::endl;
+  //if (kDebugging) std::cout << "IterativeLegalMoves finished. Total sequences added: " << movelist->size() << ", Max non-pass found: " << max_non_pass_found << std::endl;
   
   // The return value isn't strictly used by GenerateMoveSequences anymore, 
   // but we maintain it for potential future use or consistency.
@@ -549,11 +560,11 @@ std::pair<std::vector<std::vector<CheckerMove>>, int> LongNardeState::FilterBest
   // ending because no moves were possible from the start, we need to check
   // if a single pass move is valid.
   if (filtered_movelist.empty() && max_non_pass == 0 && longest_sequence == 0) {
-      if (kDebugging) std::cout << "FilterBest: Filtered list empty, checking for pass validity." << std::endl;
+      //if (kDebugging) std::cout << "FilterBest: Filtered list empty, checking for pass validity." << std::endl;
 
       // Avoid cloning: Save relevant state, call GenerateAllHalfMoves, restore state.
       // Store potentially modified state variables
-      auto original_dice = this->dice_;
+      std::vector<int> original_dice = this->dice_;
       bool original_moved_from_head = this->moved_from_head_;
       Player current_player = this->cur_player_; // Use member variable
 
@@ -564,24 +575,24 @@ std::pair<std::vector<std::vector<CheckerMove>>, int> LongNardeState::FilterBest
       // Reset potentially affected state for the check
       mutable_this->moved_from_head_ = false; // Reset head move status for the check
 
-      // Generate moves directly on the (temporarily modified) current state
-      // Pass the current state's actual moved_from_head status
-      std::set<CheckerMove> all_half_moves = mutable_this->GenerateAllHalfMovesNew(current_player, mutable_this->moved_from_head_);
+      // Use GenerateAllHalfMoves to check validity from the current state.
+      std::set<CheckerMove> all_half_moves = mutable_this->GenerateAllHalfMoves(current_player, mutable_this->moved_from_head_);
 
       // Restore the original state immediately after the call
       mutable_this->dice_ = original_dice;
       mutable_this->moved_from_head_ = original_moved_from_head;
 
       if (all_half_moves.size() == 1 && all_half_moves.begin()->pos == kPassPos) {
-          if (kDebugging) std::cout << "FilterBest: Only pass move is valid. Adding pass sequence." << std::endl;
+          //if (kDebugging) std::cout << "FilterBest: Only pass move is valid. Adding pass sequence." << std::endl;
           filtered_movelist.push_back({kPassMove});
           pass_possible = true; // Pass is the only option
-      } else if (kDebugging) {
+      } 
+      /*else if (kDebugging) { // Remove debug block
           std::cout << "FilterBest: Pass check - found " << all_half_moves.size() << " half moves. Pass not added." << std::endl;
           for(const auto& mv : all_half_moves) {
              std::cout << "  - Move:{" << mv.pos << "," << mv.to_pos << "," << mv.die << "}" << std::endl;
           }
-      }
+      }*/ // Remove debug block
   }
 
 
@@ -640,7 +651,7 @@ std::vector<Action> LongNardeState::ApplyHigherDieRuleIfNeeded(
       cloned_state->dice_ = raw_original_dice;
       cloned_state->moved_from_head_ = false; // Reset head move status for the check
 
-      std::set<CheckerMove> all_half_moves = cloned_state->GenerateAllHalfMovesNew(cur_player_, cloned_state->moved_from_head_);
+      std::set<CheckerMove> all_half_moves = cloned_state->GenerateAllHalfMoves(cur_player_, cloned_state->moved_from_head_);
       bool higher_die_ever_playable = false;
       bool lower_die_ever_playable = false;
       for(const auto& hm : all_half_moves) {
@@ -684,15 +695,15 @@ std::vector<Action> LongNardeState::ApplyHigherDieRuleIfNeeded(
       // Apply the rule based on which dice were ever playable:
       if (higher_die_ever_playable && lower_die_ever_playable) {
           // Both were playable, must use higher die
-          if (kDebugging) std::cout << "ApplyHigherDieRule: Both dice playable, forcing higher die (" << higher_die << ")" << std::endl;
+          //if (kDebugging) std::cout << "ApplyHigherDieRule: Both dice playable, forcing higher die (" << higher_die << ")" << std::endl;
           return actions_using_higher;
       } else if (higher_die_ever_playable) {
           // Only higher was playable
-           if (kDebugging) std::cout << "ApplyHigherDieRule: Only higher die (" << higher_die << ") playable." << std::endl;
+           //if (kDebugging) std::cout << "ApplyHigherDieRule: Only higher die (" << higher_die << ") playable." << std::endl;
           return actions_using_higher;
       } else if (lower_die_ever_playable) {
           // Only lower was playable
-           if (kDebugging) std::cout << "ApplyHigherDieRule: Only lower die (" << lower_die << ") playable." << std::endl;
+           //if (kDebugging) std::cout << "ApplyHigherDieRule: Only lower die (" << lower_die << ") playable." << std::endl;
           return actions_using_lower;
       } else {
           // This state should not be reachable if max_non_pass == 1

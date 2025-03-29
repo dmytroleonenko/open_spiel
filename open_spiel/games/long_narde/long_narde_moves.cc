@@ -25,9 +25,9 @@ void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
 
   // Re-validate the move *without* the head rule check here.
   // The head rule is context-dependent (how many moved *before* this one)
-  // and is handled during sequence generation (GenerateAllHalfMoves/RecLegalMoves).
+  // and is handled during sequence generation (e.g., GenerateAllHalfMoves).
   // This check ensures basic validity (on board, not blocked, valid destination).
-  if (!IsValidCheckerMoveNew(player, move, /*moved_from_head_this_sequence=*/false)) {
+  if (!IsValidCheckerMove(player, move, /*moved_from_head_this_sequence=*/false)) {
     std::string error_message = absl::StrCat("ApplyCheckerMove: Invalid checker move provided! ",
                                            "Player ", player, " Move: ", move.pos, "->", move.to_pos, "/", move.die);
      error_message += "\nBoard state:\n" + ToString();
@@ -61,7 +61,7 @@ void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
     scores_[player]++;
     SPIEL_CHECK_LE(scores_[player], kNumCheckersPerPlayer);
               } else {
-    // Ensure destination is valid board position (should be guaranteed by IsValidCheckerMove)
+    // Ensure destination is valid board position (should be guaranteed by validation)
     SPIEL_CHECK_GE(next_pos, 0);
     SPIEL_CHECK_LT(next_pos, kNumPoints);
     board_[player][next_pos]++;
@@ -123,7 +123,7 @@ void LongNardeState::UndoCheckerMove(int player, const CheckerMove& move) {
     SPIEL_CHECK_GE(scores_[player], 0);
   } else {
     // If it was a regular move, remove checker from the destination
-    // Ensure destination is valid before decrementing
+    // Ensure destination is valid before decrementing (guaranteed by forward move)
     SPIEL_CHECK_GE(next_pos, 0);
     SPIEL_CHECK_LT(next_pos, kNumPoints);
     SPIEL_CHECK_GT(board_[player][next_pos], 0); // Must have been a checker there

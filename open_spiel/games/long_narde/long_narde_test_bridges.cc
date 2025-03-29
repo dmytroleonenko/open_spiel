@@ -100,7 +100,8 @@ void TestBridgeFormation() {
     // Note: Sequences like (5->3, 4->3) might still be legal if they don't
     // create the illegal state momentarily. This test focuses on the
     // direct bridge formation rule application.
-    bool direct_move_valid = lnstate->IsValidCheckerMove(kXPlayerId, 4, 3, 1, true);
+    CheckerMove move1(4, 3, 1);
+    bool direct_move_valid = lnstate->IsValidCheckerMove(kXPlayerId, move1, /*moved_from_head_this_sequence=*/false);
     SPIEL_CHECK_FALSE(direct_move_valid); // 4->3 with die 1 should be invalid here (bridge is now illegal).
   }
 
@@ -132,7 +133,8 @@ void TestBridgeFormation() {
     SPIEL_CHECK_TRUE(bridge_illegal); // Should be illegal now (White exists but none are ahead: vcoords >= 17)
 
     // Verify the move is not valid directly
-    bool direct_move_valid = lnstate->IsValidCheckerMove(kOPlayerId, 19, 15, 4, true);
+    CheckerMove move4(19, 15, 4);
+    bool direct_move_valid = lnstate->IsValidCheckerMove(kOPlayerId, move4, /*moved_from_head_this_sequence=*/false);
     SPIEL_CHECK_FALSE(direct_move_valid); // Move should be invalid because it forms an illegal bridge
   }
 
@@ -163,7 +165,8 @@ void TestBridgeFormation() {
     SPIEL_CHECK_FALSE(bridge_illegal); // Should be legal now with White checker ahead
 
     // Verify the move is now valid directly
-    bool direct_move_valid = lnstate->IsValidCheckerMove(kOPlayerId, 19, 15, 4, true);
+    CheckerMove move5(19, 15, 4);
+    bool direct_move_valid = lnstate->IsValidCheckerMove(kOPlayerId, move5, /*moved_from_head_this_sequence=*/false);
     SPIEL_CHECK_TRUE(direct_move_valid);
   }
 
@@ -185,7 +188,8 @@ void TestBridgeFormation() {
     bool bridge_illegal = lnstate->WouldFormBlockingBridge(kXPlayerId, 5, 4);
     SPIEL_CHECK_FALSE(bridge_illegal); // Should be legal as Black is ahead (virt 0 < virt 23)
 
-    bool direct_move_valid = lnstate->IsValidCheckerMove(kXPlayerId, 5, 4, 1, true);
+    CheckerMove move6(5, 4, 1);
+    bool direct_move_valid = lnstate->IsValidCheckerMove(kXPlayerId, move6, /*moved_from_head_this_sequence=*/false);
     SPIEL_CHECK_TRUE(direct_move_valid); // Move should be valid now
   }
 
@@ -207,7 +211,8 @@ void TestBridgeFormation() {
     bool bridge_illegal = lnstate->WouldFormBlockingBridge(kXPlayerId, 5, 4);
     SPIEL_CHECK_TRUE(bridge_illegal); // Should be ILLEGAL (Black at vcoord 22 is NOT ahead of bridge start at vcoord 16)
 
-    bool direct_move_valid = lnstate->IsValidCheckerMove(kXPlayerId, 5, 4, 1, true);
+    CheckerMove move7(5, 4, 1);
+    bool direct_move_valid = lnstate->IsValidCheckerMove(kXPlayerId, move7, /*moved_from_head_this_sequence=*/false);
     SPIEL_CHECK_FALSE(direct_move_valid); // Move should be invalid as it forms an illegal bridge
   }
 }

@@ -351,27 +351,30 @@ void NoLandingOnOpponentTest() {
   SPIEL_CHECK_FALSE(found_move_landing_16);
 
   // Another direct check:
-  bool is_valid = lnstate->IsValidCheckerMove(kXPlayerId, 19, 15, 4);
+  CheckerMove white_move_attempt(19, 15, 4);
+  bool is_valid = lnstate->IsValidCheckerMove(kXPlayerId, white_move_attempt, /*moved_from_head_this_sequence=*/false);
   SPIEL_CHECK_FALSE(is_valid);
 
   // --- Black player perspective test ---
   // Test that Black cannot land on White's checkers
   std::vector<std::vector<int>> board_black_no_land = {
-      // White: 1 on 19, 14 on 24
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 14, 0 /* score */},
-      // Black: 1 on 16, 14 on 12
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
+      // White: Need checker at index 12 (calculated destination for O:15+die3).
+      // Original had 1 at 18 (pos 19), move it to 12 (pos 13).
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0 /* score */},
+      // Black: 1 on 15 (pos 16), 14 on 12 (head=pos 11)
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */} // Black at index 15
   };
   SetupBoardState(lnstate, kOPlayerId, board_black_no_land, {0, 0});
   SetupDice(lnstate, {3, 1}, false);
 
-  // Check if Black's legal actions include moving from pos 15 to pos 18 (with die 3)
+  // Check if Black's legal actions include moving from pos 15 to pos 12 (with die 3)
   la = lnstate->LegalActions();
   bool found_black_landing_on_white = false;
   for (Action a : la) {
     auto moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, a);
     for (auto &m : moves) {
-      if (m.pos == 15 && m.to_pos == 18 && m.die == 3) {
+      // Check if the decoded move is O: 15->12 with die 3
+      if (m.pos == 15 && m.die == 3 && m.to_pos == 12) {
         found_black_landing_on_white = true;
         break;
       }
@@ -381,8 +384,14 @@ void NoLandingOnOpponentTest() {
   SPIEL_CHECK_FALSE(found_black_landing_on_white);
 
   // Direct check for Black
-  is_valid = lnstate->IsValidCheckerMove(kOPlayerId, 15, 18, 3);
-  SPIEL_CHECK_FALSE(is_valid);
+  // Calculate expected to_pos = 12. Board setup has White at index 12.
+  // IsValidCheckerMove will internally calculate to_pos=12.
+  // Provide the calculated to_pos for clarity in the struct.
+  CheckerMove black_move_attempt(15, 12, 3); 
+  // Call the new validation function (head rule not relevant here)
+  is_valid = lnstate->IsValidCheckerMove(kOPlayerId, black_move_attempt, /*moved_from_head_this_sequence=*/false);
+  // The move IS INVALID because the calculated destination (12) is occupied by White.
+  SPIEL_CHECK_FALSE(is_valid); // Reverted assertion
 
   std::cout << "✓ NoLandingOnOpponentTest passed\n";
 }
@@ -520,7 +529,7 @@ void TestHalfMoveGeneration() {
             << "2. Point 24 with die 5 (pos=23, die=5)\n";
   
   // Generate half-moves for White (X)
-  std::set<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kXPlayerId);
+  std::set<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kXPlayerId, /*moved_from_head_this_sequence=*/false);
   
   std::cout << "Generated " << half_moves.size() << " half-moves:\n";
   for (const auto& move : half_moves) {
@@ -690,30 +699,30 @@ void TestHalfMoveGenerationBlack() {
   std::unique_ptr<State> state = game->NewInitialState();
   auto lnstate = static_cast<LongNardeState*>(state.get());
   
-  // Set up a test board state for Black player
+  // Set up a test board state for Black
   std::vector<int> scores = {0, 13}; // 13 Black checkers already borne off
   
   // Set state with Black to move
   //lnstate->SetState(kOPlayerId, false, dice, scores, test_board);
   std::vector<std::vector<int>> test_board_with_scores = {
-      // White: all at head
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0 /* score */},
-      // Black: one at 11 (head), one at 16 (point 17)
+      // White: one at point 24 (idx 23)
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0 /* score */},
+      // Black: one at point 12 (idx 11 - head), one at point 17 (idx 16)
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
   };
   SetupBoardState(lnstate, kOPlayerId, test_board_with_scores, scores);
   SetupDice(lnstate, {4, 2}, false);
   
-  std::cout << "Test setup:\n" << lnstate->ToString() << std::endl;
+  std::cout << "Test setup (Black to move):\n" << lnstate->ToString() << std::endl;
   std::cout << "Black's Home: points 13-18 (indices 12-17)\n";
   std::cout << "Expecting moves: \n"
-            << "1. Point 12 with die 4 (pos=11, die=4)\n"
-            << "2. Point 12 with die 2 (pos=11, die=2)\n"
+            << "1. Point 12 (head) with die 4 (pos=11, die=4)\n"
+            << "2. Point 12 (head) with die 2 (pos=11, die=2)\n"
             << "3. Point 17 with die 4 (pos=16, die=4)\n"
             << "4. Point 17 with die 2 (pos=16, die=2)\n";
   
   // Generate half-moves for Black (O)
-  std::set<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kOPlayerId);
+  std::set<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kOPlayerId, /*moved_from_head_this_sequence=*/false);
   
   std::cout << "Generated " << half_moves.size() << " half-moves for Black:\n";
   for (const auto& move : half_moves) {

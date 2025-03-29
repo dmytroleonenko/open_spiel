@@ -77,8 +77,7 @@ void MemoryEfficientRandomSim(int num_simulations = kDefaultNumSimulations,
                  continue;
             }
 
-            if (!temp_lnstate->IsValidCheckerMove(state->CurrentPlayer(), move.pos, move.to_pos,
-                                             move.die, false)) {
+            if (!temp_lnstate->IsValidCheckerMove(state->CurrentPlayer(), move, false)) {
               invalid_move_found = true;
               invalid_moves_detected++;
               action_valid = false;

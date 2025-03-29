@@ -179,7 +179,7 @@ bool LongNardeState::HasIllegalBridge(int player) const {
  * @param check_head_rule If true, enforces the head movement rule for this move. Should generally be true, except when validating individual steps within a pre-validated sequence.
  * @return True if the single checker move is valid, false otherwise.
  */
-bool LongNardeState::IsValidCheckerMoveNew(int player, const CheckerMove& move,
+bool LongNardeState::IsValidCheckerMove(int player, const CheckerMove& move,
                                          bool moved_from_head_this_sequence) const {
   // Check basic move properties
   if (move.pos == kPassPos) return true; // Pass is always valid conceptually
@@ -258,25 +258,6 @@ bool LongNardeState::IsValidCheckerMoveNew(int player, const CheckerMove& move,
   return true; // Move is valid
 }
 
-// Wrapper function using the original signature for backward compatibility (tests).
-bool LongNardeState::IsValidCheckerMove(int player, int from_pos, int to_pos, int die_value, bool check_head_rule) const {
-  // First, check if the provided to_pos matches the calculated one.
-  // Tests using this old signature might rely on this implicit check.
-  int calculated_to_pos = GetToPos(player, from_pos, die_value);
-  if (to_pos != calculated_to_pos) {
-      // If the test provides an explicit to_pos that doesn't match the calculation,
-      // consider it invalid based on the old assumptions.
-      return false; 
-  }
-
-  CheckerMove move(from_pos, to_pos, die_value);
-  // When called via the old signature (e.g., from tests), we don't have the sequence context.
-  // Use the object's current moved_from_head_ status if check_head_rule is true.
-  // If check_head_rule is false (as in ApplyCheckerMove), pass false to the new function.
-  bool use_head_status = check_head_rule ? this->moved_from_head_ : false;
-  return IsValidCheckerMoveNew(player, move, use_head_status);
-}
-
 bool LongNardeState::ValidateAction(Action action) const {
   if (IsChanceNode() || IsTerminal()) return false; // Actions only valid for current player
 
@@ -330,7 +311,7 @@ bool LongNardeState::ValidateAction(Action action) const {
              // For now, passing true here might be incorrect, as it assumes the head rule applies
              // independently for each step rather than sequentially.
              // TODO: Refactor ValidateAction to track moved_from_head state sequentially.
-            if (move.pos != kPassPos && !temp_state->IsValidCheckerMoveNew(temp_state->cur_player_, move, /*moved_from_head_this_sequence=*/true)) {
+            if (move.pos != kPassPos && !temp_state->IsValidCheckerMove(temp_state->cur_player_, move, /*moved_from_head_this_sequence=*/true)) {
                  if (kDebugging) {
                      std::cout << "ERROR ValidateAction: Decoded move [" << move.pos << "->" << move.to_pos << "/" << move.die
                                << "] from action " << action << " is INVALID at its step in sequence!" << std::endl;
