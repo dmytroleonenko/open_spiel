@@ -241,23 +241,25 @@ std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player) const {
 
 // Struct to hold state for the iterative exploration
 struct ExplorationState {
-  std::unique_ptr<LongNardeState> state;
+  std::unique_ptr<LongNardeState> state; // Represents the state *after* the move is applied
   std::vector<CheckerMove> current_sequence;
+  CheckerMove move_applied; // The move that led to this state (or a dummy {kPassPos, kPassPos, 0} for root)
   int depth; // To track recursion depth limit
 
   // Constructor for initial state
   ExplorationState(std::unique_ptr<LongNardeState> s, int d) 
-    : state(std::move(s)), depth(d) {}
+    : state(std::move(s)), move_applied({kPassPos, kPassPos, 0}), depth(d) {} // Dummy move for root
 
   // Constructor for subsequent states
   ExplorationState(std::unique_ptr<LongNardeState> s, 
                    const std::vector<CheckerMove>& seq, 
+                   const CheckerMove& move, // Pass the move that was applied
                    int d) 
-    : state(std::move(s)), current_sequence(seq), depth(d) {}
+    : state(std::move(s)), current_sequence(seq), move_applied(move), depth(d) {}
 };
 
 // Iterative helper for LegalActions. Explores possible move sequences using DFS.
-int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& initial_moveseq,
+int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initial_moveseq - unused*/,
                                         std::set<std::vector<CheckerMove>>* movelist,
                                         int /*max_moves_param - unused, depth limit controls*/) const {
   // Safety limits (same as recursive version)
@@ -267,7 +269,7 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& initial_
 
   std::stack<ExplorationState> exploration_stack;
 
-  // Push the initial state onto the stack
+  // Push the initial state onto the stack (cloned once)
   exploration_stack.emplace(
       std::unique_ptr<LongNardeState>(static_cast<LongNardeState*>(this->Clone().release())), 
       0 // Initial depth is 0
@@ -276,12 +278,16 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& initial_
   int max_non_pass_found = 0; // Track the overall maximum non-pass moves
 
   while (!exploration_stack.empty()) {
-    ExplorationState current = std::move(exploration_stack.top());
+    // Move ownership of the popped state data
+    ExplorationState current_exploration = std::move(exploration_stack.top());
     exploration_stack.pop();
 
-    LongNardeState* current_state = current.state.get();
-    const std::vector<CheckerMove>& current_sequence = current.current_sequence;
-    int current_depth = current.depth;
+    // Extract data (state pointer is now owned by current_exploration)
+    std::unique_ptr<LongNardeState> current_state_ptr = std::move(current_exploration.state);
+    LongNardeState* current_state = current_state_ptr.get(); // Get raw pointer for use
+    const std::vector<CheckerMove>& current_sequence = current_exploration.current_sequence;
+    const CheckerMove& move_applied_to_reach_this = current_exploration.move_applied;
+    int current_depth = current_exploration.depth;
 
     // --> ADD DEBUG CHECK HERE <--
     #ifndef NDEBUG // Only include in debug builds
@@ -315,10 +321,12 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& initial_
          for(const auto& m : current_sequence) if(m.pos != kPassPos) non_pass++;
          max_non_pass_found = std::max(max_non_pass_found, non_pass);
       }
+      // No need to undo here, state ptr goes out of scope
       continue; // Stop exploring this path
     }
 
     // --> ADDED: Check for terminal state BEFORE generating moves <--
+    // Note: The state here is *after* move_applied_to_reach_this was done
     if (current_state->IsTerminal()) {
       if (!current_sequence.empty()) {
          movelist->insert(current_sequence);
@@ -329,6 +337,7 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& initial_
       } else {
          if (kDebugging) std::cout << "  Iterative: End of path (Terminal state from start). Not adding." << std::endl;
       }
+      // No need to undo here
       continue; // Stop exploring this path
     }
     // --> END ADDED CHECK <--
@@ -357,20 +366,28 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& initial_
           if (kDebugging) std::cout << "  Iterative: End of path (pass/no dice/no moves/max len). Added seq. Non-pass: " << non_pass << std::endl;
       } else if (only_pass_available) {
           // If sequence is empty and only pass is available, add the pass sequence
-          movelist->insert({*half_moves.begin()}); 
+          // GenerateAllHalfMoves gives {kPassPos, kPassPos, 1} as placeholder.
+          // FilterBestMoveSequences and LegalActions handle correct dice encoding later.
+          movelist->insert({CheckerMove{kPassPos, kPassPos, 1}}); // Use placeholder
           // max_non_pass_found remains 0
-          if (kDebugging) std::cout << "  Iterative: End of path (only pass available from start). Added pass sequence." << std::endl;
+          if (kDebugging) std::cout << "  Iterative: End of path (only pass available from start). Added placeholder pass sequence." << std::endl;
       } else {
           // No moves possible from start, or other terminal condition with empty sequence
            if (kDebugging) std::cout << "  Iterative: End of path (no moves from start or other). Not adding." << std::endl;
       }
+      // No need to undo here
       continue; // Finished exploring this path
     }
 
     // --- Explore Next Moves ---
     size_t explored_branches = 0;
     bool found_move_in_iteration = false; 
-    for (const CheckerMove& next_move : half_moves) {
+    Player player = current_state->CurrentPlayer(); // Get player once
+
+    // We need to iterate over a copy or manage indices carefully if applying/undoing modifies the set indirectly (it shouldn't here)
+    std::vector<CheckerMove> moves_to_explore(half_moves.begin(), half_moves.end()); 
+
+    for (const CheckerMove& next_move : moves_to_explore) { // Iterate over the copy
       if (next_move.pos == kPassPos) continue; // Skip placeholder pass if other moves exist
 
       if (explored_branches >= kMaxBranchingFactor) {
@@ -380,24 +397,34 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& initial_
         break; // Stop exploring further branches from this node
       }
 
-      // Clone the current state *before* applying the move
-      std::unique_ptr<LongNardeState> next_state_ptr(static_cast<LongNardeState*>(current_state->Clone().release()));
-      
-      // Apply the move to the *cloned* state
-      next_state_ptr->ApplyCheckerMove(next_state_ptr->CurrentPlayer(), next_move);
+      // --- Apply Move ---
+      // Apply the move directly to the current state
+      current_state->ApplyCheckerMove(player, next_move);
       found_move_in_iteration = true; 
 
       // Create the new sequence
       std::vector<CheckerMove> next_sequence = current_sequence;
       next_sequence.push_back(next_move);
 
-      // Push the new state and sequence onto the stack
-      exploration_stack.emplace(std::move(next_state_ptr), next_sequence, current_depth + 1);
+      // --- Push Next State ---
+      // Clone the *modified* state and push it with the move that led to it
+      // This clone is now outside the immediate apply->push cycle for *this* state,
+      // but necessary to create independent states for the stack.
+      std::unique_ptr<LongNardeState> next_state_for_stack(
+          static_cast<LongNardeState*>(current_state->Clone().release())
+      );
+      exploration_stack.emplace(std::move(next_state_for_stack), next_sequence, next_move, current_depth + 1);
       
       if (kDebugging) std::cout << "  Iterative: Pushed state for move {" << next_move.pos << "," << next_move.to_pos << "," << next_move.die << "} at depth " << current_depth + 1 << std::endl;
 
+      // --- Undo Move ---
+      // Undo the move on the *current_state* to prepare for the next iteration of *this* loop
+      // using the move itself, as ApplyCheckerMove returns void.
+      current_state->UndoCheckerMove(player, next_move); 
+
       explored_branches++;
-    }
+    } // End for loop over half_moves
+
      // If no actual moves were pushed (e.g., only pass was generated but skipped, or branching limit hit immediately)
      // and the current sequence is valid, add it.
      if (!found_move_in_iteration && !current_sequence.empty()) {
@@ -407,6 +434,9 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& initial_
          max_non_pass_found = std::max(max_non_pass_found, non_pass);
          if (kDebugging) std::cout << "  Iterative: End of path (no branches explored). Added current seq. Non-pass: " << non_pass << std::endl;
      }
+     
+     // State pointer (current_state_ptr) goes out of scope here, deleting the state object.
+     // If ownership was transferred via std::move in the loop, it's handled by the stack.
 
   } // End while loop
 
