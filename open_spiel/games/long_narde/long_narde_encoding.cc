@@ -64,8 +64,16 @@ const std::array<Action, 5> kDoublesBasePower = {
     1L, 25L, 625L, 15625L, 390625L
 };
 
-// Encodes a single CheckerMove (normal or pass) into an integer digit.
-// Used by the standard encoding scheme.
+/**
+ * @brief Encodes a single CheckerMove (normal or pass) into an integer digit.
+ *
+ * This is used by the standard encoding scheme (non-doubles or doubles <= 2 moves).
+ * - Normal move (pos 0-23, die 1-6): Encoded as `pos * 6 + (die - 1)`, range [0, 143].
+ * - Pass move (pos kPassPos, die 1-6): Encoded as `kPassOffset + (die - 1)`, range [144, 149].
+ *
+ * @param move The CheckerMove to encode.
+ * @return The encoded integer digit.
+ */
 int EncodeSingleMove(const CheckerMove& move) {
   if (move.pos == kPassPos) {
     // Encode a pass move: kPassOffset + (die - 1), range 144-149.
@@ -82,8 +90,17 @@ int EncodeSingleMove(const CheckerMove& move) {
   }
 }
 
-// Decodes a single integer digit back into a CheckerMove.
-// Used by the standard decoding scheme.
+/**
+ * @brief Decodes a single integer digit back into a CheckerMove.
+ *
+ * Used by the standard decoding scheme.
+ * Requires the state context to calculate the `to_pos` for normal moves.
+ *
+ * @param digit The integer digit to decode (0-149).
+ * @param player The player making the move (needed for GetToPos).
+ * @param state A pointer to the current game state (needed for GetToPos).
+ * @return The decoded CheckerMove.
+ */
 CheckerMove DecodeSingleDigit(int digit, Player player, const LongNardeState* state) {
   if (digit >= kPassOffset) { // Pass range (144-149)
     int die = (digit - kPassOffset) + 1;
@@ -98,8 +115,20 @@ CheckerMove DecodeSingleDigit(int digit, Player player, const LongNardeState* st
   }
 }
 
-// Encodes up to four CheckerMoves (for a doubles roll) into a single integer.
-// Uses a base-25 encoding scheme.
+/**
+ * @brief Encodes up to four CheckerMoves (for a doubles roll with > 2 moves) into a single integer Action.
+ *
+ * Uses a special base-25 encoding scheme for the source positions:
+ * - Each position (0-23) is encoded as `pos`.
+ * - A pass move (kPassPos) is encoded as `kEncodingBaseDouble - 1` (24).
+ * - The four encoded positions (p0, p1, p2, p3) are combined: `p3*B^3 + p2*B^2 + p1*B^1 + p0*B^0`, where B = kEncodingBaseDouble.
+ * - The implicit die value (1-6) is not directly encoded in the positions part.
+ * - The final action adds kDoublesOffset to distinguish it from the standard encoding.
+ *
+ * @param moves A vector containing 3 or 4 CheckerMoves (padding with passes if necessary).
+ * @param die The die value rolled (the doubles value, 1-6).
+ * @return The encoded Spiel Action, guaranteed to be >= kDoublesOffset.
+ */
 Action EncodeDoubles(const std::vector<CheckerMove>& moves, int die)
 {
   // Doubles encoding: Base 25 encoding for up to 4 moves.
@@ -125,7 +154,19 @@ Action EncodeDoubles(const std::vector<CheckerMove>& moves, int die)
   return encoded_action + kDoublesOffset;
 }
 
-// Decodes a Spiel action (in the doubles range) back into a vector of CheckerMoves.
+/**
+ * @brief Decodes a Spiel action (in the special doubles range) back into a vector of CheckerMoves.
+ *
+ * Reverses the EncodeDoubles process.
+ * Extracts the 4 encoded positions and reconstructs the CheckerMoves.
+ * The die value is implicit (same for all moves) and must be provided or inferred.
+ * Note: The returned vector might contain pass moves if fewer than 4 actual moves were encoded.
+ *
+ * @param spiel_move The Spiel Action to decode (must be >= kDoublesOffset).
+ * @param player The player who made the move.
+ * @param state A pointer to the state (needed for GetToPos calculation).
+ * @return A vector containing up to 4 CheckerMoves (potentially including passes).
+ */
 std::vector<CheckerMove> DecodeDoubles(Action spiel_move, Player player, const LongNardeState* state)
 {
   // Adjust the action value by removing the doubles offset.
@@ -170,16 +211,21 @@ std::vector<CheckerMove> DecodeDoubles(Action spiel_move, Player player, const L
 
 // ===== Encoding/Decoding Functions =====
 
-// Encodes a sequence of checker moves (up to 4) into a single Spiel Action (int).
-// It uses two distinct schemes:
-// 1. Standard Scheme: For non-doubles rolls, or doubles rolls resulting in <= 2 moves.
-//    - Encodes exactly two CheckerMoves (padding with Passes if needed).
-//    - Uses kDigitBase and potentially a low-roll-first offset.
-//    - Resulting action is in the range [0, kDoublesOffset - 1].
-// 2. Special Doubles Scheme: For doubles rolls resulting in > 2 moves (typically 3 or 4).
-//    - Encodes up to 4 source positions (0-23, or 24 for Pass).
-//    - Uses kEncodingBaseDouble and adds kDoublesOffset.
-//    - Resulting action is in the range [kDoublesOffset, NumDistinctActions() - 1].
+/**
+ * @brief Encodes a sequence of checker moves (up to 4) into a single Spiel Action (int).
+ *
+ * Selects the appropriate encoding scheme based on whether it's a doubles roll
+ * and how many moves are being made.
+ * 1. Standard Scheme (non-doubles, or doubles <= 2 moves): Encodes two half-moves
+ *    (padded with passes if needed) using base kDigitBase. Adds an offset if the
+ *    original dice roll was low-die first. Range: [0, kDoublesOffset - 1].
+ * 2. Special Doubles Scheme (doubles > 2 moves): Encodes up to 4 source positions
+ *    using base kEncodingBaseDouble and adds kDoublesOffset.
+ *    Range: [kDoublesOffset, NumDistinctActions() - 1].
+ *
+ * @param moves A vector of CheckerMove objects representing the full turn.
+ * @return The encoded Spiel Action.
+ */
 Action LongNardeState::CheckerMovesToSpielMove(
     const std::vector<CheckerMove>& moves) const {
   SPIEL_CHECK_LE(moves.size(), 4);  // Allow up to 4 moves for doubles
@@ -320,8 +366,16 @@ Action LongNardeState::CheckerMovesToSpielMove(
   }
 }
 
-// Decodes a Spiel Action (int) back into a sequence of checker moves.
-// Handles both the standard and special doubles encoding schemes based on the action value.
+/**
+ * @brief Decodes a Spiel Action (int) back into a sequence of checker moves.
+ *
+ * Determines which encoding scheme was used based on the action value and calls
+ * the appropriate internal decoding helper (DecodeSingleDigit or DecodeDoubles).
+ *
+ * @param player The player whose action is being decoded.
+ * @param spiel_move The Spiel Action to decode.
+ * @return A vector of CheckerMove objects representing the turn. May contain passes.
+ */
 std::vector<CheckerMove> LongNardeState::SpielMoveToCheckerMoves(
     Player player, Action spiel_move) const {
   // Check if the action falls within the special doubles encoding range.
@@ -409,6 +463,16 @@ std::vector<CheckerMove> LongNardeState::SpielMoveToCheckerMoves(
   }
 }
 
+/**
+ * @brief Returns the total number of distinct actions possible in the game.
+ *
+ * This is the maximum value an action can take + 1.
+ * It's calculated based on the sizes of the two encoding ranges:
+ * - Standard range size: kDoublesOffset
+ * - Doubles range size: kEncodingBaseDouble^4
+ *
+ * @return The total number of distinct actions.
+ */
 int LongNardeState::NumDistinctActions() const {
   // The total number of distinct actions is the sum of the ranges used by the two encoding schemes.
   // 1. Non-doubles (and doubles <= 2 moves) encoding range:
