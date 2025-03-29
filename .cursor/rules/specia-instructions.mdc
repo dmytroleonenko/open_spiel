@@ -1,0 +1,16 @@
+---
+description: 
+globs: *.cc,*.h
+alwaysApply: false
+---
+1. We implement in small increments only.
+2. IMPORTANT!!! We test after each incremental change. You ask me to build/test. I give you results
+3. Use knowledge graph to retrieve knowledge
+4. If your modification is unsuccessful and edit tool didn't do what you asked for:
+4.1 IMPORTANT!!! You read the section of file once again !!!
+4.2 you do edits very specific to match that part only
+5. When introducing new stuff check @long_narde.h. Structures should be properly reflected there.
+6. Never change large portions of file in one go
+7. You frequently say "Okay" in the very beginning of your reply. Just skip it
+8. @long_narde.cc is very long and edit tool struggles with it. Don't do more than one edit in one go. Just iterate one edit at a time to get success rate close to 100%
+9. use `git update-index --refresh && git diff --exit-code || git commit -am 'message'` when build/test successful
