@@ -10,6 +10,16 @@ namespace long_narde {
 
 // ===== Movement Functions =====
 
+/**
+ * @brief Applies a single checker move (half-move) to the board state.
+ *
+ * Updates the board by removing a checker from `from_pos` and adding it to `to_pos`.
+ * Handles bearing off by incrementing the player's score instead of placing on the board.
+ * Also manages the `moved_from_head_` flag if the move originates from a head position.
+ *
+ * @param player The player making the move.
+ * @param move The CheckerMove struct containing from_pos, to_pos, and die value.
+ */
 void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
   if (move.pos == kPassPos) return; // Nothing to do for a pass move
 
@@ -63,6 +73,16 @@ void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
   }
 }
 
+/**
+ * @brief Undoes a single checker move (half-move) from the board state.
+ *
+ * Reverts the board changes made by ApplyCheckerMove. Removes a checker from `to_pos`
+ * (or decrements score if it was a bear-off) and adds it back to `from_pos`.
+ * Note: This function does NOT revert the `moved_from_head_` flag, as that depends on the whole turn's sequence.
+ *
+ * @param player The player whose move is being undone.
+ * @param move The CheckerMove struct containing from_pos, to_pos, and die value.
+ */
 void LongNardeState::UndoCheckerMove(int player, const CheckerMove& move) {
   if (move.pos == kPassPos) return; // Nothing to undo for a pass
 
@@ -113,6 +133,18 @@ void LongNardeState::UndoCheckerMove(int player, const CheckerMove& move) {
   // by restoring the value from before the ApplyCheckerMove call.
 }
 
+/**
+ * @brief Calculates the destination position for a move.
+ *
+ * Given a starting position and a die roll, determines the resulting board position
+ * index after moving counter-clockwise. Handles bearing off by returning a special value
+ * (kBearOffPosWhite or kBearOffPosBlack).
+ *
+ * @param player The player making the move.
+ * @param from_pos The starting position index (0-23).
+ * @param die_value The value of the die roll (1-6).
+ * @return The destination position index (0-23), or a special bear-off value (-1 or -2).
+ */
 int LongNardeState::GetToPos(int player, int from_pos, int pips) const {
   SPIEL_CHECK_GE(from_pos, 0);
   SPIEL_CHECK_LT(from_pos, kNumPoints);
