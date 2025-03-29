@@ -10,10 +10,28 @@ namespace long_narde {
 
 // ===== Core Spiel API Implementations =====
 
+/**
+ * @brief Returns the player whose turn it is.
+ *
+ * Returns kTerminalPlayerId if the game has ended.
+ *
+ * @return The player ID (0 or 1), or kTerminalPlayerId.
+ */
 Player LongNardeState::CurrentPlayer() const {
   return IsTerminal() ? kTerminalPlayerId : Player{cur_player_};
 }
 
+/**
+ * @brief Applies the given action (Spiel move) to the current state.
+ *
+ * Handles both chance node rolls and player moves.
+ * For player moves, it decodes the Spiel action into checker moves, validates
+ * them (including head rule checks), applies the valid moves, updates turn
+ * history, and advances the game state (player turn, dice, etc.).
+ * Grants an extra turn if doubles were rolled and it wasn't already an extra turn.
+ *
+ * @param move_id The encoded Spiel action to apply.
+ */
 void LongNardeState::DoApplyAction(Action move_id) {
   if (IsChanceNode()) {
     ProcessChanceRoll(move_id);
@@ -103,6 +121,17 @@ void LongNardeState::DoApplyAction(Action move_id) {
   moved_from_head_ = false;
 }
 
+/**
+ * @brief Undoes the last action applied to the state.
+ *
+ * Restores the game state (player, dice, turn count, history flags) from the
+ * most recent entry in the turn history.
+ * If the action being undone was a player move, it also undoes the individual
+ * checker moves in reverse order.
+ *
+ * @param player The player who made the action to undo.
+ * @param action The Spiel action that was applied.
+ */
 void LongNardeState::UndoAction(Player player, Action action) {
   TurnHistoryInfo info = turn_history_info_.back();
   turn_history_info_.pop_back();
@@ -143,12 +172,34 @@ void LongNardeState::UndoAction(Player player, Action action) {
   }
 }
 
+/**
+ * @brief Returns a string representation of the current game state from the perspective of the specified player.
+ *
+ * @param player The player for whom the observation is requested (0 or 1).
+ * @return A string describing the current board state, dice, and scores.
+ */
 std::string LongNardeState::ObservationString(Player player) const {
   SPIEL_CHECK_GE(player, 0);
   SPIEL_CHECK_LT(player, num_players_);
   return ToString();
 }
 
+/**
+ * @brief Fills a provided tensor with the observation data for the specified player.
+ *
+ * The tensor encoding includes:
+ * - Board representation from the player's perspective (24 values).
+ * - Board representation from the opponent's perspective (24 values).
+ * - Player's score (1 value).
+ * - Opponent's score (1 value).
+ * - Indicator for player's turn (1 value).
+ * - Indicator for opponent's turn (1 value).
+ * - Dice values (2 values, 0 if not rolled).
+ * The total size is kStateEncodingSize.
+ *
+ * @param player The player for whom the observation tensor is requested (0 or 1).
+ * @param values A span of floats to be filled with the observation data. Its size must equal kStateEncodingSize.
+ */
 void LongNardeState::ObservationTensor(Player player,
                                         absl::Span<float> values) const {
   SPIEL_CHECK_GE(player, 0);
@@ -187,6 +238,16 @@ void LongNardeState::ObservationTensor(Player player,
   SPIEL_CHECK_EQ(value_it, values.end());
 }
 
+/**
+ * @brief Determines if the game has reached a terminal state.
+ *
+ * The game ends when either player has borne off all 15 checkers.
+ * Special handling exists for the WinLossTie scoring rule, where the game
+ * might not be terminal immediately if one player finishes, allowing the
+ * opponent a potential last roll to tie (if they have 14 or 15 checkers off).
+ *
+ * @return True if the game is over, false otherwise.
+ */
 bool LongNardeState::IsTerminal() const {
   if (scores_[kXPlayerId] == kNumCheckersPerPlayer ||
       scores_[kOPlayerId] == kNumCheckersPerPlayer) {
@@ -215,6 +276,19 @@ bool LongNardeState::IsTerminal() const {
   return false;
 }
 
+/**
+ * @brief Returns the final scores for each player if the game is terminal.
+ *
+ * Returns {0, 0} if the game is not terminal.
+ * Otherwise, returns the scores based on the game outcome:
+ * - Tie (WinLossTieScoring only): {0, 0}
+ * - White Wins (Mars): {2, -2}
+ * - White Wins (Oin): {1, -1}
+ * - Black Wins (Mars): {-2, 2}
+ * - Black Wins (Oin): {-1, 1}
+ *
+ * @return A vector containing the final return for each player.
+ */
 std::vector<double> LongNardeState::Returns() const {
   if (!IsTerminal()) {
     return {0.0, 0.0};
@@ -238,6 +312,16 @@ std::vector<double> LongNardeState::Returns() const {
   }
 }
 
+/**
+ * @brief Returns the set of possible chance outcomes (dice rolls) and their probabilities.
+ *
+ * In Long Narde, the standard 30 non-double dice rolls (1-2, 1-3, ..., 5-6) are possible.
+ * Doubles are excluded from the initial roll but handled during regular turns.
+ * This function returns the fixed set of 30 non-double outcomes, each with equal probability.
+ *
+ * @return A vector of pairs, where each pair contains a chance action (encoded dice roll)
+ *         and its probability (1.0 / 30.0).
+ */
 std::vector<std::pair<Action, double>> LongNardeState::ChanceOutcomes() const {
   SPIEL_CHECK_TRUE(IsChanceNode());
   // In Long Narde, the chance outcomes (dice rolls) are always the same,
@@ -245,24 +329,35 @@ std::vector<std::pair<Action, double>> LongNardeState::ChanceOutcomes() const {
   return kChanceOutcomes;
 }
 
+/**
+ * @brief Creates a deep copy of the current game state.
+ *
+ * Note: Currently implements a simple copy constructor. History management logic
+ * previously present has been removed.
+ *
+ * @return A unique pointer to the newly created clone of the state.
+ */
 std::unique_ptr<State> LongNardeState::Clone() const {
-  auto new_state = std::make_unique<LongNardeState>(*this);
-  // History management (optional, for performance/memory)
-  const size_t kMaxSafeHistorySize = 100; 
-  if (IsTerminal() || turn_history_info_.size() > kMaxSafeHistorySize) {
-    new_state->turn_history_info_.clear(); // Clear history on terminal or large states
-    #ifndef NDEBUG // Only print warning in debug builds
-    if (turn_history_info_.size() > kMaxSafeHistorySize) {
-      std::cout << "Warning: Cloning state with large history (" << turn_history_info_.size() 
-                << "), clearing history in clone." << std::endl;
-    }
-    #endif
-  }
-  return new_state;
+#ifndef NDEBUG
+    // std::cout << "Cloning state: " << ToString() << std::endl;
+#endif
+    return std::unique_ptr<State>(new LongNardeState(*this));
 }
 
 // ===== Chance Node Handling =====
 
+/**
+ * @brief Processes a chance outcome (dice roll) and updates the game state.
+ *
+ * This function is called when the current player is kChancePlayerId.
+ * It takes the encoded chance action (dice roll), updates the internal dice_ state,
+ * stores the roll history, determines the next player based on game rules (initial
+ * turn, doubles extra turn, normal alternation), updates turn flags (is_first_turn_,
+ * double_turn_, is_playing_extra_turn_), and handles the setup for a potential
+ * last roll tie under the WinLossTieScoring rule.
+ *
+ * @param move_id The encoded chance action representing the dice roll.
+ */
 void LongNardeState::ProcessChanceRoll(Action move_id) {
   SPIEL_CHECK_GE(move_id, 0);
   SPIEL_CHECK_LT(move_id, game_->MaxChanceOutcomes());

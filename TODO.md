@@ -397,7 +397,7 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	[x] Document the logic of the (now iterative) move sequence generation function.
 	•	[x] Document the checks in IsValidCheckerMove (bounds, head rule, bearing off, opponent occupancy, bridging).
 	•	[x] Document the bridge rule implementation and the rationale behind it.
-	•	[ ] Add parameter and return documentation using a consistent style (e.g., Doxygen).
+	•	[x] Add parameter and return documentation using a consistent style (e.g., Doxygen).
 	8.	Document Encoding Logic
 	•	What: Add comprehensive documentation for the encoding scheme.
 	•	Where: long_narde.cc (lines 157–266, 268–323)
@@ -411,13 +411,11 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 ## Progress Tracking
 	•	[x] Code Simplification (Tasks 1–3, 3a)
 	•	[x] Code Structure (Tasks 4–6)
-	•	[*] Documentation (Tasks 7–8)
+	•	[x] Documentation (Tasks 7–8)
 	•	[ ] Performance (Tasks 9–10)
 	•	[ ] Algorithms (Tasks 11–12)
 	•	[*] Testing (Tasks 13–14)
 	•	[x] Testing Refactoring (Task 15)
-
-⸻
 
 ## Summary of Key Recommendations
 	•	Break large functions into smaller helpers for move generation, filtering, and encoding/decoding.
