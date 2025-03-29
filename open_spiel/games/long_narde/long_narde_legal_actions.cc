@@ -28,7 +28,7 @@ std::vector<Action> LongNardeState::LegalActions() const {
   }
 
   // Generate all possible move sequences
-  std::set<std::vector<CheckerMove>> movelist = GenerateMoveSequences(CurrentPlayer(), max_moves);
+  std::vector<std::vector<CheckerMove>> movelist = GenerateMoveSequences(CurrentPlayer(), max_moves);
 
   // DEBUG: Print movelist contents after generation
   if (kDebugging) {
@@ -44,7 +44,7 @@ std::vector<Action> LongNardeState::LegalActions() const {
 
   // Filter for the best move sequences (longest, max non-pass)
   auto filter_result = FilterBestMoveSequences(movelist);
-  std::set<std::vector<CheckerMove>> filtered_movelist = filter_result.first;
+  std::vector<std::vector<CheckerMove>> filtered_movelist = filter_result.first;
   int max_non_pass = filter_result.second;
 
   // If filtering resulted in only a pass sequence (and original was pass-only), convert and return it.
@@ -140,15 +140,19 @@ std::vector<Action> LongNardeState::IllegalActions() const {
 }
 
 // Helper function to generate all valid move sequences.
-std::set<std::vector<CheckerMove>> LongNardeState::GenerateMoveSequences(
+std::vector<std::vector<CheckerMove>> LongNardeState::GenerateMoveSequences(
     Player player, int max_moves) const {
-  std::set<std::vector<CheckerMove>> movelist;
+  std::vector<std::vector<CheckerMove>> movelist; // Changed from std::set
   // Use the new iterative function
   IterativeLegalMoves({}, &movelist, max_moves); 
 
+  // Sort and remove duplicates to mimic std::set behavior
+  std::sort(movelist.begin(), movelist.end());
+  movelist.erase(std::unique(movelist.begin(), movelist.end()), movelist.end());
+
   // DEBUG: Print movelist contents after generation
   if (kDebugging) {
-    std::cout << "DEBUG GenerateMoveSequences (Player " << player << "): Movelist size = " << movelist.size() << std::endl;
+    std::cout << "DEBUG GenerateMoveSequences (Player " << player << "): Movelist size = " << movelist.size() << " (after sort/unique)" << std::endl;
     // Optionally print details if needed
     /*
     for (const auto& seq : movelist) {
@@ -260,7 +264,7 @@ struct ExplorationState {
 
 // Iterative helper for LegalActions. Explores possible move sequences using DFS.
 int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initial_moveseq - unused*/,
-                                        std::set<std::vector<CheckerMove>>* movelist,
+                                        std::vector<std::vector<CheckerMove>>* movelist, // Changed from std::set*
                                         int /*max_moves_param - unused, depth limit controls*/) const {
   // Safety limits (same as recursive version)
   const size_t kMaxTotalSequences = 200; 
@@ -309,14 +313,17 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
     #endif
 
     // --- Check Limits and Base Cases ---
-    if (movelist->size() >= kMaxTotalSequences || current_depth > kMaxIterationDepth) {
+    // Check sequence limit *before* adding potentially large number of sequences
+    bool sequence_limit_hit = (movelist->size() >= kMaxTotalSequences);
+
+    if (sequence_limit_hit || current_depth > kMaxIterationDepth) {
       #ifndef NDEBUG
-      if (movelist->size() >= kMaxTotalSequences) std::cerr << "Warning: IterativeLegalMoves hit sequence limit (" << kMaxTotalSequences << ")" << std::endl;
+      if (sequence_limit_hit) std::cerr << "Warning: IterativeLegalMoves hit sequence limit (" << kMaxTotalSequences << ")" << std::endl;
       if (current_depth > kMaxIterationDepth) std::cerr << "Warning: IterativeLegalMoves hit depth limit (" << kMaxIterationDepth << ")" << std::endl;
       #endif
       // Add sequence if non-empty, as it's a valid endpoint due to limits
       if (!current_sequence.empty()) {
-         movelist->insert(current_sequence);
+         movelist->push_back(current_sequence); // Changed from insert
          int non_pass = 0;
          for(const auto& m : current_sequence) if(m.pos != kPassPos) non_pass++;
          max_non_pass_found = std::max(max_non_pass_found, non_pass);
@@ -329,7 +336,7 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
     // Note: The state here is *after* move_applied_to_reach_this was done
     if (current_state->IsTerminal()) {
       if (!current_sequence.empty()) {
-         movelist->insert(current_sequence);
+         movelist->push_back(current_sequence); // Changed from insert
          int non_pass = 0;
          for(const auto& m : current_sequence) if(m.pos != kPassPos) non_pass++;
          max_non_pass_found = std::max(max_non_pass_found, non_pass);
@@ -359,7 +366,7 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
     // --- Base Case Check: End of a sequence path? (Excluding terminal check, done above) ---
     if (only_pass_available || no_dice_left || half_moves.empty() || current_sequence.size() >= game_->MaxGameLength()) {
       if (!current_sequence.empty()) {
-          movelist->insert(current_sequence);
+          movelist->push_back(current_sequence); // Changed from insert
           int non_pass = 0;
           for(const auto& m : current_sequence) if(m.pos != kPassPos) non_pass++;
           max_non_pass_found = std::max(max_non_pass_found, non_pass);
@@ -368,7 +375,7 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
           // If sequence is empty and only pass is available, add the pass sequence
           // GenerateAllHalfMoves gives {kPassPos, kPassPos, 1} as placeholder.
           // FilterBestMoveSequences and LegalActions handle correct dice encoding later.
-          movelist->insert({CheckerMove{kPassPos, kPassPos, 1}}); // Use placeholder
+          movelist->push_back({CheckerMove{kPassPos, kPassPos, 1}}); // Changed from insert; Use placeholder
           // max_non_pass_found remains 0
           if (kDebugging) std::cout << "  Iterative: End of path (only pass available from start). Added placeholder pass sequence." << std::endl;
       } else {
@@ -399,7 +406,7 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
 
       if (explored_branches >= kMaxBranchingFactor) {
         #ifndef NDEBUG
-        std::cerr << "Warning: IterativeLegalMoves hit branching factor limit (" << kMaxBranchingFactor << ") at depth " << current_depth << std::endl;
+        std::cerr << "Warning: IterativeLegalMoves hit branching factor limit (" << kMaxBranchingFactor << ")" << std::endl;
         #endif
         break; // Stop exploring further branches from this node
       }
@@ -425,7 +432,7 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
 
           // --- Undo Move ---
           // Undo the move on the *current_state* to prepare for the next iteration 
-          current_state->UndoCheckerMove(player, next_move); 
+          current_state->UndoCheckerMove(player, next_move);
       } else {
           // --- Push Original State (Last Move) ---
           // Transfer ownership of the original current_state_ptr to the stack
@@ -441,7 +448,7 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
 
      // If no actual moves were pushed (e.g., only pass was generated initially, or branching limit hit immediately)
      if (!found_move_in_iteration && !current_sequence.empty()) {
-         movelist->insert(current_sequence);
+         movelist->push_back(current_sequence); // Changed from insert
          int non_pass = 0;
          for(const auto& m : current_sequence) if(m.pos != kPassPos) non_pass++;
          max_non_pass_found = std::max(max_non_pass_found, non_pass);
@@ -453,7 +460,7 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
 
   } // End while loop
 
-  if (kDebugging) std::cout << "IterativeLegalMoves finished. Total sequences: " << movelist->size() << ", Max non-pass found: " << max_non_pass_found << std::endl;
+  if (kDebugging) std::cout << "IterativeLegalMoves finished. Total sequences added: " << movelist->size() << ", Max non-pass found: " << max_non_pass_found << std::endl;
   
   // The return value isn't strictly used by GenerateMoveSequences anymore, 
   // but we maintain it for potential future use or consistency.
@@ -465,8 +472,8 @@ int LongNardeState::IterativeLegalMoves(const std::vector<CheckerMove>& /*initia
 
 
 // Helper function to filter generated sequences for the best ones.
-std::pair<std::set<std::vector<CheckerMove>>, int> LongNardeState::FilterBestMoveSequences(
-    const std::set<std::vector<CheckerMove>>& movelist) const {
+std::pair<std::vector<std::vector<CheckerMove>>, int> LongNardeState::FilterBestMoveSequences(
+    const std::vector<std::vector<CheckerMove>>& movelist) const {
   if (movelist.empty()) {
       return {{}, 0};
   }
@@ -492,7 +499,7 @@ std::pair<std::set<std::vector<CheckerMove>>, int> LongNardeState::FilterBestMov
   }
 
   // Filter the sequences: keep only those with the longest length AND max non-pass moves
-  std::set<std::vector<CheckerMove>> filtered_movelist;
+  std::vector<std::vector<CheckerMove>> filtered_movelist;
   bool pass_possible = false; // Track if pass is a potentially valid "best" move
 
   for (const auto& moveseq : movelist) {
@@ -506,7 +513,7 @@ std::pair<std::set<std::vector<CheckerMove>>, int> LongNardeState::FilterBestMov
       }
 
       if (moveseq.size() == longest_sequence && current_non_pass == max_non_pass) {
-          filtered_movelist.insert(moveseq);
+          filtered_movelist.push_back(moveseq);
           if (is_pass_sequence) {
              pass_possible = true; // A pass sequence is among the best
           }
@@ -516,7 +523,7 @@ std::pair<std::set<std::vector<CheckerMove>>, int> LongNardeState::FilterBestMov
          // sequence {kPassMove} is included if it exists in the original list.
          // This handles the scenario where the *only* possible action is Pass.
          if (moveseq.size() == 1 && moveseq[0].pos == kPassPos) {
-           filtered_movelist.insert(moveseq);
+           filtered_movelist.push_back(moveseq);
            pass_possible = true;
          }
       }
@@ -550,7 +557,7 @@ std::pair<std::set<std::vector<CheckerMove>>, int> LongNardeState::FilterBestMov
 
       if (all_half_moves.size() == 1 && all_half_moves.begin()->pos == kPassPos) {
           if (kDebugging) std::cout << "FilterBest: Only pass move is valid. Adding pass sequence." << std::endl;
-          filtered_movelist.insert({kPassMove});
+          filtered_movelist.push_back({kPassMove});
           pass_possible = true; // Pass is the only option
       } else if (kDebugging) {
           std::cout << "FilterBest: Pass check - found " << all_half_moves.size() << " half moves. Pass not added." << std::endl;
@@ -567,7 +574,7 @@ std::pair<std::set<std::vector<CheckerMove>>, int> LongNardeState::FilterBestMov
 // Helper function to apply the "play higher die" rule if necessary.
 std::vector<Action> LongNardeState::ApplyHigherDieRuleIfNeeded(
     const std::vector<Action>& current_legal_moves,
-    const std::set<std::vector<CheckerMove>>& original_movelist /* Unused for now, keep for potential future refactors */) const {
+    const std::vector<std::vector<CheckerMove>>& original_movelist /* Unused for now, keep for potential future refactors */) const {
 
   // This logic requires knowing max_non_pass, which is calculated *before* this would be called.
   // Re-calculate it here based on the original_movelist (passed as arg, though maybe inefficiently).

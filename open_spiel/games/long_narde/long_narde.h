@@ -73,6 +73,10 @@ struct CheckerMove {
     if (to_pos != rhs.to_pos) return to_pos < rhs.to_pos;
     return die < rhs.die;
   }
+
+  bool operator==(const CheckerMove& other) const {
+    return pos == other.pos && to_pos == other.to_pos && die == other.die;
+  }
 };
 
 // Constant pass move to avoid repeated construction
@@ -254,7 +258,7 @@ class LongNardeState : public State {
 
   bool UsableDiceOutcome(int outcome) const;
   std::vector<Action> ProcessLegalMoves(int max_moves,
-                                      const std::set<std::vector<CheckerMove>>& movelist) const;
+                                      const std::vector<std::vector<CheckerMove>>& movelist) const;
 
   // Tests if a bridge (illegal formation) would be created by applying a move.
   // Returns true if a bridge would be formed, false otherwise.
@@ -305,8 +309,8 @@ class LongNardeState : public State {
 
   // Iterative helper for LegalActions
   int IterativeLegalMoves(const std::vector<CheckerMove>& initial_moveseq,
-                          std::set<std::vector<CheckerMove>>* movelist,
-                          int max_moves_param) const;
+                          std::vector<std::vector<CheckerMove>>* movelist,
+                          int max_moves) const;
 
  protected:
   void DoApplyAction(Action move_id) override;
@@ -338,20 +342,20 @@ class LongNardeState : public State {
   std::vector<TurnHistoryInfo> turn_history_info_;  // Info needed for Undo.
   bool allow_last_roll_tie_;  // Tracks if a last roll for tie is allowed.
 
-  // Helper function to generate all valid move sequences.
-  std::set<std::vector<CheckerMove>> GenerateMoveSequences(
+  // Generate all valid move sequences.
+  std::vector<std::vector<CheckerMove>> GenerateMoveSequences(
       Player player, int max_moves) const;
 
   // Helper function to filter generated sequences for the best ones
   // (longest sequence length, max non-pass moves within that length).
   // Returns the filtered list and the calculated max_non_pass count.
-  std::pair<std::set<std::vector<CheckerMove>>, int> FilterBestMoveSequences(
-      const std::set<std::vector<CheckerMove>>& movelist) const;
+  std::pair<std::vector<std::vector<CheckerMove>>, int> FilterBestMoveSequences(
+      const std::vector<std::vector<CheckerMove>>& movelist) const;
 
   // Helper function to apply the "play higher die" rule if necessary.
   std::vector<Action> ApplyHigherDieRuleIfNeeded(
       const std::vector<Action>& current_legal_moves,
-      const std::set<std::vector<CheckerMove>>& original_movelist) const;
+      const std::vector<std::vector<CheckerMove>>& original_movelist) const;
 
   friend class LongNardeGame;
 
