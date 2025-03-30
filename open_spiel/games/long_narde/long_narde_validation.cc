@@ -415,20 +415,32 @@ int LongNardeState::FurthestCheckerInHome(Player player) const {
 
 // ===== Bridge Rule Checks =====
 
-// Checks if a given die *outcome* (1-6, or potentially a marker for used) is usable.
-// This function was likely part of the original backgammon code or an earlier version.
-// It uses a convention where negative values or values > 6 indicate a used die.
-bool LongNardeState::UsableDiceOutcome(int outcome) const {
-  return outcome >= 1 && outcome <= 6;
+// Returns the actual die value (1-6) for a given index in dice_.
+// Handles used dice markers.
+int LongNardeState::DiceValue(int i) const {
+  SPIEL_CHECK_GE(i, 0);
+  SPIEL_CHECK_LT(i, dice_.size()); // dice_.size() is now 4
+  int val = dice_[i];
+  if (val == 0) return 0; // 0 represents an invalid/unused slot
+  return (val > kNumDiceOutcomes) ? (val - kNumDiceOutcomes) : val;
 }
 
-// Checks if the die at a specific *index* in the dice_ vector is usable.
+// Checks if the die at the specified index in dice_ is usable.
 bool LongNardeState::IsDieUsable(int index) const {
-  if (index < 0 || index >= dice_.size()) {
-    SpielFatalError(absl::StrCat("IsDieUsable: Invalid index ", index, " for dice size ", dice_.size()));
-    return false; // Should not be reached
-  }
-  return UsableDiceOutcome(dice_[index]);
+  SPIEL_CHECK_GE(index, 0);
+  SPIEL_CHECK_LT(index, dice_.size()); // dice_.size() is now 4
+  int val = dice_[index];
+  // A die is usable if its value is > 0 (not an empty slot) 
+  // and <= kNumDiceOutcomes (not marked as used).
+  return val > 0 && val <= kNumDiceOutcomes;
+}
+
+// Checks if a given die *outcome* value (potentially marked as used) is usable.
+// This function might be less relevant now with 4 slots, but keep for compatibility/potential use.
+bool LongNardeState::UsableDiceOutcome(int outcome) const {
+  // An outcome is usable if it's between 1 and 6 (inclusive).
+  // Values 0 (empty slot) or > 6 (used marker) are not usable outcomes.
+  return outcome >= 1 && outcome <= kNumDiceOutcomes;
 }
 
 } // namespace long_narde

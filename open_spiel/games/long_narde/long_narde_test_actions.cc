@@ -398,16 +398,19 @@ void ConsecutiveMovesTest() {
 
   // Pick one valid action. In practice you may want to decode them
   // and pick an action that actually moves two from the head, or one from the head, etc.
-  Action first_action = first_turn_legal_actions[0];
+  Action first_action = first_turn_legal_actions[0]; // Restore naive selection
+
   lnstate->ApplyAction(first_action);
 
-  // After White's first move on doubles, it should be a chance node for the extra turn.
-  SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kChancePlayerId);
+  // After White's first move on doubles, the state should be Chance, waiting for the extra turn roll.
+  SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kChancePlayerId); // Verify it's a chance node
+  SPIEL_CHECK_TRUE(lnstate->IsExtraTurn()); // Verify the extra turn flag is set
 
-  // Apply another dice roll (again double 1s).
+  // Apply another dice roll (again double 1s) for the extra turn.
   lnstate->ApplyAction(15);
 
   // White's extra turn with double 1s (second turn):
+  // NOW check that the player is White AFTER the chance roll processing.
   SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kXPlayerId);
 
   // Gather new legal actions for the second turn. (Important to do this again!)

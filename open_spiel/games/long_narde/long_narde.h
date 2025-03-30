@@ -154,20 +154,18 @@ struct TurnHistoryInfo {
   int prev_player;
   std::vector<int> dice;
   Action action;
-  bool double_turn;
   bool moved_from_head;
-  bool is_playing_extra_turn;  // Added: tracks if this turn was an extra turn
+  bool is_playing_extra_turn;
   TurnHistoryInfo(int _player, int _prev_player, std::vector<int> _dice,
-                  int _action, bool _double_turn,
+                  int _action,
                   bool _moved_from_head,
-                  bool _is_playing_extra_turn)  // Added parameter
+                  bool _is_playing_extra_turn)
       : player(_player),
         prev_player(_prev_player),
         dice(_dice),
         action(_action),
-        double_turn(_double_turn),
         moved_from_head(_moved_from_head),
-        is_playing_extra_turn(_is_playing_extra_turn) {}  // Added initialization
+        is_playing_extra_turn(_is_playing_extra_turn) {}
 };
 
 class LongNardeGame;
@@ -185,6 +183,7 @@ class LongNardeState : public State {
   std::vector<std::pair<Action, double>> ChanceOutcomes() const override;
   std::string ToString() const override;
   bool IsTerminal() const override;
+  bool IsExtraTurn() const;
   std::vector<double> Returns() const override;
   std::string ObservationString(Player player) const override;
   void ObservationTensor(Player player,
@@ -218,7 +217,7 @@ class LongNardeState : public State {
   }
   int score(int player) const { return scores_[player]; }
   int dice(int i) const { return dice_[i]; }
-  bool double_turn() const { return double_turn_; }
+  bool double_turn() const { return dice_[0] == dice_[2]; }
   bool moved_from_head() const { return moved_from_head_; }
 
   // Get the number of checkers on the board in the specified position belonging
@@ -274,9 +273,12 @@ class LongNardeState : public State {
   // that is encountered first on a given player's path.
   int GetBlockPathStartRealPos(int player_for_path, int block_lowest_real_idx) const;
 
-  // Generates all valid single half-moves based on current dice and board.
-  // Takes sequence context for head rule.
+  // Finds all valid single half-moves from the current state for the player.
   std::set<CheckerMove> GenerateAllHalfMoves(int player, bool moved_from_head_this_sequence) const;
+
+  // Iterative helper for move sequence generation.
+  int IterativeLegalMoves(const std::vector<CheckerMove>& current_sequence, 
+                          std::vector<std::vector<CheckerMove>>* moves_list) const;
 
   // Helper function: checks if 'player' has any checker in [startPos, endPos] inclusive.
   bool HasAnyChecker(int player, int startPos, int endPos) const;
@@ -302,18 +304,12 @@ class LongNardeState : public State {
   ScoringType scoring_type_ = ScoringType::kWinLossTieScoring;
   bool is_on_first_turn_ = false; // ADDED: True if the current player is on their very first turn
   bool moved_from_head_; // Has a checker moved from head this turn?
-  bool double_turn_;    // Was the *last* roll doubles?
   bool is_playing_extra_turn_; // Is the current roll due to doubles on prev?
   bool allow_last_roll_tie_; // Special flag for WinLossTie scoring rule
   std::vector<int> initial_dice_; // Dice rolled at start of player's turn (1-6)
   std::vector<TurnHistoryInfo> turn_history_info_;  // Info needed for Undo.
 
   int FurthestChecker(Player player) const; // Furthest checker from 0 (home)
-
-  // Iterative helper for LegalActions
-  int IterativeLegalMoves(const std::vector<CheckerMove>& initial_moveseq,
-                          std::vector<std::vector<CheckerMove>>* movelist,
-                          int max_moves) const;
 
   // Returns the position on the board for a given point number (1-24).
   int PointToPos(int point) const;
@@ -352,8 +348,7 @@ class LongNardeState : public State {
 
  private:
   // Add back the missing private helper method declarations for LegalActions
-  std::vector<std::vector<CheckerMove>> GenerateMoveSequences(
-      Player player, int max_moves) const;
+  std::vector<std::vector<CheckerMove>> GenerateMoveSequences(Player player) const;
   std::pair<std::vector<std::vector<CheckerMove>>, int> FilterBestMoveSequences(
       const std::vector<std::vector<CheckerMove>>& movelist) const;
   std::vector<Action> ApplyHigherDieRuleIfNeeded(
@@ -361,15 +356,13 @@ class LongNardeState : public State {
       const std::vector<std::vector<CheckerMove>>& original_movelist) const;
 
   void SetupInitialBoard();
-  void RollDice(int outcome);
+  void RollDice(Action outcome);
   int CheckersInHome(int player) const;
   int NumOppCheckers(int player, int pos) const;
   std::string DiceToString(int outcome) const;
   int DiceValue(int i) const;
   int HighestUsableDiceOutcome() const;
-  void AdvanceToNextPlayer(const std::vector<CheckerMove>& applied_moves,
-                            Action spiel_action, bool was_doubles_roll,
-                            bool currently_extra);
+  void AdvanceToNextPlayer(const std::vector<CheckerMove>& applied_moves, Action spiel_action);
 
   // A helper function used by ActionToString to compute the end position
   // of a move and determine whether it goes off the board.

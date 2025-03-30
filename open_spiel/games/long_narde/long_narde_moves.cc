@@ -20,7 +20,7 @@ namespace long_narde {
  * @param player The player making the move.
  * @param move The CheckerMove struct containing from_pos, to_pos, and die value.
  */
-void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
+void LongNardeState::ApplyCheckerMove(Player player, const CheckerMove& move) {
   if (move.pos == kPassPos) return; // Nothing to do for a pass move
 
   // RE-ENABLED: Validation check.
@@ -35,40 +35,30 @@ void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
     SpielFatalError(error_message);
   }
 
-  // Perform the move on the board
-  SPIEL_CHECK_GE(move.pos, 0); // Should be guaranteed by IsValidCheckerMove if not pass
-  SPIEL_CHECK_LT(move.pos, kNumPoints);
-  SPIEL_CHECK_GT(board_[player][move.pos], 0); // Must have a checker to move
+  // Apply move
   board_[player][move.pos]--;
-
-  // Mark the die used (find the first usable die with that value)
-  bool die_marked = false;
-  for (int i = 0; i < dice_.size(); ++i) {
-    if (UsableDiceOutcome(dice_[i]) && dice_[i] == move.die) {
-      dice_[i] += 6; // Mark as used by adding 6
-      die_marked = true;
-                    break;
-                  }
-                }
-  SPIEL_CHECK_TRUE(die_marked); // Should always find a usable die if the move was valid
-
-  // Update destination (board or score)
-  int next_pos = move.to_pos; 
-  if (IsOff(player, next_pos)) {
+  if (!IsOff(player, move.to_pos)) { 
+    board_[player][move.to_pos]++;
+  } else {
+    // Bearing off - increment score
     scores_[player]++;
-    SPIEL_CHECK_LE(scores_[player], kNumCheckersPerPlayer);
-              } else {
-    // Ensure destination is valid board position (should be guaranteed by validation)
-    SPIEL_CHECK_GE(next_pos, 0);
-    SPIEL_CHECK_LT(next_pos, kNumPoints);
-    board_[player][next_pos]++;
   }
 
-  // Update head move status *for the current turn's sequence*
-  // REMOVED: This is now handled by the caller (IterativeLegalMoves)
-  // if (IsHeadPos(player, move.pos)) {
-  //   moved_from_head_ = true;
-  // }
+  // Mark die as used. Find the *first available* slot matching the die value.
+  bool found_die = false;
+  for (int i = 0; i < dice_.size(); ++i) { // dice_.size() should be 4
+    if (IsDieUsable(i) && DiceValue(i) == move.die) {
+      dice_[i] += kNumDiceOutcomes; // Mark as used (e.g., 3 -> 9)
+      found_die = true;
+      break;
+    }
+  }
+  SPIEL_CHECK_TRUE(found_die); // Should always find a usable die if the move was generated correctly
+
+  // Update moved_from_head status if applicable
+  if (IsHeadPos(player, move.pos)) {
+    moved_from_head_ = true;
+  }
 }
 
 /**
@@ -81,54 +71,34 @@ void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
  * @param player The player whose move is being undone.
  * @param move The CheckerMove struct containing from_pos, to_pos, and die value.
  */
-void LongNardeState::UndoCheckerMove(int player, const CheckerMove& move) {
+void LongNardeState::UndoCheckerMove(Player player, const CheckerMove& move) {
   if (move.pos == kPassPos) return; // Nothing to undo for a pass
 
   // Check consistency: should have a valid starting position
   SPIEL_CHECK_GE(move.pos, 0); 
   SPIEL_CHECK_LT(move.pos, kNumPoints);
 
-  // Restore checker to the starting position
+  // Reverse the move application
   board_[player][move.pos]++;
-  SPIEL_CHECK_LE(board_[player][move.pos], kNumCheckersPerPlayer);
-
-  // Unmark the die used (find the first *used* die matching the value)
-   bool die_unmarked = false;
-   for (int i = 0; i < dice_.size(); ++i) {
-     // Check if dice_[i] represents the used version of move.die
-     if (dice_[i] == move.die + 6) { 
-       dice_[i] -= 6; // Unmark by subtracting 6
-       die_unmarked = true;
-       break;
-     }
-   }
-   // If this fails, it indicates a major inconsistency in state/undo logic.
-   if (!die_unmarked) {
-        std::string error_msg = "UndoCheckerMove: Could not find used die to unmark. ";
-        error_msg += absl::StrCat("Player ", player, ", Move ", move.pos, "->", move.to_pos, "/", move.die);
-        error_msg += "\nDice state: ";
-         for (int d : dice_) { error_msg += absl::StrCat(d, " "); }
-         error_msg += "\nBoard:\n" + ToString();
-         SpielFatalError(error_msg);
-   }
-
-  // Reverse the effect on the destination
-  int next_pos = move.to_pos; 
-  if (IsOff(player, next_pos)) {
-    // If it was a bear-off move, decrement the score
-    scores_[player]--;
-    SPIEL_CHECK_GE(scores_[player], 0);
+  if (!IsOff(player, move.to_pos)) { 
+    board_[player][move.to_pos]--;
   } else {
-    // If it was a regular move, remove checker from the destination
-    // Ensure destination is valid before decrementing (guaranteed by forward move)
-    SPIEL_CHECK_GE(next_pos, 0);
-    SPIEL_CHECK_LT(next_pos, kNumPoints);
-    SPIEL_CHECK_GT(board_[player][next_pos], 0); // Must have been a checker there
-    board_[player][next_pos]--;
+    // Undo bearing off - decrement score
+    scores_[player]--;
   }
 
-  // Note: Undoing moved_from_head_ is handled by the caller (RecLegalMoves)
-  // by restoring the value from before the ApplyCheckerMove call.
+  // Unmark die as used. Find the *first used* slot matching the die value.
+  bool found_die = false;
+  for (int i = 0; i < dice_.size(); ++i) { // dice_.size() should be 4
+    if (!IsDieUsable(i) && DiceValue(i) == move.die) { // Check !IsDieUsable
+      dice_[i] -= kNumDiceOutcomes; // Unmark (e.g., 9 -> 3)
+      found_die = true;
+      break;
+    }
+  }
+  SPIEL_CHECK_TRUE(found_die); // Should always find a used die to unmark if undoing correctly
+
+  // moved_from_head_ is restored from TurnHistoryInfo in UndoAction.
 }
 
 /**

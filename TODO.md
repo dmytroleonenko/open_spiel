@@ -41,7 +41,7 @@ We will create a copy of "games/backgammon" and modify it to implement the game 
     *   Confirm `initial_dice_` is exclusively used for the special first-turn double rule application throughout the *entire* turn's move sequence generation. (Verified - `initial_dice_` is now set correctly and used in `IsLegalHeadMove`)
     *   Ensure head movement allowance during sequence generation correctly uses the `initial_dice_` check (for the special rule) or the sequence-local `moved_from_head_this_sequence` flag, not the current state's `IsFirstTurn(player)`. (Verified - `IsLegalHeadMove` now uses the sequence flag for the normal case).
 *   [*] **Verify Bridge Rule (`WouldFormBlockingBridge`)**: Ensure it's correctly called and evaluated within the move generation/validation process. (Verified during recent debugging)
-*   [*] **Comprehensive Testing**: Add/Update tests (e.g., `FirstTurnTest`, `HeadRuleTest`, `BridgeRuleTest`, `BearingOffLogicTest`) to validate the corrected recursive `GenerateMoveSequences` against known-good scenarios and edge cases based on the rules. (Tests are passing after recent fixes)
+*   [*] **Comprehensive Testing**: Add/Update tests (e.g., `FirstTurnTest`, `HeadRuleTest`, `BridgeRuleTest`, `BearingOffLogicTest`, `ConsecutiveMovesTest`) to validate the corrected recursive `GenerateMoveSequences` against known-good scenarios and edge cases based on the rules. (Tests are passing after recent fixes for extra turn logic)
 
 **Deferred Tasks (Until Correctness Confirmed):**
 *   Task #2 (Comparison Test for `IterativeLegalMoves`) // Task numbers might be outdated
@@ -188,7 +188,7 @@ We will create a copy of "games/backgammon" and modify it to implement the game 
    - [*] Add ConsecutiveMovesTest:
      - Tested that doubles (e.g., 4-4) allow consecutive moves of the same checker
      - Tested proper handling of doubles on non-first turns (extra turn when both dice used)
-     - Verified that partial double usage (one die only) doesn't grant an extra turn
+     - Verified that extra turn is granted on any double roll (unless already extra turn)
      - Tested scenarios for both White and Black players
 
    - [*] Add UndoRedoTest:
@@ -406,9 +406,9 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 			*   [x] Build/test successful after moving encoding functions.
 			*   [x] Build/test successful after moving validation functions.
 			*   [x] Build/test successful after moving legal action functions.
-			*   [x] Build/test after moving API functions.
-			*   [x] Build/test after moving utility functions.
-			*   [x] Build/test after moving game class functions.
+			*   [x] Build/test successful after moving API functions.
+			*   [x] Build/test successful after moving utility functions.
+			*   [x] Build/test successful after moving game class functions.
 	•	[x] Refactor remaining code in `long_narde.cc` (likely containing `LongNardeGame` class and main state methods) for clarity.
 
 ## Comments and Documentation

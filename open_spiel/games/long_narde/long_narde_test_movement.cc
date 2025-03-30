@@ -164,8 +164,9 @@ void FirstTurnTest() {
   if (lnstate->IsChanceNode()) lnstate->ApplyAction(0);  // might need second roll
 
   if (lnstate->CurrentPlayer() == kOPlayerId) {
-    // Check the member variable which reflects turn progression, not board state.
-    SPIEL_CHECK_FALSE(lnstate->is_on_first_turn_);
+    // Check the member variable which reflects turn progression.
+    // It SHOULD be true for Black's first turn.
+    SPIEL_CHECK_TRUE(lnstate->is_on_first_turn_); 
   }
 
   std::cout << "✓ First turn logic verified\n";
