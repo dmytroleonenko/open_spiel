@@ -207,11 +207,8 @@ std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player, bool move
       int die_value = outcome; // Since UsableDiceOutcome passed, outcome is 1-6
       int to_pos = GetToPos(player, pos, die_value);
       
-      /*if (is_debugging) { // Remove debug block
-        std::cout << "    Checking die " << die_value << ", calculated to_pos=" << to_pos 
-                  << (IsOff(player, to_pos) ? " (Bear Off)" : "") << "\n";
-      }*/ // Remove debug block
-      
+      // === REMOVED SPECIFIC DEBUG BLOCK ===
+
       // Check if this specific half-move is valid *now*
       // Crucially includes the head rule check based on the *passed* sequence state.
       CheckerMove current_move(pos, to_pos, die_value); // Create the move struct
@@ -219,10 +216,7 @@ std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player, bool move
       
       if (is_valid) {
         half_moves.insert(current_move);
-        /*if (is_debugging) { // Remove debug block
-          std::cout << "    Added valid move: pos=" << pos << ", to_pos=" << to_pos 
-                    << ", die=" << die_value << "\n";
-        }*/ // Remove debug block
+        // === REMOVED SPECIFIC DEBUG BLOCK ===
       }
     }
   }

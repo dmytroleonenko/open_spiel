@@ -33,6 +33,9 @@ void TestEndgame();        // Endgame tests including bearing off
 void TestHeadRule();       // Head rule tests
 void TestPassMoveBehavior(); // Test pass move behavior
 
+// Add declaration for the new test function
+void TestSimpleNonDoubleMove();
+
 // Original function for backward compatibility
 void BasicLongNardeTests();
 
@@ -60,13 +63,11 @@ inline void SetupBoardState(LongNardeState* state, Player player,
   state->cur_player_ = player;
   // Reset turn-specific flags that SetState would normally handle
   // These might need adjustment based on specific test needs
-  state->is_first_turn_ = false; // Default assumption for tests using this helper
   state->moved_from_head_ = false; // Default assumption
 }
 
-// Sets the dice roll and double turn status for a given state.
-inline void SetupDice(LongNardeState* state, const std::vector<int>& dice,
-                      bool double_turn) {
+// Sets the dice roll for a given state.
+inline void SetupDice(LongNardeState* state, const std::vector<int>& dice) {
   SPIEL_CHECK_TRUE(state != nullptr);
   SPIEL_CHECK_LE(dice.size(), 2); // Max 2 dice values
 
@@ -76,8 +77,15 @@ inline void SetupDice(LongNardeState* state, const std::vector<int>& dice,
   while (state->dice_.size() < 2) {
       state->dice_.push_back(0);
   }
-  state->double_turn_ = double_turn;
 }
+
+// Test functions from long_narde_test_pass.cc (or similar)
+void TestPassMoveBehavior();
+
+// Test functions from long_narde_test_movegen_comparison.cc
+void TestSimpleNonDoubleMove();
+void TestDoubleMove();
+void TestPartialMoveBlocked();
 
 }  // namespace long_narde
 }  // namespace open_spiel

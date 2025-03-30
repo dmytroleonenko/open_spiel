@@ -129,23 +129,14 @@ std::string LongNardeState::ToString() const {
   absl::StrAppend(&board_str, "Turn: ");
   absl::StrAppend(&board_str, CurPlayerToString(cur_player_));
   if (cur_player_ != kChancePlayerId && cur_player_ != kTerminalPlayerId) {
-      absl::StrAppend(&board_str, (is_first_turn_ ? " (First Turn)" : ""));
+      absl::StrAppend(&board_str, (IsFirstTurn(CurrentPlayer()) ? " (First Turn)" : ""));
       absl::StrAppend(&board_str, (is_playing_extra_turn_ ? " (Extra Turn)" : ""));
   }
   absl::StrAppend(&board_str, "\n");
 
   absl::StrAppend(&board_str, "Dice: ");
-  if (dice_.empty() && cur_player_ != kChancePlayerId) {
-       absl::StrAppend(&board_str, "(None rolled yet)");
-  } else if (dice_.empty() && cur_player_ == kChancePlayerId) {
-       absl::StrAppend(&board_str, "(Waiting for roll)");
-  } else {
-      for (size_t i = 0; i < dice_.size(); ++i) {
-        if (i > 0) absl::StrAppend(&board_str, " ");
-        absl::StrAppend(&board_str, std::to_string(DiceValue(i)));
-        if (!IsDieUsable(i)) absl::StrAppend(&board_str, "(u)");
-      }
-  }
+  // Call the dedicated DiceToString method
+  absl::StrAppend(&board_str, DiceToString());
   absl::StrAppend(&board_str, "\n");
 
   absl::StrAppend(&board_str, "Scores: X (White): ", scores_[kXPlayerId]);
@@ -154,9 +145,25 @@ std::string LongNardeState::ToString() const {
   if (moved_from_head_) {
     absl::StrAppend(&board_str, "Status: Head checker moved this turn.\n");
   }
-  if (double_turn_) {
-     absl::StrAppend(&board_str, "Status: Next roll is for an extra turn.\n");
+  
+  // Determine if doubles directly from dice_
+  bool is_double = (dice_.size() == 4 && // Check size
+                    dice_[0] >= 0 && dice_[0] <= 5 && // Check first die valid (internal 0-5)
+                    dice_[0] == dice_[1] && 
+                    dice_[0] == dice_[2] && 
+                    dice_[0] == dice_[3] &&
+                    dice_[0] != 0); // Make sure it's not {0,0,0,0} from init
+
+  if (is_double) {
+     absl::StrAppend(&board_str, "Status: Rolled doubles.\n"); // Indicate doubles were rolled
   }
+  
+  // NOTE: We removed double_turn_, which indicated if the *next* roll was for an extra turn.
+  // We might want to add back the is_playing_extra_turn_ check here if relevant for ToString.
+  // if (is_playing_extra_turn_) {
+  //    absl::StrAppend(&board_str, "Status: Currently playing an extra turn.\n");
+  // }
+
    if (allow_last_roll_tie_) {
      absl::StrAppend(&board_str, "Status: Last roll tie attempt allowed.\n");
    }

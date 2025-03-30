@@ -23,7 +23,6 @@ LongNardeState::LongNardeState(std::shared_ptr<const Game> game)
       prev_player_(kChancePlayerId),
       turns_(-1), // Initial turns count before first roll
       double_turn_(false),
-      is_first_turn_(false),
       moved_from_head_(false),
       is_playing_extra_turn_(false),
       dice_({}),

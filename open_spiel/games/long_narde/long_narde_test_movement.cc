@@ -127,7 +127,7 @@ void CheckerDistributionTest() {
 //------------------------------------------------------------------------------
 // Test: FirstTurnTest
 // On the actual first turn with special doubles (6,6), multiple checkers from
-// head are legal. Confirms that after the first turn, is_first_turn_ is false.
+// head are legal. Confirms that after the first turn, IsFirstTurn(player) returns false.
 //------------------------------------------------------------------------------
 void FirstTurnTest() {
   std::cout << "\n=== Running FirstTurnTest ===\n";
@@ -164,7 +164,8 @@ void FirstTurnTest() {
   if (lnstate->IsChanceNode()) lnstate->ApplyAction(0);  // might need second roll
 
   if (lnstate->CurrentPlayer() == kOPlayerId) {
-    SPIEL_CHECK_FALSE(lnstate->IsFirstTurn(kOPlayerId));
+    // Check the member variable which reflects turn progression, not board state.
+    SPIEL_CHECK_FALSE(lnstate->is_on_first_turn_);
   }
 
   std::cout << "✓ First turn logic verified\n";
@@ -213,13 +214,13 @@ void HeadRuleTest() {
 
   {
     // (B) NON-FIRST-TURN scenario with dice=4,4 => only 1 checker can leave the head.
-    // Make sure White does NOT have all 15 on the head => is_first_turn_ is false.
+    // Make sure White does NOT have all 15 on the head => IsFirstTurn(WHITE) is false.
     // We'll place 14 on the head, 1 on point 23 => no contradiction.
     std::shared_ptr<const Game> game = LoadGame("long_narde");
     std::unique_ptr<State> stB = game->NewInitialState();
     auto lnB = static_cast<LongNardeState*>(stB.get());
 
-    // => is_first_turn_ is definitely false for White:
+    // => IsFirstTurn(WHITE) is definitely false for White:
     std::vector<std::vector<int>> board_non_first = {
       // White: 14 on 24, 1 on 23
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 14, 0 /* score placeholder */},
@@ -228,7 +229,7 @@ void HeadRuleTest() {
     };
     // White to move, dice=4,4, scores=0,0 => definitely not first turn
     SetupBoardState(lnB, kXPlayerId, board_non_first, {0, 0});
-    SetupDice(lnB, {4, 4}, false); // Assume double_turn is false here
+    SetupDice(lnB, {4, 4});
 
     SPIEL_CHECK_FALSE(lnB->IsFirstTurn(kXPlayerId));
 
@@ -276,7 +277,7 @@ void MovementDirectionTest() {
       {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
   };
   SetupBoardState(lnstate, kXPlayerId, board_white_move, {0, 0});
-  SetupDice(lnstate, {3, 2}, false);
+  SetupDice(lnstate, {3, 2});
 
   std::vector<Action> white_actions = lnstate->LegalActions();
   for (Action a : white_actions) {
@@ -295,7 +296,7 @@ void MovementDirectionTest() {
       {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
   };
   SetupBoardState(lnstate, kOPlayerId, board_black_move, {0, 0});
-  SetupDice(lnstate, {3, 2}, false);
+  SetupDice(lnstate, {3, 2});
 
   std::vector<Action> black_actions = lnstate->LegalActions();
   for (Action a : black_actions) {
@@ -331,7 +332,7 @@ void NoLandingOnOpponentTest() {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
   };
   SetupBoardState(lnstate, kXPlayerId, board_white_no_land, {0, 0});
-  SetupDice(lnstate, {4, 2}, false);
+  SetupDice(lnstate, {4, 2});
 
   std::vector<Action> la = lnstate->LegalActions();
   bool found_move_landing_16 = false;
@@ -365,7 +366,7 @@ void NoLandingOnOpponentTest() {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */} // Black at index 15
   };
   SetupBoardState(lnstate, kOPlayerId, board_black_no_land, {0, 0});
-  SetupDice(lnstate, {3, 1}, false);
+  SetupDice(lnstate, {3, 1});
 
   // Check if Black's legal actions include moving from pos 15 to pos 12 (with die 3)
   la = lnstate->LegalActions();
@@ -398,7 +399,7 @@ void NoLandingOnOpponentTest() {
 
 //------------------------------------------------------------------------------
 // Test: HomeRegionsTest
-// White's home is [0..5], black's home is [12..17]. Checks logic on isPosInHome().
+// White's home is [0..5], black's home is [12..17]. Checks logic on IsPosInHome().
 //------------------------------------------------------------------------------
 void HomeRegionsTest() {
   std::cout << "\n=== Running HomeRegionsTest ===\n";
@@ -462,7 +463,7 @@ void TestIllegalLandingInLegalActions() {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
   };
   SetupBoardState(lnstate, kOPlayerId, board_setup_with_scores, {0, 0});
-  SetupDice(lnstate, {1, 1}, false);
+  SetupDice(lnstate, {1, 1});
 
   // Get legal actions
   std::vector<Action> legal_actions = lnstate->LegalActions();
@@ -520,7 +521,7 @@ void TestHalfMoveGeneration() {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
   };
   SetupBoardState(lnstate, kXPlayerId, test_board_with_scores, scores);
-  SetupDice(lnstate, {3, 5}, false);
+  SetupDice(lnstate, {3, 5});
   
   std::cout << "Test setup:\n" << lnstate->ToString() << std::endl;
   std::cout << "White's Home: points 1-6 (indices 0-5)\n";
@@ -664,7 +665,7 @@ void HeadRuleTestBlack() {
     };
     // Black to move, dice=4,4, scores=0,0 => not first turn
     SetupBoardState(lnB, kOPlayerId, board_non_first, {0, 0});
-    SetupDice(lnB, {4, 4}, false); // Assume double_turn is false here
+    SetupDice(lnB, {4, 4});
 
     SPIEL_CHECK_FALSE(lnB->IsFirstTurn(kOPlayerId));
 
@@ -711,7 +712,7 @@ void TestHalfMoveGenerationBlack() {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
   };
   SetupBoardState(lnstate, kOPlayerId, test_board_with_scores, scores);
-  SetupDice(lnstate, {4, 2}, false);
+  SetupDice(lnstate, {4, 2});
   
   std::cout << "Test setup (Black to move):\n" << lnstate->ToString() << std::endl;
   std::cout << "Black's Home: points 13-18 (indices 12-17)\n";

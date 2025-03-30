@@ -24,7 +24,7 @@ void BearingOffBasicTest() {
   
   // Set White to move
   SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, dice, false);
+  SetupDice(lnstate, {6, 1});
   
   // Check that White can bear off by verifying all checkers are in home
   bool all_checkers_in_home = lnstate->AllInHome(kXPlayerId);
@@ -38,7 +38,7 @@ void BearingOffBasicTest() {
     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black - size 25
   };
   SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, dice, false);
+  SetupDice(lnstate, {6, 1});
   
   // Check that White can't bear off due to checker outside home
   all_checkers_in_home = lnstate->AllInHome(kXPlayerId);
@@ -52,7 +52,7 @@ void BearingOffBasicTest() {
     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0} // Black - size 25
   };
   SetupBoardState(lnstate, kOPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, dice, false);
+  SetupDice(lnstate, {2, 2});
   
   // Check that Black can bear off
   all_checkers_in_home = lnstate->AllInHome(kOPlayerId);
@@ -74,7 +74,7 @@ void BearingOffLogicTest() {
   std::vector<int> dice = {1, 3};
   
   SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, dice, false);
+  SetupDice(lnstate, {1, 3});
   
   // Get legal actions
   std::vector<Action> legal_actions = lnstate->LegalActions();
@@ -119,7 +119,7 @@ void BearingOffLogicTest() {
   };
   
   SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, dice, false);
+  SetupDice(lnstate, {1, 6});
   
   // Check if any checkers are outside the home region
   bool any_checker_outside_home = false;
@@ -148,7 +148,7 @@ void BearingOffFromPosition1Test() {
   std::vector<int> dice = {1, 3};
   
   SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, dice, false);
+  SetupDice(lnstate, {1, 3});
   
   // Get legal actions
   std::vector<Action> legal_actions = lnstate->LegalActions();
@@ -203,7 +203,7 @@ void BearingOffBlackTest() {
 
   // Set Black (kOPlayerId) to move
   SetupBoardState(lnstate, kOPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, dice, false);
+  SetupDice(lnstate, {2, 3});
 
   // Verify all Black checkers are in their home board (12-23 for bearing off)
   // Note: The definition of "home" for bearing off might differ slightly from IsPosInHome.
@@ -275,7 +275,7 @@ void EndgameScoreTest() {
   // Assuming White just finished their turn (so cur_player should be Black, but game ends)
   // We set current player to White for SetupBoardState, but the terminal check ignores it.
   SetupBoardState(lnstate, kXPlayerId, mars_board, mars_scores);
-  SetupDice(lnstate, mars_dice, false); // double_turn = false shouldn't matter
+  SetupDice(lnstate, {1, 1});
   
   // Game should be terminal
   SPIEL_CHECK_TRUE(lnstate->IsTerminal());
@@ -299,7 +299,7 @@ void EndgameScoreTest() {
   std::vector<int> oin_scores = {15, 5};
   std::vector<int> oin_dice = {1, 2};
   SetupBoardState(lnstate, kXPlayerId, oin_board, oin_scores);
-  SetupDice(lnstate, oin_dice, false);
+  SetupDice(lnstate, {1, 1});
   
   // Game should be terminal
   SPIEL_CHECK_TRUE(lnstate->IsTerminal());
@@ -324,7 +324,7 @@ void EndgameScoreTest() {
   std::vector<int> tie_scores = {15, 15};
   std::vector<int> tie_dice = {1, 2};
   SetupBoardState(lnstate, kXPlayerId, tie_board, tie_scores);
-  SetupDice(lnstate, tie_dice, false);
+  SetupDice(lnstate, {1, 1});
   
   // Game should be terminal
   SPIEL_CHECK_TRUE(lnstate->IsTerminal());
@@ -384,7 +384,7 @@ void SingleLegalMoveTestBlack() {
   std::vector<int> scores = {0, 14}; // Black has 14 checkers borne off already
   
   SetupBoardState(lnstate, kOPlayerId, test_board, scores);
-  SetupDice(lnstate, dice, false);
+  SetupDice(lnstate, {1, 2});
   
   // Should have only one legal action
   std::vector<Action> legal_actions = lnstate->LegalActions();
@@ -422,7 +422,7 @@ void SingleLegalMoveTestBlack() {
   scores = {0, 13};
 
   SetupBoardState(lnstate, kOPlayerId, test_board, scores);
-  SetupDice(lnstate, dice, false);
+  SetupDice(lnstate, {5, 2});
 
   legal_actions = lnstate->LegalActions();
   SPIEL_CHECK_FALSE(legal_actions.empty());
@@ -476,7 +476,7 @@ void BearingOffLogicTestBlackNearEnd() {
   std::vector<int> scores = {0, 13}; // Black has 13 checkers borne off already
 
   SetupBoardState(lnstate, kOPlayerId, test_board, scores);
-  SetupDice(lnstate, dice, false);
+  SetupDice(lnstate, {5, 2});
 
   // Verify all Black checkers are in the bear-off zone (12+)
   SPIEL_CHECK_TRUE(lnstate->AllInHome(kOPlayerId));
@@ -553,7 +553,7 @@ void CannotBearOffIfNotAllInHomeTest() {
   // --- Test White ---
   std::cout << "Testing White...\n";
   SetupBoardState(lnstate, kXPlayerId, test_board, scores);
-  SetupDice(lnstate, dice, false);
+  SetupDice(lnstate, {1, 6});
 
   // Verify White is NOT considered all in home
   SPIEL_CHECK_FALSE(lnstate->AllInHome(kXPlayerId));
@@ -588,7 +588,7 @@ void CannotBearOffIfNotAllInHomeTest() {
   test_board[kXPlayerId].assign(kNumPoints + 1, 0); // Use kNumPoints + 1
   test_board[kXPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer;
   SetupBoardState(lnstate, kOPlayerId, test_board, scores);
-  SetupDice(lnstate, dice, false);
+  SetupDice(lnstate, {1, 6});
 
   // Verify Black is NOT considered all in home
   bool black_all_in_home = lnstate->AllInHome(kOPlayerId);

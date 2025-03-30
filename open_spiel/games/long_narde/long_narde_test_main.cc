@@ -22,6 +22,7 @@ int main(int argc, char** argv) {
     // TestBasicMovement is already run as part of TestMovementRules and BasicLongNardeTests
   }
   
+  
   std::cout << "✓ All tests passed\n";
   return 0;
 } 

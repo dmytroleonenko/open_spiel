@@ -25,7 +25,7 @@ void ActionEncodingTest() {
   initial_board[kOPlayerId][kBlackHeadPos] = kNumCheckersPerPlayer;
   // Replace SetState with helper functions
   SetupBoardState(lnstate, kXPlayerId, initial_board, {0, 0});
-  SetupDice(lnstate, {}, false); // Empty dice, not double turn
+  SetupDice(lnstate, {5, 3});
   
   // Removed the forced chance roll. We'll directly set the dice when calling SetState.
 
@@ -54,7 +54,7 @@ void ActionEncodingTest() {
   // Update the state with the modified board and new dice using helper functions
   std::vector<int> scores = {lnstate->scores_[kXPlayerId], lnstate->scores_[kOPlayerId]}; // Get current scores
   SetupBoardState(lnstate, kXPlayerId, modified_board, scores);
-  SetupDice(lnstate, {5, 3}, false); // Set dice and double_turn status
+  SetupDice(lnstate, {5, 3});
   
   // Test 1: Regular move encoding (high roll first)
   // Create a move: Position 14 with die 5, position 19 with die 3
@@ -127,7 +127,7 @@ void ActionEncodingTest() {
   // Test 3: Regular move encoding (low roll first)
   // Reset state but with dice 3, 5 (low roll first)
   SetupBoardState(lnstate, kXPlayerId, modified_board, scores);
-  SetupDice(lnstate, {3, 5}, false);
+  SetupDice(lnstate, {3, 5});
 
   // Use the same moves as Test 1, but expect a different action ID due to the offset
   // Moves: Position 14 with die 5, position 19 with die 3
@@ -162,7 +162,6 @@ void ActionEncodingTest() {
 
   // Test 4: Doubles encoding (4 moves)
   // Need to set up a board where 4 moves are possible with doubles.
-  // Put 4 checkers near the start for White.
   std::vector<std::vector<int>> doubles_board(2, std::vector<int>(kNumPoints + 1, 0)); // Size kNumPoints+1
   doubles_board[kXPlayerId][23] = 1; // Head
   doubles_board[kXPlayerId][22] = 1;
@@ -174,7 +173,7 @@ void ActionEncodingTest() {
   // Set state with double 2s (dice {2, 2})
   // Note: Assume this is NOT the first turn, so head rule applies normally (1 from head max).
   SetupBoardState(lnstate, kXPlayerId, doubles_board, scores); // Use helper
-  SetupDice(lnstate, {2, 2}, true); // Use helper, double_turn = true
+  SetupDice(lnstate, {2, 2}); // Use helper, double_turn = true
 
   // Define the 4 moves (one from head, three others)
   std::vector<CheckerMove> doubles_moves = {
@@ -269,7 +268,7 @@ void ActionEncodingTest() {
   // Test 6: Standard encoding: Single move + Pass
   // Reset state with non-double dice {4, 1}
   SetupBoardState(lnstate, kXPlayerId, modified_board, scores); // Re-apply board/scores
-  SetupDice(lnstate, {4, 1}, false); // Set new dice, non-double
+  SetupDice(lnstate, {4, 1}); // Set new dice, non-double
   
   // Define moves: pos 14 with die 4, pass with die 1
   std::vector<CheckerMove> single_move_pass = {
@@ -299,7 +298,7 @@ void ActionEncodingTest() {
 
   // Test 7: Standard encoding: Double Pass (already covered in Test 2, but re-verify)
   SetupBoardState(lnstate, kXPlayerId, modified_board, scores); // Re-apply board/scores
-  SetupDice(lnstate, {6, 5}, false); // Set new dice
+  SetupDice(lnstate, {6, 5}); // Set new dice
   
   std::vector<CheckerMove> double_pass_moves = {
     {kPassPos, kPassPos, 6},
@@ -341,7 +340,7 @@ void SingleLegalMoveTest() {
 
   // Set White to move
   SetupBoardState(lnstate, kXPlayerId, test_board, scores);
-  SetupDice(lnstate, dice, false);
+  SetupDice(lnstate, {1, 2});
 
   // --- Verification ---
   // Possible moves for checker at pos 1:
@@ -472,7 +471,7 @@ void UndoRedoTest() {
 
   // Set the state
   SetupBoardState(lnstate, current_player, mid_game_board, scores);
-  SetupDice(lnstate, dice, double_turn);
+  SetupDice(lnstate, {4, 2});
   // --- End mid-game state definition ---
 
   SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kXPlayerId); // Verify White's turn
@@ -547,7 +546,7 @@ void PassMoveBehaviorTest() {
 
   // Set up the state
   SetupBoardState(lnstate, kXPlayerId, no_moves_board, {0, 0});
-  SetupDice(lnstate, dice_1_3, false);
+  SetupDice(lnstate, {1, 3});
 
   // Calculate the expected pass action for dice {1, 3}
   std::vector<CheckerMove> expected_pass_encoding_1_3 = {{kPassPos, kPassPos, 1}, {kPassPos, kPassPos, 3}};
@@ -569,7 +568,7 @@ void PassMoveBehaviorTest() {
 
   // Set up the state
   SetupBoardState(lnstate, kXPlayerId, valid_moves_board, {0, 0});
-  SetupDice(lnstate, dice_1_3, false);
+  SetupDice(lnstate, {1, 3});
 
   // Get legal actions
   legal_actions = lnstate->LegalActions();
@@ -602,7 +601,7 @@ void PassMoveBehaviorTest() {
 
     // Set up the state - Black's turn with doubles, no moves possible
     SetupBoardState(lnstate, kOPlayerId, no_moves_doubles_board, {0, 0});
-    SetupDice(lnstate, doubles_dice, true); // Set double_turn=true for doubles dice
+    SetupDice(lnstate, {2, 2}); // Set double_turn=true for doubles dice
 
     // Calculate the expected pass action for dice {2, 2}
     std::vector<CheckerMove> expected_pass_encoding_2_2 = {{kPassPos, kPassPos, 2}, {kPassPos, kPassPos, 2}};
@@ -644,7 +643,7 @@ void VerifySingleDiePlayBehavior() {
     board[kOPlayerId][0] = 1; // Black checker blocks moves to point 1 (pos 0)
 
     SetupBoardState(lnstate, kXPlayerId, board, {0, 0});
-    SetupDice(lnstate, dice, false);
+    SetupDice(lnstate, {5, 3});
 
     // Expected: Only the higher die move 8->3 (d5) should be legal.
     auto legal_actions = lnstate->LegalActions();
@@ -709,7 +708,7 @@ void VerifySingleDiePlayBehavior() {
     board[kOPlayerId][0] = 1; // Blocks W@5 with d5
     board[kOPlayerId][3] = 1; // Blocks W@8 with d5 AND blocks subsequent d5 move from W@2 if W@5 moved first.
     SetupBoardState(lnstate, kXPlayerId, board, {0, 0});
-    SetupDice(lnstate, dice, false);
+    SetupDice(lnstate, {5, 3});
 
     // Expected: Only move possible is 5->2 (d3). Max non-pass = 1. Rule applies.
     auto legal_actions = lnstate->LegalActions();
@@ -762,7 +761,7 @@ void VerifySingleDiePlayBehavior() {
     board[kOPlayerId][0] = 1; // Black checker blocks moves to point 1 (pos 0)
 
     SetupBoardState(lnstate, kXPlayerId, board, {0, 0});
-    SetupDice(lnstate, dice, false);
+    SetupDice(lnstate, {5, 3});
 
     // Expected: Individual moves 8->3(d5) and 8->5(d3) are possible. No sequences possible.
     // max_non_pass should be 1. Rule applies, force higher die (d5).
@@ -811,7 +810,7 @@ void DirectBearOffTest() {
     board[kOPlayerId][11] = 15; // Irrelevant black checkers
     std::vector<int> scores = {13, 0}; // White has 13 borne off
     SetupBoardState(lnstate, kXPlayerId, board, scores);
-    SetupDice(lnstate, dice, false);
+    SetupDice(lnstate, {1, 2});
 
     auto legal_actions = lnstate->LegalActions();
     SPIEL_CHECK_FALSE(legal_actions.empty());
@@ -851,8 +850,9 @@ void DirectBearOffTest() {
 
     // Replace direct state setting with helpers
     SetupBoardState(lnstate, kOPlayerId, board, scores);
-    SetupDice(lnstate, dice, false);
+    SetupDice(lnstate, {1, 2});
 
+    // The moved_from_head_ flag is handled by SetupBoardState/SetupDice defaults or internal logic.
     // The is_first_turn_ and moved_from_head_ are handled by SetupBoardState/SetupDice defaults or internal logic.
 
     if (kDebugging) {
@@ -903,7 +903,7 @@ void SingleCheckerBearOffTest() {
     std::vector<std::vector<int>> boardW(2, std::vector<int>(kNumPoints + 1, 0)); // Size kNumPoints+1
     boardW[kXPlayerId][0] = 1;
     SetupBoardState(lnstate, kXPlayerId, boardW, {14, 0});
-    SetupDice(lnstate, dice, false);
+    SetupDice(lnstate, {1, 6});
     auto legal_actionsW = lnstate->LegalActions();
     SPIEL_CHECK_EQ(legal_actionsW.size(), 1); // Expect only one action
     std::vector<CheckerMove> movesW = lnstate->SpielMoveToCheckerMoves(kXPlayerId, legal_actionsW[0]);
@@ -916,7 +916,7 @@ void SingleCheckerBearOffTest() {
     std::vector<std::vector<int>> boardB(2, std::vector<int>(kNumPoints + 1, 0)); // Size kNumPoints+1
     boardB[kOPlayerId][12] = 1;
     SetupBoardState(lnstate, kOPlayerId, boardB, {0, 14});
-    SetupDice(lnstate, dice, false);
+    SetupDice(lnstate, {1, 6});
     auto legal_actionsB = lnstate->LegalActions();
     SPIEL_CHECK_EQ(legal_actionsB.size(), 1); // Expect only one action
     std::vector<CheckerMove> movesB = lnstate->SpielMoveToCheckerMoves(kOPlayerId, legal_actionsB[0]);
@@ -935,7 +935,7 @@ void SingleCheckerBearOffTest() {
     std::vector<std::vector<int>> boardW(2, std::vector<int>(kNumPoints + 1, 0)); // Size kNumPoints+1
     boardW[kXPlayerId][0] = 1;
     SetupBoardState(lnstate, kXPlayerId, boardW, {14, 0});
-    SetupDice(lnstate, dice, false);
+    SetupDice(lnstate, {1, 3});
     auto legal_actionsW = lnstate->LegalActions();
     SPIEL_CHECK_EQ(legal_actionsW.size(), 1); // Expect only one action
     std::vector<CheckerMove> movesW = lnstate->SpielMoveToCheckerMoves(kXPlayerId, legal_actionsW[0]);
@@ -948,7 +948,7 @@ void SingleCheckerBearOffTest() {
     std::vector<std::vector<int>> boardB(2, std::vector<int>(kNumPoints + 1, 0)); // Size kNumPoints+1
     boardB[kOPlayerId][12] = 1;
     SetupBoardState(lnstate, kOPlayerId, boardB, {0, 14});
-    SetupDice(lnstate, dice, false);
+    SetupDice(lnstate, {1, 3});
     auto legal_actionsB = lnstate->LegalActions();
     SPIEL_CHECK_EQ(legal_actionsB.size(), 1); // Expect only one action
     std::vector<CheckerMove> movesB = lnstate->SpielMoveToCheckerMoves(kOPlayerId, legal_actionsB[0]);
@@ -966,7 +966,7 @@ void SingleCheckerBearOffTest() {
      std::vector<std::vector<int>> boardB_pos14(2, std::vector<int>(kNumPoints + 1, 0)); // New board var, Size kNumPoints+1
      boardB_pos14[kOPlayerId][14] = 1;
      SetupBoardState(lnstate, kOPlayerId, boardB_pos14, {0, 14});
-     SetupDice(lnstate, dice, false);
+     SetupDice(lnstate, {1, 3});
      legal_actionsB = lnstate->LegalActions();
      SPIEL_CHECK_EQ(legal_actionsB.size(), 1); // Expect only one sequence (the two-step one)
      movesB = lnstate->SpielMoveToCheckerMoves(kOPlayerId, legal_actionsB[0]);
@@ -999,7 +999,7 @@ void BearOffLastCheckerTest() {
     std::vector<int> scores = {14, 0}; // White has 14 borne off
 
     SetupBoardState(lnstate, kXPlayerId, board, scores);
-    SetupDice(lnstate, dice, false);
+    SetupDice(lnstate, {4, 5});
 
     auto legal_actions = lnstate->LegalActions();
     SPIEL_CHECK_EQ(legal_actions.size(), 1); // Should only be one legal action
@@ -1039,7 +1039,7 @@ void BearOffLastCheckerTest() {
     std::vector<int> scores = {0, 14}; // Black has 14 borne off
 
     SetupBoardState(lnstate, kOPlayerId, board, scores);
-    SetupDice(lnstate, dice, false);
+    SetupDice(lnstate, {4, 5});
 
     auto legal_actions = lnstate->LegalActions();
     SPIEL_CHECK_EQ(legal_actions.size(), 1); // Should only be one legal action

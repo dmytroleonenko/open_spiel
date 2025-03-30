@@ -39,9 +39,8 @@ void LongNardeState::DoApplyAction(Action move_id) {
   }
 
   bool rolled_doubles = (dice_.size() == 2 && DiceValue(0) == DiceValue(1));
-  bool currently_extra = is_playing_extra_turn_; // Store current state
+  bool currently_extra = is_playing_extra_turn_;
 
-  is_first_turn_ = IsFirstTurn(cur_player_);
   std::vector<CheckerMove> original_moves = SpielMoveToCheckerMoves(cur_player_, move_id);
   std::vector<CheckerMove> filtered_moves;
   int head_pos = (cur_player_ == kXPlayerId) ? kWhiteHeadPos : kBlackHeadPos;
@@ -58,7 +57,7 @@ void LongNardeState::DoApplyAction(Action move_id) {
     // (B) Not first turn => no second head move.
     // This check remains as a safeguard, although LegalActions should prevent invalid sequences.
     if (IsHeadPos(cur_player_, m.pos) && used_head_move) {
-      if (is_first_turn_) {
+      if (IsFirstTurn(cur_player_)) {
         // Must be double 6,4,3
         bool is_special_double = (rolled_doubles &&
                                  (DiceValue(0) == 6 ||
@@ -93,32 +92,33 @@ void LongNardeState::DoApplyAction(Action move_id) {
     }
   }
 
-  // Record history with the current state before modifications
+  // Store the state before applying the move for undo purposes.
   turn_history_info_.push_back(
-      TurnHistoryInfo(cur_player_, prev_player_, dice_, move_id, double_turn_,
-                      is_first_turn_, moved_from_head_, currently_extra));
+      TurnHistoryInfo(cur_player_, prev_player_, dice_, move_id, rolled_doubles,
+                      moved_from_head_, currently_extra));
 
-  // Only grant an extra turn if we rolled doubles and are NOT already in an extra turn
-  bool grant_extra_turn = rolled_doubles && !currently_extra;
+  // Determine next player *before* clearing dice etc.
+  // This function will update cur_player_, is_playing_extra_turn_, turns_ etc.
+  AdvanceToNextPlayer(filtered_moves, move_id, rolled_doubles, currently_extra);
 
-  // Update turn progression
-  if (!grant_extra_turn) {
-    turns_++;
-    if (cur_player_ == kXPlayerId) {
-      x_turns_++;
-    } else if (cur_player_ == kOPlayerId) {
-      o_turns_++;
-    }
+  // Update state for next *phase* (usually chance node)
+  // 'cur_player_' now holds the player whose turn *just ended*.
+  // 'prev_player_' needs to store the player who will play *after* the chance roll.
+  // If an extra turn was granted, cur_player_ didn't change in AdvanceToNextPlayer.
+  // If normal alternation, cur_player_ *was* changed in AdvanceToNextPlayer (but we removed that line).
+  // Let's calculate the intended next player again here based on the flags set by AdvanceToNextPlayer.
+  Player intended_next_player;
+  if (is_playing_extra_turn_) { // Check the flag set by AdvanceToNextPlayer
+      intended_next_player = cur_player_; // Same player continues
+  } else {
+      intended_next_player = Opponent(cur_player_); // Opponent plays next
   }
 
-  // Update state for next turn
-  prev_player_ = cur_player_;
+  prev_player_ = intended_next_player; // Store who should play after the roll
+  double_turn_ = rolled_doubles; 
   dice_.clear();
-  cur_player_ = IsTerminal() ? kTerminalPlayerId : kChancePlayerId;
-  double_turn_ = grant_extra_turn;  // Signal for next ProcessChanceRoll
-  is_playing_extra_turn_ = false;  // Reset after move completes
-  is_first_turn_ = false;
-  moved_from_head_ = false;
+  moved_from_head_ = false; 
+  cur_player_ = IsTerminal() ? kTerminalPlayerId : kChancePlayerId; // Transition to chance node
 }
 
 /**
@@ -135,13 +135,14 @@ void LongNardeState::DoApplyAction(Action move_id) {
 void LongNardeState::UndoAction(Player player, Action action) {
   TurnHistoryInfo info = turn_history_info_.back();
   turn_history_info_.pop_back();
-  is_first_turn_ = info.is_first_turn;
+
+  // Restore state
   moved_from_head_ = info.moved_from_head;
   cur_player_ = info.player;
   prev_player_ = info.prev_player;
   dice_ = info.dice;
   double_turn_ = info.double_turn;
-  is_playing_extra_turn_ = info.is_playing_extra_turn;  // Restore extra turn state
+  is_playing_extra_turn_ = info.is_playing_extra_turn;
 
   if (player == kChancePlayerId && info.dice.empty()) {
     cur_player_ = kChancePlayerId;
@@ -364,9 +365,8 @@ void LongNardeState::ProcessChanceRoll(Action move_id) {
 
   // Record the chance outcome in turn history.
   turn_history_info_.push_back(
-      TurnHistoryInfo(kChancePlayerId, prev_player_, dice_,
-                      move_id, double_turn_, is_first_turn_, moved_from_head_,
-                      is_playing_extra_turn_));
+      TurnHistoryInfo(kChancePlayerId, prev_player_, dice_, move_id, double_turn_,
+                      moved_from_head_, is_playing_extra_turn_));
 
   // Ensure we have no dice set yet, then apply this new roll.
   SPIEL_CHECK_TRUE(dice_.empty());
@@ -377,26 +377,18 @@ void LongNardeState::ProcessChanceRoll(Action move_id) {
     // Initial state: White always starts in this implementation.
     turns_ = 0;
     cur_player_ = kXPlayerId; // White goes first
-    prev_player_ = kChancePlayerId; // Previous was chance
     is_playing_extra_turn_ = false; // Not an extra turn
-    is_first_turn_ = true; // It's the first turn for White
-  } else if (double_turn_) {
-    // Rolled doubles on the *previous* turn, granting an extra roll *now*.
-    // Player remains the same.
-    cur_player_ = prev_player_; // Player who rolled doubles continues
-    is_playing_extra_turn_ = true;  // Mark that this roll is for an extra turn
-    is_first_turn_ = false; // Cannot be the first turn if it's an extra turn
+    is_on_first_turn_ = true; // Set flag for X's first turn
   } else {
-    // Normal turn progression: pass to the opponent.
-    cur_player_ = Opponent(prev_player_);
-    is_playing_extra_turn_ = false;  // Reset for normal turn
-    // Determine if it's the new player's first turn
-    is_first_turn_ = IsFirstTurn(cur_player_); 
+    // For subsequent turns, the player who should move was determined by 
+    // AdvanceToNextPlayer and stored in prev_player_ by DoApplyAction.
+    cur_player_ = prev_player_; 
+    // is_playing_extra_turn_ was correctly set by AdvanceToNextPlayer
+    // Set is_on_first_turn_ correctly for the upcoming player turn
+    is_on_first_turn_ = (turns_ == 0 && cur_player_ == kXPlayerId) || (turns_ == 1 && cur_player_ == kOPlayerId);
   }
-  
-  // Reset double_turn_ flag; it indicated the *previous* roll was doubles.
-  // The current roll's nature (double or not) will determine the *next* state transition.
-  double_turn_ = false; 
+
+  prev_player_ = kChancePlayerId; // Mark that the previous phase *was* chance
   moved_from_head_ = false; // Reset for the start of the new player's turn
 
   // Check special condition for last-roll tie possibility
@@ -420,7 +412,64 @@ void LongNardeState::ProcessChanceRoll(Action move_id) {
   } else {
       allow_last_roll_tie_ = false; // Rule not active
   }
+}
 
+void LongNardeState::AdvanceToNextPlayer(const std::vector<CheckerMove>& applied_moves,
+                                         Action spiel_action,
+                                         bool was_doubles_roll,
+                                         bool currently_extra) {
+  Player prev_player_ = cur_player_;
+  // Parameters received: applied_moves, spiel_action, was_doubles_roll, currently_extra
+
+  int num_actual_moves = 0;
+  for(const auto& m : applied_moves) {
+    if (m.pos != kPassPos) {
+      num_actual_moves++;
+    }
+  }
+
+  // Player turn logic: Determine if next turn is extra or alternate player
+  if (was_doubles_roll && num_actual_moves == dice_.size() && !currently_extra) {
+    // Completed all moves of a double roll and was NOT already on an extra turn => gets an extra turn.
+    // Player stays the same.
+    // cur_player_ remains cur_player_
+    moved_from_head_ = false;
+    is_playing_extra_turn_ = true; // Mark that this is an extra turn
+    // is_on_first_turn_ remains unchanged
+  } else {
+    // Normal alternation or end of extra turn.
+    Player next_player = NextPlayerRoundRobin(cur_player_, num_players_);
+    moved_from_head_ = false;
+    is_playing_extra_turn_ = false; 
+    is_on_first_turn_ = false; 
+    // Only advance turn counter if switching players
+    if (next_player != cur_player_) { // Check against player who just moved
+      turns_++;
+      if (next_player == kXPlayerId) x_turns_++; else o_turns_++;
+    }
+  }
+  // prev_player_ will be set in DoApplyAction based on the final cur_player_ determined here.
+}
+
+/**
+ * @brief Returns the dice values as a string.
+ *
+ * Formats the current dice roll (e.g., "3 5", "6 6 (u)") indicating used dice.
+ *
+ * @return A string representation of the dice state.
+ */
+std::string LongNardeState::DiceToString() const {
+  std::string dice_str = "";
+  if (dice_.empty()) {
+    dice_str = "(None)";
+  } else {
+    for (size_t i = 0; i < dice_.size(); ++i) {
+      if (i > 0) dice_str += " ";
+      dice_str += std::to_string(DiceValue(i));
+      if (!IsDieUsable(i)) dice_str += "(u)";
+    }
+  }
+  return dice_str;
 }
 
 } // namespace long_narde

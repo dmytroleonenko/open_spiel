@@ -23,18 +23,15 @@ namespace long_narde {
 void LongNardeState::ApplyCheckerMove(int player, const CheckerMove& move) {
   if (move.pos == kPassPos) return; // Nothing to do for a pass move
 
-  // Re-validate the move *without* the head rule check here.
-  // The head rule is context-dependent (how many moved *before* this one)
-  // and is handled during sequence generation (e.g., GenerateAllHalfMoves).
-  // This check ensures basic validity (on board, not blocked, valid destination).
+  // RE-ENABLED: Validation check.
   if (!IsValidCheckerMove(player, move, /*moved_from_head_this_sequence=*/false)) {
-    std::string error_message = absl::StrCat("ApplyCheckerMove: Invalid checker move provided! ",
-                                           "Player ", player, " Move: ", move.pos, "->", move.to_pos, "/", move.die);
-     error_message += "\nBoard state:\n" + ToString();
-     error_message += "\nDice: ";
-      for (int d : dice_) { error_message += absl::StrCat(DiceValue(d), UsableDiceOutcome(d)?" ":"u "); }
-     error_message += "\nMoved from head? ", (moved_from_head_?"Y":"N");
-     error_message += "\nIs first turn? ", (is_first_turn_?"Y":"N");
+    std::string error_message = "Invalid checker move: ";
+    error_message += "Player: ", std::to_string(player);
+    error_message += absl::StrCat(", Move: ", move.pos, "->", move.to_pos, "/", move.die);
+    error_message += "\nIs first turn? ", (IsFirstTurn(player)?"Y":"N");
+    error_message += ", Moved from head? ", (moved_from_head_?"Y":"N");
+    error_message += ", Dice: " + DiceToString();
+    error_message += "\nBoard:\n" + ToString();
     SpielFatalError(error_message);
   }
 

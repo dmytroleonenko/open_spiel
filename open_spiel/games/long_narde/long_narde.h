@@ -155,19 +155,17 @@ struct TurnHistoryInfo {
   std::vector<int> dice;
   Action action;
   bool double_turn;
-  bool is_first_turn;
   bool moved_from_head;
   bool is_playing_extra_turn;  // Added: tracks if this turn was an extra turn
   TurnHistoryInfo(int _player, int _prev_player, std::vector<int> _dice,
                   int _action, bool _double_turn,
-                  bool _is_first_turn, bool _moved_from_head,
+                  bool _moved_from_head,
                   bool _is_playing_extra_turn)  // Added parameter
       : player(_player),
         prev_player(_prev_player),
         dice(_dice),
         action(_action),
         double_turn(_double_turn),
-        is_first_turn(_is_first_turn),
         moved_from_head(_moved_from_head),
         is_playing_extra_turn(_is_playing_extra_turn) {}  // Added initialization
 };
@@ -221,7 +219,6 @@ class LongNardeState : public State {
   int score(int player) const { return scores_[player]; }
   int dice(int i) const { return dice_[i]; }
   bool double_turn() const { return double_turn_; }
-  bool is_first_turn() const { return is_first_turn_; }
   bool moved_from_head() const { return moved_from_head_; }
 
   // Get the number of checkers on the board in the specified position belonging
@@ -243,7 +240,6 @@ class LongNardeState : public State {
   bool IsHeadPos(int player, int pos) const;
   bool IsLegalHeadMove(int player, int from_pos) const;
   bool IsFirstTurn(int player) const;
-  bool& MutableIsFirstTurn() { return is_first_turn_; }
 
   // Takes sequence context for head rule.
   bool IsValidCheckerMove(int player, const CheckerMove& move,
@@ -299,8 +295,18 @@ class LongNardeState : public State {
   std::vector<int> dice_; // Current dice roll.
   std::vector<int> scores_; // Number of checkers borne off by each player.
   Player cur_player_; // Player whose turn it is.
-  bool is_first_turn_;
-  bool moved_from_head_;
+  Player prev_player_; // Previous player (for doubles logic)
+  int turns_; // -1: initial state, 0: first player turn, 1+: subsequent turns
+  int x_turns_; // Player X turn count
+  int o_turns_; // Player O turn count
+  ScoringType scoring_type_ = ScoringType::kWinLossTieScoring;
+  bool is_on_first_turn_ = false; // ADDED: True if the current player is on their very first turn
+  bool moved_from_head_; // Has a checker moved from head this turn?
+  bool double_turn_;    // Was the *last* roll doubles?
+  bool is_playing_extra_turn_; // Is the current roll due to doubles on prev?
+  bool allow_last_roll_tie_; // Special flag for WinLossTie scoring rule
+  std::vector<int> initial_dice_; // Dice rolled at start of player's turn (1-6)
+  std::vector<TurnHistoryInfo> turn_history_info_;  // Info needed for Undo.
 
   int FurthestChecker(Player player) const; // Furthest checker from 0 (home)
 
@@ -337,10 +343,23 @@ class LongNardeState : public State {
   Action CheckerMovesToSpielMove(
       const std::vector<CheckerMove>& move_list) const;
 
+  std::vector<int>& MutableDice() { return dice_; }
+  const std::vector<int>& InitialDice() const { return initial_dice_; }
+  std::vector<int>& MutableInitialDice() { return initial_dice_; }
+
  protected:
   void DoApplyAction(Action move_id) override;
 
  private:
+  // Add back the missing private helper method declarations for LegalActions
+  std::vector<std::vector<CheckerMove>> GenerateMoveSequences(
+      Player player, int max_moves) const;
+  std::pair<std::vector<std::vector<CheckerMove>>, int> FilterBestMoveSequences(
+      const std::vector<std::vector<CheckerMove>>& movelist) const;
+  std::vector<Action> ApplyHigherDieRuleIfNeeded(
+      const std::vector<Action>& current_legal_moves,
+      const std::vector<std::vector<CheckerMove>>& original_movelist) const;
+
   void SetupInitialBoard();
   void RollDice(int outcome);
   int CheckersInHome(int player) const;
@@ -348,39 +367,15 @@ class LongNardeState : public State {
   std::string DiceToString(int outcome) const;
   int DiceValue(int i) const;
   int HighestUsableDiceOutcome() const;
+  void AdvanceToNextPlayer(const std::vector<CheckerMove>& applied_moves,
+                            Action spiel_action, bool was_doubles_roll,
+                            bool currently_extra);
 
   // A helper function used by ActionToString to compute the end position
   // of a move and determine whether it goes off the board.
   int GetMoveEndPosition(CheckerMove* cmove, int player, int start) const;
 
   std::set<CheckerMove> LegalCheckerMoves(int player) const;
-
-  ScoringType scoring_type_;  // Which rules apply when scoring the game.
-
-  Player prev_player_;
-  int turns_;
-  int x_turns_;
-  int o_turns_;
-  bool double_turn_;
-  bool is_playing_extra_turn_; // Added: tracks if current turn is an extra turn from doubles
-  std::vector<int> initial_dice_; // Dice rolled at the start of the current player's turn.
-  std::vector<TurnHistoryInfo> turn_history_info_;  // Info needed for Undo.
-  bool allow_last_roll_tie_;  // Tracks if a last roll for tie is allowed.
-
-  // Generate all valid move sequences.
-  std::vector<std::vector<CheckerMove>> GenerateMoveSequences(
-      Player player, int max_moves) const;
-
-  // Helper function to filter generated sequences for the best ones
-  // (longest sequence length, max non-pass moves within that length).
-  // Returns the filtered list and the calculated max_non_pass count.
-  std::pair<std::vector<std::vector<CheckerMove>>, int> FilterBestMoveSequences(
-      const std::vector<std::vector<CheckerMove>>& movelist) const;
-
-  // Helper function to apply the "play higher die" rule if necessary.
-  std::vector<Action> ApplyHigherDieRuleIfNeeded(
-      const std::vector<Action>& current_legal_moves,
-      const std::vector<std::vector<CheckerMove>>& original_movelist) const;
 
   friend class LongNardeGame;
 

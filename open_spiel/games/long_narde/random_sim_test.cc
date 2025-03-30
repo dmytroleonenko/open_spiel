@@ -178,6 +178,7 @@ void ParseArguments(int argc, char** argv, int* num_simulations, int* seed) {
 }  // namespace
 
 void RunRandomSimTests(int argc, char** argv) {
+  std::cout << ">>> Starting Long Narde Random Simulation Test (RunRandomSimTests entry)..." << std::endl;
   int num_simulations = kDefaultNumSimulations;
   int seed = kDefaultSeed;
   

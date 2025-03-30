@@ -49,7 +49,7 @@ bool LongNardeState::IsLegalHeadMove(int player, int from_pos) const {
 
   // Check for first turn special doubles exception
   // Use the member variable 'is_first_turn_' here
-  if (is_first_turn_ && is_special_double_roll) {
+  if (IsFirstTurn(player) && is_special_double_roll) {
     // On special first turn doubles, we can move up to two checkers from head.
     // This function checks the validity of a *single* potential move.
     // The limit of two moves is handled implicitly by the sequence generation
@@ -225,18 +225,18 @@ bool LongNardeState::IsValidCheckerMove(int player, const CheckerMove& move,
 
   // Check head rule using the passed flag
   if (IsHeadPos(player, move.pos)) {
-    // Use the member variable 'is_first_turn_' of the current state object
-    if (moved_from_head_this_sequence && !this->is_first_turn_) {
-      // Already moved from head this turn, and it's not the first turn.
+    // Use the member variable 'is_on_first_turn_' instead of calling IsFirstTurn(player).
+    if (moved_from_head_this_sequence && !this->is_on_first_turn_) {
+      // Already moved from head this turn, and it wasn't the first turn.
       return false;
     }
     // Special first turn double rule check:
-    // Use the member variable 'is_first_turn_' of the current state object
-    if (this->is_first_turn_) {
+    // Use the member variable 'is_on_first_turn_'.
+    if (this->is_on_first_turn_) {
         bool is_special_double = false;
         // Need to check the dice of *this specific state object*
-        if (this->dice_.size() == 2 && this->DiceValue(0) == this->DiceValue(1)) {
-            int dieVal = this->DiceValue(0);
+        if (dice_.size() == 2 && DiceValue(0) == DiceValue(1)) {
+            int dieVal = DiceValue(0);
             if (dieVal == 6 || dieVal == 4 || dieVal == 3) {
                 is_special_double = true;
             }

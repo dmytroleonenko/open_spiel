@@ -30,6 +30,23 @@ We will create a copy of "games/backgammon" and modify it to implement the game 
 - [*] Successfully build and run all tests to ensure the new rules are correctly implemented.
 - [ ] Commit changes following TDD principles.
 
+# CURRENT PRIORITY: Correctness of Existing Move Generation
+
+**Goal:** Ensure the existing recursive (cloning-based) move generation logic correctly implements all game rules before attempting major refactoring or optimization.
+
+**Key Steps:**
+*   [*] **Introduce `initial_dice_`:** Add `initial_dice_` member to `LongNardeState`, populate in `ProcessChanceRoll`, handle in `UndoAction`, and use in `IsValidCheckerMove` for the first-turn head rule exception. (Completed)
+*   [ ] **Refine `is_first_turn_` vs. `IsFirstTurn(player)`:** Ensure the member variable (`is_first_turn_`) reflects the start-of-turn status, while the method (`IsFirstTurn(player)`) checks current board state. Update logic to use the correct check where needed (especially around head rule validation during sequence generation).
+*   [ ] **Fix Validation Logic (`IsValidCheckerMove`)**: 
+    *   Confirm `initial_dice_` is exclusively used for the special first-turn double rule application throughout the *entire* turn's move sequence generation.
+    *   Ensure head movement allowance during sequence generation correctly uses the `initial_dice_` check (for the special rule) or the sequence-local `moved_from_head_this_sequence` flag, not the current state's `IsFirstTurn(player)`.
+*   [ ] **Verify Bridge Rule (`WouldFormBlockingBridge`)**: Ensure it's correctly called and evaluated within the move generation/validation process.
+*   [ ] **Comprehensive Testing**: Add/Update tests (e.g., `FirstTurnTest`, `HeadRuleTest`, `BridgeRuleTest`) to validate the corrected recursive `GenerateMoveSequences` against known-good scenarios and edge cases based on the rules.
+
+**Deferred Tasks (Until Correctness Confirmed):**
+*   Task #2 (Comparison Test for `IterativeLegalMoves`)
+*   Task #10 (Refactor `IterativeLegalMoves` to use Apply/Undo)
+
 ## Specific Code Changes Completed
 - [*] Added constants for head positions: White head (point 24) and Black head (point 12)
 - [*] Modified checker movement direction: Both players now move counter-clockwise
@@ -272,6 +289,9 @@ The following tests have differences between the original implementation and the
 
 Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidelines.
 
+**Note on Move Generation Comparison:**
+*   Initial comparison tests (`long_narde_test_movegen_comparison.cc`) revealed that the first implementation of `RecursiveLegalMoves` was flawed. It incorrectly handled non-double dice, exploring only paths starting with the second die if the first die was completely unplayable, thus missing valid sequences. This was corrected by refactoring `FindRecursiveMoves` to explore paths starting with each distinct die independently. The iterative approach (`IterativeLegalMoves` via `GenerateMoveSequences`) handled this correctly from the start.
+
 ## Code Simplification
 	1.	Refactor LegalActions Function
 	•	What: Break down the complex LegalActions function into smaller, focused helper functions.
@@ -284,10 +304,10 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	[*] Create a helper for higher-die rule application (e.g., `ApplyHigherDieRuleIfNeeded`).
 	•	[ ] Create a helper for doubles move handling. (Deferred - may fit better in RecLegalMoves/Encoding refactor)
 	•	[ ] Use early returns to avoid deeply nested conditions. (Deferred - current structure is fairly linear)
-	2.	Simplify RecLegalMoves Function
+	2.	Simplify RecLegalMoves Function (DEFERRED - See Current Priority)
 	•	What: Convert the recursive RecLegalMoves function to an iterative approach using a stack or queue.
-	•	Where: long_narde.cc (lines 1598–1681)
-	•	Why: Reduce complexity and potential stack overflow risks.
+	•	Where: long_narde.cc (lines 1598–1681) -> Now in `long_narde_legal_actions.cc`
+	•	Why: Reduce complexity and potential stack overflow risks. (**Deferring** until current logic is proven correct).
 	•	Retrieval Hint: Use query `Task:LongNardeRefactorRecLegalMoves`
 	•	Tasks:
 	•	[x] Design an iterative algorithm structure (BFS/DFS style) to generate half-move sequences.
@@ -313,9 +333,9 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•   Why: Improve API clarity and consistency. `IsFirstTurn(player)` is less ambiguous.
 	•	Retrieval Hint: Use query `Task:LongNardeRefactorIsFirstTurn`
 	•   Tasks:
-	    *   [x] Remove the `is_first_turn()` declaration and definition.
-	    *   [x] Update all call sites (identified during refactoring in tests) to use `IsFirstTurn(player)` instead.
-	    *   [x] Verify tests still pass.
+	    *   [ ] Remove the `is_first_turn()` declaration and definition.
+	    *   [ ] Update all call sites (identified during refactoring in tests) to use `IsFirstTurn(player)` instead.
+	    *   [ ] Verify tests still pass.
 
 ## Code Structure
 	4.	Group Related Functions
@@ -424,10 +444,10 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 		*   [x] Update function declarations in `long_narde.h`.
 		*   [x] Verify `CheckerMove::operator<` exists for sorting.
 		*   [x] Build and test successfully.
-	10.	Reduce Cloning in Move Generation
+	10.	Reduce Cloning in Move Generation (DEFERRED - See Current Priority)
 	•	What: Modify `IterativeLegalMoves` to use apply/undo on the current state instead of cloning for most branches.
 	•	Where: `long_narde_legal_actions.cc` (within `IterativeLegalMoves`).
-	•	Why: Avoid expensive `Clone()` calls during the depth-first search.
+	•	Why: Avoid expensive `Clone()` calls during the depth-first search. (**Deferring** until current logic is proven correct).
 	•	Retrieval Hint: Use query `Task:LongNardeReduceCloning`
 	•	Tasks:
 		*   [ ] Refactor the loop in `IterativeLegalMoves` to apply a move, push state parameters (or a lighter context object), explore, and then undo the move. (**Note:** Current implementation uses cloning per branch, which works but is less efficient).
@@ -462,3 +482,45 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	Expand and automate tests for encoding, movement, and bridging rules to ensure robust functionality.
 
 By addressing these tasks, the Long Narde codebase will become simpler, better organized, more performant, and easier to maintain or extend in the future. 
+
+
+# Debugging Doubles Move Generation (Task #2 Comparison Test Failure)
+
+**Problem:** The `TestDoubleMove` in `long_narde_test_movegen_comparison.cc` consistently failed, generating only 2 moves for a double roll instead of the expected 4. Attempts to fix this led to crashes (`Spiel Fatal Error: ... i < dice_.size()` with `i = 4, dice_.size() = 2`).
+
+**Failed Approaches:**
+
+1.  **Modify `GenerateAllHalfMoves` to Ignore `UsableDiceOutcome`:**
+    *   Idea: If `double_turn_` is true, allow `GenerateAllHalfMoves` to generate moves for the double die value regardless of whether the two entries in `dice_` were marked as used.
+    *   Result: Led to crashes, likely because `ApplyCheckerMove` couldn't find a corresponding usable die entry in `dice_` to mark after the 2nd move.
+
+2.  **Refine `GenerateAllHalfMoves` Doubles Check:**
+    *   Idea: If `double_turn_`, only generate a move for the double value if at least one corresponding entry in `dice_` was still marked usable.
+    *   Result: Still led to the `dice_[4]` access crash, suggesting the state inconsistency occurred elsewhere or was more fundamental.
+
+3.  **Modify `IterativeLegalMoves` to Manually Add Moves:**
+    *   Idea: Keep `GenerateAllHalfMoves` simple. If it returned no usable moves during a doubles turn (because `dice_` entries were marked used) but fewer than 4 moves had been made, manually re-check and add valid moves for the double value within the `IterativeLegalMoves` loop.
+    *   Result: Still led to the `dice_[4]` access crash.
+
+4.  **Introduce `doubles_moves_made_` Counter:**
+    *   Idea: Decouple doubles move tracking from the 2-element `dice_` array. Add a counter, increment/decrement it in `Apply/UndoCheckerMove`, and have `GenerateAllHalfMoves` check this counter (< 4) instead of `UsableDiceOutcome` for doubles.
+    *   Initial Result: Still crashed (`dice_[4]` access).
+    *   Correction: Realized the counter wasn't saved/restored in `TurnHistoryInfo` / `UndoAction`. Fixed that.
+    *   Final Result: Still crashed with the exact same `dice_[4]` access error, indicating the root cause wasn't the undo history but likely a more fundamental mismatch between the 4 moves and the 2-slot `dice_` representation causing state corruption elsewhere.
+
+**Conclusion from Failed Attempts:** The core issue appears to be the inherent difficulty and fragility of managing 4 potential moves using a state representation (`dice_`) designed for only 2 dice. Attempts to patch the logic lead to inconsistencies and crashes.
+
+**Proposed New Approach: Refactor State Representation**
+
+1.  **Change `dice_`:** Modify `std::vector<int> dice_` to always have **4 elements**.
+2.  **RollDice:** Store non-doubles (e.g., 3-1) as `{3, 1, 0, 0}`. Store doubles (e.g., 4-4) as `{4, 4, 4, 4}`. ('0' indicates an unused/invalid slot).
+3.  **Marking Used:** Continue marking used dice by adding 6 (becoming 7-12).
+4.  **`UsableDiceOutcome`:** Update to treat '0' as unusable.
+5.  **Remove `double_turn_` Flag:** Redundant. Determine if roll was doubles by checking `DiceValue(0) == DiceValue(1)`.
+6.  **Remove `doubles_moves_made_` Counter:** Redundant. The state of the 4-element `dice_` array directly reflects moves made.
+7.  **Simplify `GenerateAllHalfMoves`:** Loop `i` from 0 to 3. If `UsableDiceOutcome(dice_[i])` is true, generate moves for `DiceValue(i)`.
+8.  **Simplify `ApplyCheckerMove` / `UndoCheckerMove`:** Find the *first available* `dice_` entry matching the `move.die` value and mark/unmark it.
+9.  **Simplify `IterativeLegalMoves` / `GenerateMoveSequences`:** Remove `max_moves_param`. The logic naturally stops when `GenerateAllHalfMoves` finds no more usable dice in the 4-element array.
+10. **Update Undo History:** Remove `double_turn_` and `doubles_moves_made_` from `TurnHistoryInfo` struct and associated save/restore logic.
+
+This approach aligns the state directly with the maximum number of moves, simplifying logic and hopefully eliminating the source of state corruption. 
