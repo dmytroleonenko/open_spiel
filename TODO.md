@@ -40,12 +40,12 @@ We will create a copy of "games/backgammon" and modify it to implement the game 
 *   [ ] **Fix Validation Logic (`IsValidCheckerMove`)**: 
     *   Confirm `initial_dice_` is exclusively used for the special first-turn double rule application throughout the *entire* turn's move sequence generation.
     *   Ensure head movement allowance during sequence generation correctly uses the `initial_dice_` check (for the special rule) or the sequence-local `moved_from_head_this_sequence` flag, not the current state's `IsFirstTurn(player)`.
-*   [ ] **Verify Bridge Rule (`WouldFormBlockingBridge`)**: Ensure it's correctly called and evaluated within the move generation/validation process.
-*   [ ] **Comprehensive Testing**: Add/Update tests (e.g., `FirstTurnTest`, `HeadRuleTest`, `BridgeRuleTest`) to validate the corrected recursive `GenerateMoveSequences` against known-good scenarios and edge cases based on the rules.
+*   [*] **Verify Bridge Rule (`WouldFormBlockingBridge`)**: Ensure it's correctly called and evaluated within the move generation/validation process. (Verified during recent debugging)
+*   [*] **Comprehensive Testing**: Add/Update tests (e.g., `FirstTurnTest`, `HeadRuleTest`, `BridgeRuleTest`, `BearingOffLogicTest`) to validate the corrected recursive `GenerateMoveSequences` against known-good scenarios and edge cases based on the rules. (Tests are passing after recent fixes)
 
 **Deferred Tasks (Until Correctness Confirmed):**
-*   Task #2 (Comparison Test for `IterativeLegalMoves`)
-*   Task #10 (Refactor `IterativeLegalMoves` to use Apply/Undo)
+*   Task #2 (Comparison Test for `IterativeLegalMoves`) // Task numbers might be outdated
+*   Task #10 (Refactor `IterativeLegalMoves` to use Apply/Undo) // Task numbers might be outdated
 
 ## Specific Code Changes Completed
 - [*] Added constants for head positions: White head (point 24) and Black head (point 12)
