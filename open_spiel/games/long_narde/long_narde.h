@@ -203,7 +203,7 @@ class LongNardeState : public State {
   bool IsOff(int player, int pos) const;
 
   // Get the To position for this play given the from position and number of
-  // pips on the die. This function simply adds the values: the return value
+  // pips on the die. This function simply adds the values; the return value
   // will be a position that might be off the the board (<0 or >23).
   int GetToPos(int player, int from_pos, int pips) const;
 
@@ -238,8 +238,8 @@ class LongNardeState : public State {
 
   bool WouldFormBlockingBridge(int player, int from_pos, int to_pos) const;
   bool IsHeadPos(int player, int pos) const;
-  bool IsLegalHeadMove(int player, int from_pos) const;
   bool IsFirstTurn(int player) const;
+  bool IsLegalHeadMove(int player, int from_pos, bool moved_from_head_this_sequence) const;
 
   // Takes sequence context for head rule.
   bool IsValidCheckerMove(int player, const CheckerMove& move,
