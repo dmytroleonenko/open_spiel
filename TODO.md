@@ -36,10 +36,10 @@ We will create a copy of "games/backgammon" and modify it to implement the game 
 
 **Key Steps:**
 *   [*] **Introduce `initial_dice_`:** Add `initial_dice_` member to `LongNardeState`, populate in `ProcessChanceRoll`, handle in `UndoAction`, and use in `IsValidCheckerMove` for the first-turn head rule exception. (Completed)
-*   [ ] **Refine `is_first_turn_` vs. `IsFirstTurn(player)`:** Ensure the member variable (`is_first_turn_`) reflects the start-of-turn status, while the method (`IsFirstTurn(player)`) checks current board state. Update logic to use the correct check where needed (especially around head rule validation during sequence generation).
-*   [ ] **Fix Validation Logic (`IsValidCheckerMove`)**: 
-    *   Confirm `initial_dice_` is exclusively used for the special first-turn double rule application throughout the *entire* turn's move sequence generation.
-    *   Ensure head movement allowance during sequence generation correctly uses the `initial_dice_` check (for the special rule) or the sequence-local `moved_from_head_this_sequence` flag, not the current state's `IsFirstTurn(player)`.
+*   [*] **Refine `is_first_turn_` vs. `IsFirstTurn(player)`:** Ensure the member variable (`is_on_first_turn_`) reflects the start-of-turn status, while the method (`IsFirstTurn(player)`) checks current board state. Update logic to use the correct check where needed (especially around head rule validation during sequence generation). (Completed - `IsLegalHeadMove` now correctly uses `is_on_first_turn_` for the special case and the sequence flag otherwise).
+*   [*] **Fix Validation Logic (`IsValidCheckerMove`)**: 
+    *   Confirm `initial_dice_` is exclusively used for the special first-turn double rule application throughout the *entire* turn's move sequence generation. (Verified - `initial_dice_` is now set correctly and used in `IsLegalHeadMove`)
+    *   Ensure head movement allowance during sequence generation correctly uses the `initial_dice_` check (for the special rule) or the sequence-local `moved_from_head_this_sequence` flag, not the current state's `IsFirstTurn(player)`. (Verified - `IsLegalHeadMove` now uses the sequence flag for the normal case).
 *   [*] **Verify Bridge Rule (`WouldFormBlockingBridge`)**: Ensure it's correctly called and evaluated within the move generation/validation process. (Verified during recent debugging)
 *   [*] **Comprehensive Testing**: Add/Update tests (e.g., `FirstTurnTest`, `HeadRuleTest`, `BridgeRuleTest`, `BearingOffLogicTest`) to validate the corrected recursive `GenerateMoveSequences` against known-good scenarios and edge cases based on the rules. (Tests are passing after recent fixes)
 
