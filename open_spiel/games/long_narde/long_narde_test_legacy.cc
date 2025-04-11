@@ -13,13 +13,19 @@ namespace long_narde {
 namespace {
 
 // Internal version of TestBasicMovement
+//StartFunction: TestBasicMovementInternal
+//StartTest: test-legacy-movement-internal
 void TestBasicMovementInternal() {
   std::cout << "\n=== TestBasicMovement (forwarding to actual implementation) ===" << std::endl;
   TestMovementRules();
 }
+//EndTest: test-legacy-movement-internal
+//EndFunction: TestBasicMovementInternal
 
 } // namespace
 
+//StartFunction: BasicLongNardeTests
+//StartTest: test-legacy-basic-1
 void BasicLongNardeTests() {
   std::cout << "\n=== Running legacy BasicLongNardeTests ===" << std::endl;
 
@@ -29,9 +35,9 @@ void BasicLongNardeTests() {
   // Run the basic tests from OpenSpiel
   testing::RandomSimTest(*game, 10);
   testing::RandomSimTestWithUndo(*game, 10);
-  
+
   // TestClone is not available, skip it
-  
+
   // Verify that the underlying game has the expected properties
   SPIEL_CHECK_EQ(game->GetType().chance_mode, GameType::ChanceMode::kExplicitStochastic);
   SPIEL_CHECK_EQ(game->GetType().dynamics, GameType::Dynamics::kSequential);
@@ -42,10 +48,12 @@ void BasicLongNardeTests() {
   SPIEL_CHECK_EQ(game->MaxChanceOutcomes(), 21);
 
   std::cout << "✓ All legacy basic tests passed!" << std::endl;
-  
+
   // Run the movement tests as well, since they're part of the legacy tests
   TestBasicMovementInternal();
 }
+//EndTest: test-legacy-basic-1
+//EndFunction: BasicLongNardeTests
 
 }  // namespace long_narde
-}  // namespace open_spiel 
+}  // namespace open_spiel

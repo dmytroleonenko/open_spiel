@@ -60,9 +60,9 @@ std::string CurPlayerToString(Player cur_player) {
 /**
  * @brief Generates a detailed string representation of the current game state.
  *
- * Includes a visual board layout, current turn player (with first turn/extra turn
- * indicators), dice state (rolled values, used dice), player scores, and status flags
- * (head moved, extra turn pending, last roll tie allowed).
+ * Includes a visual board layout, current turn player (with first turn
+ * indicator), dice state (rolled values, used dice), player scores, and status flags
+ * (head moved, last roll tie allowed).
  *
  * @return A multi-line string describing the game state.
  */
@@ -130,7 +130,6 @@ std::string LongNardeState::ToString() const {
   absl::StrAppend(&board_str, CurPlayerToString(cur_player_));
   if (cur_player_ != kChancePlayerId && cur_player_ != kTerminalPlayerId) {
       absl::StrAppend(&board_str, (IsFirstTurn(CurrentPlayer()) ? " (First Turn)" : ""));
-      absl::StrAppend(&board_str, (is_playing_extra_turn_ ? " (Extra Turn)" : ""));
   }
   absl::StrAppend(&board_str, "\n");
 
@@ -145,28 +144,26 @@ std::string LongNardeState::ToString() const {
   if (moved_from_head_) {
     absl::StrAppend(&board_str, "Status: Head checker moved this turn.\n");
   }
-  
+
   // Determine if doubles directly from dice_
   bool is_double = (dice_.size() == 4 && // Check size
                     dice_[0] >= 0 && dice_[0] <= 5 && // Check first die valid (internal 0-5)
-                    dice_[0] == dice_[1] && 
-                    dice_[0] == dice_[2] && 
+                    dice_[0] == dice_[1] &&
+                    dice_[0] == dice_[2] &&
                     dice_[0] == dice_[3] &&
                     dice_[0] != 0); // Make sure it's not {0,0,0,0} from init
 
   if (is_double) {
      absl::StrAppend(&board_str, "Status: Rolled doubles.\n"); // Indicate doubles were rolled
   }
-  
-  // NOTE: We removed double_turn_, which indicated if the *next* roll was for an extra turn.
-  // We might want to add back the is_playing_extra_turn_ check here if relevant for ToString.
-  // if (is_playing_extra_turn_) {
-  //    absl::StrAppend(&board_str, "Status: Currently playing an extra turn.\n");
-  // }
 
-   if (allow_last_roll_tie_) {
-     absl::StrAppend(&board_str, "Status: Last roll tie attempt allowed.\n");
-   }
+  if (allow_last_roll_tie_) {
+    absl::StrAppend(&board_str, "Status: Last roll tie attempt allowed.\n");
+  }
+
+  if (turns_ >= 0) {
+    absl::StrAppend(&board_str, "\nTurn: ", turns_);
+  }
 
   return board_str;
 }
@@ -332,7 +329,7 @@ int LongNardeState::GetBlockPathStartRealPos(int player_for_path, int block_lowe
     // Check the other 5 points in the block
     for (int i = 1; i < 6; ++i) {
         int current_real_pos = (block_lowest_real_idx + i) % kNumPoints; // Handle wrap-around
-        
+
         int current_path_idx = GetPathIndex(player_for_path, current_real_pos);
         if (current_path_idx < min_path_idx) {
             min_path_idx = current_path_idx;
@@ -342,5 +339,38 @@ int LongNardeState::GetBlockPathStartRealPos(int player_for_path, int block_lowe
     return furthest_back_real_pos;
 }
 
+/**
+ * @brief Converts a real board position to a virtual coordinate for bridge legality checking.
+ *
+ * In Long Narde, White and Black travel different paths around the board. To simplify
+ * bridge legality checking, we map each player's board positions into a consistent,
+ * linear coordinate system where moving forward always means decreasing the coordinate.
+ *
+ * For White (kXPlayerId): Virtual coordinate = real index (no transformation)
+ * For Black (kOPlayerId):
+ *   - If real index is 0-11: virtual coordinate = real index + 12
+ *   - If real index is 12-23: virtual coordinate = real index - 12
+ *
+ * @param player The player (kXPlayerId or kOPlayerId)
+ * @param real_pos The real board position (0-23)
+ * @return The virtual coordinate for the given player and position
+ */
+int LongNardeState::GetVirtualCoords(int player, int real_pos) const {
+  if (real_pos < 0 || real_pos >= kNumPoints) {
+    SpielFatalError(absl::StrCat("GetVirtualCoords called with invalid real_pos: ", real_pos));
+    return -1;
+  }
+
+  if (player == kXPlayerId) {
+    return real_pos;
+  } else { // kOPlayerId
+    if (real_pos >= 0 && real_pos <= 11) { // Segment 1
+      return real_pos + 12;
+    } else { // Segment 2
+      return real_pos - 12;
+    }
+  }
+}
+
 } // namespace long_narde
-} // namespace open_spiel 
+} // namespace open_spiel

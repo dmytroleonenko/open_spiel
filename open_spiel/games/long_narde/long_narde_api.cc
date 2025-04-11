@@ -28,7 +28,6 @@ Player LongNardeState::CurrentPlayer() const {
  * For player moves, it decodes the Spiel action into checker moves, validates
  * them (including head rule checks), applies the valid moves, updates turn
  * history, and advances the game state (player turn, dice, etc.).
- * Grants an extra turn if doubles were rolled and it wasn't already an extra turn.
  *
  * @param move_id The encoded Spiel action to apply.
  */
@@ -38,13 +37,11 @@ void LongNardeState::DoApplyAction(Action move_id) {
     return;
   }
 
-  bool currently_extra = is_playing_extra_turn_;
-
   std::vector<CheckerMove> original_moves = SpielMoveToCheckerMoves(cur_player_, move_id);
   std::vector<CheckerMove> filtered_moves;
   int head_pos = (cur_player_ == kXPlayerId) ? kWhiteHeadPos : kBlackHeadPos;
   bool used_head_move = false;
-  
+
   for (const auto& m : original_moves) {
     if (m.pos == kPassPos) {
       filtered_moves.push_back(m);
@@ -57,7 +54,7 @@ void LongNardeState::DoApplyAction(Action move_id) {
     // This check remains as a safeguard, although LegalActions should prevent invalid sequences.
     if (IsHeadPos(cur_player_, m.pos) && used_head_move) {
       // Use is_on_first_turn_ member variable and initial_dice_
-      if (is_on_first_turn_) { 
+      if (is_on_first_turn_) {
         // Check initial_dice_ for special doubles
         bool is_special_double = false;
         if (initial_dice_.size() >= 2 && initial_dice_[0] > 0 && initial_dice_[0] == initial_dice_[1]) {
@@ -85,7 +82,7 @@ void LongNardeState::DoApplyAction(Action move_id) {
     }
     filtered_moves.push_back(m); // Add the original move if it passed checks
   }
-  
+
   // Apply all valid moves from the filtered sequence
   for (const auto& m : filtered_moves) {
     if (m.pos != kPassPos) {
@@ -98,12 +95,13 @@ void LongNardeState::DoApplyAction(Action move_id) {
   // Store the state before applying the move for undo purposes.
   turn_history_info_.push_back(
       TurnHistoryInfo(cur_player_, prev_player_, dice_, move_id,
-                      moved_from_head_, currently_extra));
+                      moved_from_head_));
 
   // Clear dice *before* advancing to the next player/chance node
-  dice_.clear();
+  dice_.assign(4, 0); // NEW WAY - Reset dice slots to 0, maintaining size 4
+
   // Reset head move flag here as well, before AdvanceToNextPlayer might use it indirectly
-  moved_from_head_ = false; 
+  moved_from_head_ = false;
 
   // Determine next player state (sets cur_player_ to kChancePlayerId and stores next actual player in prev_player_)
   AdvanceToNextPlayer(filtered_moves, move_id);
@@ -132,8 +130,12 @@ void LongNardeState::UndoAction(Player player, Action action) {
   moved_from_head_ = info.moved_from_head;
   cur_player_ = info.player;
   prev_player_ = info.prev_player;
-  dice_ = info.dice; // Should restore the 4-element dice correctly
-  is_playing_extra_turn_ = info.is_playing_extra_turn;
+  // dice_ = info.dice; // OLD WAY - Could restore a 2-element vector
+  // NEW WAY: Restore dice values while ensuring dice_ remains size 4
+  dice_.assign(4, 0); // Reset to 4 zeros
+  for (size_t i = 0; i < info.dice.size() && i < 4; ++i) {
+      dice_[i] = info.dice[i]; // Copy values from history (up to 4)
+  }
 
   if (player == kChancePlayerId && info.dice.empty()) {
     cur_player_ = kChancePlayerId;
@@ -147,21 +149,21 @@ void LongNardeState::UndoAction(Player player, Action action) {
       cur_player_ = player;
     }
     std::vector<CheckerMove> moves = SpielMoveToCheckerMoves(player, action);
-    
+
     // Undo moves in reverse order
     for (int i = moves.size() - 1; i >= 0; --i) {
       UndoCheckerMove(player, moves[i]);
     }
-    
+
     // Determine if the undone roll was doubles based on restored dice
-    bool was_doubles = (info.dice.size() == 4 && info.dice[0] > 0 && 
-                        info.dice[0] == info.dice[1] && 
-                        info.dice[1] == info.dice[2] && 
+    bool was_doubles = (info.dice.size() == 4 && info.dice[0] > 0 &&
+                        info.dice[0] == info.dice[1] &&
+                        info.dice[1] == info.dice[2] &&
                         info.dice[2] == info.dice[3]);
 
     // Only decrement turn counters if it wasn't a doubles turn
     // (since doubles don't increment the turn counter initially)
-    if (!was_doubles) { 
+    if (!was_doubles) {
       turns_--;
       if (player == kXPlayerId) {
         x_turns_--;
@@ -338,10 +340,9 @@ std::vector<std::pair<Action, double>> LongNardeState::ChanceOutcomes() const {
  * @return A unique pointer to the newly created clone of the state.
  */
 std::unique_ptr<State> LongNardeState::Clone() const {
-#ifndef NDEBUG
-    // std::cout << "Cloning state: " << ToString() << std::endl;
-#endif
-    return std::unique_ptr<State>(new LongNardeState(*this));
+  // Use the default copy constructor
+  auto cloned_state = std::make_unique<LongNardeState>(*this);
+  return cloned_state; // Return the unique_ptr directly
 }
 
 // ===== Chance Node Handling =====
@@ -352,8 +353,8 @@ std::unique_ptr<State> LongNardeState::Clone() const {
  * This function is called when the current player is kChancePlayerId.
  * It takes the encoded chance action (dice roll), updates the internal dice_ state,
  * stores the roll history, determines the next player based on game rules (initial
- * turn, doubles extra turn, normal alternation), updates turn flags (is_first_turn_,
- * double_turn_, is_playing_extra_turn_), and handles the setup for a potential
+ * turn, normal alternation), updates turn flags (is_first_turn_),
+ * and handles the setup for a potential
  * last roll tie under the WinLossTieScoring rule.
  *
  * @param move_id The encoded chance action representing the dice roll.
@@ -365,28 +366,25 @@ void LongNardeState::ProcessChanceRoll(Action move_id) {
   // Record the chance outcome in turn history.
   turn_history_info_.push_back(
       TurnHistoryInfo(kChancePlayerId, prev_player_, dice_, move_id,
-                      moved_from_head_, is_playing_extra_turn_));
+                      moved_from_head_));
 
   // Ensure we have no dice set yet, then apply this new roll.
-  SPIEL_CHECK_TRUE(dice_.empty());
   RollDice(move_id); // Sets dice_ based on outcome
 
   // *** Store the dice roll at the start of the turn ***
-  initial_dice_ = dice_; 
+  initial_dice_ = dice_;
 
   // Decide which player moves next.
   if (turns_ < 0) {
     // Initial state: White always starts in this implementation.
     turns_ = 0;
     cur_player_ = kXPlayerId; // White goes first
-    is_playing_extra_turn_ = false; // Not an extra turn
     is_on_first_turn_ = true; // Set flag for X's first turn
   } else {
-    // For subsequent turns, the player who should move was determined by 
+    // For subsequent turns, the player who should move was determined by
     // AdvanceToNextPlayer and stored in prev_player_ by DoApplyAction.
-    cur_player_ = prev_player_; 
+    cur_player_ = prev_player_;
 
-    // is_playing_extra_turn_ was correctly set by AdvanceToNextPlayer
     // Set is_on_first_turn_ correctly for the upcoming player turn
     is_on_first_turn_ = (turns_ == 0 && cur_player_ == kXPlayerId) || (turns_ == 1 && cur_player_ == kOPlayerId);
   }
@@ -420,7 +418,6 @@ void LongNardeState::ProcessChanceRoll(Action move_id) {
 void LongNardeState::AdvanceToNextPlayer(const std::vector<CheckerMove>& applied_moves,
                                          Action spiel_action) {
   Player moving_player = cur_player_; // Player who just finished moving
-  bool currently_extra = is_playing_extra_turn_;
 
   // Determine if the roll was doubles based on the initial roll for this turn
   // Use initial_dice_ as dice_ gets cleared before this is called.
@@ -436,27 +433,12 @@ void LongNardeState::AdvanceToNextPlayer(const std::vector<CheckerMove>& applied
 
   Player next_player_id; // Who will play AFTER the next dice roll?
 
-  // Grant extra turn if doubles were rolled AND player wasn't already on an extra turn.
-  // The number of actual moves made doesn't matter for granting the extra turn.
-  if (was_doubles_roll && !currently_extra) {
-    // Grant extra turn
-    next_player_id = moving_player;
-    is_playing_extra_turn_ = true;
-    // is_on_first_turn_ remains unchanged
-    // turns_ counter doesn't increment on doubles
-  } else {
-    // Normal alternation or end of extra turn
-    next_player_id = NextPlayerRoundRobin(moving_player, num_players_);
-    is_playing_extra_turn_ = false;
-
-    // Only update flags if player actually changes
-    if (next_player_id != moving_player) {
-        is_on_first_turn_ = false;
-        turns_++;
-        if (next_player_id == kXPlayerId) x_turns_++; else o_turns_++;
-    }
-    // If player stays the same (end of extra turn), flags are already correct.
-  }
+  // ALWAYS advance to the next player
+  next_player_id = NextPlayerRoundRobin(moving_player, num_players_);
+  is_on_first_turn_ = false; // Can never be the first turn after the first move sequence
+  // Always increment turn counters
+  turns_++;
+  if (next_player_id == kXPlayerId) x_turns_++; else o_turns_++; // Increment for the player whose turn is STARTING
 
   // Reset head move flag for the upcoming turn
   moved_from_head_ = false;
@@ -466,15 +448,6 @@ void LongNardeState::AdvanceToNextPlayer(const std::vector<CheckerMove>& applied
 
   // Set the current player to Chance to trigger dice roll on next ApplyAction
   cur_player_ = kChancePlayerId;
-}
-
-/**
- * @brief Checks if the game state represents an extra turn for the current player.
- * 
- * @return True if it is currently an extra turn, false otherwise.
- */
-bool LongNardeState::IsExtraTurn() const {
-  return is_playing_extra_turn_;
 }
 
 /**
@@ -507,7 +480,6 @@ std::string LongNardeState::DiceToString() const {
 }
 
 void LongNardeState::RollDice(Action outcome) {
-  SPIEL_CHECK_TRUE(dice_.empty());
   const std::vector<int>& roll = kChanceOutcomeValues[outcome];
   dice_.resize(4, 0); // Always resize to 4 elements, initialize with 0
   if (roll[0] == roll[1]) { // Doubles
@@ -529,4 +501,4 @@ void LongNardeState::RollDice(Action outcome) {
 }
 
 } // namespace long_narde
-} // namespace open_spiel 
+} // namespace open_spiel

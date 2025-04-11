@@ -10,75 +10,80 @@ namespace open_spiel {
 namespace long_narde {
 namespace {
 
+//StartFunction: BearingOffBasicTest
 void BearingOffBasicTest() {
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
   auto lnstate = static_cast<LongNardeState*>(state.get());
-  
+
+  //StartTest: test-bobt-1
   // Set up a test board where White has all checkers in home (points 0-5)
   std::vector<std::vector<int>> test_board = {
     {3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White - size 25 (incl. head)
     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black - size 25 (incl. head)
   };
-  std::vector<int> dice = {1, 5};
-  
   // Set White to move
   SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, {6, 1});
-  
+  SetupDice(lnstate, {6, 1, 0, 0});
+
   // Check that White can bear off by verifying all checkers are in home
   bool all_checkers_in_home = lnstate->AllInHome(kXPlayerId);
-  
+
   // White should be able to bear off since all checkers are in home
   SPIEL_CHECK_TRUE(all_checkers_in_home);
-  
+  //EndTest: test-bobt-1
+
+  //StartTest: test-bobt-2
   // Now set a checker outside of home
   test_board = {
     {3, 3, 3, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White (one at 15) - size 25
     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black - size 25
   };
   SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, {6, 1});
-  
+  SetupDice(lnstate, {6, 1, 0, 0});
+
   // Check that White can't bear off due to checker outside home
   all_checkers_in_home = lnstate->AllInHome(kXPlayerId);
-  
+
   // White should not be able to bear off due to checker outside home
   SPIEL_CHECK_FALSE(all_checkers_in_home);
-  
+  //EndTest: test-bobt-2
+
+  //StartTest: test-bobt-3
   // Check for Black player too - set up board where Black has all checkers in home (indices 12-17)
   test_board = {
     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15},  // White - size 25
     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0} // Black - size 25
   };
   SetupBoardState(lnstate, kOPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, {2, 2});
-  
+  SetupDice(lnstate, {2, 2, 0, 0});
+
   // Check that Black can bear off
   all_checkers_in_home = lnstate->AllInHome(kOPlayerId);
-  
+
   // Black should be able to bear off
   SPIEL_CHECK_TRUE(all_checkers_in_home);
+  //EndTest: test-bobt-3
 }
 
+//StartFunction: BearingOffLogicTest
 void BearingOffLogicTest() {
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
   auto lnstate = static_cast<LongNardeState*>(state.get());
-  
+
+  //StartTest: test-bolt-1
   // Setup a board position where White has checkers in position 1, 2
   std::vector<std::vector<int>> test_board = {
     {0, 1, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White - size 25
     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black - size 25
   };
-  std::vector<int> dice = {1, 3};
-  
   SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, {1, 3});
-  
+  SetupDice(lnstate, {1, 3, 0, 0});
+
   // Get legal actions
   std::vector<Action> legal_actions = lnstate->LegalActions();
-  
+
   // Find a move that uses die 1 from position 1 (should move to pos 0, not bear off)
   bool can_bear_off_with_1 = false;
   for (Action action : legal_actions) {
@@ -92,7 +97,7 @@ void BearingOffLogicTest() {
     }
     if (can_bear_off_with_1) break;
   }
-  
+
   // Find a move to bear off with the 3 die from position 2
   bool can_bear_off_with_3 = false;
   for (Action action : legal_actions) {
@@ -106,21 +111,23 @@ void BearingOffLogicTest() {
     }
     if (can_bear_off_with_3) break;
   }
-  
+
   // Move with die 1 from pos 1 should NOT bear off (goes to pos 0)
   SPIEL_CHECK_FALSE(can_bear_off_with_1);
   // Move with die 3 from pos 2 SHOULD bear off
   SPIEL_CHECK_TRUE(can_bear_off_with_3);
-  
+  //EndTest: test-bolt-1
+
+  //StartTest: test-bolt-2
   // Create a new test board with checkers further back
   test_board = {
     {0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White - size 25
     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black - size 25
   };
-  
+
   SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, {1, 6});
-  
+  SetupDice(lnstate, {1, 6, 0, 0});
+
   // Check if any checkers are outside the home region
   bool any_checker_outside_home = false;
   for (int pos = 0; pos < kNumPoints; ++pos) {
@@ -129,81 +136,85 @@ void BearingOffLogicTest() {
       break;
     }
   }
-  
+
   // Should have checkers outside home
   SPIEL_CHECK_TRUE(any_checker_outside_home);
+  //EndTest: test-bolt-2
 }
 
+//StartFunction: BearingOffFromPosition1Test
 void BearingOffFromPosition1Test() {
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
   auto lnstate = static_cast<LongNardeState*>(state.get());
-  
+
+  //StartTest: test-bofp1-1
   // Setup a board position where White has all checkers in home.
   // Crucially, only checkers are on points 0 and 1 to test bearing off from 1 with a higher roll.
   std::vector<std::vector<int>> test_board = {
     {14, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // White - size 25
     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}  // Black - size 25
   };
-  std::vector<int> dice = {1, 3};
-  
   SetupBoardState(lnstate, kXPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, {1, 3});
-  
+  SetupDice(lnstate, {1, 3, 0, 0});
+
   // Get legal actions
   std::vector<Action> legal_actions = lnstate->LegalActions();
-  
+
   // Find bearing off moves
   bool can_bear_off_with_1 = false;
   bool can_bear_off_with_3 = false;
   bool has_pass = false;
-  
+
   for (Action action : legal_actions) {
     std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
-    
+
     // Check for bearing off with 1
     if (moves.size() >= 1 && moves[0].pos == 1 && moves[0].die == 1 && lnstate->IsOff(kXPlayerId, moves[0].to_pos)) {
       can_bear_off_with_1 = true;
     }
-    
+
     // Check for bearing off with 3
     if (moves.size() >= 1 && moves[0].pos == 1 && moves[0].die == 3 && lnstate->IsOff(kXPlayerId, moves[0].to_pos)) {
       can_bear_off_with_3 = true;
     }
-    
+
     // Check for pass move
     if (moves.size() >= 1 && moves[0].pos == kPassPos) {
       has_pass = true;
     }
   }
-  
+
   // Should be able to bear off with 1 (exact move)
   SPIEL_CHECK_FALSE(can_bear_off_with_1);  // Die 1 from pos 1 goes to pos 0, not off
-  
+
   // Should be able to bear off with 3 (greater than needed)
   // This is now TRUE because there are no checkers on points 2, 3, 4, or 5.
   SPIEL_CHECK_TRUE(can_bear_off_with_3);
-  
+
   // Should not have a pass move
   SPIEL_CHECK_FALSE(has_pass);
+  //EndTest: test-bofp1-1
 }
 
+//StartFunction: BearingOffBlackTest
 void BearingOffBlackTest() {
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
   auto lnstate = static_cast<LongNardeState*>(state.get());
 
+  //StartTest: test-bobtBlack-1
   // Setup board: Black has checkers in home (12-17), including near the end (22, 23)
   // Points 12-17 are Black's home. Points 18-23 are the final quadrant.
   std::vector<std::vector<int>> test_board = {
     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}, // White - size 25
     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 3, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0}  // Black - size 25
   };
-  std::vector<int> dice = {2, 3}; // Dice roll 2, 3
+  // Test with dice roll 2, 3
 
   // Set Black (kOPlayerId) to move
   SetupBoardState(lnstate, kOPlayerId, test_board, {0, 0});
-  SetupDice(lnstate, {2, 3});
+  SetupDice(lnstate, {2, 3, 0, 0});
 
   // Verify all Black checkers are in their home board (12-23 for bearing off)
   // Note: The definition of "home" for bearing off might differ slightly from IsPosInHome.
@@ -251,20 +262,23 @@ void BearingOffBlackTest() {
   SPIEL_CHECK_FALSE(can_bear_off_23_with_2);
   SPIEL_CHECK_FALSE(can_bear_off_23_with_3);
 
-  // AllInHome should now return FALSE because checkers exist at 22 and 23, 
+  // AllInHome should now return FALSE because checkers exist at 22 and 23,
   // outside the 12-17 home range.
   SPIEL_CHECK_FALSE(lnstate->AllInHome(kOPlayerId));
+  //EndTest: test-bobtBlack-1
 }
 
+//StartFunction: EndgameScoreTest
 void EndgameScoreTest() {
   // Test different scoring methods
-  
+
+  //StartTest: test-est-1
   // 1. Test Mars scoring (default)
   std::shared_ptr<const Game> game = LoadGame("long_narde");
-  
+
   std::unique_ptr<State> state = game->NewInitialState();
   auto lnstate = static_cast<LongNardeState*>(state.get());
-  
+
   // Set up a position where White has borne off all checkers and Black has none
   std::vector<std::vector<int>> mars_board = {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // Size 25
@@ -275,22 +289,24 @@ void EndgameScoreTest() {
   // Assuming White just finished their turn (so cur_player should be Black, but game ends)
   // We set current player to White for SetupBoardState, but the terminal check ignores it.
   SetupBoardState(lnstate, kXPlayerId, mars_board, mars_scores);
-  SetupDice(lnstate, {1, 1});
-  
+  SetupDice(lnstate, {1, 1, 1, 1});
+
   // Game should be terminal
   SPIEL_CHECK_TRUE(lnstate->IsTerminal());
-  
+
   // Check returns
   std::vector<double> returns = lnstate->Returns();
-  
+
   // White should get 2 points for Mars (all checkers off while opponent has none)
   SPIEL_CHECK_EQ(returns[kXPlayerId], 2.0);
   SPIEL_CHECK_EQ(returns[kOPlayerId], -2.0);
-  
+  //EndTest: test-est-1
+
+  //StartTest: test-est-2
   // 2. Test Oin scoring (1 point)
   state = game->NewInitialState();
   lnstate = static_cast<LongNardeState*>(state.get());
-  
+
   // Set up a position where White has borne off all checkers and Black has some
   std::vector<std::vector<int>> oin_board = {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // Size 25
@@ -299,23 +315,25 @@ void EndgameScoreTest() {
   std::vector<int> oin_scores = {15, 5};
   std::vector<int> oin_dice = {1, 2};
   SetupBoardState(lnstate, kXPlayerId, oin_board, oin_scores);
-  SetupDice(lnstate, {1, 1});
-  
+  SetupDice(lnstate, {1, 1, 1, 1});
+
   // Game should be terminal
   SPIEL_CHECK_TRUE(lnstate->IsTerminal());
-  
+
   // Check returns
   returns = lnstate->Returns();
-  
+
   // White should get 1 point (regular win)
   SPIEL_CHECK_EQ(returns[kXPlayerId], 1.0);
   SPIEL_CHECK_EQ(returns[kOPlayerId], -1.0);
-  
+  //EndTest: test-est-2
+
+  //StartTest: test-est-3
   // 3. Test tie (winlosstie mode)
   std::shared_ptr<const Game> game_tie = LoadGame("long_narde(scoring_type=winlosstie_scoring)");
   state = game_tie->NewInitialState();
   lnstate = static_cast<LongNardeState*>(state.get());
-  
+
   // Set up a position where both players have borne off all checkers
   std::vector<std::vector<int>> tie_board = {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // Size 25
@@ -324,72 +342,78 @@ void EndgameScoreTest() {
   std::vector<int> tie_scores = {15, 15};
   std::vector<int> tie_dice = {1, 2};
   SetupBoardState(lnstate, kXPlayerId, tie_board, tie_scores);
-  SetupDice(lnstate, {1, 1});
-  
+  SetupDice(lnstate, {1, 1, 1, 1});
+
   // Game should be terminal
   SPIEL_CHECK_TRUE(lnstate->IsTerminal());
-  
+
   // Check returns
   returns = lnstate->Returns();
-  
+
   // Should be a tie (0 points each)
   SPIEL_CHECK_EQ(returns[kXPlayerId], 0.0);
   SPIEL_CHECK_EQ(returns[kOPlayerId], 0.0);
+  //EndTest: test-est-3
 }
 
+//StartFunction: ScoringSystemTest
 void ScoringSystemTest() {
   // Test different scoring parameters
-  
+
+  //StartTest: test-sst-1
   // 1. Default scoring (0 = winloss, 1 = winlosstie)
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   auto params = game->GetParameters();
-  auto scoring_str = params.count("scoring_type") > 0 ? 
+  auto scoring_str = params.count("scoring_type") > 0 ?
     params.at("scoring_type").string_value() : "winloss_scoring";
-  
+
   // Check if string value is "winloss_scoring" which corresponds to 0
   SPIEL_CHECK_EQ(scoring_str, "winloss_scoring");
-  
+
   // 2. Explicit winloss scoring
   game = LoadGame("long_narde(scoring_type=winloss_scoring)");
   params = game->GetParameters();
   scoring_str = params.at("scoring_type").string_value();
-  
+
   // Check if string value is "winloss_scoring" which corresponds to 0
   SPIEL_CHECK_EQ(scoring_str, "winloss_scoring");
-  
+
   // 3. Winlosstie scoring
   game = LoadGame("long_narde(scoring_type=winlosstie_scoring)");
   params = game->GetParameters();
   scoring_str = params.at("scoring_type").string_value();
-  
+
   // Check if string value is "winlosstie_scoring" which corresponds to 1
   SPIEL_CHECK_EQ(scoring_str, "winlosstie_scoring");
+  //EndTest: test-sst-1
 }
+//EndFunction: ScoringSystemTest
 
+//StartFunction: SingleLegalMoveTestBlack
 void SingleLegalMoveTestBlack() {
   std::cout << "\n=== Running SingleLegalMoveTestBlack ===\n";
-  
+
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
   auto lnstate = static_cast<LongNardeState*>(state.get());
-  
+
+  //StartTest: test-slmtb-1
   // Setup a board with Black having a single checker at position 22
   // With dice 1,2 and White blocking pos 21, the only legal sequence should be 22->20 (die 2), then 20->19 (die 1)
   std::vector<std::vector<int>> test_board(2, std::vector<int>(kNumPoints + 1, 0)); // Use kNumPoints + 1
   test_board[kOPlayerId][22] = 1; // Black checker at position 22 (point 23)
   test_board[kXPlayerId][21] = 1; // White blocks pos 21 (destination for die 1)
   test_board[kXPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer - 1; // Rest of White at head
-  
-  std::vector<int> dice = {1, 2};
+
   std::vector<int> scores = {0, 14}; // Black has 14 checkers borne off already
-  
+
   SetupBoardState(lnstate, kOPlayerId, test_board, scores);
-  SetupDice(lnstate, {1, 2});
-  
+  SetupDice(lnstate, {1, 2, 0, 0});
+
   // Should have only one legal action
   std::vector<Action> legal_actions = lnstate->LegalActions();
   SPIEL_CHECK_EQ(legal_actions.size(), 1);
-  
+
   // Check that the legal action is the expected sequence: 22->20 (die 2), then 20->19 (die 1)
   std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, legal_actions[0]);
   SPIEL_CHECK_EQ(moves.size(), 2); // Should be a sequence of 2 moves
@@ -408,7 +432,9 @@ void SingleLegalMoveTestBlack() {
 
   SPIEL_CHECK_TRUE(found_22_to_20_with_die2); // First move uses die 2
   SPIEL_CHECK_TRUE(found_20_to_19_with_die1); // Second move uses die 1
+  //EndTest: test-slmtb-1
 
+  //StartTest: test-slmtb-2
   // Setup another board for Black single-die max play rule
   test_board.assign(2, std::vector<int>(kNumPoints + 1, 0)); // Use kNumPoints + 1
   test_board[kOPlayerId][18] = 1; // Black checker at position 18
@@ -418,11 +444,11 @@ void SingleLegalMoveTestBlack() {
   test_board[kXPlayerId][16] = 1; // White blocks O@18 die 2 (target 16)
   test_board[kXPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer - 3; // Adjust head count
 
-  dice = {5, 2}; // Higher 5, Lower 2
+  std::vector<int> dice = {5, 2}; // Higher 5, Lower 2
   scores = {0, 13};
 
   SetupBoardState(lnstate, kOPlayerId, test_board, scores);
-  SetupDice(lnstate, {5, 2});
+  SetupDice(lnstate, {5, 2, 0, 0});
 
   legal_actions = lnstate->LegalActions();
   SPIEL_CHECK_FALSE(legal_actions.empty());
@@ -458,25 +484,29 @@ void SingleLegalMoveTestBlack() {
   SPIEL_CHECK_FALSE(found_any_other_die2_move);
   std::cout << "Found only lower die 2 move (20->18), as expected by setup.\n";
   std::cout << "✓ SingleLegalMoveTestBlack passed\n";
+  //EndTest: test-slmtb-2
 }
+//EndFunction: SingleLegalMoveTestBlack
 
+//StartFunction: BearingOffLogicTestBlackNearEnd
 void BearingOffLogicTestBlackNearEnd() {
   std::cout << "\n=== Running BearingOffLogicTestBlackNearEnd ===\n";
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
   auto lnstate = static_cast<LongNardeState*>(state.get());
 
+  //StartTest: test-boltbne-1
   // Setup: Black has 1 checker at pos 13, 1 at pos 14. 13 already borne off.
   std::vector<std::vector<int>> test_board(2, std::vector<int>(kNumPoints + 1, 0)); // Use kNumPoints + 1
   test_board[kOPlayerId][13] = 1; // Black checker at index 13 (needs 2 pips)
   test_board[kOPlayerId][14] = 1; // Black checker at index 14 (needs 3 pips)
   test_board[kXPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer; // White out of the way
 
-  std::vector<int> dice = {5, 2}; // Higher 5, Lower 2
+  // Test with dice Higher 5, Lower 2
   std::vector<int> scores = {0, 13}; // Black has 13 checkers borne off already
 
   SetupBoardState(lnstate, kOPlayerId, test_board, scores);
-  SetupDice(lnstate, {5, 2});
+  SetupDice(lnstate, {5, 2, 0, 0});
 
   // Verify all Black checkers are in the bear-off zone (12+)
   SPIEL_CHECK_TRUE(lnstate->AllInHome(kOPlayerId));
@@ -521,14 +551,18 @@ void BearingOffLogicTestBlackNearEnd() {
   SPIEL_CHECK_TRUE(can_move_14_to_12_with_2); // Normal move should be valid
 
   std::cout << "✓ BearingOffLogicTestBlackNearEnd passed\n";
+  //EndTest: test-boltbne-1
 }
+//EndFunction: BearingOffLogicTestBlackNearEnd
 
+//StartFunction: CannotBearOffIfNotAllInHomeTest
 void CannotBearOffIfNotAllInHomeTest() {
   std::cout << "\n=== Running CannotBearOffIfNotAllInHomeTest ===\n";
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
   auto lnstate = static_cast<LongNardeState*>(state.get());
 
+  //StartTest: test-cboiah-1
   // Setup:
   // - 14 checkers in the respective home area.
   // - 1 checker just outside the home area.
@@ -547,13 +581,13 @@ void CannotBearOffIfNotAllInHomeTest() {
   test_board[kOPlayerId][14] = 4; // 14 checkers in 12-17
   test_board[kOPlayerId][18] = 1; // 1 checker outside at index 18
 
-  std::vector<int> dice = {1, 6}; // Dice shouldn't matter much, need values
+  // Dice shouldn't matter much for this test
   std::vector<int> scores = {0, 0};
 
   // --- Test White ---
   std::cout << "Testing White...\n";
   SetupBoardState(lnstate, kXPlayerId, test_board, scores);
-  SetupDice(lnstate, {1, 6});
+  SetupDice(lnstate, {1, 6, 0, 0});
 
   // Verify White is NOT considered all in home
   SPIEL_CHECK_FALSE(lnstate->AllInHome(kXPlayerId));
@@ -581,14 +615,16 @@ void CannotBearOffIfNotAllInHomeTest() {
   }
   SPIEL_CHECK_FALSE(white_first_move_is_bear_off);
   std::cout << "  White cannot start turn with bear off (as expected).\n";
+  //EndTest: test-cboiah-1
 
+  //StartTest: test-cboiah-2
   // --- Test Black ---
   std::cout << "Testing Black...\n";
   // Reset White checkers to head, keep Black setup
   test_board[kXPlayerId].assign(kNumPoints + 1, 0); // Use kNumPoints + 1
   test_board[kXPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer;
   SetupBoardState(lnstate, kOPlayerId, test_board, scores);
-  SetupDice(lnstate, {1, 6});
+  SetupDice(lnstate, {1, 6, 0, 0});
 
   // Verify Black is NOT considered all in home
   bool black_all_in_home = lnstate->AllInHome(kOPlayerId);
@@ -628,49 +664,55 @@ void CannotBearOffIfNotAllInHomeTest() {
   }
 
   std::cout << "✓ CannotBearOffIfNotAllInHomeTest passed\n";
+  //EndTest: test-cboiah-2
 }
+//EndFunction: CannotBearOffIfNotAllInHomeTest
 
 }  // namespace
 
+//StartFunction: TestEndgame
 void TestEndgame() {
+  //StartTest: test-endgame
   std::cout << "\n=== Testing Endgame Rules ===" << std::endl;
-  
+
   std::cout << "\n=== Running BearingOffBasicTest ===\n";
   BearingOffBasicTest();
   std::cout << "✓ BearingOffBasicTest passed\n";
-  
+
   std::cout << "\n=== Running BearingOffLogicTest ===\n";
   BearingOffLogicTest();
   std::cout << "✓ BearingOffLogicTest passed\n";
-  
+
   std::cout << "\n=== Running BearingOffFromPosition1Test ===\n";
   BearingOffFromPosition1Test();
   std::cout << "✓ BearingOffFromPosition1Test passed\n";
-  
+
   std::cout << "\n=== Running BearingOffBlackTest ===\n";
   BearingOffBlackTest();
   std::cout << "✓ BearingOffBlackTest passed\n";
-  
+
   std::cout << "\n=== Running EndgameScoreTest ===\n";
   EndgameScoreTest();
   std::cout << "✓ EndgameScoreTest passed\n";
-  
+
   std::cout << "\n=== Running ScoringSystemTest ===\n";
   ScoringSystemTest();
   std::cout << "✓ ScoringSystemTest passed\n";
-  
+
   CannotBearOffIfNotAllInHomeTest();
-  
+
   std::cout << "\n=== Running SingleLegalMoveTestBlack ===\n";
   SingleLegalMoveTestBlack();
   std::cout << "✓ SingleLegalMoveTestBlack passed\n";
-  
+
   std::cout << "\n=== Running BearingOffLogicTestBlackNearEnd ===\n";
   BearingOffLogicTestBlackNearEnd();
   std::cout << "✓ BearingOffLogicTestBlackNearEnd passed\n";
-  
+
   std::cout << "✓ All endgame tests passed\n";
+  //EndTest: test-endgame
 }
+//EndFunction: TestEndgame
 
 }  // namespace long_narde
 }  // namespace open_spiel

@@ -232,7 +232,7 @@ Action LongNardeState::CheckerMovesToSpielMove(
 
   // Check if this is a doubles roll based on the current dice state.
   bool is_doubles = false;
-  if (dice_.size() == 2 && DiceValue(0) == DiceValue(1)) {
+  if (dice_.size() == 4 && DiceValue(0) > 0 && DiceValue(0) == DiceValue(1)) {
     is_doubles = true;
   }
 
@@ -282,29 +282,43 @@ Action LongNardeState::CheckerMovesToSpielMove(
 
       if (encoded_moves.size() == 1) {
         // If exactly one move was made, the pass MUST use the other die.
-        SPIEL_CHECK_EQ(dice_.size(), 2); // Should have two dice in this scenario
+        SPIEL_CHECK_EQ(dice_.size(), 4); // NEW CHECK: Expect size 4
         int first_move_die = encoded_moves[0].die;
         int die0_val = DiceValue(0);
         int die1_val = DiceValue(1);
-        // Find the die value that was NOT used by the first move.
-        pass_die = (first_move_die == die0_val) ? die1_val : die0_val;
+        
+        // Handle doubles case first
+        if (die0_val > 0 && die0_val == die1_val) {
+            pass_die = die0_val; // If doubles, the unused die is the same value
+        } 
+        // Non-doubles case: Find the die value (from index 0 or 1) that was NOT used
+        else if (IsDieUsable(0) && die0_val != first_move_die) {
+            pass_die = die0_val;
+        } 
+        else if (IsDieUsable(1) && die1_val != first_move_die) {
+            pass_die = die1_val;
+        } 
+        // If logic failed (shouldn't happen), pass_die remains kPassDieValue (1).
+
       } else { // encoded_moves.size() == 0 (need to pad two passes)
         // Find a usable die index to use for the pass move.
-        // Prioritize index 1 if both usable and different.
+        // Prioritize index 1 if both usable and different (higher die value).
         int usable_idx = -1;
-        if (dice_.size() >= 2 && IsDieUsable(1)) {
-            usable_idx = 1;
-            if (IsDieUsable(0) && DiceValue(0) != DiceValue(1)) {
-               // No change needed, usable_idx is already 1 (prefer higher die)
-            } else if (!IsDieUsable(0)){
-               // Only index 1 is usable
+        int die0_val = DiceValue(0);
+        int die1_val = DiceValue(1);
+        bool usable0 = IsDieUsable(0);
+        bool usable1 = IsDieUsable(1);
+
+        if (usable1) {
+            if (usable0 && die0_val > die1_val) {
+                usable_idx = 0; // Prefer higher die if both usable and different
             } else {
-               // Both usable, but same value or 0 is higher/only one usable.
-               if (!IsDieUsable(1)) usable_idx = 0; 
+                usable_idx = 1; // Use die 1 if usable and (die0 not usable OR die1 >= die0)
             }
-        } else if (dice_.size() >= 1 && IsDieUsable(0)) {
-            usable_idx = 0;
+        } else if (usable0) {
+            usable_idx = 0; // Use die 0 if it's the only usable one
         }
+
         // If a usable die was found, use its value.
         if (usable_idx != -1) {
             pass_die = DiceValue(usable_idx);

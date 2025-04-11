@@ -18,24 +18,26 @@ bool ActionsContains(const std::vector<Action>& legal_actions, Action action) {
 
 // Test correct initial board setup for Long Narde
 // White's 15 checkers on point 24, Black's 15 on point 12
+//StartFunction: InitialBoardSetupTest
+//StartTest: test-initial-board-setup
 void InitialBoardSetupTest() {
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
   LongNardeState* lnstate = static_cast<LongNardeState*>(state.get());
-  
+
   // Check initial setup for White (kXPlayerId) - all 15 on point 24 (index 23)
   SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos), kNumCheckersPerPlayer);
-  
+
   // Check other positions for White have zero checkers
   for (int i = 0; i < kNumPoints; ++i) {
     if (i != kWhiteHeadPos) {
       SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, i), 0);
     }
   }
-  
+
   // Check initial setup for Black (kOPlayerId) - all 15 on point 12 (index 11)
   SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, kBlackHeadPos), kNumCheckersPerPlayer);
-  
+
   // Check other positions for Black have zero checkers
   for (int i = 0; i < kNumPoints; ++i) {
     if (i != kBlackHeadPos) {
@@ -43,20 +45,28 @@ void InitialBoardSetupTest() {
     }
   }
 }
+//EndTest: test-initial-board-setup
+//EndFunction: InitialBoardSetupTest
 
 // Long Narde doesn't have hits, so we check that no hits are returned
+//StartFunction: BasicLongNardeTestsCheckNoHits
+//StartTest: test-check-no-hits
 void BasicLongNardeTestsCheckNoHits() {
   std::shared_ptr<const Game> game = LoadGame("long_narde");
-  
+
   // Comment out the RandomSimTest that's causing memory issues
   // testing::RandomSimTest(*game, 1, false, true, &CheckNoHits);
 }
+//EndTest: test-check-no-hits
+//EndFunction: BasicLongNardeTestsCheckNoHits
 
+//StartFunction: BasicLongNardeTestsDoNotStartWithDoubles
+//StartTest: test-no-doubles-start
 void BasicLongNardeTestsDoNotStartWithDoubles() {
   // Instead of relying on random values, let's directly test the assumption
   auto game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
-  
+
   // Manually set up a state with equal dice to check our logic
   while (state->IsChanceNode()) {
     // Choose a specific chance outcome that would lead to equal dice
@@ -69,29 +79,33 @@ void BasicLongNardeTestsDoNotStartWithDoubles() {
     }
     state->ApplyAction(selected_action);
   }
-  
+
   // Now check that the dice aren't equal (game should handle this)
   LongNardeState* long_narde_state = dynamic_cast<LongNardeState*>(state.get());
   SPIEL_CHECK_NE(long_narde_state->dice(0), long_narde_state->dice(1));
 }
+//EndTest: test-no-doubles-start
+//EndFunction: BasicLongNardeTestsDoNotStartWithDoubles
 
+//StartFunction: WhiteMovesFirstTest
+//StartTest: test-white-moves-first
 void WhiteMovesFirstTest() {
   auto game = LoadGame("long_narde");
-  
+
   // Run multiple simulations to verify White always moves first
   for (int i = 0; i < 10; ++i) {
     std::unique_ptr<State> state = game->NewInitialState();
-    
+
     // Apply the first chance outcome (dice roll)
     if (state->IsChanceNode()) {
       auto outcomes = state->ChanceOutcomes();
       state->ApplyAction(outcomes[0].first);
     }
-    
+
     // Check that the current player is White (kXPlayerId)
     auto lnstate = static_cast<const LongNardeState*>(state.get());
     SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kXPlayerId);
-    
+
     // Try a different dice roll to ensure it's consistent
     auto new_state = game->NewInitialState();
     if (new_state->IsChanceNode()) {
@@ -102,27 +116,33 @@ void WhiteMovesFirstTest() {
     }
   }
 }
+//EndTest: test-white-moves-first
+//EndFunction: WhiteMovesFirstTest
 
 }  // namespace
 
+//StartFunction: TestBasicSetup
+//StartTest: test-basic-setup
 void TestBasicSetup() {
   std::cout << "\n=== Testing Basic Setup ===" << std::endl;
-  
+
   std::cout << "\n=== Running InitialBoardSetupTest ===\n";
   InitialBoardSetupTest();
   std::cout << "✓ Initial board setup verified\n";
-  
+
   std::cout << "\n=== Running BasicLongNardeTestsCheckNoHits ===\n";
   BasicLongNardeTestsCheckNoHits();
-  
+
   std::cout << "\n=== Running BasicLongNardeTestsDoNotStartWithDoubles ===\n";
   BasicLongNardeTestsDoNotStartWithDoubles();
-  
+
   std::cout << "\n=== Running WhiteMovesFirstTest ===\n";
   WhiteMovesFirstTest();
-  
+
   std::cout << "✓ Basic setup tests passed\n";
 }
+//EndTest: test-basic-setup
+//EndFunction: TestBasicSetup
 
 }  // namespace long_narde
-}  // namespace open_spiel 
+}  // namespace open_spiel

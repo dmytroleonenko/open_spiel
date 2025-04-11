@@ -192,53 +192,89 @@ bool LongNardeState::IsValidCheckerMove(int player, const CheckerMove& move,
   SPIEL_CHECK_GE(move.die, 1);
   SPIEL_CHECK_LE(move.die, 6);
 
-  // Calculate destination
+  // Calculate the potential destination position first.
   int to_pos = GetToPos(player, move.pos, move.die);
 
-  // Check if moving off the board (bearing off)
-  if (IsOff(player, to_pos)) {
-    // Bearing off rules:
-    // 1. All checkers must be in the home board.
-    if (!AllInHome(player)) {
-      return false; // Cannot bear off if checkers outside home
+  // Check Bear Off conditions ONLY if the move targets off-board AND all checkers are home.
+  bool is_target_off_board = IsOff(player, to_pos);
+  if (is_target_off_board && AllInHome(player)) {
+    // --- Bear Off Validation ---
+    int pips_needed = (player == kXPlayerId) ? (move.pos + 1) : (18 - move.pos);
+
+    // Check if die roll is sufficient
+    if (move.die < pips_needed) {
+        // This should generally not happen if GetToPos calculated off-board correctly,
+        // but check defensively.
+        if (kDebugging) std::cout << "    INVALID: Bear-off attempt, but die (" << move.die << ") < pips needed (" << pips_needed << ")." << std::endl;
+        return false;
     }
-    // 2. The checker being borne off must be the furthest one away from home,
-    //    OR the die roll must be exact for its position.
-    int furthest_pos = FurthestCheckerInHome(player);
-    if (move.pos != furthest_pos && (move.pos - move.die) >= (player == kXPlayerId ? kWhiteHomeStart : kBlackHomeStart)) { // Adjusted check for black home boundary
-      // Not the furthest checker, and the roll is not high enough to bear off
-      // from this position (exact or higher roll needed relative to home start).
+
+    // If die roll is higher than needed, check if it's the furthest checker.
+    if (move.die > pips_needed) {
+        int furthest_pos = FurthestCheckerInHome(player);
+        if (move.pos != furthest_pos) {
+             if (kDebugging) std::cout << "    INVALID: Cannot use higher die roll (" << move.die << ") for non-furthest checker (pos=" << move.pos << ", furthest=" << furthest_pos << ")." << std::endl;
+             return false; // Invalid bear-off (higher roll on non-furthest)
+        }
+    }
+    // Valid bear-off move.
+    if (kDebugging) std::cout << "    VALID: Bear off check passed (pos=" << move.pos << ", die=" << move.die << ")." << std::endl;
+    return true;
+  } else {
+    // --- Regular Move Check (or move within home board) ---
+    // Check destination validity (must be on the board if not a valid bear-off)
+    if (is_target_off_board /* && !AllInHome(player) - implied by reaching here */) {
+         if (kDebugging) std::cout << "    INVALID: Calculated to_pos (" << to_pos << ") is off-board, but not a valid bear-off (not all home)." << std::endl;
+         return false;
+    }
+    if (to_pos < 0 || to_pos >= kNumPoints) { // Should be caught by IsOff check, but double-check
+         if (kDebugging) std::cout << "    INVALID: Calculated to_pos (" << to_pos << ") is off-board and not a valid bear-off." << std::endl;
+         return false;
+    }
+
+    // Check opponent occupancy at the calculated on-board destination.
+    // ADDED DEBUG LOGGING HERE
+    if (player == 1 && move.pos == 11 && move.die == 1) {
+        std::cout << "[DEBUG ILM CHECK] player=" << player
+                  << ", move.pos=" << move.pos
+                  << ", move.die=" << move.die
+                  << ", to_pos=" << to_pos
+                  << ", Opponent(player)=" << Opponent(player)
+                  << ", board(Opponent(player), to_pos)=" << board(Opponent(player), to_pos)
+                  << std::endl;
+    }
+    // ADDED DEBUG LOGGING for NoLandingOnOpponentTest case
+    if (player == 1 && move.pos == 15 && move.die == 3) {
+        std::cout << "[DEBUG NLO CHECK] player=" << player
+                  << ", move.pos=" << move.pos
+                  << ", move.die=" << move.die
+                  << ", to_pos=" << to_pos
+                  << ", Opponent(player)=" << Opponent(player)
+                  << ", board(Opponent(player), to_pos)=" << board(Opponent(player), to_pos)
+                  << std::endl;
+    }
+    if (board(Opponent(player), to_pos) > 0) {
+      if (kDebugging) std::cout << "[DEBUG ICMV " << player << "] Invalid move: Opponent block at " << to_pos << " for move " << move.pos << " -> " << to_pos << std::endl;
       return false;
     }
-    // Check passed - valid bear off
-    return true;
+
+    // Check Head Rule
+    if (IsHeadPos(player, move.pos)) {
+        if (!IsLegalHeadMove(player, move.pos, moved_from_head_this_sequence)) {
+            if (kDebugging) std::cout << "    INVALID: Head rule violation (already moved from head this sequence)." << std::endl;
+            return false;
+        }
+    }
+
+    // Check bridge rule
+    if (WouldFormBlockingBridge(player, move.pos, to_pos)) {
+      if (kDebugging) std::cout << "    INVALID: Move would form illegal bridge." << std::endl;
+      return false; // Move would create an illegal bridge
+    }
+
+    if (kDebugging) std::cout << "    VALID: Regular move check passed (pos=" << move.pos << ", to=" << to_pos << ", die=" << move.die << ")." << std::endl;
+    return true; // Regular move (or move within home) is valid
   }
-
-  // Regular move (not bearing off)
-  // Check destination validity
-  SPIEL_CHECK_GE(to_pos, 0); // Should be guaranteed by GetToPos if not bearing off
-  SPIEL_CHECK_LT(to_pos, kNumPoints);
-
-  // Check opponent occupancy
-  if (board(Opponent(player), to_pos) > 0) {
-    return false; // Cannot land on opponent's checker
-  }
-
-  // Check Head Rule
-  if (IsHeadPos(player, move.pos)) {
-      // *** Pass the flag here ***
-      if (!IsLegalHeadMove(player, move.pos, moved_from_head_this_sequence)) {
-          if (kDebugging) std::cerr << "    INVALID: Head rule violation (already moved from head this sequence)." << std::endl;
-          return false;
-      }
-  }
-
-  // Check bridge rule
-  if (WouldFormBlockingBridge(player, move.pos, to_pos)) {
-    return false; // Move would create an illegal bridge
-  }
-
-  return true; // Move is valid
 }
 
 bool LongNardeState::ValidateAction(Action action) const {
@@ -391,8 +427,9 @@ bool LongNardeState::AllInHome(Player player) const {
     }
   }
   
-  // Final check: Ensure the total count of checkers IN HOME + checkers BORNE OFF equals total checkers.
-  return (checkers_on_board + scores_[player] == kNumCheckersPerPlayer);
+  // If we reached here, no checkers were found outside the home board.
+  // All checkers currently on the board are within the home region.
+  return true; // Allow bearing off
 }
 
 // Finds the position of the furthest checker in the home board. Returns -1 if empty.

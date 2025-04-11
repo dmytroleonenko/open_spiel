@@ -55,19 +55,19 @@ struct CheckerMove {
   int pos;      // Valid board locations: 0-23; -1 represents a pass.
   int to_pos;   // Destination position (or -1 for pass)
   int die;      // Die value used (1-6, or -1 for pass)
-  
+
   // Default constructor
-  constexpr CheckerMove() 
+  constexpr CheckerMove()
       : pos(kPassPos), to_pos(kPassPos), die(kPassDieValue) {}
-  
+
   // Constructor
-  constexpr CheckerMove(int _pos, int _to_pos, int _die) 
+  constexpr CheckerMove(int _pos, int _to_pos, int _die)
       : pos(_pos), to_pos(_to_pos), die(_die) {}
-  
+
   // Legacy constructor for compatibility
-  constexpr CheckerMove(int _pos, int _die) 
+  constexpr CheckerMove(int _pos, int _die)
       : pos(_pos), to_pos(-1), die(_die) {}
-  
+
   bool operator<(const CheckerMove& rhs) const {
     if (pos != rhs.pos) return pos < rhs.pos;
     if (to_pos != rhs.to_pos) return to_pos < rhs.to_pos;
@@ -92,7 +92,7 @@ inline constexpr const int kNumOffPosHumanReadable = -2;
 inline constexpr const int kNumCheckersPerPlayer = 15;
 
 // Debugging flag
-inline constexpr const bool kDebugging = false;
+inline constexpr const bool kDebugging = true;
 
 // Head positions for each player
 inline constexpr const int kWhiteHeadPos = 23;  // Point 24 (0-indexed)
@@ -155,17 +155,14 @@ struct TurnHistoryInfo {
   std::vector<int> dice;
   Action action;
   bool moved_from_head;
-  bool is_playing_extra_turn;
   TurnHistoryInfo(int _player, int _prev_player, std::vector<int> _dice,
                   int _action,
-                  bool _moved_from_head,
-                  bool _is_playing_extra_turn)
+                  bool _moved_from_head)
       : player(_player),
         prev_player(_prev_player),
         dice(_dice),
         action(_action),
-        moved_from_head(_moved_from_head),
-        is_playing_extra_turn(_is_playing_extra_turn) {}
+        moved_from_head(_moved_from_head) {}
 };
 
 class LongNardeGame;
@@ -183,7 +180,6 @@ class LongNardeState : public State {
   std::vector<std::pair<Action, double>> ChanceOutcomes() const override;
   std::string ToString() const override;
   bool IsTerminal() const override;
-  bool IsExtraTurn() const;
   std::vector<double> Returns() const override;
   std::string ObservationString(Player player) const override;
   void ObservationTensor(Player player,
@@ -250,6 +246,14 @@ class LongNardeState : public State {
   void ApplyCheckerMove(int player, const CheckerMove& move);
   void UndoCheckerMove(int player, const CheckerMove& move);
 
+  // Path and position utilities
+  int GetPathIndex(int player, int real_pos) const;
+  bool IsAhead(int player, int checker_pos_idx, int reference_pos_idx) const;
+  int GetBlockPathStartRealPos(int player_for_path, int block_lowest_real_idx) const;
+
+  // Virtual coordinate system for bridge legality checking
+  int GetVirtualCoords(int player, int real_pos) const;
+
   std::vector<Action> ProcessLegalMoves(int max_moves,
                                       const std::vector<std::vector<CheckerMove>>& movelist) const;
 
@@ -268,7 +272,7 @@ class LongNardeState : public State {
 
   // Checks if the current board state contains an illegal bridge for the player.
   bool HasIllegalBridge(int player) const;
-  
+
   // Helper function to find the real position index within a block
   // that is encountered first on a given player's path.
   int GetBlockPathStartRealPos(int player_for_path, int block_lowest_real_idx) const;
@@ -277,7 +281,7 @@ class LongNardeState : public State {
   std::set<CheckerMove> GenerateAllHalfMoves(int player, bool moved_from_head_this_sequence) const;
 
   // Iterative helper for move sequence generation.
-  int IterativeLegalMoves(const std::vector<CheckerMove>& current_sequence, 
+  int IterativeLegalMoves(const std::vector<CheckerMove>& current_sequence,
                           std::vector<std::vector<CheckerMove>>* moves_list) const;
 
   // Helper function: checks if 'player' has any checker in [startPos, endPos] inclusive.
@@ -304,7 +308,6 @@ class LongNardeState : public State {
   ScoringType scoring_type_ = ScoringType::kWinLossTieScoring;
   bool is_on_first_turn_ = false; // ADDED: True if the current player is on their very first turn
   bool moved_from_head_; // Has a checker moved from head this turn?
-  bool is_playing_extra_turn_; // Is the current roll due to doubles on prev?
   bool allow_last_roll_tie_; // Special flag for WinLossTie scoring rule
   std::vector<int> initial_dice_; // Dice rolled at start of player's turn (1-6)
   std::vector<TurnHistoryInfo> turn_history_info_;  // Info needed for Undo.
@@ -424,6 +427,16 @@ class LongNardeGame : public Game {
  private:
   ScoringType scoring_type_;
 };
+
+// ===== Constants =====
+constexpr int kNumPlayers = 2;
+constexpr int kNumCheckersPerPlayer = 15;
+constexpr int kNumPoints = 24;
+constexpr int kBearOffPos = -1; // Special value for bearing off
+constexpr int kPassPos = -2;    // Special value for a pass move component
+constexpr int kPassDieValue = 1; // Placeholder die value consumed by pass
+constexpr int kMaxGameLengthEst = 300; // Estimated max moves for history reservation
+
 
 }  // namespace long_narde
 }  // namespace open_spiel

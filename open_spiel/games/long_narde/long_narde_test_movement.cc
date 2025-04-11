@@ -13,13 +13,15 @@ namespace testing_internal {  // Renamed from anonymous namespace
 //------------------------------------------------------------------------------
 // Test: Basic movement (already in original file).
 //------------------------------------------------------------------------------
+//StartFunction: TestBasicMovement
+//StartTest: test-basicmovement-1
 void TestBasicMovement() {
   std::cout << "\n=== Running TestBasicMovement ===\n";
 
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
   LongNardeState* lnstate = static_cast<LongNardeState*>(state.get());
-  
+
   // White (X player) moves first => initial state is a chance node.
   SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kChancePlayerId);
   SPIEL_CHECK_TRUE(lnstate->IsChanceNode());
@@ -51,12 +53,16 @@ void TestBasicMovement() {
 
   std::cout << "✓ Basic movement test passed\n";
 }
+//EndTest: test-basicmovement-1
+//EndFunction: TestBasicMovement
 
 //------------------------------------------------------------------------------
 // Test: InitialDiceTest
 // Verifies that the chance outcomes produce valid dice pairs in [1..6] with
 // the highest die first (unless double).
 //------------------------------------------------------------------------------
+//StartFunction: InitialDiceTest
+//StartTest: test-initialdice-1
 void InitialDiceTest() {
   std::cout << "\n=== Running InitialDiceTest ===\n";
 
@@ -91,11 +97,15 @@ void InitialDiceTest() {
 
   std::cout << "✓ Initial dice values verified\n";
 }
+//EndTest: test-initialdice-1
+//EndFunction: InitialDiceTest
 
 //------------------------------------------------------------------------------
 // Test: CheckerDistributionTest
 // Confirms the default setup and a first-turn double move from the head.
 //------------------------------------------------------------------------------
+//StartFunction: CheckerDistributionTest
+//StartTest: test-checkerdistribution-1
 void CheckerDistributionTest() {
   std::cout << "\n=== Running CheckerDistributionTest ===\n";
 
@@ -123,12 +133,16 @@ void CheckerDistributionTest() {
 
   std::cout << "✓ Checker distribution verified\n";
 }
+//EndTest: test-checkerdistribution-1
+//EndFunction: CheckerDistributionTest
 
 //------------------------------------------------------------------------------
 // Test: FirstTurnTest
 // On the actual first turn with special doubles (6,6), multiple checkers from
 // head are legal. Confirms that after the first turn, IsFirstTurn(player) returns false.
 //------------------------------------------------------------------------------
+//StartFunction: FirstTurnTest
+//StartTest: test-firstturn-1
 void FirstTurnTest() {
   std::cout << "\n=== Running FirstTurnTest ===\n";
 
@@ -166,18 +180,22 @@ void FirstTurnTest() {
   if (lnstate->CurrentPlayer() == kOPlayerId) {
     // Check the member variable which reflects turn progression.
     // It SHOULD be true for Black's first turn.
-    SPIEL_CHECK_TRUE(lnstate->is_on_first_turn_); 
+    SPIEL_CHECK_TRUE(lnstate->is_on_first_turn_);
   }
 
   std::cout << "✓ First turn logic verified\n";
 }
+//EndTest: test-firstturn-1
+//EndFunction: FirstTurnTest
 
 //------------------------------------------------------------------------------
+//StartFunction: HeadRuleTest
 // Test: HeadRuleTest
 // Splits into two subcases for clarity:
 //   - HeadRuleTest_FirstTurnDoubles:  still all 15 on head, special doubles => 2 can leave
 //   - HeadRuleTest_NonFirstTurn: partial head, dice=4,4 => only 1 can leave
 //------------------------------------------------------------------------------
+//StartTest: test-headrule-1
 void HeadRuleTest() {
   std::cout << "\n=== Running HeadRuleTest ===\n";
 
@@ -230,7 +248,7 @@ void HeadRuleTest() {
     };
     // White to move, dice=4,4, scores=0,0 => definitely not first turn
     SetupBoardState(lnB, kXPlayerId, board_non_first, {0, 0});
-    SetupDice(lnB, {4, 4});
+    SetupDice(lnB, {4, 4, 4, 4});
 
     SPIEL_CHECK_FALSE(lnB->IsFirstTurn(kXPlayerId));
 
@@ -258,11 +276,15 @@ void HeadRuleTest() {
 
   std::cout << "✓ Head rule test passed (first-turn vs. non-first-turn)\n";
 }
+//EndTest: test-headrule-1
+//EndFunction: HeadRuleTest
 
 //------------------------------------------------------------------------------
+//StartFunction: MovementDirectionTest
 // Test: MovementDirectionTest
 // Verifies White is decreasing index, Black is effectively wrapping (ccw).
 //------------------------------------------------------------------------------
+//StartTest: test-movementdirection-1
 void MovementDirectionTest() {
   std::cout << "\n=== Running MovementDirectionTest ===\n";
 
@@ -278,7 +300,7 @@ void MovementDirectionTest() {
       {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
   };
   SetupBoardState(lnstate, kXPlayerId, board_white_move, {0, 0});
-  SetupDice(lnstate, {3, 2});
+  SetupDice(lnstate, {3, 2, 0, 0});
 
   std::vector<Action> white_actions = lnstate->LegalActions();
   for (Action a : white_actions) {
@@ -297,7 +319,7 @@ void MovementDirectionTest() {
       {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
   };
   SetupBoardState(lnstate, kOPlayerId, board_black_move, {0, 0});
-  SetupDice(lnstate, {3, 2});
+  SetupDice(lnstate, {3, 2, 0, 0});
 
   std::vector<Action> black_actions = lnstate->LegalActions();
   for (Action a : black_actions) {
@@ -313,11 +335,15 @@ void MovementDirectionTest() {
 
   std::cout << "✓ MovementDirectionTest passed\n";
 }
+//EndTest: test-movementdirection-1
+//EndFunction: MovementDirectionTest
 
 //------------------------------------------------------------------------------
+//StartFunction: NoLandingOnOpponentTest
 // Test: NoLandingOnOpponentTest
 // Ensures that if the opponent has a checker on some point, you cannot move onto it.
 //------------------------------------------------------------------------------
+//StartTest: test-nolanding-1
 void NoLandingOnOpponentTest() {
   std::cout << "\n=== Running NoLandingOnOpponentTest ===\n";
 
@@ -333,7 +359,7 @@ void NoLandingOnOpponentTest() {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
   };
   SetupBoardState(lnstate, kXPlayerId, board_white_no_land, {0, 0});
-  SetupDice(lnstate, {4, 2});
+  SetupDice(lnstate, {4, 2, 0, 0});
 
   std::vector<Action> la = lnstate->LegalActions();
   bool found_move_landing_16 = false;
@@ -342,8 +368,8 @@ void NoLandingOnOpponentTest() {
     for (auto &m : moves) {
       if (m.to_pos == 15) { // internal storage is zero-based => 19 means 20 in displayed
         // In the original code, there's a mismatch (pos ==19 => point=20).
-        // We'll trust the code's internal logic: to_pos=15 means "point16"? 
-        // Just confirm we do not see that in legal actions. 
+        // We'll trust the code's internal logic: to_pos=15 means "point16"?
+        // Just confirm we do not see that in legal actions.
         found_move_landing_16 = true;
         break;
       }
@@ -367,7 +393,7 @@ void NoLandingOnOpponentTest() {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */} // Black at index 15
   };
   SetupBoardState(lnstate, kOPlayerId, board_black_no_land, {0, 0});
-  SetupDice(lnstate, {3, 1});
+  SetupDice(lnstate, {3, 1, 0, 0});
 
   // Check if Black's legal actions include moving from pos 15 to pos 12 (with die 3)
   la = lnstate->LegalActions();
@@ -389,7 +415,7 @@ void NoLandingOnOpponentTest() {
   // Calculate expected to_pos = 12. Board setup has White at index 12.
   // IsValidCheckerMove will internally calculate to_pos=12.
   // Provide the calculated to_pos for clarity in the struct.
-  CheckerMove black_move_attempt(15, 12, 3); 
+  CheckerMove black_move_attempt(15, 12, 3);
   // Call the new validation function (head rule not relevant here)
   is_valid = lnstate->IsValidCheckerMove(kOPlayerId, black_move_attempt, /*moved_from_head_this_sequence=*/false);
   // The move IS INVALID because the calculated destination (12) is occupied by White.
@@ -397,11 +423,15 @@ void NoLandingOnOpponentTest() {
 
   std::cout << "✓ NoLandingOnOpponentTest passed\n";
 }
+//EndTest: test-nolanding-1
+//EndFunction: NoLandingOnOpponentTest
 
 //------------------------------------------------------------------------------
+//StartFunction: HomeRegionsTest
 // Test: HomeRegionsTest
 // White's home is [0..5], black's home is [12..17]. Checks logic on IsPosInHome().
 //------------------------------------------------------------------------------
+//StartTest: test-homeregions-1
 void HomeRegionsTest() {
   std::cout << "\n=== Running HomeRegionsTest ===\n";
 
@@ -431,12 +461,16 @@ void HomeRegionsTest() {
 
   std::cout << "✓ HomeRegionsTest passed\n";
 }
+//EndTest: test-homeregions-1
+//EndFunction: HomeRegionsTest
 
 //------------------------------------------------------------------------------
+//StartFunction: TestIllegalLandingInLegalActions
 // Test: IllegalLandingInLegalActions
 // Verifies that LegalActions does not generate moves landing on occupied points,
 // specifically targeting the bug identified in random_sim_test.
 //------------------------------------------------------------------------------
+//StartTest: test-illegallanding-1
 void TestIllegalLandingInLegalActions() {
   std::cout << "\n=== Running TestIllegalLandingInLegalActions ===\n";
 
@@ -464,7 +498,7 @@ void TestIllegalLandingInLegalActions() {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
   };
   SetupBoardState(lnstate, kOPlayerId, board_setup_with_scores, {0, 0});
-  SetupDice(lnstate, {1, 1});
+  SetupDice(lnstate, {1, 1, 1, 1});
 
   // Get legal actions
   std::vector<Action> legal_actions = lnstate->LegalActions();
@@ -501,18 +535,22 @@ void TestIllegalLandingInLegalActions() {
 
   std::cout << "✓ TestIllegalLandingInLegalActions passed (no illegal landings found)\n";
 }
+//EndTest: test-illegallanding-1
+//EndFunction: TestIllegalLandingInLegalActions
 
+//StartFunction: TestHalfMoveGeneration
 // Test to verify that half-move generation produces correct moves
+//StartTest: test-halfmove-1
 void TestHalfMoveGeneration() {
   std::cout << "\n=== Running TestHalfMoveGeneration ===\n";
-  
+
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
   auto lnstate = static_cast<LongNardeState*>(state.get());
-  
+
   // Set up a test board state
   std::vector<int> scores = {13, 14}; // Most checkers are already borne off
-  
+
   // Set state
   //lnstate->SetState(kXPlayerId, false, dice, scores, test_board);
   std::vector<std::vector<int>> test_board_with_scores = {
@@ -522,30 +560,30 @@ void TestHalfMoveGeneration() {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
   };
   SetupBoardState(lnstate, kXPlayerId, test_board_with_scores, scores);
-  SetupDice(lnstate, {3, 5});
-  
+  SetupDice(lnstate, {3, 5, 0, 0});
+
   std::cout << "Test setup:\n" << lnstate->ToString() << std::endl;
   std::cout << "White's Home: points 1-6 (indices 0-5)\n";
   std::cout << "Expecting moves: \n"
             << "1. Point 24 with die 3 (pos=23, die=3)\n"
             << "2. Point 24 with die 5 (pos=23, die=5)\n";
-  
+
   // Generate half-moves for White (X)
   std::set<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kXPlayerId, /*moved_from_head_this_sequence=*/false);
-  
+
   std::cout << "Generated " << half_moves.size() << " half-moves:\n";
   for (const auto& move : half_moves) {
     int human_pos = (move.pos >= 0) ? move.pos + 1 : move.pos;
     int human_to_pos = (move.to_pos >= 0) ? move.to_pos + 1 : (move.to_pos == kPassPos ? move.to_pos : -1);
-    std::cout << "  - Move from pos " << human_pos 
+    std::cout << "  - Move from pos " << human_pos
               << " to pos " << (human_to_pos < 0 ? "Off" : std::to_string(human_to_pos))
               << " with die " << move.die << "\n";
   }
-  
+
   // Check for each specific expected move
   bool found_point24_die3 = false;
   bool found_point24_die5 = false;
-  
+
   for (const auto& move : half_moves) {
     if (move.pos == 23 && move.die == 3) {
       found_point24_die3 = true;
@@ -556,32 +594,32 @@ void TestHalfMoveGeneration() {
       std::cout << "✓ Found Point 24 with die 5\n";
     }
   }
-  
+
   // Report individual missing moves
   if (!found_point24_die3) std::cout << "✗ Missing: Point 24 with die 3\n";
   if (!found_point24_die5) std::cout << "✗ Missing: Point 24 with die 5\n";
-  
+
   // Expect exactly 2 half-moves:
   // 1. Move from point 24 using die 3
   // 2. Move from point 24 using die 5
   SPIEL_CHECK_EQ(half_moves.size(), 2);
-  
+
   // Verify all moves were found
   SPIEL_CHECK_TRUE(found_point24_die3);
   SPIEL_CHECK_TRUE(found_point24_die5);
-  
+
   // Now get legal actions and verify they match expected combinations
   std::vector<Action> legal_actions = lnstate->LegalActions();
-  
+
   // We expect to have actions that use both dice
   SPIEL_CHECK_GE(legal_actions.size(), 1);
-  
+
   // Verify all actions use at least one valid half-move
   bool all_valid = true;
   for (Action action : legal_actions) {
     std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
     bool action_valid = false;
-    
+
     for (const auto& move : moves) {
       if (move.pos != kPassPos) {
         bool is_valid_half_move = half_moves.count(move) > 0;
@@ -591,22 +629,26 @@ void TestHalfMoveGeneration() {
         }
       }
     }
-    
+
     if (!action_valid) {
       all_valid = false;
       break;
     }
   }
-  
+
   SPIEL_CHECK_TRUE(all_valid);
-  
+
   std::cout << "✓ TestHalfMoveGeneration passed\n";
 }
+//EndTest: test-halfmove-1
+//EndFunction: TestHalfMoveGeneration
 
 //------------------------------------------------------------------------------
+//StartFunction: HeadRuleTestBlack
 // Test: HeadRuleTestBlack
 // Tests the head rule for Black player in both first-turn and non-first-turn scenarios
 //------------------------------------------------------------------------------
+//StartTest: test-headruleblack-1
 void HeadRuleTestBlack() {
   std::cout << "\n=== Running HeadRuleTestBlack ===\n";
 
@@ -666,7 +708,7 @@ void HeadRuleTestBlack() {
     };
     // Black to move, dice=4,4, scores=0,0 => not first turn
     SetupBoardState(lnB, kOPlayerId, board_non_first, {0, 0});
-    SetupDice(lnB, {4, 4});
+    SetupDice(lnB, {4, 4, 4, 4});
 
     SPIEL_CHECK_FALSE(lnB->IsFirstTurn(kOPlayerId));
 
@@ -692,29 +734,35 @@ void HeadRuleTestBlack() {
 
   std::cout << "✓ Black head rule test passed (first-turn vs. non-first-turn)\n";
 }
+//EndTest: test-headruleblack-1
+//EndFunction: HeadRuleTestBlack
 
+//StartFunction: TestHalfMoveGenerationBlack
 // Test to verify that half-move generation produces correct moves for Black player
+//StartTest: test-halfmoveblack-1
 void TestHalfMoveGenerationBlack() {
   std::cout << "\n=== Running TestHalfMoveGenerationBlack ===\n";
-  
+
   std::shared_ptr<const Game> game = LoadGame("long_narde");
   std::unique_ptr<State> state = game->NewInitialState();
   auto lnstate = static_cast<LongNardeState*>(state.get());
-  
+
   // Set up a test board state for Black
-  std::vector<int> scores = {0, 13}; // 13 Black checkers already borne off
-  
-  // Set state with Black to move
-  //lnstate->SetState(kOPlayerId, false, dice, scores, test_board);
+  // White has 1 checker on board (needs 14 borne off), Black has 2 on board (needs 13 borne off)
+  std::vector<int> scores = {14, 13};
+
   std::vector<std::vector<int>> test_board_with_scores = {
       // White: one at point 24 (idx 23)
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0 /* score */},
       // Black: one at point 12 (idx 11 - head), one at point 17 (idx 16)
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 /* score */}
   };
+
+  // White: 1 on board + 14 borne off = 15
+  // Black: 2 on board + 13 borne off = 15
   SetupBoardState(lnstate, kOPlayerId, test_board_with_scores, scores);
-  SetupDice(lnstate, {4, 2});
-  
+  SetupDice(lnstate, {4, 2, 0, 0});
+
   std::cout << "Test setup (Black to move):\n" << lnstate->ToString() << std::endl;
   std::cout << "Black's Home: points 13-18 (indices 12-17)\n";
   std::cout << "Expecting moves: \n"
@@ -722,25 +770,25 @@ void TestHalfMoveGenerationBlack() {
             << "2. Point 12 (head) with die 2 (pos=11, die=2)\n"
             << "3. Point 17 with die 4 (pos=16, die=4)\n"
             << "4. Point 17 with die 2 (pos=16, die=2)\n";
-  
+
   // Generate half-moves for Black (O)
   std::set<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kOPlayerId, /*moved_from_head_this_sequence=*/false);
-  
+
   std::cout << "Generated " << half_moves.size() << " half-moves for Black:\n";
   for (const auto& move : half_moves) {
     int human_pos = (move.pos >= 0) ? move.pos + 1 : move.pos;
     int human_to_pos = (move.to_pos >= 0) ? move.to_pos + 1 : (move.to_pos == kPassPos ? move.to_pos : -1);
-    std::cout << "  - Move from pos " << human_pos 
+    std::cout << "  - Move from pos " << human_pos
               << " to pos " << (human_to_pos < 0 ? "Off" : std::to_string(human_to_pos))
               << " with die " << move.die << "\n";
   }
-  
+
   // Check for each specific expected move
   bool found_pos11_die4 = false;
   bool found_pos11_die2 = false;
   bool found_pos16_die4 = false;
   bool found_pos16_die2 = false;
-  
+
   for (const auto& move : half_moves) {
     if (move.pos == 11 && move.die == 4) {
       found_pos11_die4 = true;
@@ -759,32 +807,32 @@ void TestHalfMoveGenerationBlack() {
       std::cout << "✓ Found Point 17 with die 2\n";
     }
   }
-  
+
   // Report individual missing moves
   if (!found_pos11_die4) std::cout << "✗ Missing: Point 12 with die 4\n";
   if (!found_pos11_die2) std::cout << "✗ Missing: Point 12 with die 2\n";
   if (!found_pos16_die4) std::cout << "✗ Missing: Point 17 with die 4\n";
   if (!found_pos16_die2) std::cout << "✗ Missing: Point 17 with die 2\n";
-  
+
   // Expect exactly 4 half-moves for Black
   SPIEL_CHECK_EQ(half_moves.size(), 4);
-  
+
   // Verify all expected moves were found
   SPIEL_CHECK_TRUE(found_pos11_die4);
   SPIEL_CHECK_TRUE(found_pos11_die2);
   SPIEL_CHECK_TRUE(found_pos16_die4);
   SPIEL_CHECK_TRUE(found_pos16_die2);
-  
+
   // Now get legal actions and verify they use the valid half-moves
   std::vector<Action> legal_actions = lnstate->LegalActions();
   SPIEL_CHECK_GE(legal_actions.size(), 1);
-  
+
   // Verify all actions use at least one valid half-move
   bool all_valid = true;
   for (Action action : legal_actions) {
     std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, action);
     bool action_valid = false;
-    
+
     for (const auto& move : moves) {
       if (move.pos != kPassPos) {
         bool is_valid_half_move = half_moves.count(move) > 0;
@@ -794,23 +842,27 @@ void TestHalfMoveGenerationBlack() {
         }
       }
     }
-    
+
     if (!action_valid) {
       all_valid = false;
       break;
     }
   }
-  
+
   SPIEL_CHECK_TRUE(all_valid);
-  
+
   std::cout << "✓ TestHalfMoveGenerationBlack passed\n";
 }
+//EndTest: test-halfmoveblack-1
+//EndFunction: TestHalfMoveGenerationBlack
 
 }  // namespace testing_internal
 
 //------------------------------------------------------------------------------
 // Master test function that runs all the above movement tests in one go.
 //------------------------------------------------------------------------------
+//StartFunction: TestMovementRules
+//StartTest: test-movementrules-1
 void TestMovementRules() {
   std::cout << "\n=== Testing Movement Rules ===" << std::endl;
 
@@ -830,13 +882,19 @@ void TestMovementRules() {
 
   std::cout << "✓ All movement tests passed\n";
 }
+//EndTest: test-movementrules-1
+//EndFunction: TestMovementRules
 
 // Define TestHeadRule to call the HeadRuleTest function
+//StartFunction: TestHeadRule
+//StartTest: test-headrule-main-1
 void TestHeadRule() {
   std::cout << "\n=== Testing Head Rule ===" << std::endl;
   testing_internal::HeadRuleTest();
   std::cout << "✓ Head rule test completed\n";
 }
+//EndTest: test-headrule-main-1
+//EndFunction: TestHeadRule
 
 }  // namespace long_narde
 }  // namespace open_spiel

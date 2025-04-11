@@ -1,34 +1,75 @@
 # TODO: Long Narde Implementation Plan
 
 ## Overview
-We will create a copy of "games/backgammon" and modify it to implement the game rules of Long Narde, an ultra-short variant with the following rules:
-
+We are implementing the game rules of Long Narde, based on a copy of "games/backgammon". Key rules include:
 1. Setup: White's 15 checkers on point 24; Black's 15 on point 12.
 2. Movement: Both move checkers counter-clockwise into home (White 1–6, Black 13–18), then bear off.
-3. Starting: Each rolls 1 die; higher is White and goes first.
-4. Turns: Roll 2 dice, move checkers exactly by each value. No landing on opponent; if no moves exist, skip; if only one is possible, use the higher die.
-5. Head Rule: Only 1 checker may leave the head per turn, except on the first turn if a double 6, 4, or 3 is rolled, allowing 2 moves from the head. Afterwards, no extra head moves are allowed.
+3. Starting: Each rolls 1 die; higher is White and goes first (no doubles on first roll).
+4. Turns: Roll 2 dice, move checkers exactly by each value. No landing on opponent; if no moves exist, skip; if only one is possible, use the higher die. Doubles grant 4 moves.
+5. Head Rule: Only 1 checker may leave the head per turn, except on the first turn if a double 6, 4, or 3 is rolled, allowing 2 moves from the head.
 6. Bearing Off: Once all checkers reach home, bear them off with exact or higher rolls.
-7. Ending/Scoring: Game ends when a player bears off all checkers. If the loser has borne off none, the winner scores 2 (mars); otherwise, 1 (oin). Some events allow a last roll to tie.
-8. Block (Bridge) Rule: A contiguous block of 6 checkers cannot be formed unless at least 1 opponent checker is ahead. Fully trapping all 15 opponent checkers is banned.
-9. Last Roll Tie: If one player has borne off all checkers but the opponent has at least 14 checkers off, they get one last roll to potentially achieve a tie.
+7. Ending/Scoring: Mars (2 points) if loser bore off none, Oin (1 point) otherwise. Optional last roll tie if loser has >= 14 checkers off.
+8. Block (Bridge) Rule: A contiguous block of 6 checkers cannot be formed unless at least 1 opponent checker is ahead.
+9. Last Roll Tie: Implemented via `allow_last_roll_tie_` parameter.
 
-## Action Items
-- [*] Create a new folder "games/long_narde" as a copy of "games/backgammon".
-- [*] Adjust initial checker positions to reflect the new setup (White on point 24, Black on point 12).
-- [*] Update movement logic: enforce counter-clockwise movement into designated home areas and bearing off.
-- [*] Modify starting turn logic: each player rolls 1 die, with the higher roll making White go first.
-- [*] Update turn logic: implement two-dice rolls, moving checkers exactly by each die value, enforcement of using the higher die if only one move is available, and skipping turn if no moves exist.
-- [*] Implement the head rule: limit head moves to 1 per turn, with an exception on the first turn when a double 6, 4, or 3 permits moving 2 checkers from the head.
-- [*] Adjust bearing off rules to require exact or higher die values once all checkers are in the home area.
-- [*] Implement game-ending logic and scoring, including conditions for mars and oin, and a possible tie on a last roll.
-- [*] Enforce the block rule: prevent forming a contiguous block of 6 checkers that fully traps the opponent.
-- [*] Write comprehensive test cases for each rule modification before altering implementation (TDD approach).
-- [*] Update documentation to reflect all changes.
-- [*] Add the Long Narde game to the CMakeLists.txt
-- [*] Implement last roll tie rule to allow a final chance for a player who has at least 14 checkers off
-- [*] Successfully build and run all tests to ensure the new rules are correctly implemented.
-- [ ] Commit changes following TDD principles.
+## Current Status & Architecture Assessment
+
+*   **Core Implementation:** Most rules (movement, setup, scoring, bearing off, bridge rule, head rule basics, last roll tie) are implemented.
+*   **Code Structure:** The monolithic `long_narde.cc` has been successfully split into smaller, functionally-grouped files (`_state.cc`, `_moves.cc`, `_encoding.cc`, `_validation.cc`, `_legal_actions.cc`, `_api.cc`, `_utils.cc`, `_game.cc`). This significantly improves maintainability.
+*   **Move Generation:** An iterative move generation approach (`IterativeLegalMoves` using `GenerateMoveSequences`) is in place. However, it currently relies on **cloning the game state** for each move exploration branch to avoid state consistency issues previously encountered with apply/undo. This works for correctness but misses the performance benefits of a true iterative apply/undo approach.
+*   **Doubles Handling:** There's a fundamental issue identified: the current `dice_` state representation (2 elements) is insufficient and fragile for handling the 4 moves required on a double roll. This led to test failures (`TestDoubleMove`) and crashes during debugging attempts. A state refactor is needed.
+*   **Testing:** Significant refactoring and addition of tests have occurred. Test utilities (`long_narde_test_utils.h/cc`) are in place. While many tests pass, some discrepancies with original test logic might remain, and the crucial `TestDoubleMove` is likely failing due to the doubles handling issue.
+*   **Simplification/Docs:** Efforts to simplify `LegalActions`, consolidate constants, and improve documentation have been largely completed.
+
+## Current Priorities
+
+1.  **[HIGH] Refactor State for Doubles Handling:** Implement the proposed state refactoring to correctly handle 4 moves on doubles. **(IN PROGRESS)**
+    *   **Goal:** Modify state representation (`dice_`, related flags/counters) to robustly handle 4 moves for doubles, enabling future apply/undo optimization.
+    *   **Files Primarily Affected:** `long_narde.h`, `long_narde_state.cc`, `long_narde_api.cc`, `long_narde_moves.cc`, `long_narde_legal_actions.cc`.
+    *   [ ] **Step 1: Modify State Definition (`long_narde.h`, `long_narde_state.cc`)**
+        *   Change `dice_` from `std::vector<int>(2)` to `std::vector<int>(4)`. Initialize with zeros.
+        *   Remove `double_turn_` member variable.
+        *   Remove `doubles_moves_made_` member variable.
+        *   Update `TurnHistoryInfo` struct to remove `double_turn_` and `doubles_moves_made_`.
+    *   [ ] **Step 2: Update Dice Rolling (`long_narde_api.cc`)**
+        *   In `ProcessChanceRoll` (or similar logic if moved): Populate `dice_` as `{d1, d2, 0, 0}` for non-doubles, and `{d, d, d, d}` for doubles `d-d`.
+    *   [ ] **Step 3: Update Dice Accessors/Checkers (`long_narde_state.cc`)**
+        *   Update `DiceValue(int i)` and `IsUsed(int i)` logic if necessary (marking used by adding 6 should still work, but verify access bounds).
+        *   Update `UsableDiceOutcome(int i)` to treat `0` as unusable.
+    *   [ ] **Step 4: Update Move Application/Undo (`long_narde_moves.cc`, `long_narde_api.cc`)**
+        *   Modify `ApplyCheckerMove` to find the *first* unused `dice_[i]` matching `move.die`, mark it as used (add 6).
+        *   Modify `UndoCheckerMove` to find the *first* used `dice_[i]` matching `move.die`, mark it as unused (subtract 6).
+        *   Update `UndoAction` to remove logic related to saving/restoring `double_turn_` and `doubles_moves_made_` from `TurnHistoryInfo`.
+    *   [ ] **Step 5: Update Move Generation (`long_narde_legal_actions.cc`)**
+        *   Simplify `GenerateAllHalfMoves` to loop `i` from 0 to 3, check `UsableDiceOutcome(dice_[i])`.
+        *   Remove `max_moves_param` from `IterativeLegalMoves` / `GenerateMoveSequences` calls if it exists (logic should naturally handle the 4 dice slots).
+    *   [ ] **Step 6: Build and Test**
+        *   Perform incremental builds.
+        *   Run all tests, paying close attention to `TestDoubleMove` and any tests involving doubles logic.
+        *   Debug and fix any failures until all tests pass.
+
+2.  **[MEDIUM] Verify/Fix Test Discrepancies:** After the doubles refactor, re-evaluate and fix any remaining discrepancies between the refactored tests and the original logic/coverage from `long_narde_test.cc`.
+    *   [ ] **HeadRuleTest:** Ensure `long_narde_test_movement.cc` accurately covers the original test's intent (Test Case #2).
+    *   [ ] **FirstTurnDoublesExceptionTest:** Implement the missing test for the special first-turn doubles head rule exception (Test Case #3).
+    *   [ ] **BlockingBridgeRuleTest:** Ensure `long_narde_test_bridges.cc` covers all 4 specific sub-cases from the original test (Test Case #4).
+
+3.  **[MEDIUM] Optimize Iterative Move Generation (Reduce Cloning):** Once correctness is confirmed (especially after the doubles refactor), implement the apply/undo optimization in `IterativeLegalMoves`.
+    *   [ ] Refactor the loop in `IterativeLegalMoves` to use `ApplyCheckerMove`, push minimal necessary context onto the stack, recurse/iterate, and then use `UndoCheckerMove`. Avoid `Clone()` within the main generation loop. (Task #10 from previous list).
+    *   [ ] Ensure `UndoCheckerMove` correctly restores all necessary state. Pay attention to sequence-specific state like `moved_from_head_this_sequence`.
+    *   [ ] Build and test thoroughly to confirm correctness and potentially measure performance improvement.
+
+4.  **[LOW] Simplify `IsFirstTurn` Access:**
+    *   [ ] Remove the redundant `is_first_turn()` method, keeping only `IsFirstTurn(Player player)`. (Task 3a from previous list).
+    *   [ ] Update all call sites to use `IsFirstTurn(player)`.
+    *   [ ] Verify tests still pass.
+
+5.  **[FINAL] Commit Changes:**
+    *   [ ] Once all tests pass and priorities are addressed, commit the changes following TDD principles (small, tested commits).
+
+## Deferred / Completed Sections (For Reference - To Be Removed Later)
+
+*   (Sections on Initial Action Items, Specific Code Changes, Build Issues, Test Failures, detailed Test Case Reviews, Optimization Task breakdown, Debugging notes were here - removed as they are completed or superseded by the new priorities).
+
 
 # CURRENT PRIORITY: Correctness of Existing Move Generation
 
@@ -62,6 +103,7 @@ We will create a copy of "games/backgammon" and modify it to implement the game 
 - [*] Updated visualization and string representation functions to properly display Long Narde positions
 - [*] Added `allow_last_roll_tie_` tracking and modified `IsTerminal()` and `Returns()` to implement the last roll tie rule
 - [*] Added test case to verify the last roll tie functionality
+- [*] Added `data-testid` and `data-filename` attributes to verification checkboxes in `TESTS.html` for improved interactivity and debugging.
 
 ## Build Issues
 - [*] Fixed build environment issues through a dedicated build script (build_long_narde.sh)
@@ -452,7 +494,7 @@ Retrieval Hint: Search `Principle:` in knowledge graph for general coding guidel
 	•	Tasks:
 		*   [ ] Refactor the loop in `IterativeLegalMoves` to apply a move, push state parameters (or a lighter context object), explore, and then undo the move. (**Note:** Current implementation uses cloning per branch, which works but is less efficient).
 		*   [ ] Only clone when necessary (potentially never if using a purely recursive approach or if state needs to be preserved across stack unwinds).
-		*   [x] Ensure `UndoCheckerMove` correctly restores all relevant state (except `moved_from_head_`, which needs careful handling).
+		*   [x] Ensure `UndoCheckerMove` correctly restores all necessary state. Pay attention to sequence-specific state like `moved_from_head_this_sequence`.
 		*   [x] Build and test successfully.
 
 ## Testing Refactoring
@@ -524,3 +566,73 @@ By addressing these tasks, the Long Narde codebase will become simpler, better o
 10. **Update Undo History:** Remove `double_turn_` and `doubles_moves_made_` from `TurnHistoryInfo` struct and associated save/restore logic.
 
 This approach aligns the state directly with the maximum number of moves, simplifying logic and hopefully eliminating the source of state corruption. 
+
+# TESTS.html Interactive Features Plan
+
+## Goal
+Enhance `TESTS.html` to allow users to view relevant C++ source code snippets for each test case, mark test cases as verified, and automatically manage verification status based on source code changes. This involves integrating source code viewing, `localStorage` persistence, checksum validation, and UI enhancements.
+
+## I. Data Storage Structure (`localStorage`)
+
+1.  **Source Code Files (`sourceFiles` key):** An object storing source code and checksums.
+    *   Key: Filename (e.g., `"long_narde_test_actions.cc"`)
+    *   Value: Object `{ code: "...", checksum: "sha256_hash_here" }`
+2.  **Test Verification Statuses (`verificationStatuses` key):** An object storing verification state linked to source versions.
+    *   Key: Unique test case ID (e.g., `"test-actionencodingtest-1"`)
+    *   Value: Object `{ verified: true/false, verifiedChecksum: "sha256_hash_of_associated_file_at_verification_time_or_null" }`
+
+## II. HTML Modifications (`TESTS.html`)
+
+1.  **Dependencies:**
+    *   [x] Include `highlight.js` core library.
+    *   [x] Include `highlight.js` C++ language pack.
+    *   [x] Include `highlight.js` CSS theme (e.g., `default.min.css`).
+    *   [x] Include `highlightjs-line-numbers.js` plugin.
+    *   [x] Include `highlightjs-line-numbers.js` CSS.
+    *   [x] Include Bootstrap v3.4 CSS (for modals).
+    *   [x] Include Bootstrap v3.4 JS (for modals).
+    *   [x] Include jQuery (required by Bootstrap 3 JS).
+2.  **Test Suites (`h2`):**
+    *   [x] Add `id` attribute based on filename (e.g., `id="suite-long_narde_test_actions.cc"`).
+    *   [x] Add `data-filename` attribute (e.g., `"long_narde_test_actions.cc"`).
+    *   [x] Add CSS/JS to make the `h2` clickable for collapse/expand.
+    *   [x] Add a collapse/expand icon (e.g., +/- or arrow).
+    *   [x] Add a clickable "Load Source" link/button next to the filename within the `h2`.
+3.  **Test Functions (`h3`):**
+    *   [x] Make clickable (wrap in `<a>` or add JS listener).
+    *   [x] Add `data-filename` attribute.
+    *   [x] Add `data-lines` attribute (e.g., `"14-348"`).
+4.  **Test Cases (`.test-case`):**
+    *   [x] Add `<input type="checkbox" class="verification-checkbox">` near the `h4`.
+    *   [x] Add `data-testid` attribute to checkbox (using test case `id`).
+    *   [x] Add `data-filename` attribute to checkbox.
+    *   [ ] Ensure the parent `.test-function` div has a unique ID or class identifiable by filename.
+    *   [ ] Ensure the parent `.test-suite` div has a unique ID identifiable by filename.
+5.  **Modals (Bootstrap 3 Style):**
+    *   [ ] Create a modal (`#sourceInputModal`) for pasting source code:
+        *   Include `<textarea id="sourceCodeInputArea">`.
+        *   Include "Submit" and "Cancel" buttons.
+        *   Include a hidden input or data attribute to store the target filename.
+    *   [ ] Create a modal (`#codeViewModal`) for displaying code snippets:
+        *   Include `<pre><code id="codeSnippetDisplay" class="language-cpp"></code></pre>`.
+        *   Include a "Close" button.
+        *   Include a title area to display filename and line range.
+
+## III. JavaScript Logic
+
+1.  **Helper Functions:**
+    *   [x] `async calculateChecksum(string)`: Use `crypto.subtle.digest('SHA-256', ...)` to generate SHA-256 hash. Convert buffer to hex string.
+    *   [x] `saveSourceCode(filename, code)`: Calculates checksum, saves `{code, checksum}` to `localStorage['sourceFiles'][filename]`. **Crucially, iterates `localStorage['verificationStatuses']` and sets `verified = false`, `verifiedChecksum = null` for any test linked to this `filename` if the new checksum doesn't match the previous one (if any was stored).** Updates the UI (checkboxes, suite highlighting) for the affected file. Handles potential `localStorage` errors (quota exceeded) with `alert()` and `console.error()`.
+    *   [x] `getSourceCode(filename)`: Retrieves `{code, checksum}` from `localStorage['sourceFiles'][filename]`. Handles errors if not found.
+    *   [x] `saveVerificationStatus(testId, filename, isVerified)`: Gets current checksum for `filename` via `getSourceCode`. Saves `{ verified: isVerified, verifiedChecksum: (isVerified ? currentChecksum : null) }` to `localStorage['verificationStatuses'][testId]`. Updates suite highlighting if needed. Handles errors.
+    *   [x] `getVerificationStatus(testId, filename)`: Retrieves status object for `testId`. Gets current source info via `getSourceCode(filename)`. Returns `true` only if `status.verified === true` AND `status.verifiedChecksum === currentSource.checksum` AND `currentSource` exists. Returns `false` otherwise. Handles errors.
+    *   [x] `displayCodeSnippet(filename, code, startLine, endLine)`:
+        *   Shows `#codeViewModal`.
+        *   Sets modal title.
+        *   Sets the content of `#codeSnippetDisplay` to `code`.
+        *   Calls `hljs.highlightElement(document.getElementById('codeSnippetDisplay'))`.
+        *   Calls `hljs.lineNumbersBlock(document.getElementById('codeSnippetDisplay'), { startFrom: 1 })`.
+        *   Scrolls the modal's `<pre>` block so `startLine` is near the top.
+        *   Adds temporary visual highlighting (e.g., background color change) to lines from `startLine` to `endLine` within the `<pre>` block. (This might require manipulating the DOM generated by `highlightjs-line-numbers.js`).
+    *   [x] `displaySourceInputModal(filename)`: Shows `#sourceInputModal`, sets its target filename, pre-populates `<textarea>` if code exists in `localStorage`.
+    *   [x] `updateSuiteHighlight(filename)`: Checks if all checkboxes within the suite corresponding to `filename` are checked (using `getVerificationStatus`). Adds/removes a "verified-suite" class to the `
