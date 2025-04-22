@@ -1,0 +1,103 @@
+{
+  "filename": "random_sim_test.cc",
+  "functions": [
+    {
+      "name": "MemoryEfficientRandomSim",
+      "lines": "23-141",
+      "testCases": [
+        {
+          "id": "test-randsim-1",
+          "title": "Test 1: Memory Efficient Random Simulation",
+          "objective": "Verify that the memory-efficient random simulation runs correctly without errors, detecting any invalid moves.",
+          "boardSetup": "Runs a configurable number of random simulations (default 5) with a specified seed (default 1224). Starts from the initial board state.",
+          "diceRoll": null,
+          "expectations": "The simulation should complete without errors. It should detect any invalid moves (where LegalActions() and IsValidCheckerMove() disagree). Statistics about game length and termination are reported.",
+          "fileFunctionRef": "Test: test-randsim-1",
+          "rulesInvolved": "Random game simulation, move validation, memory management, general game rules.",
+          "notes": "Visualization shows the standard initial state. Actual simulation runs multiple games.",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [5, 5]
+          }
+        }
+      ]
+    },
+    {
+      "name": "RunRandomSimTest",
+      "lines": "146-152",
+      "testCases": [
+        {
+          "id": "test-runsim-1",
+          "title": "Test: Run Random Simulation",
+          "objective": "Verify that the wrapper function for running random simulations works correctly.",
+          "boardSetup": "Calls MemoryEfficientRandomSim with configurable parameters.",
+          "diceRoll": null,
+          "expectations": "The function should successfully call MemoryEfficientRandomSim with the provided parameters.",
+          "fileFunctionRef": "Test: test-runsim-1",
+          "rulesInvolved": "Function delegation, parameter passing.",
+          "notes": "This test does not manipulate game state directly, so no board visualization is needed.",
+          "initialState": null
+        }
+      ]
+    },
+    {
+      "name": "ParseArguments",
+      "lines": "157-187",
+      "testCases": [
+        {
+          "id": "test-parseargs-1",
+          "title": "Test: Command-Line Argument Parsing",
+          "objective": "Verify that command-line arguments are correctly parsed.",
+          "boardSetup": "Processes command-line arguments for number of simulations and random seed.",
+          "diceRoll": null,
+          "expectations": "The function should correctly parse --num_simulations/-n and --seed/-s arguments, updating the provided variables. It should also handle the --help/-h flag.",
+          "fileFunctionRef": "Test: test-parseargs-1",
+          "rulesInvolved": "Command-line argument parsing, parameter validation.",
+          "notes": "This test does not manipulate game state, so no board visualization is needed.",
+          "initialState": null
+        }
+      ]
+    },
+    {
+      "name": "RunRandomSimTests",
+      "lines": "193-202",
+      "testCases": [
+        {
+          "id": "test-runsimtests-1",
+          "title": "Test: Main Test Runner",
+          "objective": "Verify that the main test runner function correctly coordinates argument parsing and test execution.",
+          "boardSetup": "Calls ParseArguments and then RunRandomSimTest with the parsed parameters.",
+          "diceRoll": null,
+          "expectations": "The function should successfully parse arguments and then run the simulation test.",
+          "fileFunctionRef": "Test: test-runsimtests-1",
+          "rulesInvolved": "Test coordination, function delegation.",
+          "notes": "This test does not directly manipulate game state, so no board visualization is needed.",
+          "initialState": null
+        }
+      ]
+    },
+    {
+      "name": "main",
+      "lines": "209-214",
+      "testCases": [
+        {
+          "id": "test-main-1",
+          "title": "Test: Program Entry Point",
+          "objective": "Verify that the main function correctly calls the test runner.",
+          "boardSetup": "Calls RunRandomSimTests with command-line arguments.",
+          "diceRoll": null,
+          "expectations": "The function should successfully call RunRandomSimTests and return 0.",
+          "fileFunctionRef": "Test: test-main-1",
+          "rulesInvolved": "Program entry point, return value.",
+          "notes": "This test does not directly manipulate game state, so no board visualization is needed.",
+          "initialState": null
+        }
+      ]
+    }
+  ]
+}

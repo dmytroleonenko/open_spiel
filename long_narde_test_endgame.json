@@ -1,0 +1,331 @@
+{
+  "filename": "long_narde_test_endgame.cc",
+  "functions": [
+    {
+      "name": "BearingOffBasicTest",
+      "lines": "11-61",
+      "testCases": [
+        {
+          "id": "test-bobt-1",
+          "title": "Test 1: White Can Bear Off",
+          "objective": "Verify `AllInHome` is true for White when all checkers are in points 1-6.",
+          "boardSetup": "White: {3@1, 3@2, 3@3, 2@4, 2@5, 2@6}. Black: {3@19, 3@20, 3@21, 2@22, 2@23, 2@24}.",
+          "diceRoll": "{6, 1}",
+          "expectations": "`AllInHome(kXPlayerId)` returns true.",
+          "fileFunctionRef": "Test: test-bobt-1",
+          "rulesInvolved": "Home region definition, `AllInHome` logic.",
+          "initialState": {
+            "board": [
+              [3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 2, 2, 2]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [6, 1]
+          }
+        },
+        {
+          "id": "test-bobt-2",
+          "title": "Test 2: White Cannot Bear Off (Checker Outside)",
+          "objective": "Verify `AllInHome` returns false for White if at least one checker is outside the home board.",
+          "boardSetup": "White: 1 checker at pt7(idx6), 14 checkers at head(pt24/idx23). Black: Checkers distributed in home.",
+          "diceRoll": "{6, 1}",
+          "expectations": "`AllInHome(kXPlayerId)` returns false.",
+          "fileFunctionRef": "Test: test-bobt-2",
+          "rulesInvolved": "Home region definition, `AllInHome` logic.",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [6, 1]
+          }
+        },
+        {
+          "id": "test-bobt-3",
+          "title": "Test 3: Black Can Bear Off",
+          "objective": "Verify `AllInHome` is true for Black when all Black checkers are in points 13–18.",
+          "boardSetup": "Black: {3@13, 3@14, 3@15, 2@16, 2@17, 2@18}. White: {3@1, 3@2, 3@3, 2@4, 2@5, 2@6}.",
+          "diceRoll": "{2, 2}",
+          "expectations": "`AllInHome(kOPlayerId)` returns true.",
+          "fileFunctionRef": "Test: test-bobt-3",
+          "rulesInvolved": "Home region definition (Black), `AllInHome` logic.",
+          "initialState": {
+            "board": [
+              [3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 1,
+            "dice": [2, 2, 2, 2]
+          }
+        }
+      ]
+    },
+    {
+      "name": "BearingOffLogicTest",
+      "lines": "65-132",
+      "testCases": [
+        {
+          "id": "test-bolt-1",
+          "title": "Test 1: White Exact vs. Non-Exact Bear Off",
+          "objective": "Verify White bears off with exact die (3 from pt3), but not with die (1 from pt2) landing inside home.",
+          "boardSetup": "White: 1@pt2(idx1), 14@pt3(idx2). Black: 15@head.",
+          "diceRoll": "{1, 3}",
+          "expectations": "Move pt2->1 with die 1 is valid (no bear off). Move pt3->off with die 3 is valid (bear off).",
+          "fileFunctionRef": "Test: test-bolt-1",
+          "rulesInvolved": "Bear off rules (exact pip count), basic movement.",
+          "initialState": {
+            "board": [
+              [0, 1, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [1, 3]
+          }
+        }
+      ]
+    },
+    {
+      "name": "BearingOffFromPosition1Test",
+      "lines": "154-206",
+      "testCases": [
+        {
+          "id": "test-bofp1-1",
+          "title": "Test: Bearing off from pt2 (idx1)",
+          "objective": "Verify bearing-off logic from pt2 (idx1) with multiple checkers, enforcing higher die rule if applicable.",
+          "boardSetup": "White: 13@pt1(idx0), 2@pt2(idx1). Black: 15@head.",
+          "diceRoll": "{1, 3}",
+          "expectations": "Move pt2->1 with d1 is valid. Move pt2->off with d3 is valid (bear off allowed). No pass move generated.",
+          "fileFunctionRef": "Test: test-bofp1-1",
+          "rulesInvolved": "Bear off rules (exact/higher pip), higher die rule, multiple checkers.",
+          "initialState": {
+            "board": [
+              [13, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [1, 3]
+          }
+        }
+      ]
+    },
+    {
+      "name": "BearingOffBlackTest",
+      "lines": "218-281",
+      "testCases": [
+        {
+          "id": "test-bobtBlack-1",
+          "title": "Test: Black Bearing Off Eligibility",
+          "objective": "Verify Black is eligible to bear off only when all Black checkers are within home region (indices 12-17).",
+          "boardSetup": "Black: All 15 checkers distributed within home region (indices 12-17). White: 15@idx0.",
+          "diceRoll": "{2, 3}",
+          "expectations": "`AllInHome(kOPlayerId)` is true.",
+          "fileFunctionRef": "Test: test-bobtBlack-1",
+          "rulesInvolved": "Bear off eligibility (all in home), `AllInHome` logic (Black).",
+          "initialState": {
+            "board": [
+              [15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 1,
+            "dice": [2, 3]
+          }
+        }
+      ]
+    },
+    {
+      "name": "EndgameScoreTest",
+      "lines": "261-340",
+      "testCases": [
+        {
+          "id": "test-est-1",
+          "title": "Test 1: Mars Scoring (Default)",
+          "objective": "Verify default scoring for Mars win.",
+          "boardSetup": "White: All borne off (Score 15). Black: 15@pt24(idx23) (Score 0).",
+          "expectations": "White return 2.0, Black return -2.0.",
+          "fileFunctionRef": "Test: test-est-1",
+          "rulesInvolved": "Terminal state detection, scoring rules (Mars).",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15]
+            ],
+            "scores": [15, 0],
+            "playerToMove": 0,
+            "dice": [1, 1, 1, 1]
+          }
+        },
+        {
+          "id": "test-est-2",
+          "title": "Test 2: Oin Scoring (Standard Win)",
+          "objective": "Verify scoring for standard Oin win.",
+          "boardSetup": "White: All borne off (Score 15). Black: 10 in home range (positions 12-17, Score 5 left).",
+          "expectations": "White return 1.0, Black return -1.0.",
+          "fileFunctionRef": "Test: test-est-2",
+          "rulesInvolved": "Terminal state detection, scoring rules (Oin).",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 1, 1, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [15, 5],
+            "playerToMove": 0,
+            "dice": [1, 1, 1, 1]
+          }
+        },
+        {
+          "id": "test-est-3",
+          "title": "Test 3: Tie Scoring (WinLossTie Mode)",
+          "objective": "Verify tie scoring (0 points) when both finish, using `winlosstie_scoring`.",
+          "boardSetup": "White: All borne off (Score 15). Black: All borne off (Score 15).",
+          "gameParameter": "`scoring_type=winlosstie_scoring`",
+          "expectations": "White return 0.0, Black return 0.0.",
+          "fileFunctionRef": "Test: test-est-3",
+          "rulesInvolved": "Terminal state detection, scoring rules (Tie), game parameters (`scoring_type`).",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [15, 15],
+            "playerToMove": 0,
+            "dice": [1, 1, 1, 1]
+          }
+        }
+      ]
+    },
+    {
+      "name": "ScoringSystemTest",
+      "lines": "342-371",
+      "testCases": [
+        {
+          "id": "test-sst-1",
+          "title": "Test: Scoring System Parameter Loading",
+          "objective": "Verify game correctly loads specified scoring system parameter.",
+          "testCases": "Default (`winloss_scoring`), Explicit `winloss_scoring`, Explicit `winlosstie_scoring`.",
+          "expectations": "Game parameter `scoring_type` matches the loaded value.",
+          "fileFunctionRef": "Test: test-sst-1",
+          "rulesInvolved": "Game parameter parsing (`scoring_type`).",
+          "initialState": null
+        }
+      ]
+    },
+    {
+      "name": "SingleLegalMoveTestBlack",
+      "lines": "375-456",
+      "testCases": [
+        {
+          "id": "test-slmtb-1",
+          "title": "Test 1: Forced Sequence due to Block",
+          "objective": "Verify forced sequence when block prevents one die's initial play, and other checkers cannot move until the last one enters home.",
+          "boardSetup": "Black: 1@pt23(idx22), 14@pt13(idx12). White: 1@pt22(idx21), 14@head(idx23).",
+          "diceRoll": "{1, 2}",
+          "expectations": "Only legal action: pt23->21(d2) then pt21->20(d1).",
+          "fileFunctionRef": "Test: test-slmtb-1",
+          "rulesInvolved": "Legal action generation, blocking, forced move sequences, AllInHome prerequisite, checker movement rules.",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 14],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 1,
+            "dice": [1, 2]
+          }
+        }
+      ]
+    },
+    {
+      "name": "BearingOffLogicTestBlackNearEnd",
+      "lines": "462-524",
+      "testCases": [
+        {
+          "id": "test-boltbne-1",
+          "title": "Test: Black Bear Off Logic Near End",
+          "objective": "Verify Black's bear off logic near end (exact, higher die, normal move).",
+          "boardSetup": "Black: 1@pt14(idx13, needs 2), 1@pt15(idx14, needs 3). White: head.",
+          "diceRoll": "{5, 2}",
+          "expectations": "Half-moves possible: pt14->off(d2)=T, pt14->off(d5)=T, pt15->off(d5)=T, pt15->off(d2)=F, pt15->13(d2)=T.",
+          "fileFunctionRef": "Test: test-boltbne-1",
+          "rulesInvolved": "Bear off rules (exact, higher die), basic movement.",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 15],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] 
+            ],
+            "scores": [0, 13],
+            "playerToMove": 1,
+            "dice": [5, 2]
+          }
+        }
+      ]
+    },
+    {
+      "name": "CannotBearOffIfNotAllInHomeTest",
+      "lines": "554-623",
+      "testCases": [
+        {
+          "id": "test-cboiah-1",
+          "title": "Test 1: White Cannot Bear Off",
+          "objective": "Verify White cannot bear off if checker is outside home (0-5).",
+          "boardSetup": "White: 14 in home (0-2), 1@pt7(idx6). Black: 14 in home (12-14), 1@pt19(idx18).",
+          "diceRoll": "{1, 6}",
+          "expectations": "`AllInHome(White)` is false. No legal action starts with bear-off.",
+          "fileFunctionRef": "Test: test-cboiah-1",
+          "rulesInvolved": "`AllInHome`, bear off prerequisite.",
+          "initialState": {
+            "board": [
+              [5, 5, 4, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 4, 0, 0, 0, 1, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [1, 6]
+          }
+        },
+        {
+          "id": "test-cboiah-2",
+          "title": "Test 2: Black Cannot Bear Off",
+          "objective": "Verify Black cannot bear off if checker is outside home (12-17).",
+          "boardSetup": "Black: 14 in home (12-14), 1@pt19(idx18). White: 15@head.",
+          "diceRoll": "{1, 6}",
+          "expectations": "`AllInHome(Black)` is false. No legal action starts with bear-off.",
+          "fileFunctionRef": "Test: test-cboiah-2",
+          "rulesInvolved": "`AllInHome`, bear off prerequisite.",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 4, 0, 0, 0, 1, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 1,
+            "dice": [1, 6]
+          }
+        }
+      ]
+    },
+    {
+      "name": "TestEndgame",
+      "lines": "673-715",
+      "testCases": [
+        {
+          "id": "test-endgame",
+          "title": "Test: Endgame Test Runner",
+          "objective": "Run all endgame tests in sequence.",
+          "setup": "N/A - calls other test functions.",
+          "process": "Calls all endgame test functions.",
+          "expectations": "All tests pass.",
+          "fileFunctionRef": "Test: test-endgame",
+          "rulesInvolved": "All endgame rules.",
+          "initialState": null
+        }
+      ]
+    }
+  ]
+}

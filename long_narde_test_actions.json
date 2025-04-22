@@ -1,0 +1,515 @@
+{
+  "filename": "long_narde_test_actions.cc",
+  "functions": [
+    {
+      "name": "ActionEncodingTest",
+      "lines": "1-65",
+      "testCases": [
+        {
+          "id": "test-actionencodingtest-1",
+          "title": "Test 1: Regular Move Encoding (High Roll First)",
+          "objective": "Verify correct encoding and decoding of a regular two-checker move when the dice roll has the higher die first.",
+          "boardSetup": "White: 13 checkers at head (point 24, index 23), 1 at point 15 (index 14), 1 at point 20 (index 19). Black: 15 checkers at head (point 12, index 11).",
+          "diceRoll": null,
+          "expectations": "The specific move sequence `{pos=14, to=19, die=5}, {pos=19, to=22, die=3}` is encoded to a valid Spiel `Action`. Decoding this `Action` recovers both original `CheckerMove`s (verified by checking `pos` and `die` for both moves).",
+          "fileFunctionRef": "Test: ActionEncodingTest1",
+          "rulesInvolved": "Action encoding/decoding, basic checker movement, with simplified code.",
+          "notes": null,
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 13],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [5, 3]
+          }
+        },
+        {
+          "id": "test-actionencodingtest-2",
+          "title": "Test 2: Pass Move Encoding using SetupDice",
+          "objective": "Verify correct encoding and decoding of a \"pass\" move (passing both available dice), using SetupDice uniformly.",
+          "boardSetup": "Implicitly reuses state from Test 1. White: 13 checkers at head (point 24, index 23), 1 at point 15 (index 14), 1 at point 20 (index 19). Black: 15 checkers at head (point 12, index 11).",
+          "diceRoll": "SetupDice({5, 3})",
+          "expectations": "A pass move sequence using `kPassPos` for both checkers `{kPassPos, kPassPos, 5}, {kPassPos, kPassPos, 3}` can be encoded to a Spiel `Action`. Decoding this `Action` recovers two pass `CheckerMove`s, identified by checking `pos == kPassPos` and `die` values 5 and 3.",
+          "fileFunctionRef": "Test: ActionEncodingTest2",
+          "rulesInvolved": "Action encoding/decoding, pass move representation (`kPassPos`), with simplified code.",
+          "notes": "Board state same as Test 1. Visualization shows the setup.",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 13],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [5, 3]
+          }
+        },
+        {
+          "id": "test-actionencodingtest-3",
+          "title": "Test 3: Regular Move Encoding (Low Roll First)",
+          "objective": "Verify that encoding the same two-checker move as in Test 1, but with the dice rolled low-first ({3, 5}), results in a *different* Action ID (due to encoding offset) but still decodes back to the correct moves.",
+          "boardSetup": "White: 13 checkers at head (point 24), 1 at point 15, 1 at point 20. Black: 15 checkers at head (point 12).",
+          "diceRoll": "{3, 5} (low roll first)",
+          "expectations": "Encoding the same logical moves as Test 1 (`{pos=14, to=19, die=5}, {pos=19, to=22, die=3}`) results in a different `Action` ID (`action_low_roll`) compared to the ID from Test 1 (`action`). Decoding `action_low_roll` still recovers the original two `CheckerMove`s (verified by checking `pos` and `die`).",
+          "fileFunctionRef": "Test: ActionEncodingTest3",
+          "rulesInvolved": "Action encoding/decoding, encoding offset for low-roll-first scenarios, basic checker movement.",
+          "notes": null,
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 13],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [3, 5]
+          }
+        },
+        {
+            "id": "test-actionencodingtest-4",
+            "title": "Test 4: Doubles Encoding (4 moves)",
+            "objective": "Verify the correct encoding and decoding of a 4-move sequence resulting from rolling doubles (non-first turn).",
+            "boardSetup": "White: 1 checker each at point 24 (head, index 23), point 23 (index 22), point 22 (index 21), point 21 (index 20), and 11 checkers at point 20 (index 19). Black: 15 checkers at head (point 12, index 11).",
+            "diceRoll": "{2, 2, 2, 2}",
+            "expectations": "A 4-move sequence `{23->21(d2)}, {22->20(d2)}, {21->19(d2)}, {20->18(d2)}` is encoded to a valid Spiel `Action`. Decoding this `Action` recovers the 4 original `CheckerMove`s (verified by checking `pos` and `die == 2` for all 4 moves).",
+            "fileFunctionRef": "Test: ActionEncodingTest4",
+            "rulesInvolved": "Action encoding/decoding for doubles, doubles play (4 moves), head movement rule (non-first turn).",
+            "notes": null,
+            "initialState": {
+                "board": [
+                    [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,11,1,1,1,1],
+                    [0,0,0,0,0,0,0,0,0,0,0,15,0,0,0,0,0,0,0,0,0,0,0,0]
+                ],
+                "scores": [0, 0],
+                "playerToMove": 0,
+                "dice": [2, 2, 2, 2]
+            }
+        },
+        {
+            "id": "test-actionencodingtest-5",
+            "title": "Test 5: Doubles Encoding (3 moves + 1 pass)",
+            "objective": "Verify the correct encoding and decoding of a sequence resulting from doubles, where only 3 moves are possible, forcing the 4th \"move\" to be a pass.",
+            "boardSetup": "Implicitly reuses state from Test 4. White: 1 checker each at point 24 (head, index 23), point 23 (index 22), point 22 (index 21), point 21 (index 20), and 11 checkers at point 20 (index 19). Black: 15 checkers at head (point 12, index 11).",
+            "diceRoll": "Implicitly {2, 2, 2, 2}",
+            "expectations": "A sequence of 3 moves `{23->21(d2)}, {22->20(d2)}, {21->19(d2)}` plus one pass `{kPassPos, kPassPos, 2}` can be encoded. Decoding the `Action` should yield moves corresponding to the 3 unique non-pass starting positions (23, 22, 21) and at least one pass move (`passes_found >= 1`). The action ID should differ from the 4-move action in Test 4.",
+            "fileFunctionRef": "Test: ActionEncodingTest5",
+            "rulesInvolved": "Action encoding/decoding for doubles, doubles play (partial usage), pass moves.",
+            "notes": "Board state same as Test 4. Visualization shows the setup.",
+            "initialState": {
+                "board": [
+                    [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,11,1,1,1,1],
+                    [0,0,0,0,0,0,0,0,0,0,0,15,0,0,0,0,0,0,0,0,0,0,0,0]
+                ],
+                "scores": [0, 0],
+                "playerToMove": 0,
+                "dice": [2, 2, 2, 2]
+            }
+        },
+        {
+            "id": "test-actionencodingtest-6",
+            "title": "Test 6: Standard Encoding: Single move + Pass",
+            "objective": "Verify the correct encoding/decoding for a standard (non-double) roll where only one die can be played, forcing a pass with the other die.",
+            "boardSetup": "White: 1 checker at pt15 (index 14), 1 at point 20 (index 19), 13 at head (point 24, index 23). Black: 15 checkers at head (point 12, index 11).",
+            "diceRoll": "{4, 1}",
+            "expectations": "A sequence involving moving from point 15 (pos 14) with die 4 and passing with die 1 can be encoded. Decoding the `Action` should recover the move from point 15 (die 4) and the pass (die 1). No low-roll offset should be applied.",
+            "fileFunctionRef": "Test: ActionEncodingTest6",
+            "rulesInvolved": "Action encoding/decoding, basic checker movement, partial dice usage (forced pass).",
+            "notes": null,
+            "initialState": {
+                "board": [
+                  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,1,0,0,0,13],
+                  [0,0,0,0,0,0,0,0,0,0,0,15,0,0,0,0,0,0,0,0,0,0,0,0]
+                ],
+                "scores": [0, 0],
+                "playerToMove": 0,
+                "dice": [4, 1]
+            }
+        },
+        {
+            "id": "test-actionencodingtest-7",
+            "title": "Test 7: Standard Encoding: Double Pass",
+            "objective": "Re-verify the correct encoding/decoding of a double pass (passing both dice) with a standard roll, ensuring no low-roll offset is applied.",
+            "boardSetup": "White: 13 checkers at head (point 24), 1 at point 15, 1 at point 20. Black: 15 checkers at head (point 12).",
+            "diceRoll": "{6, 5}",
+            "expectations": "A double pass move (`kPassPos` for both dice) can be encoded. Decoding the `Action` should recover the pass moves corresponding to dice 6 and 5. No low-roll offset should be applied.",
+            "fileFunctionRef": "Test: ActionEncodingTest7",
+            "rulesInvolved": "Action encoding/decoding, pass move representation (`kPassPos`).",
+            "notes": "Board state same as Test 1. Visualization shows the setup.",
+             "initialState": {
+                "board": [
+                    [0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,1,0,0,0,13],
+                    [0,0,0,0,0,0,0,0,0,0,0,15,0,0,0,0,0,0,0,0,0,0,0,0]
+                ],
+                "scores": [0, 0],
+                "playerToMove": 0,
+                "dice": [6, 5]
+             }
+        }
+      ]
+    },
+    {
+      "name": "SingleLegalMoveTest",
+      "lines": "N/A",
+      "testCases": [
+        {
+          "id": "test-singlelegalmovetest-1",
+          "title": "Test: Higher Die Rule Enforcement (White's Direction, Head Blocked)",
+          "objective": "Verify that when White (moving towards lower points) has only one checker that can move, and that checker can use either die individually but not both sequentially, the game enforces playing the single move corresponding to the higher die.",
+          "boardSetup": "White: 1 checker at Point 6 (index 5), 14 checkers at Point 24 (head, index 23). Black: 2 checkers at Point 1 (index 0) blocking the combined move from Point 6; 1 checker at Point 21 (index 20) and 1 checker at Point 22 (index 21) blocking moves from White's head; 11 checkers at Point 12 (head, index 11).",
+          "diceRoll": "{2, 3}",
+          "expectations": "White's checkers at the head (Point 24) cannot move because Points 22 and 21 are blocked by Black. The only potentially movable White checker is at Point 6 (index 5). This checker can move to Point 4 (index 3) with die 2, or to Point 3 (index 2) with die 3. Playing both dice is impossible because the total move of 5 pips (2+3) from Point 6 lands exactly on Point 1 (index 0), which is blocked by Black checkers. Since only single-die moves are possible for the only movable checker, the higher die rule applies. The only legal action should be the move using die 3: Point 6 (index 5) -> Point 3 (index 2).",
+          "fileFunctionRef": "Test: test-singlelegalmovetest-1",
+          "rulesInvolved": "Legal action generation, rule for playing maximum dice, rule for playing higher die when only single moves are possible, blocking, player direction, head movement rules.",
+          "notes": null,
+          "initialState": {
+             "board": [
+                [0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,14],
+                [2,0,0,0,0,0,0,0,0,0,0,11,0,0,0,0,0,0,0,0,1,1,0,0]
+             ],
+             "scores": [0, 0],
+             "playerToMove": 0,
+             "dice": [2, 3]
+           }
+        }
+      ]
+    },
+    {
+        "name": "ConsecutiveMovesTest",
+        "lines": "N/A",
+        "testCases": [
+            {
+                "id": "test-consecutivemovestest-1",
+                "title": "Test: Normal Turn Sequence",
+                "objective": "Verify correct state transitions when players take turns in sequence.",
+                "boardSetup": "Starts with the default initial state. Both players have 15 checkers on their respective heads.",
+                "diceRoll": "W: {1, 1} -> B: {1, 2}",
+                "expectations": "1. After White's move, current player is `kChancePlayerId`. 2. After second roll ({1, 2}), current player is `kOPlayerId`. 3. After Black's move, current player is `kChancePlayerId`.",
+                "fileFunctionRef": "Test: test-consecutivemovestest-1",
+                "rulesInvolved": "Game turn flow, chance nodes.",
+                "notes": "Visualization shows initial state before first roll.",
+                "initialState": {
+                    "board": [
+                        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15],
+                        [0,0,0,0,0,0,0,0,0,0,0,15,0,0,0,0,0,0,0,0,0,0,0,0]
+                    ],
+                    "scores": [0, 0],
+                    "playerToMove": 0,
+                    "dice": null
+                }
+            }
+        ]
+    },
+    {
+        "name": "UndoRedoTest",
+        "lines": "N/A",
+        "testCases": [
+            {
+                "id": "test-undoredotest-1",
+                "title": "Test: Apply and Undo Action",
+                "objective": "Verify that applying a legal move and then undoing it restores the game state (specifically the board) to its exact previous configuration.",
+                "boardSetup": "White: 2@pt4, 3@pt6, 1@pt9, 2@pt11, 2@pt15, 3@pt18, 2@pt21. Black: 3@pt2, 2@pt7, 2@pt10, 1@pt13(head), 2@pt16, 2@pt19, 2@pt23.",
+                "diceRoll": "{4, 2}",
+                "expectations": "After applying the first legal action found, the board state changes (`board_changed == true`). After calling `UndoAction` with the same player (`kXPlayerId`) and action, the board state is identical to the initial board state (`board_restored == true`).",
+                "fileFunctionRef": "Test: test-undoredotest-1",
+                "rulesInvolved": "State modification (`ApplyAction`), state restoration (`UndoAction`).",
+                "notes": null,
+                "initialState": {
+                    "board": [
+                        [0,0,0,2,0,3,0,0,1,0,2,0,0,0,2,0,0,3,0,0,2,0,0,0],
+                        [0,3,0,0,0,0,2,0,0,2,0,1,1,0,0,2,0,0,2,0,0,0,2,0]
+                    ],
+                    "scores": [0, 0],
+                    "playerToMove": 0,
+                    "dice": [4, 2]
+                }
+            }
+        ]
+    },
+    {
+        "name": "PassMoveBehaviorTest",
+        "lines": "557-635",
+        "testCases": [
+            {
+                "id": "test-passmovebehaviortest-1",
+                "title": "Test Case 1: Forced Pass (No Valid Moves)",
+                "objective": "Verify that if no checker can be legally moved with either die, the only legal action is the specific double pass action.",
+                "boardSetup": "White: 1 checker @ point 5. Black: 1 checker each @ point 2, point 4, point 6.",
+                "diceRoll": "{1, 3}",
+                "expectations": "White cannot move checker at point 5 (index 4) with either die. In Long Narde, White moves from higher indices to lower indices. With die 1, White would move from index 4 to index 3 (point 4), which is occupied by Black. With die 3, White would move from index 4 to index 1 (point 2), which is also occupied by Black. Since both potential landing spots are blocked, White must pass with both dice. The `LegalActions()` list must contain exactly one action (`size() == 1`), which must be the specific encoded pass action for dice {1, 3}.",
+                "fileFunctionRef": "Test: test-passmovebehaviortest-1",
+                "rulesInvolved": "Legal action generation, blocking rules, forced pass.",
+                "notes": null,
+                "initialState": {
+                    "board": [
+                        [0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                        [0,1,0,1,0,1,0,0,0,0,0,12,0,0,0,0,0,0,0,0,0,0,0,0]
+                    ],
+                    "scores": [14, 0],
+                    "playerToMove": 0,
+                    "dice": [1, 3]
+                }
+            },
+            {
+                "id": "test-passmovebehaviortest-2",
+                "title": "Test Case 2: Valid Moves Available",
+                "objective": "Verify that if at least one legal move is possible, the double pass action is *not* included in the legal actions list.",
+                "boardSetup": "White: 1 checker @ point 2, 1 checker @ point 4. Black: board empty.",
+                "diceRoll": "{1, 3}",
+                "expectations": "White has valid moves (e.g., point 2(pos 1)->1(pos 0) with d1). The list of legal actions must be non-empty (`size() > 0`) and must *not* contain the specific double pass action corresponding to dice {1, 3} (`pass_found == false`).",
+                "fileFunctionRef": "Test: test-passmovebehaviortest-2",
+                "rulesInvolved": "Legal action generation, exclusion of pass action when moves exist.",
+                "notes": null,
+                "initialState": {
+                    "board": [
+                        [0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+                    ],
+                    "scores": [13, 15],
+                    "playerToMove": 0,
+            "dice": [1, 3]
+                }
+            },
+            {
+                "id": "test-passmovebehaviortest-3",
+                "title": "Test Case 3: Forced Pass (Doubles, No Valid Moves)",
+                "objective": "Verify that the forced pass rule applies correctly when doubles are rolled, but no moves are possible.",
+                "boardSetup": "Black: 1@pt3, 1@pt8, 13@pt12(head). White: 1@pt1, 1@pt6, 1@pt10, 12@pt24(head). Black to move.",
+                "diceRoll": "{2, 2, 2, 2}",
+                "expectations": "Black cannot move from pt 3 (pos 2) (blocked by W@pt1/pos0), pt 8 (pos 7) (blocked by W@pt6/pos5), or head pt 12 (pos 11) (blocked by W@pt10/pos9). The `LegalActions()` list must contain exactly one action (`size() == 1`), which must be the specific encoded pass action for double 2s.",
+                "fileFunctionRef": "Test: test-passmovebehaviortest-3",
+                "rulesInvolved": "Legal action generation, blocking, forced pass with doubles.",
+                "notes": null,
+                "initialState": {
+                    "board": [
+                        [1,0,0,0,0,1,0,0,7,0,1,0,0,0,0,0,0,0,0,0,0,0,0,12],
+                        [0,0,1,0,0,0,0,1,0,0,0,13,0,0,0,0,0,0,0,0,0,0,0,0]
+                    ],
+                    "scores": [0, 0],
+                    "playerToMove": 1,
+                    "dice": [2, 2, 2, 2]
+                }
+            }
+        ]
+    },
+    {
+        "name": "VerifyDicePlayBehavior",
+        "lines": "622-826",
+        "testCases": [
+            {
+                "id": "test-vsdpb-1",
+                "title": "Scenario 1: Two-Move Sequence Possible (Overrides Higher Die Rule)",
+                "objective": "Verify that when a full two-move sequence is possible, it is the only legal action, even if individual dice could be played differently, and the \"play higher die first\" rule for single moves does not apply.",
+                "boardSetup": "White: 1@pt9, 1@pt4, 13@pt4. Black: 1@pt1, 14@Black head.",
+                "diceRoll": "{5, 3}",
+                "expectations": "White *can* play a two-move sequence: point 9->6 (d3), then point 4->off (d5). Because a two-move sequence exists, the rule requiring playing the higher die (5) first *if only single moves are possible* does not apply. The only legal action should be the one corresponding to the full two-move sequence {pt9->6 (d3), pt4->off (d5)}.",
+                "fileFunctionRef": "Test: test-vsdpb-1",
+                "rulesInvolved": "Legal action generation, playing the maximum number of dice, interaction between movement and subsequent moves, bear off.",
+                "notes": null,
+                "initialState": {
+                    "board": [
+                        
+                         [0,0,0,14,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                        
+                         [1,0,0,0,0,0,0,0,0,0,0,14,0,0,0,0,0,0,0,0,0,0,0,0]
+                    ],
+                    "scores": [0, 0],
+                    "playerToMove": 0,
+                    "dice": [5, 3]
+                }
+            },
+             {
+                "id": "test-vsdpb-2",
+                "title": "Scenario 2: Only Lower Die Initially Playable",
+                "objective": "Verify that when blocks prevent the higher die from being played initially, the legal actions correctly use only the lower die.",
+                "boardSetup": "White: 8@pt6, 7@pt9. Black: 8@pt1, 7@pt4.",
+                "diceRoll": "{5, 3}",
+                "expectations": "White cannot use die 5 from either point 6 (blocked by B@pt1) or point 9 (blocked by B@pt4). White *can* use die 3 from point 6 (to 3) or point 9 (to 6). Subsequent moves with die 5 are also blocked in both cases. Thus, only single-move sequences using die 3 are possible. The legal actions generated must correspond to these single moves using die 3 (e.g., {pt6->3(d3), Pass(d5)} and {pt9->6(d3), Pass(d5)}).",
+                "fileFunctionRef": "Test: test-vsdpb-2",
+                "rulesInvolved": "Legal action generation, blocking, playing maximum number of dice.",
+                "notes": null,
+                "initialState": {
+                    "board": [
+                        [0,0,0,0,0,8,0,0,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                        [8,0,0,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+                    ],
+                    "scores": [0, 0],
+                    "playerToMove": 0,
+                    "dice": [5, 3]
+                }
+            }
+        ]
+    },
+     {
+        "name": "SingleCheckerBearOffTest",
+        "lines": "925-1053",
+        "testCases": [
+            {
+                "id": "test-scbo-1w",
+                "title": "Scenario 1: Higher Die Rule (Bear Off, Both Playable) - White",
+                "objective": "Verify higher die rule is applied when bearing off a single checker, and both dice are sufficient (one exact, one higher).",
+                "boardSetup": "White: 1@pt1 (needs 1). Black: 15@head.",
+                "diceRoll": "{1, 6}",
+                "expectations": "Both die 1 (exact) and die 6 (higher) can bear off the checker at point 1 (pos 0). The higher die rule applies. The only legal action (`legal_actionsW.size() == 1`) must use die 6 ({pt1/pos0 -> off (d6)}), forcing a pass with die 1. Check verifies `found_die6W == true`.",
+                "fileFunctionRef": "Test: test-scbo-1w",
+                "rulesInvolved": "Bear off (exact or higher roll), higher die rule for single moves.",
+                "notes": null,
+                "initialState": {
+                    "board": [
+                        
+                         [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                        
+                         [0,0,0,0,0,0,0,0,0,0,0,15,0,0,0,0,0,0,0,0,0,0,0,0]
+                     ],
+                     "scores": [14, 0],
+                     "playerToMove": 0,
+                     "dice": [1, 6]
+                 }
+            },
+            {
+                "id": "test-scbo-2b1",
+                "title": "Scenario 1: Higher Die Rule (Bear Off, Both Playable) - Black",
+                "objective": "Verify higher die rule for Black bearing off a single checker, when both dice are sufficient.",
+                "boardSetup": "Black: 1@pt13 (needs 1). White: 15@head.",
+                "diceRoll": "{1, 6}",
+                "expectations": "Black has 1 checker at point 13 (pos 12), which needs 1 pip to bear off. Both die 1 (exact) and die 6 (higher) can bear off the checker. The higher die rule applies. The only legal action (`legal_actionsB.size() == 1`) must use die 6 ({pt13/pos12 -> off (d6)}), forcing a pass with die 1. The C++ check verifies `found_die6B == true` and `found_die1B == false`.",
+                "fileFunctionRef": "Test: test-scbo-2b1",
+                "rulesInvolved": "Bear off (exact or higher roll), higher die rule for single moves.",
+                "notes": null,
+                "initialState": {
+                     "board": [
+                       
+                         [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15],
+                        
+                         [0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0]
+                     ],
+                     "scores": [15, 14],
+                     "playerToMove": 1,
+                     "dice": [1, 6]
+                 }
+            },
+            {
+                "id": "test-scbo-2b2",
+                "title": "Scenario 2: Terminal State Flexibility - Black (Point 15)",
+                "objective": "Verify that in a terminal state (last checker), Black has the option to either bear off directly with an exact die or move within the home board first if possible.",
+                "boardSetup": "Black: 1@pt15 (needs 3). White: 15@head.",
+                "diceRoll": "{1, 3}",
+                "expectations": "Black needs 3 pips to bear off from point 15 (pos 14). Since this is the last checker (terminal state), both options should be valid: (1) Direct bear-off with die 3 + pass die 1, or (2) Two-step sequence: move pt15(pos14) -> pt14(pos13) with die 1, then bear off pt14(pos13) -> off with die 3. The test verifies that both options are legal (`legal_actionsB.size() == 2`) and checks that both the direct bear-off and two-step sequence are found.",
+                "fileFunctionRef": "Test: test-scbo-2b2",
+                "rulesInvolved": "Bear off (terminal state flexibility), terminal state handling, multiple valid options.",
+                "notes": null,
+                "initialState": {
+                    "board": [
+                       
+                         [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15],
+                        
+                         [0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0]
+                     ],
+                     "scores": [15, 14],
+                     "playerToMove": 1,
+            "dice": [1, 3]
+                 }
+            }
+        ]
+    },
+     {
+        "name": "DirectBearOffTest",
+        "lines": "N/A",
+        "testCases": [
+            {
+                "id": "test-dbo-1w",
+                "title": "Test: White Direct Bear Off (Exact)",
+                "objective": "Verify that White can directly bear off two checkers when all checkers are in the home quadrant and the dice rolls are exact.",
+                "boardSetup": "White: 1@pt1, 1@pt2. Black: 15@pt12(head).",
+                "diceRoll": "{1, 2}",
+                "expectations": "White needs 1 pip for point 1 (pos 0) and 2 pips for point 2 (pos 1). The dice {1, 2} are exact. The legal actions must include one corresponding to the sequence {pt1(pos0)->off(d1), pt2(pos1)->off(d2)}. Check verifies `found_direct_bearoff == true` by matching `pos`, `die`, and `to_pos == kBearOffPos` for both moves.",
+                "fileFunctionRef": "Test: test-dbo-1w",
+                "rulesInvolved": "Bear off (exact roll), legal action generation.",
+                "notes": null,
+                 "initialState": {
+                    "board": [
+                       
+                         [1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                       
+                         [0,0,0,0,0,0,0,0,0,0,0,15,0,0,0,0,0,0,0,0,0,0,0,0]
+                     ],
+                     "scores": [13, 0],
+                     "playerToMove": 0,
+                     "dice": [1, 2]
+                 }
+            },
+             {
+                 "id": "test-dbo-1b",
+                 "title": "Test: Black Direct Bear Off (Exact)",
+                 "objective": "Verify that Black can directly bear off two checkers when all checkers are in their home quadrant and the dice rolls are exact.",
+                 "boardSetup": "Black: 1@pt14 (needs 2), 1@pt15 (needs 3). White: 15@pt24(head).",
+                 "diceRoll": "{2, 3}",
+                 "expectations": "Black needs 2 pips for point 14 (pos 13) and 3 pips for point 15 (pos 14). With dice {2, 3}, the direct bear off is {pt14->off(d2), pt15->off(d3)}. The test verifies `found_direct_bearoff == true` by checking for this exact sequence.",
+                 "fileFunctionRef": "Test: test-dbo-1b",
+                 "rulesInvolved": "Bear off (exact roll), legal action generation, Black's home board/direction.",
+                 "notes": null,
+                 "initialState": {
+                     "board": [
+                       
+                         [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15],
+                        
+                         [0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0]
+                     ],
+                     "scores": [15, 13],
+                     "playerToMove": 1,
+                     "dice": [2, 3]
+                 }
+            }
+        ]
+    },
+    {
+        "name": "BearOffLastCheckerTest",
+        "lines": "N/A",
+        "testCases": [
+            {
+                "id": "test-bolc-1w",
+                "title": "Test: White Last Checker Bear Off (Higher Die + Pass)",
+                "objective": "Verify that when bearing off the last checker, if multiple dice are sufficient (higher than needed), the higher die must be used.",
+                "boardSetup": "White: 1@pt2 (needs 2). Black: 15@pt12 (head, index 11).",
+                "diceRoll": "{4, 5}",
+                "expectations": "White needs 2 pips to bear off the last checker at point 2 (pos 1). Both die 4 and die 5 are sufficient. The higher die rule applies, so die 5 must be used ({pt2/pos1 -> off (d5)}). The other die (4) must be passed. The only legal action (`legal_actions.size() == 1`) must contain the bear-off move with die 5 and a pass move with die 4. Checks verify `found_bear_off` (with die 5) and `found_pass` (with die 4).",
+                "fileFunctionRef": "Test: test-bolc-1w",
+                "rulesInvolved": "Bear off (last checker, exact or higher), higher die rule, forced pass.",
+                "notes": null,
+                 "initialState": {
+                     "board": [
+                       
+                         [0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                       
+                         [0,0,0,0,0,0,0,0,0,0,0,15,0,0,0,0,0,0,0,0,0,0,0,0]
+                     ],
+                     "scores": [14, 0],
+                     "playerToMove": 0,
+                     "dice": [4, 5]
+                 }
+            },
+            {
+                 "id": "test-bolc-1b",
+                 "title": "Test: Black Last Checker Bear Off (Higher Die + Pass)",
+                 "objective": "Verify the same higher die rule applies to Black bearing off the last checker.",
+                 "boardSetup": "Black: 1@pt14 (needs 2). White: 15@pt24(head).",
+                 "diceRoll": "{4, 5}",
+                 "expectations": "Black needs 2 pips to bear off the last checker at point 14 (pos 13). Both die 4 and die 5 are sufficient. The higher die rule applies, so die 5 must be used ({pt14/pos13 -> off (d5)}). The other die (4) must be passed. The only legal action (`legal_actions.size() == 1`) must contain the bear-off move with die 5 and a pass move with die 4. Checks verify `found_bear_off` (with die 5) and `found_pass` (with die 4).",
+                 "fileFunctionRef": "Test: test-bolc-1b",
+                 "rulesInvolved": "Bear off (last checker, exact or higher), higher die rule, forced pass, Black's direction.",
+                 "notes": null,
+                 "initialState": {
+                     "board": [
+                       
+                         [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15],
+                       
+                         [0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0]
+                     ],
+                     "scores": [15, 14],
+                     "playerToMove": 1,
+                     "dice": [4, 5]
+                 }
+            }
+        ]
+    }
+  ]
+}

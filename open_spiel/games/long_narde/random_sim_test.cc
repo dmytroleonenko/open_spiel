@@ -14,7 +14,6 @@ namespace open_spiel {
 namespace long_narde {
 namespace {
 
-// Default values for simulation parameters
 constexpr int kDefaultNumSimulations = 5;
 constexpr int kDefaultSeed = 1224;
 
@@ -69,23 +68,17 @@ void MemoryEfficientRandomSim(int num_simulations = kDefaultNumSimulations,
         if (lnstate) {
           std::vector<CheckerMove> moves =
               lnstate->SpielMoveToCheckerMoves(state->CurrentPlayer(), action);
-          bool action_valid = true;
 
           std::unique_ptr<State> temp_state = state->Clone();
           LongNardeState* temp_lnstate = dynamic_cast<LongNardeState*>(temp_state.get());
 
           for (const auto& move : moves) {
-            if (move.pos == kPassPos) {
-                 continue;
-            }
-
+            if (move.pos == kPassPos) continue;
             if (!temp_lnstate->IsValidCheckerMove(state->CurrentPlayer(), move, false)) {
               invalid_move_found = true;
               invalid_moves_detected++;
-              action_valid = false;
               break;
             }
-
             temp_lnstate->ApplyCheckerMove(state->CurrentPlayer(), move);
           }
         }
@@ -95,6 +88,7 @@ void MemoryEfficientRandomSim(int num_simulations = kDefaultNumSimulations,
 
       move_count++;
 
+      // Periodically clone state to test undo/redo logic and memory safety.
       if (move_count % 20 == 0 && !state->IsTerminal()) {
         std::unique_ptr<State> new_state = state->Clone();
         state = std::move(new_state);
@@ -113,9 +107,6 @@ void MemoryEfficientRandomSim(int num_simulations = kDefaultNumSimulations,
     if (state->IsTerminal()) {
       terminated_games++;
     }
-
-    state.reset();
-    lnstate = nullptr;
   }
 
   double avg_game_length = static_cast<double>(total_moves) / num_simulations;
@@ -152,14 +143,12 @@ void RunRandomSimTest(int num_simulations = kDefaultNumSimulations,
 //EndTest: test-runsim-1
 //EndFunction: RunRandomSimTest
 
-// Parses command-line arguments
 //StartFunction: ParseArguments
 //StartTest: test-parseargs-1
 void ParseArguments(int argc, char** argv, int* num_simulations, int* seed) {
-  // Default values already set in the parameters
+  // Parse command-line arguments for simulation count and seed.
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
-
     if (arg == "--num_simulations" || arg == "-n") {
       if (i + 1 < argc) {
         *num_simulations = std::stoi(argv[++i]);
@@ -201,9 +190,6 @@ void RunRandomSimTests(int argc, char** argv) {
 }
 //EndTest: test-runsimtests-1
 //EndFunction: RunRandomSimTests
-
-}  // namespace long_narde
-}  // namespace open_spiel
 
 //StartFunction: main
 //StartTest: test-main-1

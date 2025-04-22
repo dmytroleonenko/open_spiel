@@ -1,0 +1,54 @@
+{
+  "filename": "long_narde_test_basic.cc",
+  "functions": [
+    {
+      "name": "InitialBoardSetupTest",
+      "lines": "17-39",
+      "testCases": [
+        {
+          "id": "test-initial-board-setup",
+          "title": "Verify correct initial checker placement.",
+          "objective": "Verify correct initial checker placement.",
+          "boardSetup": "Default initial state.",
+          "diceRoll": null,
+          "expectations": "White: 15@pt24(idx23), 0 elsewhere. Black: 15@pt12(idx11), 0 elsewhere.",
+          "fileFunctionRef": "Test: test-initial-board-setup",
+          "rulesInvolved": "Initial board setup rules.",
+          "notes": null,
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": null,
+            "dice": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "WhiteMovesFirstTest",
+      "lines": "42-55",
+      "testCases": [
+        {
+          "id": "test-white-moves-first",
+          "title": "Verify White (Player X) moves first.",
+          "objective": "Verify White (Player X) moves first. (Test logic simplified).",
+          "boardSetup": "Start new game, apply first chance outcome.",
+          "diceRoll": null,
+          "expectations": "After chance node, `CurrentPlayer` is `kXPlayerId`.",
+          "fileFunctionRef": "Test: test-white-moves-first",
+          "rulesInvolved": "Turn order rules (White moves first).",
+          "notes": null,
+          "initialState": {
+             "board": null,
+             "scores": [null, null],
+             "playerToMove": null,
+             "dice": null
+          }
+        }
+      ]
+    }
+  ]
+}

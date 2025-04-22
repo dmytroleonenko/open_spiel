@@ -221,9 +221,6 @@ class LongNardeState : public State {
   // of checkers born off.
   int board(int player, int pos) const;
 
-  // Check if a position is in the home area of the player
-  bool IsPosInHome(int player, int pos) const;
-
   // Action encoding / decoding functions. Note, the converted checker moves
   // do not contain the hit information; use the AddHitInfo function to get the
   // hit information.

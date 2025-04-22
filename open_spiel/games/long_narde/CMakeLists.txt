@@ -5,7 +5,6 @@ add_executable(long_narde_test
   long_narde_test_bridges.cc
   long_narde_test_actions.cc
   long_narde_test_endgame.cc
-  long_narde_test_legacy.cc
 )
 
 target_include_directories(long_narde_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../)

@@ -48,18 +48,18 @@ std::unique_ptr<LongNardeState> CreateStateFromString(const std::string& board_s
 // Helper functions for setting up test states
 // Sets the board configuration and scores for a given state.
 inline void SetupBoardState(LongNardeState* state, Player player,
-                            const std::vector<std::vector<int>>& board_config,
-                            const std::vector<int>& scores) {
+                            const std::vector<std::vector<int>>& board_config) {
   SPIEL_CHECK_TRUE(state != nullptr);
   SPIEL_CHECK_EQ(board_config.size(), kNumPlayers);
-  // Ensure the input board config has the correct size (including score position)
-  SPIEL_CHECK_EQ(board_config[0].size(), kNumPoints + 1);
-  SPIEL_CHECK_EQ(board_config[1].size(), kNumPoints + 1);
-  SPIEL_CHECK_EQ(scores.size(), kNumPlayers);
+  // Ensure the input board config has the correct size (only indices 0-23)
+  SPIEL_CHECK_EQ(board_config[0].size(), kNumPoints);  // kNumPoints is 24
+  SPIEL_CHECK_EQ(board_config[1].size(), kNumPoints);  // kNumPoints is 24
 
   // Direct manipulation (allowed via friend declaration in LongNardeState)
   state->board_ = board_config;
-  state->scores_ = scores;
+  // Calculate scores internally
+  state->scores_[0] = kNumCheckersPerPlayer - std::accumulate(state->board_[0].begin(), state->board_[0].end(), 0);
+  state->scores_[1] = kNumCheckersPerPlayer - std::accumulate(state->board_[1].begin(), state->board_[1].end(), 0);
   state->cur_player_ = player;
   // Reset turn-specific flags that SetState would normally handle
   // These might need adjustment based on specific test needs

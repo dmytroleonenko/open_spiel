@@ -1,0 +1,7 @@
+---
+description: when file_editor fails to edit the file
+globs: 
+alwaysApply: false
+---
+You first try to re-read the target file again. Then try very precise small edit. Prefer many small edits over one huge.
+If tool still fails fallback to using mcp_UltraEditor tools like tool_replace_block and tool_apply_patch depending on what would be more efficient one patch or (possibly) several calls using tool_replace_block

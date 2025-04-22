@@ -374,20 +374,6 @@ bool LongNardeState::IsOff(int player, int pos) const {
 
 // ===== Home Region Checks =====
 
-bool LongNardeState::IsPosInHome(int player, int pos) const {
-  switch (player) {
-    case kXPlayerId:
-      // White's home: points 1-6 (indices 0-5)
-      return (pos >= kWhiteHomeStart && pos <= kWhiteHomeEnd);
-    case kOPlayerId:
-      // Black's home: points 13-18 (indices 12-17)
-      return (pos >= kBlackHomeStart && pos <= kBlackHomeEnd);
-    default:
-      SpielFatalError(absl::StrCat("Unknown player ID in IsPosInHome: ", player));
-      return false; // Should be unreachable
-  }
-}
-
 bool LongNardeState::AllInHome(Player player) const {
   int checkers_on_board = 0;
   if (player == kXPlayerId) {

@@ -1,0 +1,331 @@
+{
+  "filename": "long_narde_test_movement.cc",
+  "functions": [
+    {
+      "name": "TestBasicMovement",
+      "lines": "16-57",
+      "testCases": [
+        {
+          "id": "test-basicmovement-1",
+          "title": "Test Basic Movement with Doubles",
+          "objective": "Test basic checker movement, specifically using all four moves from a double roll (4,4) on the first turn.",
+          "boardSetup": "Initial board with White to move.",
+          "diceRoll": "{4, 4}",
+          "process": "Sets up a game with dice 4,4. Moves two checkers from White's head (pt 24 / idx 23) to point 20 (idx 19), then moves those same two checkers from point 20 (idx 19) to point 16 (idx 15), using all four available '4' moves.",
+          "expectations": "Two checkers move from head (23) to 19, then to 15. Final board state: 13 checkers on head (idx 23), 0 on point 19 (idx 18), 2 on point 15 (idx 14).",
+          "fileFunctionRef": "Test: test-basicmovement-1",
+          "rulesInvolved": "Basic movement rules, doubles play (use all four dice values).",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [4, 4]
+          }
+        }
+      ]
+    },
+    {
+      "name": "InitialDiceTest",
+      "lines": "64-101",
+      "testCases": [
+        {
+          "id": "test-initialdice-1",
+          "title": "Initial Dice Validation",
+          "objective": "Verify that chance outcomes produce valid dice pairs.",
+          "boardSetup": null,
+          "process": "Checks all chance outcomes to ensure dice values are in [1..6] with highest die first (unless doubles).",
+          "expectations": "All dice pairs are valid according to Long Narde rules (1-6, non-equal highest first).",
+          "fileFunctionRef": "Test: test-initialdice-1",
+          "rulesInvolved": "Dice generation rules, chance outcomes.",
+          "initialState": null
+        }
+      ]
+    },
+    {
+      "name": "CheckerDistributionTest",
+      "lines": "107-137",
+      "testCases": [
+        {
+          "id": "test-checkerdistribution-1",
+          "title": "Initial Distribution & First Turn Doubles Move",
+          "objective": "Confirm the default setup and a first-turn double move from the head.",
+          "boardSetup": "Initial board setup.",
+          "diceRoll": "{6, 6}",
+          "process": "Checks initial distribution (15 checkers on each head) and applies a 6,6 roll to move two checkers from White's head.",
+          "expectations": "Initial distribution is correct (White@24, Black@12) and two checkers move from White's head as expected on a first-turn 6,6 roll.",
+          "fileFunctionRef": "Test: test-checkerdistribution-1",
+          "rulesInvolved": "Initial setup, special doubles on first turn.",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [6, 6]
+          }
+        }
+      ]
+    },
+    {
+      "name": "HeadRuleTestFirstTurn",
+      "lines": "146-181",
+      "testCases": [
+        {
+          "id": "test-headrule-first-turn-1",
+          "title": "Head Rule (First Turn - White)",
+          "objective": "Verify that on the first turn, if White rolls doubles (e.g., 4,4), they are allowed to move two checkers from their head.",
+          "boardSetup": "Initial board with White to move.",
+          "diceRoll": "{4, 4}",
+          "process": "Sets up an initial game state, applies dice 4,4. Checks legal actions to ensure at least one action moves two checkers off the head.",
+          "expectations": "The player should have legal moves that involve moving two checkers from the head point (index 23).",
+          "fileFunctionRef": "Test: test-headrule-first-turn-1",
+          "rulesInvolved": "Head rule (first turn exception), special doubles.",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [4, 4]
+          }
+        }
+      ]
+    },
+    {
+      "name": "HeadRuleTestNonFirstTurn",
+      "lines": "184-233",
+      "testCases": [
+        {
+          "id": "test-headrule-non-first-turn-1",
+          "title": "Head Rule (Non-First Turn - White)",
+          "objective": "Verify that on a non-first turn, even with doubles (e.g., 4,4,4,4), White can only move one checker from their head.",
+          "boardSetup": "White: 14 checkers on head (idx 23), 1 checker on point 23 (idx 22). Black: 15 checkers on head (idx 11). White to move.",
+          "diceRoll": "{4, 4, 4, 4}",
+          "process": "Sets up a board state where White has one checker off the head. Applies dice 4,4,4,4. Checks legal actions to ensure no action moves more than one checker off the head.",
+          "expectations": "No legal action should allow moving more than one checker from the head point (index 23). Subsequent moves must use the checker already off the head (at index 22).",
+          "fileFunctionRef": "Test: test-headrule-non-first-turn-1",
+          "rulesInvolved": "Head rule (standard), doubles play.",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 14],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [4, 4, 4, 4]
+          }
+        }
+      ]
+    },
+    {
+      "name": "MovementDirectionTest",
+      "lines": "239-293",
+      "testCases": [
+        {
+          "id": "test-movementdirection-1",
+          "title": "Movement Direction Validation",
+          "objective": "Verify that both White and Black move counter-clockwise (towards decreasing indices), with Black wrapping around 0.",
+          "boardSetup": "White: 1@pt19(idx18), 14@head(idx23). Black: 1@pt8(idx7), 14@head(idx11).",
+          "diceRoll": "{3, 2}",
+          "process": "Sets up the board and applies dice {3, 2} first for White, then resets and applies for Black. Checks resulting positions against CCW movement rules.",
+          "expectations": "Both players move CCW (decreasing indices). White moves 18->15(d3) and 18->16(d2) are valid. Black moves 7->4(d3) and 7->5(d2) are valid.",
+          "fileFunctionRef": "Test: test-movementdirection-1",
+          "rulesInvolved": "Movement direction rules (CCW for both, Black wrap-around).",
+          "notes": "Visualization shows the state before White's turn.",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 14],
+              [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [3, 2]
+          }
+        }
+      ]
+    },
+    {
+      "name": "NoLandingOnOpponentTestWhite",
+      "lines": "297-336",
+      "testCases": [
+        {
+          "id": "test-nolanding-1",
+          "title": "Cannot Land on Opponent's Point (White)",
+          "objective": "Ensure that White cannot land on a point occupied by any number of opposing checkers.",
+          "boardSetup": "White: 1@pt20, Black: 1@pt16. White to move.",
+          "diceRoll": "{4, 2}",
+          "process": "Sets up a board position where a potential White move (pt20 -> pt16 with die 4) would land on Black's point. Checks if the move is invalid via `IsValidCheckerMove` and not present in `LegalActions()`.",
+          "expectations": "White moving 20->16 (die 4) is invalid.",
+          "fileFunctionRef": "Test: test-nolanding-1",
+          "rulesInvolved": "Landing rules (blocking).",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 14],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [4, 2]
+          }
+        }
+      ]
+    },
+    {
+      "name": "NoLandingOnOpponentTestBlack",
+      "lines": "340-380",
+      "testCases": [
+        {
+          "id": "test-nolanding-2",
+          "title": "Cannot Land on Opponent's Point (Black)",
+          "objective": "Ensure that Black cannot land on a point occupied by any number of opposing checkers.",
+          "boardSetup": "Black: 1@pt16, White: 1@pt13. Black to move.",
+          "diceRoll": "{3, 1}",
+          "process": "Sets up a board position where a potential Black move (pt16 -> pt13 with die 3) would land on White's point. Checks if the move is invalid via `IsValidCheckerMove` and not present in `LegalActions()`.",
+          "expectations": "Black moving 16->13 (die 3) is invalid.",
+          "fileFunctionRef": "Test: test-nolanding-2",
+          "rulesInvolved": "Landing rules (blocking).",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 1,
+            "dice": [3, 1]
+          }
+        }
+      ]
+    },
+    {
+      "name": "TestIllegalLandingInLegalActions",
+      "lines": "383-430",
+      "testCases": [
+        {
+          "id": "test-illegallanding-1",
+          "title": "Illegal Landings Not in LegalActions (Black)",
+          "objective": "Verify that `LegalActions` does not generate moves landing on occupied points for Black, based on a specific failure case.",
+          "boardSetup": "White: 13@head(pt24), 2@pt13. Black: 14@head(pt12), 1@pt14. Black to move.",
+          "diceRoll": "{1, 1, 1, 1}",
+          "process": "Sets up a specific board state. Generates legal actions for Black and checks if any action involves landing on White's checker at pt13 (index 12) by moving from pt14 (index 13) with a die of 1.",
+          "expectations": "No generated legal action for Black involves moving from index 13 to land on index 12.",
+          "fileFunctionRef": "Test: test-illegallanding-1",
+          "rulesInvolved": "Legal action generation, blocking.",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 1,
+            "dice": [1, 1, 1, 1]
+          }
+        }
+      ]
+    },
+    {
+      "name": "TestHalfMoveGeneration",
+      "lines": "434-495",
+      "testCases": [
+        {
+          "id": "test-halfmove-1",
+          "title": "Half-Move Generation (White)",
+          "objective": "Verify that `GenerateAllHalfMoves` produces the correct set of potential single-die moves for White.",
+          "boardSetup": "White: 1@pt1(idx0), 14@head(pt24/idx23). Black: 15@head(pt12/idx11). White to move.",
+          "diceRoll": "{3, 5}",
+          "process": "Generates all half-moves for White and compares against the expected set.",
+          "expectations": "Expected half-moves: {pos=23, die=3}, {pos=23, die=5}. The checker at pos 0 has no valid moves. The generated `LegalActions` should be constructible from these half-moves.",
+          "fileFunctionRef": "Test: test-halfmove-1",
+          "rulesInvolved": "Half-move generation, movement rules, blocking.",
+          "initialState": {
+            "board": [
+              [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 0,
+            "dice": [5, 3]
+          }
+        }
+      ]
+    },
+    {
+      "name": "HeadRuleTestBlack",
+      "lines": "498-602",
+      "testCases": [
+        {
+          "id": "test-headruleblack-1",
+          "title": "Head Rule (Black - First Turn Special Doubles)",
+          "objective": "Test that on Black's first turn, special doubles (e.g., 6,6) allow moving two checkers from the head.",
+          "boardSetup": "Initial board after White's first move, Black to move.",
+          "diceRoll": "{6, 6}",
+          "process": "Sets up a game state for Black's first turn, applies dice 6,6. Checks if legal actions permit moving two checkers off the head (point 12 / index 11).",
+          "expectations": "Black should have legal moves allowing two checkers to move from the head (index 11). For example, moving two checkers 11 -> 5.",
+          "fileFunctionRef": "Test: test-headruleblack-1",
+          "rulesInvolved": "Head rule for Black (first turn exception), special doubles.",
+          "notes": "Corresponds to Scenario A in the C++ code.",
+          "initialState": {
+             "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 14],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 1,
+            "dice": [6, 6]
+          }
+        },
+        {
+          "id": "test-headruleblack-2",
+          "title": "Head Rule (Black - Non-First Turn Doubles)",
+          "objective": "Test that on a non-first turn, even with doubles (e.g., 4,4,4,4), Black can only move one checker from the head.",
+          "boardSetup": "Black has 14 checkers on head (idx 11), 1 checker on point 16 (idx 15). White has 15 checkers on head (idx 23). Black to move.",
+          "diceRoll": "{4, 4, 4, 4}",
+          "process": "Sets up a board state where Black has one checker off the head. Applies dice 4,4,4,4. Checks legal actions to ensure no action moves more than one checker off the head (index 11).",
+          "expectations": "According to the head rule for non-first turns, only one checker can leave the head (index 11) during the entire turn, even with doubles. The first move must be 11 -> 7 (using one '4'). The checker initially at index 15 is within Black's home board (indices 17-12) and cannot move with a '4'; bearing off is not possible, and the target destination (index 11) is outside the valid forward movement path for a checker within the home board. The checker now at index 7 (having moved from 11) can then move 7 -> 3 (using a second '4'). No further moves are possible with the remaining two '4's: the checker at 15 still has no valid move with a '4', and the checker now at 3 cannot move with a '4' as the destination (index 23) is blocked by the opponent's head. Thus, the only valid full action for this turn consists of the sequence (11->7, 7->3), utilizing only two of the four available dice; the remaining two dice must be passed.",
+          "fileFunctionRef": "Test: HeadRuleTestBlackNonFirstTurn",
+          "rulesInvolved": "Head rule for Black (standard), doubles play.",
+          "notes": "Corresponds to Scenario B in the C++ code.",
+          "initialState": {
+             "board": [
+               [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15],
+               [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+             ],
+            "scores": [0, 0],
+            "playerToMove": 1,
+            "dice": [4, 4, 4, 4]
+          }
+        }
+      ]
+    },
+    {
+      "name": "TestHalfMoveGenerationBlack",
+      "lines": "605-647",
+      "testCases": [
+        {
+          "id": "test-halfmoveblack-1",
+          "title": "Half-Move Generation (Black)",
+          "objective": "Verify that `GenerateAllHalfMoves` produces the correct set of potential single-die moves for Black.",
+          "boardSetup": "White: 15@head(pt24/idx23). Black: 14@head(pt12/idx11), 1@pt17(idx16). Black to move.",
+          "diceRoll": "{4, 2}",
+          "process": "Generates all half-moves for Black and compares against the expected set.",
+          "expectations": "Expected half-moves: {pos=11, die=4}, {pos=11, die=2}, {pos=16, die=4}, {pos=16, die=2}. All generated `LegalActions` should be constructible from these.",
+          "fileFunctionRef": "Test: test-halfmoveblack-1",
+          "rulesInvolved": "Half-move generation, movement rules (Black).",
+          "initialState": {
+            "board": [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+            ],
+            "scores": [0, 0],
+            "playerToMove": 1,
+            "dice": [4, 2]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -70,3 +70,4 @@ pyvenv.cfg
 
 *.log
 gdb_commands.txt
+node_modules/
