@@ -195,86 +195,106 @@ bool LongNardeState::IsValidCheckerMove(int player, const CheckerMove& move,
   // Calculate the potential destination position first.
   int to_pos = GetToPos(player, move.pos, move.die);
 
-  // Check Bear Off conditions ONLY if the move targets off-board AND all checkers are home.
-  bool is_target_off_board = IsOff(player, to_pos);
-  if (is_target_off_board && AllInHome(player)) {
-    // --- Bear Off Validation ---
-    int pips_needed = (player == kXPlayerId) ? (move.pos + 1) : (18 - move.pos);
+  // Check Bear Off conditions
+  bool all_checkers_home = AllInHome(player); // Calculate once
 
-    // Check if die roll is sufficient
-    if (move.die < pips_needed) {
-        // This should generally not happen if GetToPos calculated off-board correctly,
-        // but check defensively.
-        if (kDebugging) std::cout << "    INVALID: Bear-off attempt, but die (" << move.die << ") < pips needed (" << pips_needed << ")." << std::endl;
-        return false;
-    }
+  // ADDED DEBUGGING
+  if (kDebugging) std::cout << "    [DEBUG IsValidCheckerMove] pos=" << move.pos << " die=" << move.die << " -> to_pos=" << to_pos
+                           << " | calculated_to_pos=" << to_pos << " | all_checkers_home=" << all_checkers_home << std::endl;
 
-    // If die roll is higher than needed, check if it's the furthest checker.
-    if (move.die > pips_needed) {
-        int furthest_pos = FurthestCheckerInHome(player);
-        if (move.pos != furthest_pos) {
-             if (kDebugging) std::cout << "    INVALID: Cannot use higher die roll (" << move.die << ") for non-furthest checker (pos=" << move.pos << ", furthest=" << furthest_pos << ")." << std::endl;
-             return false; // Invalid bear-off (higher roll on non-furthest)
-        }
-    }
-    // Valid bear-off move.
-    if (kDebugging) std::cout << "    VALID: Bear off check passed (pos=" << move.pos << ", die=" << move.die << ")." << std::endl;
-    return true;
-  } else {
-    // --- Regular Move Check (or move within home board) ---
-    // Check destination validity (must be on the board if not a valid bear-off)
-    if (is_target_off_board /* && !AllInHome(player) - implied by reaching here */) {
-         if (kDebugging) std::cout << "    INVALID: Calculated to_pos (" << to_pos << ") is off-board, but not a valid bear-off (not all home)." << std::endl;
-         return false;
-    }
-    if (to_pos < 0 || to_pos >= kNumPoints) { // Should be caught by IsOff check, but double-check
-         if (kDebugging) std::cout << "    INVALID: Calculated to_pos (" << to_pos << ") is off-board and not a valid bear-off." << std::endl;
-         return false;
-    }
+  // First, check if the player is in the bearing off phase
+  if (all_checkers_home) {
+      // --- Bear Off Validation ---
+      int pips_needed = (player == kXPlayerId) ? (move.pos + 1) : (move.pos - 12 + 1);
 
-    // Check opponent occupancy at the calculated on-board destination.
-    // ADDED DEBUG LOGGING HERE
-    if (player == 1 && move.pos == 11 && move.die == 1) {
-        std::cout << "[DEBUG ILM CHECK] player=" << player
-                  << ", move.pos=" << move.pos
-                  << ", move.die=" << move.die
-                  << ", to_pos=" << to_pos
-                  << ", Opponent(player)=" << Opponent(player)
-                  << ", board(Opponent(player), to_pos)=" << board(Opponent(player), to_pos)
-                  << std::endl;
-    }
-    // ADDED DEBUG LOGGING for NoLandingOnOpponentTest case
-    if (player == 1 && move.pos == 15 && move.die == 3) {
-        std::cout << "[DEBUG NLO CHECK] player=" << player
-                  << ", move.pos=" << move.pos
-                  << ", move.die=" << move.die
-                  << ", to_pos=" << to_pos
-                  << ", Opponent(player)=" << Opponent(player)
-                  << ", board(Opponent(player), to_pos)=" << board(Opponent(player), to_pos)
-                  << std::endl;
-    }
-    if (board(Opponent(player), to_pos) > 0) {
-      if (kDebugging) std::cout << "[DEBUG ICMV " << player << "] Invalid move: Opponent block at " << to_pos << " for move " << move.pos << " -> " << to_pos << std::endl;
-      return false;
-    }
+      // Check if the die roll EXACTLY matches the pips needed for bear-off
+      if (move.die == pips_needed) {
+          if (kDebugging) std::cout << "    VALID: Exact bear off check passed (pos=" << move.pos << ", die=" << move.die << ")." << std::endl;
+          return true; // Exact bear-off is always valid if all checkers are home
+      }
 
-    // Check Head Rule
-    if (IsHeadPos(player, move.pos)) {
-        if (!IsLegalHeadMove(player, move.pos, moved_from_head_this_sequence)) {
-            if (kDebugging) std::cout << "    INVALID: Head rule violation (already moved from head this sequence)." << std::endl;
-            return false;
-        }
-    }
-
-    // Check bridge rule
-    if (WouldFormBlockingBridge(player, move.pos, to_pos)) {
-      if (kDebugging) std::cout << "    INVALID: Move would form illegal bridge." << std::endl;
-      return false; // Move would create an illegal bridge
-    }
-
-    if (kDebugging) std::cout << "    VALID: Regular move check passed (pos=" << move.pos << ", to=" << to_pos << ", die=" << move.die << ")." << std::endl;
-    return true; // Regular move (or move within home) is valid
+      // Check if die roll is sufficient
+      if (move.die < pips_needed) {
+          // This move is only invalid for bear-off; it might be a valid regular move within the home board.
+          // We will let the regular move checks handle this later.
+          if (kDebugging) std::cout << "    INFO: Die (" << move.die << ") < pips needed (" << pips_needed << ") for bear-off. Will check as regular move." << std::endl;
+          // Continue to regular move checks
+      } else { // move.die > pips_needed
+          // If die roll is higher than needed, check if it's the furthest checker.
+          int furthest_pos = FurthestCheckerInHome(player);
+          if (move.pos != furthest_pos) {
+               if (kDebugging) std::cout << "    INVALID: Cannot use higher die roll (" << move.die << ") for non-furthest checker (pos=" << move.pos << ", furthest=" << furthest_pos << ")." << std::endl;
+               return false; // Invalid bear-off (higher roll on non-furthest)
+          }
+          // Valid bear-off move using a higher die roll on the furthest checker.
+          if (kDebugging) std::cout << "    VALID: Higher die bear off check passed (pos=" << move.pos << ", die=" << move.die << ")." << std::endl;
+          return true;
+      }
   }
+
+  // --- Regular Move Check (or move within home board if bear-off conditions not met) ---
+  // Check if the calculated destination is off the board (and wasn't a valid bear-off)
+  bool is_target_off_board = IsOff(player, to_pos);
+  if (is_target_off_board) {
+       if (kDebugging) std::cout << "    INVALID: Calculated to_pos (" << to_pos << ") is off-board, but not a valid bear-off." << std::endl;
+       return false;
+  }
+  // Check destination validity (must be within 0-23)
+  if (to_pos < 0 || to_pos >= kNumPoints) {
+       if (kDebugging) std::cout << "    INVALID: Calculated to_pos (" << to_pos << ") is outside valid board range [0, 23]." << std::endl;
+       return false;
+  }
+
+  // Check opponent occupancy at the calculated on-board destination.
+  // ADDED DEBUG LOGGING HERE
+  if (player == 1 && move.pos == 11 && move.die == 1) {
+      std::cout << "[DEBUG ILM CHECK] player=" << player
+                << ", move.pos=" << move.pos
+                << ", move.die=" << move.die
+                << ", to_pos=" << to_pos
+                << ", Opponent(player)=" << Opponent(player)
+                << ", board(Opponent(player), to_pos)=" << board(Opponent(player), to_pos)
+                << std::endl;
+  }
+  // ADDED DEBUG LOGGING for NoLandingOnOpponentTest case
+  if (player == 1 && move.pos == 15 && move.die == 3) {
+      std::cout << "[DEBUG NLO CHECK] player=" << player
+                << ", move.pos=" << move.pos
+                << ", move.die=" << move.die
+                << ", to_pos=" << to_pos
+                << ", Opponent(player)=" << Opponent(player)
+                << ", board(Opponent(player), to_pos)=" << board(Opponent(player), to_pos)
+                << std::endl;
+  }
+  if (board(Opponent(player), to_pos) > 0) {
+    if (kDebugging) std::cout << "[DEBUG ICMV " << player << "] Invalid move: Opponent block at " << to_pos << " for move " << move.pos << " -> " << to_pos << std::endl;
+    return false;
+  }
+
+  // Check Head Rule
+  if (IsHeadPos(player, move.pos)) {
+      // Ensure GetToPos calculated correctly for head moves initially
+      SPIEL_CHECK_TRUE(to_pos >= 0 && to_pos < kNumPoints);
+      if (!IsLegalHeadMove(player, move.pos, moved_from_head_this_sequence)) {
+          if (kDebugging) std::cout << "    INVALID: Head rule violation (already moved from head this sequence)." << std::endl;
+          return false;
+      }
+  }
+
+  // ADDED CHECK: Black cannot move past index 12 once inside home
+  if (player == kOPlayerId && move.pos >= kBlackHomeStart && to_pos < kBlackHomeStart) {
+       if (kDebugging) std::cout << "    INVALID: Black cannot move past index 12 from home (pos=" << move.pos << ", to=" << to_pos << ")." << std::endl;
+       return false;
+  }
+
+  // Check bridge rule
+  if (WouldFormBlockingBridge(player, move.pos, to_pos)) {
+    if (kDebugging) std::cout << "    INVALID: Move would form illegal bridge." << std::endl;
+    return false; // Move would create an illegal bridge
+  }
+
+  if (kDebugging) std::cout << "    VALID: Regular move check passed (pos=" << move.pos << ", to=" << to_pos << ", die=" << move.die << ")." << std::endl;
+  return true; // Regular move (or move within home) is valid
 }
 
 bool LongNardeState::ValidateAction(Action action) const {

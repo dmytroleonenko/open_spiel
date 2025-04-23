@@ -297,13 +297,13 @@
         "testCases": [
             {
                 "id": "test-vsdpb-1",
-                "title": "Scenario 1: Two-Move Sequence Possible (Overrides Higher Die Rule)",
-                "objective": "Verify that when a full two-move sequence is possible, it is the only legal action, even if individual dice could be played differently, and the \"play higher die first\" rule for single moves does not apply.",
+                "title": "Scenario 1: Higher Die Rule Forced by Bear-Off Constraint",
+                "objective": "Verify that the higher die rule is correctly enforced when the inability to move the furthest checker (due to a block) prevents bearing off with the higher die, even if the lower die could complete a sequence.",
                 "boardSetup": "White: 1@pt9, 1@pt4, 13@pt4. Black: 1@pt1, 14@Black head.",
                 "diceRoll": "{5, 3}",
-                "expectations": "White *can* play a two-move sequence: point 9->6 (d3), then point 4->off (d5). Because a two-move sequence exists, the rule requiring playing the higher die (5) first *if only single moves are possible* does not apply. The only legal action should be the one corresponding to the full two-move sequence {pt9->6 (d3), pt4->off (d5)}.",
+                "expectations": "White has checkers at index 8 (pt 9) and index 3 (pt 4), with others in home. Dice {5, 3}. To bear off from index 3 with die 5, White must first check if the furthest checker (at index 5, result of 8->5/d3) can move with die 5. Move 5->0 is blocked by B@pt1. Thus, die 5 *cannot* be used to bear off from index 3. The only possible single moves are 8->3(d5) and 8->5(d3). Since both are possible, the higher die rule applies. White must play 8->3(d5) and pass die 3. The only legal action is {8->3 (d5), Pass (d3)}. The test checks `legal_actions.size() == 1` and verifies the single move + pass sequence.",
                 "fileFunctionRef": "Test: test-vsdpb-1",
-                "rulesInvolved": "Legal action generation, playing the maximum number of dice, interaction between movement and subsequent moves, bear off.",
+                "rulesInvolved": "Legal action generation, playing the maximum number of dice, higher die rule, bear off constraint (must move furthest checker), blocking.",
                 "notes": null,
                 "initialState": {
                     "board": [

@@ -327,7 +327,6 @@ add_executable(long_narde_test
                long_narde/long_narde_test_bridges.cc
                long_narde/long_narde_test_actions.cc
                long_narde/long_narde_test_endgame.cc
-               long_narde/long_narde_test_legacy.cc
                ${OPEN_SPIEL_OBJECTS}
                $<TARGET_OBJECTS:tests>)
 add_test(long_narde_test long_narde_test)

@@ -13,12 +13,12 @@ namespace long_narde {
 //StartFunction: TestBridgeFormation
 void TestBridgeFormation() {
   std::shared_ptr<const Game> game = LoadGame("long_narde");
-  std::unique_ptr<State> state = game->NewInitialState();
-  auto lnstate = static_cast<LongNardeState*>(state.get());
 
   //StartTest: test-bridgetest-1
   // Bridge formation is legal if opponent has no checkers on board.
   {
+    std::unique_ptr<State> state = game->NewInitialState();
+    auto lnstate = static_cast<LongNardeState*>(state.get());
     std::vector<int> white_row(kNumPoints, 0);
     white_row[0] = 2; white_row[1] = 1; white_row[2] = 1; white_row[3] = 0; white_row[4] = 2; white_row[5] = 1;
     std::vector<int> black_row(kNumPoints, 0);
@@ -33,6 +33,8 @@ void TestBridgeFormation() {
   //StartTest: test-bridgetest-2
   // Bridge formation is legal if opponent has a checker ahead of the bridge.
   {
+    std::unique_ptr<State> state = game->NewInitialState();
+    auto lnstate = static_cast<LongNardeState*>(state.get());
     std::vector<int> white_row(kNumPoints, 0);
     white_row[0] = 2; white_row[1] = 1; white_row[2] = 1; white_row[3] = 0; white_row[4] = 2; white_row[5] = 1;
     std::vector<int> black_row(kNumPoints, 0);
@@ -49,6 +51,8 @@ void TestBridgeFormation() {
   //StartTest: test-bridgetest-3
   // Bridge formation is illegal if opponent is trapped behind the bridge.
   {
+    std::unique_ptr<State> state = game->NewInitialState();
+    auto lnstate = static_cast<LongNardeState*>(state.get());
     std::vector<int> white_row(kNumPoints, 0);
     white_row[0] = 2; white_row[1] = 1; white_row[2] = 1; white_row[3] = 0; white_row[4] = 2; white_row[5] = 1;
     std::vector<int> black_row(kNumPoints, 0);
@@ -65,6 +69,8 @@ void TestBridgeFormation() {
   //StartTest: test-bridgetest-4
   // Black cannot form a bridge if all White checkers are behind it.
   {
+    std::unique_ptr<State> state = game->NewInitialState();
+    auto lnstate = static_cast<LongNardeState*>(state.get());
     std::vector<int> black_row(kNumPoints, 0);
     black_row[12] = 2; black_row[13] = 1; black_row[14] = 1;
     black_row[16] = 1; black_row[17] = 2;
@@ -85,6 +91,8 @@ void TestBridgeFormation() {
   //StartTest: test-bridgetest-5
   // Black can form a bridge if White has a checker ahead of the bridge.
   {
+    std::unique_ptr<State> state = game->NewInitialState();
+    auto lnstate = static_cast<LongNardeState*>(state.get());
     std::vector<int> black_row(kNumPoints, 0);
     black_row[12] = 2; black_row[13] = 1; black_row[14] = 1;
     black_row[16] = 1; black_row[17] = 2;
@@ -106,6 +114,8 @@ void TestBridgeFormation() {
   //StartTest: test-bridgetest-6
   // White cannot form a wrap-around bridge if Black is behind.
   {
+    std::unique_ptr<State> state = game->NewInitialState();
+    auto lnstate = static_cast<LongNardeState*>(state.get());
     std::vector<int> white_row(kNumPoints, 0);
     white_row[23]=10; white_row[0]=1; white_row[1]=1; white_row[2]=1; white_row[3]=1;
     white_row[5]=1;
@@ -137,11 +147,11 @@ void TestBridgeFormation() {
   }
   //EndTest: test-bridgetest-6
 
-
-
   //StartTest: test-bridgetest-8
   // White forms a legal bridge with opponent relief (two-step sequence).
   {
+    std::unique_ptr<State> state = game->NewInitialState();
+    auto lnstate = static_cast<LongNardeState*>(state.get());
     std::vector<int> white_row(kNumPoints, 0);
     white_row[9] = 2; white_row[10] = 2; white_row[11] = 1; white_row[12] = 10;
     std::vector<int> black_row(kNumPoints, 0);

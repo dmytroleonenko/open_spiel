@@ -190,7 +190,8 @@ void RunRandomSimTests(int argc, char** argv) {
 }
 //EndTest: test-runsimtests-1
 //EndFunction: RunRandomSimTests
-
+} // namespace long_narde
+} // namespace open_spiel
 //StartFunction: main
 //StartTest: test-main-1
 int main(int argc, char** argv) {

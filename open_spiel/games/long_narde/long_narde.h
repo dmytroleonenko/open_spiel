@@ -246,7 +246,6 @@ class LongNardeState : public State {
   // Path and position utilities
   int GetPathIndex(int player, int real_pos) const;
   bool IsAhead(int player, int checker_pos_idx, int reference_pos_idx) const;
-  int GetBlockPathStartRealPos(int player_for_path, int block_lowest_real_idx) const;
 
   // Virtual coordinate system for bridge legality checking
   int GetVirtualCoords(int player, int real_pos) const;
@@ -283,16 +282,6 @@ class LongNardeState : public State {
 
   // Helper function: checks if 'player' has any checker in [startPos, endPos] inclusive.
   bool HasAnyChecker(int player, int startPos, int endPos) const;
-
-  // Translates a real board position to a virtual coordinate for path comparison.
-  int GetVirtualCoords(int player, int real_pos) const;
-
-  // Get the 0-based index along the player's path
-  int GetPathIndex(int player, int real_pos) const;
-
-  // Check if checker_pos is ahead of reference_pos on player's path
-  bool IsAhead(int player, int checker_pos, int reference_pos) const;
-
   // Directly expose board_ for testing/debugging
   std::vector<std::vector<int>> board_;  // Checkers for each player on points.
   std::vector<int> dice_; // Current dice roll.
@@ -393,6 +382,25 @@ inline std::ostream& operator<<(std::ostream& os, const ScoringType& type) {
   return os;
 }
 
+inline std::ostream& operator<<(std::ostream& os, const CheckerMove& move) {
+    os << "CheckerMove(from=" << move.pos << ", to=" << move.to_pos << ")";
+    return os;
+}
+
+inline std::ostream& operator<<(std::ostream& os, const std::set<CheckerMove>& moves) {
+  os << "{" << moves.size() << " moves: ";
+  bool first = true;
+  for (const auto& move : moves) {
+    if (!first) {
+      os << ", ";
+    }
+    os << move;
+    first = false;
+  }
+  os << "}";
+  return os;
+}
+
 class LongNardeGame : public Game {
  public:
   explicit LongNardeGame(const GameParameters& params);
@@ -426,14 +434,15 @@ class LongNardeGame : public Game {
 };
 
 // ===== Constants =====
-constexpr int kNumPlayers = 2;
-constexpr int kNumCheckersPerPlayer = 15;
-constexpr int kNumPoints = 24;
-constexpr int kBearOffPos = -1; // Special value for bearing off
-constexpr int kPassPos = -2;    // Special value for a pass move component
-constexpr int kPassDieValue = 1; // Placeholder die value consumed by pass
-constexpr int kMaxGameLengthEst = 300; // Estimated max moves for history reservation
-
+// Removed duplicate constant definitions
+// constexpr int kNumPlayers = 2;
+// constexpr int kNumCheckersPerPlayer = 15;
+// constexpr int kNumPoints = 24;
+// constexpr int kBearOffPos = -1; // Special value for bearing off
+// constexpr int kPassPos = -2;    // Special value for a pass move component
+// constexpr int kPassDieValue = 1; // Placeholder die value consumed by pass
+// constexpr int kMaxGameLengthEst = 300; // Estimated max moves for history reservation
+inline constexpr const int kMaxGameLengthEst = 300; // Added missing constant definition
 
 }  // namespace long_narde
 }  // namespace open_spiel

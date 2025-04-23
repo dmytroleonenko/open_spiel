@@ -110,8 +110,15 @@ CheckerMove DecodeSingleDigit(int digit, Player player, const LongNardeState* st
     int die = (digit % 6) + 1;
     // Need the state context to calculate to_pos
     SPIEL_CHECK_TRUE(state != nullptr);
-    int to_pos = state->GetToPos(player, pos, die);
-    return CheckerMove(pos, to_pos, die);
+    // Check if this move would result in a bear-off
+    int calculated_to_pos = state->GetToPos(player, pos, die);
+    if (calculated_to_pos < 0) {
+      // If it's any type of bear-off, return with kBearOffPos
+      return CheckerMove(pos, kBearOffPos, die);
+    } else {
+      // Otherwise, it's a regular move on the board
+      return CheckerMove(pos, calculated_to_pos, die);
+    }
   }
 }
 
@@ -480,17 +487,25 @@ std::vector<CheckerMove> LongNardeState::SpielMoveToCheckerMoves(
         // Decode a normal move.
         int pos = digit / 6;        // Extract source position (0-23)
         int die = (digit % 6) + 1;  // Extract die value (1-6)
-        // Calculate the destination position.
-        int to_pos = GetToPos(player, pos, die);
-        // Return the reconstructed normal move.
-        return CheckerMove(pos, to_pos, die);
+
+        // --- Fix for Bear-Off Target Position ---
+        // Check if this move would result in a bear-off
+        int calculated_to_pos = GetToPos(player, pos, die);
+        if (calculated_to_pos < 0) {
+          // If it's any type of bear-off, return with kBearOffPos
+          return CheckerMove(pos, kBearOffPos, die);
+        } else {
+          // Otherwise, it's a regular move on the board
+          return CheckerMove(pos, calculated_to_pos, die);
+        }
+        // --- End Fix ---
       }
     };
 
     // Decode the two digits using the helper.
     std::vector<CheckerMove> cmoves;
-    cmoves.push_back(DecodeSingleDigit(dig0, player, this));
-    cmoves.push_back(DecodeSingleDigit(dig1, player, this));
+    cmoves.push_back(decode_digit(dig0));
+    cmoves.push_back(decode_digit(dig1));
 
     return cmoves;
   }

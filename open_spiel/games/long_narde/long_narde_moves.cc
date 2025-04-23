@@ -32,17 +32,31 @@ int LongNardeState::GetToPos(int player, int from_pos, int pips) const {
     int target_idx = from_pos - pips;
     // Let IsValidCheckerMove determine if target_idx < 0 means bear off.
     return target_idx;
-  } else { // kOPlayerId (Black path: 11 -> 12 ... 23 -> 0 -> ... 11) should be decreasing index: 11 -> 10 ... 0 -> 23 -> ... 12
+  } else { // kOPlayerId (Black path: 11 -> 0 -> 23 -> ... -> 12)
+    // Check if the move starts within or reaches the bear-off zone (home board 12-17)
+    if (from_pos >= kBlackHomeStart && from_pos <= kBlackHomeEnd) {
+        int pips_needed_to_bear_off = (from_pos - kBlackHomeStart + 1);
+        if (pips >= pips_needed_to_bear_off) {
+            return kBearOffPos; // Sufficient pips to bear off
+        }
+        // Otherwise, it's a move within the home board, fall through to normal calculation
+    }
+    
+    // Normal move calculation (CCW, wrap 0->23)
     int current_pos = from_pos;
     for (int i = 0; i < pips; ++i) {
-      if (current_pos == 0) { // Wrap around from Point 1 (index 0) to Point 24 (index 23)
+      if (current_pos == 0) {
         current_pos = 23;
       } else {
-        current_pos--; // Decrement index normally
+        current_pos--;
       }
+      // The check for starting within the home board (`if (from_pos >= kBlackHomeStart...)`)
+      // correctly handles all valid bear-off scenarios for Black, as bearing off
+      // is only possible when the move originates from within the home region (12-17).
     }
-    // Return the final calculated position.
-    // Let IsValidCheckerMove determine if this constitutes a bear-off.
+    // Final position after normal movement.
+    SPIEL_CHECK_GE(current_pos, 0);
+    SPIEL_CHECK_LT(current_pos, kNumPoints);
     return current_pos;
   }
 }

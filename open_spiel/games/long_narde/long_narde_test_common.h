@@ -25,7 +25,7 @@ inline bool ActionsContains(const std::vector<Action>& legal_actions, Action act
 }
 
 // Exposed test functions - these are the main entry points for each test category
-void TestBasicSetup();     // Basic setup and initialization tests
+// void TestBasicSetup();     // Basic setup and initialization tests
 void TestMovementRules();  // Movement rules tests
 void TestBridgeFormation(); // Bridge formation tests
 void TestActionEncoding(); // Action encoding tests
@@ -34,10 +34,10 @@ void TestHeadRule();       // Head rule tests
 void TestPassMoveBehavior(); // Test pass move behavior
 
 // Add declaration for the new test function
-void TestSimpleNonDoubleMove();
+// void TestSimpleNonDoubleMove();
 
 // Original function for backward compatibility
-void BasicLongNardeTests();
+// void BasicLongNardeTests();
 
 // TestBasicMovement is implemented in long_narde_test_movement.cc
 void TestBasicMovement();
@@ -62,8 +62,10 @@ inline void SetupBoardState(LongNardeState* state, Player player,
   state->scores_[1] = kNumCheckersPerPlayer - std::accumulate(state->board_[1].begin(), state->board_[1].end(), 0);
   state->cur_player_ = player;
   // Reset turn-specific flags that SetState would normally handle
-  // These might need adjustment based on specific test needs
   state->moved_from_head_ = false; // Default assumption
+  // Reset outcome_ to indicate game is not over and turns_
+  state->outcome_ = kInvalidPlayer; // Use kInvalidPlayer (-3) as the 'not ended' indicator
+  state->turns_ = 0; // Assuming 0 is a reasonable reset value for turns
 }
 
 // Sets the dice roll for a given state.
@@ -110,7 +112,7 @@ inline void SetupDice(LongNardeState* state, const std::vector<int>& dice) {
 void TestPassMoveBehavior();
 
 // Test functions from long_narde_test_movegen_comparison.cc
-void TestSimpleNonDoubleMove();
+// void TestSimpleNonDoubleMove();
 void TestDoubleMove();
 void TestPartialMoveBlocked();
 

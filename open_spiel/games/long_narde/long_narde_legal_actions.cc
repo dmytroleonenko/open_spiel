@@ -236,7 +236,13 @@ std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player, bool move
             // Use the checker's position (pos) as the starting point
             CheckerMove current_move(pos, to_pos, die_value); // Create the move struct
 
-            // ADDED: Log before validation call
+            // If the calculated to_pos indicates any type of bear-off (is < 0),
+            // standardize it to kBearOffPos for consistency before validation/insertion.
+            if (current_move.to_pos < 0) {
+                current_move.to_pos = kBearOffPos;
+            }
+            // --- End Fix ---
+
             if (kDebugging && player == 1 && pos == 11 && die_value == 1) {
                 std::cout << "[DEBUG GAHM PRE-CHECK] player=" << player << ", pos=" << pos
                           << ", die=" << die_value << ", to_pos=" << to_pos
