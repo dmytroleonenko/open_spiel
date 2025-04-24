@@ -202,9 +202,12 @@ std::vector<CheckerMove> DecodeDoubles(Action spiel_move, Player player, const L
       SPIEL_CHECK_LT(pos, kNumPoints);
       // Calculate the destination position using the state context.
       SPIEL_CHECK_TRUE(state != nullptr);
-      int to_pos = state->GetToPos(player, pos, die);
-      // Add the decoded move to the list.
-      cmoves.push_back(CheckerMove(pos, to_pos, die));
+      int calculated_to_pos = state->GetToPos(player, pos, die);
+      if (calculated_to_pos < 0) {
+        cmoves.push_back(CheckerMove(pos, kBearOffPos, die));
+      } else {
+        cmoves.push_back(CheckerMove(pos, calculated_to_pos, die));
+      }
     } else {
       // Encoded value 0 means this move slot was unused or a pass.
       // We don't add pass moves explicitly here; the absence indicates pass/unused.
@@ -454,8 +457,13 @@ std::vector<CheckerMove> LongNardeState::SpielMoveToCheckerMoves(
         cmoves.push_back(CheckerMove(kPassPos, kPassPos, die_val));
       } else {
         // Reconstruct a normal move. Calculate the destination position.
-        int to_pos = GetToPos(player, pos, die_val);
-        cmoves.push_back(CheckerMove(pos, to_pos, die_val));
+        int calculated_to_pos = GetToPos(player, pos, die_val);
+        // Map negative positions to bear-off sentinel.
+        if (calculated_to_pos < 0) {
+          cmoves.push_back(CheckerMove(pos, kBearOffPos, die_val));
+        } else {
+          cmoves.push_back(CheckerMove(pos, calculated_to_pos, die_val));
+        }
       }
     }
     // Note: The returned vector might contain more than the actual number of

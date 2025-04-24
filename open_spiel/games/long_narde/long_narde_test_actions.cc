@@ -411,6 +411,7 @@ void PassMoveBehaviorTest() {
     std::vector<std::vector<int>> valid_moves_board(2, std::vector<int>(kNumPoints, 0));
     valid_moves_board[kXPlayerId][1] = 1;
     valid_moves_board[kXPlayerId][3] = 1;
+    valid_moves_board[kOPlayerId][12] = 15;
     SetupBoardState(lnstate, kXPlayerId, valid_moves_board);
     SetupDice(lnstate, {1, 3, 0, 0});
     auto legal_actions = lnstate->LegalActions();
@@ -613,12 +614,16 @@ void SingleCheckerBearOffTest() {
     for(const auto& m : movesW) { if(m.pos == 0 && m.die == 6 && m.to_pos == kBearOffPos) found_die6W = true; }
     SPIEL_CHECK_TRUE(found_die6W);
   }
+  //EndTest: test-scbo-1w
+
+  //StartTest: test-scbo-1b
   // Black Test (Checker at pos 12)
   {
     std::unique_ptr<State> state = game->NewInitialState();
     auto lnstate = static_cast<LongNardeState*>(state.get());
     std::vector<std::vector<int>> boardB(2, std::vector<int>(kNumPoints, 0));
     boardB[kOPlayerId][12] = 1;
+    boardB[kXPlayerId][0] = 15;
     SetupBoardState(lnstate, kOPlayerId, boardB);
     SetupDice(lnstate, {1, 6, 0, 0});
     auto legal_actionsB = lnstate->LegalActions();
@@ -628,14 +633,16 @@ void SingleCheckerBearOffTest() {
     for(const auto& m : movesB) { if(m.pos == 12 && m.die == 6 && m.to_pos == kBearOffPos) found_die6B = true; }
     SPIEL_CHECK_TRUE(found_die6B);
   }
-  //EndTest: test-scbo-1w
+  //EndTest: test-scbo-1b
+
   // --- Scenario 2: Only One Die Playable ---
-  //StartTest: test-scbo-1b
+  //StartTest: test-scbo-2b1
   {
     std::unique_ptr<State> state = game->NewInitialState();
     auto lnstate = static_cast<LongNardeState*>(state.get());
     std::vector<std::vector<int>> boardB(2, std::vector<int>(kNumPoints, 0));
     boardB[kOPlayerId][12] = 1;
+    boardB[kXPlayerId][23] = 15;
     SetupBoardState(lnstate, kOPlayerId, boardB);
     SetupDice(lnstate, {1, 3, 0, 0});
     auto legal_actionsB = lnstate->LegalActions();
@@ -650,13 +657,14 @@ void SingleCheckerBearOffTest() {
     SPIEL_CHECK_FALSE(found_die1B);
     SPIEL_CHECK_TRUE(found_die3B);
   }
-  //EndTest: test-scbo-1b
+  //EndTest: test-scbo-2b1
   //StartTest: test-scbo-2b2
   {
     std::unique_ptr<State> state = game->NewInitialState();
     auto lnstate = static_cast<LongNardeState*>(state.get());
     std::vector<std::vector<int>> boardB_pos14(2, std::vector<int>(kNumPoints, 0));
     boardB_pos14[kOPlayerId][14] = 1;
+    boardB_pos14[kXPlayerId][23] = 15;
     SetupBoardState(lnstate, kOPlayerId, boardB_pos14);
     SetupDice(lnstate, {1, 3, 0, 0});
     auto legal_actionsB = lnstate->LegalActions();

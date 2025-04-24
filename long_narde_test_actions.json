@@ -253,7 +253,7 @@
                 "id": "test-passmovebehaviortest-2",
                 "title": "Test Case 2: Valid Moves Available",
                 "objective": "Verify that if at least one legal move is possible, the double pass action is *not* included in the legal actions list.",
-                "boardSetup": "White: 1 checker @ point 2, 1 checker @ point 4. Black: board empty.",
+                "boardSetup": "White: 1 checker @ point 2, 1 checker @ point 4. Black: 15 checkers @ point 13.",
                 "diceRoll": "{1, 3}",
                 "expectations": "White has valid moves (e.g., point 2(pos 1)->1(pos 0) with d1). The list of legal actions must be non-empty (`size() > 0`) and must *not* contain the specific double pass action corresponding to dice {1, 3} (`pass_found == false`).",
                 "fileFunctionRef": "Test: test-passmovebehaviortest-2",
@@ -262,9 +262,9 @@
                 "initialState": {
                     "board": [
                         [0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-                        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+                        [0,0,0,0,0,0,0,0,0,0,0,0,15,0,0,0,0,0,0,0,0,0,0,0]
                     ],
-                    "scores": [13, 15],
+                    "scores": [13, 0],
                     "playerToMove": 0,
             "dice": [1, 3]
                 }
@@ -366,26 +366,44 @@
                  }
             },
             {
-                "id": "test-scbo-2b1",
+                "id": "test-scbo-1b",
                 "title": "Scenario 1: Higher Die Rule (Bear Off, Both Playable) - Black",
-                "objective": "Verify higher die rule for Black bearing off a single checker, when both dice are sufficient.",
-                "boardSetup": "Black: 1@pt13 (needs 1). White: 15@head.",
+                "objective": "Verify higher die rule is applied when bearing off a single checker for Black, and both dice are sufficient (one exact, one higher).",
+                "boardSetup": "Black: 1@pt13 (needs 1). White: 15@pt1.",
                 "diceRoll": "{1, 6}",
-                "expectations": "Black has 1 checker at point 13 (pos 12), which needs 1 pip to bear off. Both die 1 (exact) and die 6 (higher) can bear off the checker. The higher die rule applies. The only legal action (`legal_actionsB.size() == 1`) must use die 6 ({pt13/pos12 -> off (d6)}), forcing a pass with die 1. The C++ check verifies `found_die6B == true` and `found_die1B == false`.",
-                "fileFunctionRef": "Test: test-scbo-2b1",
-                "rulesInvolved": "Bear off (exact or higher roll), higher die rule for single moves.",
+                "expectations": "Black needs 1 pip to bear off from point 13 (pos 12). Both die 1 (exact) and die 6 (higher) can bear off the checker. The higher die rule applies. The only legal action (`legal_actionsB.size() == 1`) must use die 6 ({pt13/pos12 -> off (d6)}), forcing a pass with die 1. The C++ check verifies `found_die6B == true`.",
+                "fileFunctionRef": "Test: test-scbo-1b",
+                "rulesInvolved": "Bear off (exact or higher roll), higher die rule for single moves, Black's direction.",
                 "notes": null,
                 "initialState": {
                      "board": [
-                       
-                         [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15],
-                        
+                         [15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
                          [0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0]
                      ],
                      "scores": [15, 14],
                      "playerToMove": 1,
                      "dice": [1, 6]
                  }
+            },
+            {
+                "id": "test-scbo-2b1",
+                "title": "Scenario 2: Higher Die Rule (Bear Off Last Checker, Both Sufficient) - Black",
+                "objective": "Verify that when bearing off the last checker for Black, if both dice are sufficient (one exact, one higher), the higher die rule forces the higher die to be played.",
+                "boardSetup": "Black: 1 checker at Point 13 (index 12). White: 15 checkers at head (Point 24, index 23).",
+                "diceRoll": "{1, 3}",
+                "expectations": "Black needs 1 pip to bear off from Point 13 (index 12). Both die 1 (exact) and die 3 (higher) are sufficient. Since it's the last checker and both dice can bear it off, the higher die rule applies. Black must play the higher die (3). The only legal action is {pt13/pos12 -> off (d3), Pass (d1)}. The test verifies this by checking `legal_actionsB.size() == 1`, ensuring the move uses die 3 (`found_die3B == true`), and does not use die 1 (`found_die1B == false`).",
+                "fileFunctionRef": "Test: test-scbo-2b1",
+                "rulesInvolved": "Bear off (last checker, exact or higher), higher die rule (forced choice), forced pass, Black's direction.",
+                "notes": "Contrasts with test-scbo-1b, verifying the higher die rule when both are sufficient.",
+                "initialState": {
+                    "board": [
+                        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15],
+                        [0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0]
+                    ],
+                    "scores": [0, 14],
+                    "playerToMove": 1,
+                    "dice": [1, 3]
+                }
             },
             {
                 "id": "test-scbo-2b2",

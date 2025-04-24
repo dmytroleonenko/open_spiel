@@ -92,7 +92,7 @@ inline constexpr const int kNumOffPosHumanReadable = -2;
 inline constexpr const int kNumCheckersPerPlayer = 15;
 
 // Debugging flag
-inline constexpr const bool kDebugging = true;
+inline constexpr const bool kDebugging = false;
 
 // Head positions for each player
 inline constexpr const int kWhiteHeadPos = 23;  // Point 24 (0-indexed)

@@ -182,6 +182,23 @@ std::vector<std::vector<CheckerMove>> LongNardeState::GenerateMoveSequences(
   std::sort(movelist.begin(), movelist.end());
   movelist.erase(std::unique(movelist.begin(), movelist.end()), movelist.end());
 
+  // Add pass move sequence if no moves possible
+  if (movelist.empty()) {
+    const auto& initial = this->InitialDice();
+    std::vector<CheckerMove> pass_seq;
+    if (initial.size() >= 2 && initial[0] == initial[1]) {
+      pass_seq = { CheckerMove(kPassPos, kPassPos, initial[0]),
+                   CheckerMove(kPassPos, kPassPos, initial[0]) };
+    } else if (initial.size() >= 2) {
+      pass_seq = { CheckerMove(kPassPos, kPassPos, initial[0]),
+                   CheckerMove(kPassPos, kPassPos, initial[1]) };
+    } else if (!initial.empty()) {
+      pass_seq = { CheckerMove(kPassPos, kPassPos, initial[0]),
+                   CheckerMove(kPassPos, kPassPos, initial[0]) };
+    }
+    movelist.push_back(pass_seq);
+  }
+
   // DEBUG: Print movelist contents after generation
   if (kDebugging) {
     std::cout << "DEBUG GenerateMoveSequences (Player " << player << "): Movelist size = " << movelist.size() << " (after sort/unique)" << std::endl;
@@ -316,7 +333,7 @@ int LongNardeState::IterativeLegalMoves(
     /* int max_moves_param - Removed */) const {
 
   // *** ADDED: Unconditional Entry Log ***
-  std::cerr << "[DEBUG ILM ENTRY] IterativeLegalMoves function entered.\\n" << std::flush;
+  std::cerr << "[DEBUG ILM ENTRY] IterativeLegalMoves function entered.\n" << std::flush;
   // *** END Unconditional Entry Log ***
 
   // Safety limits (reuse from previous recursive version or define new)
@@ -517,11 +534,39 @@ int LongNardeState::IterativeLegalMoves(
           for(const auto& m : current_sequence) if(m.pos != kPassPos) non_pass++;
           max_non_pass_found = std::max(max_non_pass_found, non_pass);
       } else if (half_moves.size() == 1 && half_moves.begin()->pos == kPassPos) {
-          // ADDED: Log placeholder pass sequence
-          if (kDebugging) {
-              std::cout << "[DEBUG ILM ADD SEQ PASS PLACEHOLDER] Depth=" << current_depth << ": {-1,-1,1}" << std::endl;
+          // This means GenerateAllHalfMoves found no valid checker moves and added a placeholder pass.
+          // Construct the actual pass sequence using the initial dice for this turn.
+          std::vector<CheckerMove> actual_pass_sequence;
+          // Access initial_dice_ from the *original* state (this) as current_state might have changed dice
+          const std::vector<int>& initial_dice = this->InitialDice();
+
+          SPIEL_CHECK_GE(initial_dice.size(), 2); // Ensure we have dice info
+
+          // Handle Doubles Pass (needs 4 pass moves with the same die)
+          if (initial_dice.size() >= 2 && initial_dice[0] == initial_dice[1]) {
+             int die_value = initial_dice[0];
+             // For doubles pass, encode just two pass moves with the die value.
+             // The encoding/decoding logic handles the 4-move implication.
+             actual_pass_sequence.push_back({kPassPos, kPassPos, die_value});
+             actual_pass_sequence.push_back({kPassPos, kPassPos, die_value});
+          } else if (initial_dice.size() >= 2) {
+          // Handle Non-Doubles Pass (needs 2 pass moves, one for each die)
+             actual_pass_sequence.push_back({kPassPos, kPassPos, initial_dice[0]});
+             actual_pass_sequence.push_back({kPassPos, kPassPos, initial_dice[1]});
           }
-          moves_list->push_back({CheckerMove{kPassPos, kPassPos, 1}}); // Changed from insert; Use placeholder
+          // Else: Should not happen if dice_ were properly set earlier
+
+          // ADDED: Log the *actual* pass sequence being added
+          if (kDebugging) {
+              std::stringstream ss_pass_actual;
+              ss_pass_actual << "[DEBUG ILM ADD SEQ PASS ACTUAL] Depth=" << current_depth << ":";
+              for(const auto& m : actual_pass_sequence) { ss_pass_actual << " {" << m.pos << "," << m.to_pos << "," << m.die << "}"; }
+              std::cout << ss_pass_actual.str() << std::endl;
+          }
+          // Only add if a valid pass sequence was constructed
+          if (!actual_pass_sequence.empty()) {
+            moves_list->push_back(actual_pass_sequence); // Add the correctly formed sequence
+          }
       } else {
           // No moves possible from start, or other terminal condition with empty sequence
            //if (kDebugging) std::cout << "  Iterative: End of path (no moves from start or other). Not adding." << std::endl;

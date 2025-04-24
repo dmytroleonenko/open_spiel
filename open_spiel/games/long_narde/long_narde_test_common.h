@@ -64,7 +64,6 @@ inline void SetupBoardState(LongNardeState* state, Player player,
   // Reset turn-specific flags that SetState would normally handle
   state->moved_from_head_ = false; // Default assumption
   // Reset outcome_ to indicate game is not over and turns_
-  state->outcome_ = kInvalidPlayer; // Use kInvalidPlayer (-3) as the 'not ended' indicator
   state->turns_ = 0; // Assuming 0 is a reasonable reset value for turns
 }
 

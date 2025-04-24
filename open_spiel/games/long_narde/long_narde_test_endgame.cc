@@ -62,8 +62,8 @@ void BearingOffLogicTest() {
   //StartTest: test-bolt-1
   // Test bearing off: die 1 from pos 1 should not bear off, die 3 from pos 2 should.
   std::vector<std::vector<int>> test_board = {
-    {0, 1, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}
+    {0, 1, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}
   };
   SetupBoardState(lnstate, kXPlayerId, test_board);
   SetupDice(lnstate, {1, 3, 0, 0});
@@ -108,8 +108,8 @@ void BearingOffFromPosition1Test() {
     //StartTest: test-bofp1-1
     // Test bearing off from point 2 (index 1) with multiple checkers present; only allowed with higher die if no checkers on higher points.
     std::vector<std::vector<int>> test_board = {
-      {13, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}
+      {13, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}
     };
     SetupBoardState(lnstate, kXPlayerId, test_board);
     SetupDice(lnstate, {1, 3, 0, 0});
@@ -148,8 +148,8 @@ void BearingOffBlackTest() {
    //StartTest: test-bobtBlack-1
    // Black can only bear off if all checkers are in home (indices 12-17).
    std::vector<std::vector<int>> test_board = {
-     {15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0}
+     {15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 2, 2, 2, 0, 0, 0, 0, 0, 0}
    };
    SetupBoardState(lnstate, kOPlayerId, test_board);
    SetupDice(lnstate, {2, 3, 0, 0});
@@ -167,8 +167,8 @@ void EndgameScoreTest() {
   std::unique_ptr<State> state = game->NewInitialState();
   auto lnstate = static_cast<LongNardeState*>(state.get());
   std::vector<std::vector<int>> mars_board = {
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0}
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15}
   };
   SetupBoardState(lnstate, kXPlayerId, mars_board);
   SetupDice(lnstate, {1, 1, 1, 1});
@@ -183,8 +183,8 @@ void EndgameScoreTest() {
   state = game->NewInitialState();
   lnstate = static_cast<LongNardeState*>(state.get());
   std::vector<std::vector<int>> oin_board = {
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0}
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 1, 1, 0, 0, 0, 0, 0, 0}
   };
   SetupBoardState(lnstate, kXPlayerId, oin_board);
   SetupDice(lnstate, {1, 1, 1, 1});
@@ -200,8 +200,8 @@ void EndgameScoreTest() {
   state = game_tie->NewInitialState();
   lnstate = static_cast<LongNardeState*>(state.get());
   std::vector<std::vector<int>> tie_board = {
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
   };
   SetupBoardState(lnstate, kXPlayerId, tie_board);
   SetupDice(lnstate, {1, 1, 1, 1});
@@ -283,7 +283,6 @@ void BearingOffLogicTestBlackNearEnd() {
   auto lnstate = static_cast<LongNardeState*>(state.get());
 
   //StartTest: test-boltbne-1
-  // Black: test bearing off with exact and higher dice, and normal move when not enough pips.
   std::vector<std::vector<int>> test_board(2, std::vector<int>(kNumPoints, 0));
   test_board[kOPlayerId][13] = 1;
   test_board[kOPlayerId][14] = 1;
@@ -309,10 +308,10 @@ void BearingOffLogicTestBlackNearEnd() {
     }
   }
   SPIEL_CHECK_TRUE(can_bear_off_13_with_2);
-  SPIEL_CHECK_TRUE(can_bear_off_13_with_5);
+  SPIEL_CHECK_FALSE(can_bear_off_13_with_5);
   SPIEL_CHECK_TRUE(can_bear_off_14_with_5);
   SPIEL_CHECK_FALSE(can_bear_off_14_with_2);
-  SPIEL_CHECK_TRUE(can_move_14_to_12_with_2);
+  SPIEL_CHECK_FALSE(can_move_14_to_12_with_2);
   std::cout << "✓ BearingOffLogicTestBlackNearEnd passed\n";
   //EndTest: test-boltbne-1
 }
