@@ -144,6 +144,25 @@
                 "playerToMove": 0,
                 "dice": [6, 5]
              }
+        },
+        {
+            "id": "test-actionencodingtest-8",
+            "title": "Test 8: Doubles Bear-Off Decoding (Three Forced Bear-Offs + Pass)",
+            "objective": "Verify that when only three bear-offs are possible and the fourth die must be passed due to blocking, the encoding/decoding helpers correctly handle the legally generated sequence.",
+            "boardSetup": "White: 8 checkers at pos 1 (Point 2), 3 at pos 2 (Point 3), 4 at pos 3 (Point 4). Black: 1 checker at pos 0 (Point 1), 14 at pos 11 (Point 12). No overlap.",
+            "diceRoll": "{3, 3, 3, 3}",
+            "expectations": "LegalActions() returns a single action: three bear-offs from pos 2 and a pass. Decoding this action yields three bear-off CheckerMoves (to_pos == kBearOffPos) and one pass (pos == kPassPos).",
+            "fileFunctionRef": "Test: ActionEncodingTest8",
+            "rulesInvolved": "Action encoding/decoding, doubles branch, forced pass due to blocking, bearing-off mapping of negative indices.",
+            "initialState": {
+                "board": [
+                    [0, 8, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                ],
+                "scores": [0, 0],
+                "playerToMove": 0,
+                "dice": [3, 3, 3, 3]
+            }
         }
       ]
     },

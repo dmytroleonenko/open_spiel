@@ -197,7 +197,6 @@ set(GAME_SOURCES
   ultimate_tic_tac_toe/ultimate_tic_tac_toe.cc
   y/y.cc
   y/y.h
-  long_narde/long_narde.cc
   long_narde/long_narde.h
   long_narde/long_narde_state.cc
   long_narde/long_narde_moves.cc
@@ -223,7 +222,6 @@ target_include_directories (games PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Set debug symbols for long_narde files
 set_source_files_properties(
-  long_narde/long_narde.cc 
   long_narde/long_narde_state.cc
   long_narde/long_narde_moves.cc
   long_narde/long_narde_encoding.cc
