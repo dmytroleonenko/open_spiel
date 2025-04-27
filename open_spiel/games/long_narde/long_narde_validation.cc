@@ -207,7 +207,7 @@ namespace open_spiel
      * @param moved_from_head_this_sequence Boolean flag indicating if a checker has already moved from the head in the current sequence being explored.
      * @return True if the single checker move is valid, false otherwise.
      */
-    bool LongNardeState::IsValidCheckerMove(int player, const CheckerMove &move,
+    bool LongNardeState::LongNardeIsValidCheckerMove(int player, const LongNardeCheckerMove &move,
                                             bool moved_from_head_this_sequence) const
     {
       // Check basic move properties
@@ -306,7 +306,7 @@ namespace open_spiel
       // Perform consistency checks by decoding and simulating the action.
       try
       {
-        std::vector<CheckerMove> moves = SpielMoveToCheckerMoves(cur_player_, action);
+        std::vector<LongNardeCheckerMove> moves = LongNardeSpielMoveToCheckerMoves(cur_player_, action);
         // Simulate applying the moves on a cloned state to verify step-by-step validity
         std::unique_ptr<State> temp_state_ptr = this->Clone();
         LongNardeState *temp_state = dynamic_cast<LongNardeState *>(temp_state_ptr.get());
@@ -343,7 +343,7 @@ namespace open_spiel
           // For now, passing true here might be incorrect, as it assumes the head rule applies
           // independently for each step rather than sequentially.
           // TODO: Refactor ValidateAction to track moved_from_head state sequentially.
-          if (move.pos != kPassPos && !temp_state->IsValidCheckerMove(temp_state->cur_player_, move, /*moved_from_head_this_sequence=*/true))
+          if (move.pos != kPassPos && !temp_state->LongNardeIsValidCheckerMove(temp_state->cur_player_, move, /*moved_from_head_this_sequence=*/true))
           {
             sequence_valid = false;
             break;
@@ -351,8 +351,8 @@ namespace open_spiel
           // Apply the move to the temp state for the next check
           // No longer need to track usage locally;
           // ApplyCheckerMove below will update temp_state->dice_usage_count_
-          // Apply the move (ApplyCheckerMove handles marking dice used *within the temp state*)
-          temp_state->ApplyCheckerMove(temp_state->cur_player_, move);
+          // Apply the move (LongNardeApplyCheckerMove handles marking dice used *within the temp state*)
+          temp_state->LongNardeApplyCheckerMove(temp_state->cur_player_, move);
         }
 
         if (!sequence_valid)

@@ -76,7 +76,7 @@ namespace open_spiel
        * @param move The CheckerMove to encode.
        * @return The encoded integer digit.
        */
-      int EncodeSingleMove(const CheckerMove &move)
+      int EncodeSingleMove(const LongNardeCheckerMove &move)
       {
         if (move.pos == kPassPos)
         {
@@ -107,12 +107,12 @@ namespace open_spiel
        * @param state A pointer to the current game state (needed for GetToPos).
        * @return The decoded CheckerMove.
        */
-      CheckerMove DecodeSingleDigit(int digit, Player player, const LongNardeState *state)
+      LongNardeCheckerMove DecodeSingleDigit(int digit, Player player, const LongNardeState *state)
       {
         if (digit >= kPassOffset)
         { // Pass range (144-149)
           int die = (digit - kPassOffset) + 1;
-          return CheckerMove(kPassPos, kPassPos, die);
+          return LongNardeCheckerMove(kPassPos, kPassPos, die);
         }
         else
         { // Normal move range (0-143)
@@ -125,12 +125,12 @@ namespace open_spiel
           if (calculated_to_pos < 0)
           {
             // If it's any type of bear-off, return with kBearOffPos
-            return CheckerMove(pos, kBearOffPos, die);
+            return LongNardeCheckerMove(pos, kBearOffPos, die);
           }
           else
           {
             // Otherwise, it's a regular move on the board
-            return CheckerMove(pos, calculated_to_pos, die);
+            return LongNardeCheckerMove(pos, calculated_to_pos, die);
           }
         }
       }
@@ -149,7 +149,7 @@ namespace open_spiel
        * @param die The die value rolled (the doubles value, 1-6).
        * @return The encoded Spiel Action, guaranteed to be >= kDoublesOffset.
        */
-      Action EncodeDoubles(const std::vector<CheckerMove> &moves, int die)
+      Action EncodeDoubles(const std::vector<LongNardeCheckerMove> &moves, int die)
       {
         // Doubles encoding: Base 25 encoding for up to 4 moves.
         // Each move is encoded as pos + 1 (1-24), or 0 for pass/unused.
@@ -189,7 +189,7 @@ namespace open_spiel
        * @param state A pointer to the state (needed for GetToPos calculation).
        * @return A vector containing up to 4 CheckerMoves (potentially including passes).
        */
-      std::vector<CheckerMove> DecodeDoubles(Action spiel_move, Player player, const LongNardeState *state)
+      std::vector<LongNardeCheckerMove> DecodeDoubles(Action spiel_move, Player player, const LongNardeState *state)
       {
         // Adjust the action value by removing the doubles offset.
         Action adjusted_action = spiel_move - kDoublesOffset;
@@ -200,7 +200,7 @@ namespace open_spiel
         SPIEL_CHECK_LE(die, 6);
 
         // Extract the encoded move values (0-24) for each of the 4 potential moves.
-        std::vector<CheckerMove> cmoves;
+        std::vector<LongNardeCheckerMove> cmoves;
         Action remainder = adjusted_action % kDoublesBasePower[4];
 
         for (int i = 0; i < 4; ++i)
@@ -222,11 +222,11 @@ namespace open_spiel
             int calculated_to_pos = state->GetToPos(player, pos, die);
             if (calculated_to_pos < 0)
             {
-              cmoves.push_back(CheckerMove(pos, kBearOffPos, die));
+              cmoves.push_back(LongNardeCheckerMove(pos, kBearOffPos, die));
             }
             else
             {
-              cmoves.push_back(CheckerMove(pos, calculated_to_pos, die));
+              cmoves.push_back(LongNardeCheckerMove(pos, calculated_to_pos, die));
             }
           }
           else
@@ -258,8 +258,8 @@ namespace open_spiel
      * @param moves A vector of CheckerMove objects representing the full turn.
      * @return The encoded Spiel Action.
      */
-    Action LongNardeState::CheckerMovesToSpielMove(
-        const std::vector<CheckerMove> &moves) const
+    Action LongNardeState::LongNardeCheckerMovesToSpielMove(
+        const std::vector<LongNardeCheckerMove> &moves) const
     {
       SPIEL_CHECK_LE(moves.size(), 4); // Allow up to 4 moves for doubles
 
@@ -316,7 +316,7 @@ namespace open_spiel
         // This scheme encodes two "half-moves" (CheckerMove) into a single action.
         // The sequence 'moves' is guaranteed by LegalActions to be valid in this order.
         // We encode moves[0] as dig0 and moves[1] as dig1 directly.
-        std::vector<CheckerMove> encoded_moves = moves; // Use a copy to add padding if needed
+        std::vector<LongNardeCheckerMove> encoded_moves = moves; // Use a copy to add padding if needed
 
         // Ensure we always encode exactly two half-moves by adding Pass moves if necessary.
         while (encoded_moves.size() < 2)
@@ -384,12 +384,12 @@ namespace open_spiel
           // Ensure die_val is valid (1-6) - safety check
           pass_die = std::max(1, std::min(6, pass_die));
           // Add a pass move with the chosen die value.
-          encoded_moves.push_back(CheckerMove(kPassPos, kPassPos, pass_die));
+          encoded_moves.push_back(LongNardeCheckerMove(kPassPos, kPassPos, pass_die));
         }
 
         // Helper function to encode a single half-move (CheckerMove) into an integer digit.
         // This digit represents either a normal move or a pass move.
-        auto encode_move = [](const CheckerMove &move) -> int
+        auto encode_move = [](const LongNardeCheckerMove &move) -> int
         {
           if (move.pos == kPassPos)
           {
@@ -471,7 +471,7 @@ namespace open_spiel
      * @param spiel_move The Spiel Action to decode.
      * @return A vector of CheckerMove objects representing the turn. May contain passes.
      */
-    std::vector<CheckerMove> LongNardeState::SpielMoveToCheckerMoves(
+    std::vector<LongNardeCheckerMove> LongNardeState::LongNardeSpielMoveToCheckerMoves(
         Player player, Action spiel_move) const
     {
       // Check if the action falls within the special doubles encoding range.
@@ -497,7 +497,7 @@ namespace open_spiel
         }
 
         // Reconstruct the CheckerMove objects from the decoded positions.
-        std::vector<CheckerMove> cmoves;
+        std::vector<LongNardeCheckerMove> cmoves;
         for (int i = 0; i < 4; ++i)
         {
           int pos;
@@ -515,7 +515,7 @@ namespace open_spiel
           if (pos == kPassPos)
           {
             // Reconstruct a pass move. Note: to_pos is irrelevant for pass.
-            cmoves.push_back(CheckerMove(kPassPos, kPassPos, die_val));
+            cmoves.push_back(LongNardeCheckerMove(kPassPos, kPassPos, die_val));
           }
           else
           {
@@ -524,11 +524,11 @@ namespace open_spiel
             // Map negative positions to bear-off sentinel.
             if (calculated_to_pos < 0)
             {
-              cmoves.push_back(CheckerMove(pos, kBearOffPos, die_val));
+              cmoves.push_back(LongNardeCheckerMove(pos, kBearOffPos, die_val));
             }
             else
             {
-              cmoves.push_back(CheckerMove(pos, calculated_to_pos, die_val));
+              cmoves.push_back(LongNardeCheckerMove(pos, calculated_to_pos, die_val));
             }
           }
         }
@@ -554,14 +554,14 @@ namespace open_spiel
         int dig1 = spiel_move / kDigitBase; // Second half-move (most significant)
 
         // Helper function to decode a single digit back into a CheckerMove.
-        auto decode_digit = [this, player](int digit) -> CheckerMove
+        auto decode_digit = [this, player](int digit) -> LongNardeCheckerMove
         {
           if (digit >= kPassOffset)
           { // Check if it's in the pass range (144-149)
             // Decode a pass move.
             int die = (digit - kPassOffset) + 1; // Extract die value (1-6)
             // Return a pass move. to_pos is irrelevant.
-            return CheckerMove(kPassPos, kPassPos, die);
+            return LongNardeCheckerMove(kPassPos, kPassPos, die);
           }
           else
           { // Must be in the normal move range (0-143)
@@ -575,19 +575,19 @@ namespace open_spiel
             if (calculated_to_pos < 0)
             {
               // If it's any type of bear-off, return with kBearOffPos
-              return CheckerMove(pos, kBearOffPos, die);
+              return LongNardeCheckerMove(pos, kBearOffPos, die);
             }
             else
             {
               // Otherwise, it's a regular move on the board
-              return CheckerMove(pos, calculated_to_pos, die);
+              return LongNardeCheckerMove(pos, calculated_to_pos, die);
             }
             // --- End Fix ---
           }
         };
 
         // Decode the two digits using the helper.
-        std::vector<CheckerMove> cmoves;
+        std::vector<LongNardeCheckerMove> cmoves;
         cmoves.push_back(decode_digit(dig0));
         cmoves.push_back(decode_digit(dig1));
 

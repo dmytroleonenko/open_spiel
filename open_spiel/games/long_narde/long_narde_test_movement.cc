@@ -39,13 +39,13 @@ namespace open_spiel
         std::vector<Action> legal_actions = lnstate->LegalActions();
         SPIEL_CHECK_FALSE(legal_actions.empty());
 
-        std::vector<CheckerMove> checkers_moves = {
+        std::vector<LongNardeCheckerMove> checkers_moves = {
             {kWhiteHeadPos, kWhiteHeadPos - 4, 4},     // 23 -> 19
             {kWhiteHeadPos - 4, kWhiteHeadPos - 8, 4}, // 19 -> 15
             {kWhiteHeadPos, kWhiteHeadPos - 4, 4},     // 23 -> 19
             {kWhiteHeadPos - 4, kWhiteHeadPos - 8, 4}  // 19 -> 15
         };
-        Action action = lnstate->CheckerMovesToSpielMove(checkers_moves);
+        Action action = lnstate->LongNardeCheckerMovesToSpielMove(checkers_moves);
 
         lnstate->ApplyAction(action);
 
@@ -113,10 +113,10 @@ namespace open_spiel
 
         lnstate->ApplyAction(20); // Apply dice outcome 6,6
 
-        std::vector<CheckerMove> moves = {
+        std::vector<LongNardeCheckerMove> moves = {
             {kWhiteHeadPos, kWhiteHeadPos - 6, 6},
             {kWhiteHeadPos, kWhiteHeadPos - 6, 6}};
-        Action action = lnstate->CheckerMovesToSpielMove(moves);
+        Action action = lnstate->LongNardeCheckerMovesToSpielMove(moves);
         lnstate->ApplyAction(action);
 
         SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos), 13);
@@ -238,7 +238,7 @@ namespace open_spiel
         std::vector<Action> white_actions = lnstate->LegalActions();
         for (Action a : white_actions)
         {
-          std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, a);
+          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, a);
           for (auto &m : moves)
           {
             if (m.pos == kPassPos)
@@ -256,7 +256,7 @@ namespace open_spiel
         std::vector<Action> black_actions = lnstate->LegalActions();
         for (Action a : black_actions)
         {
-          std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, a);
+          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, a);
           for (auto &m : moves)
           {
             if (m.pos == kPassPos)
@@ -295,7 +295,7 @@ namespace open_spiel
         bool found_move_landing_16 = false;
         for (Action a : la)
         {
-          auto moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, a);
+          auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, a);
           for (auto &m : moves)
           {
             if (m.to_pos == 15)
@@ -309,8 +309,8 @@ namespace open_spiel
         }
         SPIEL_CHECK_FALSE(found_move_landing_16);
 
-        CheckerMove white_move_attempt(19, 15, 4); // Attempt to move from point 20 (idx 19) to point 16 (idx 15)
-        bool is_valid = lnstate->IsValidCheckerMove(kXPlayerId, white_move_attempt, false);
+        LongNardeCheckerMove white_move_attempt(19, 15, 4); // Attempt to move from point 20 (idx 19) to point 16 (idx 15)
+        bool is_valid = lnstate->LongNardeIsValidCheckerMove(kXPlayerId, white_move_attempt, false);
         SPIEL_CHECK_FALSE(is_valid);
 
         std::cout << "✓ NoLandingOnOpponentTestWhite passed\n";
@@ -342,7 +342,7 @@ namespace open_spiel
         bool found_black_landing_on_white = false;
         for (Action a : la)
         {
-          auto moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, a);
+          auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, a);
           for (auto &m : moves)
           {
             // Attempt to move from point 16 (idx 15) to point 13 (idx 12) with die 3
@@ -357,8 +357,8 @@ namespace open_spiel
         }
         SPIEL_CHECK_FALSE(found_black_landing_on_white);
 
-        CheckerMove black_move_attempt(15, 12, 3); // Attempt to move from point 16 (idx 15) to point 13 (idx 12)
-        bool is_valid = lnstate->IsValidCheckerMove(kOPlayerId, black_move_attempt, false);
+        LongNardeCheckerMove black_move_attempt(15, 12, 3); // Attempt to move from point 16 (idx 15) to point 13 (idx 12)
+        bool is_valid = lnstate->LongNardeIsValidCheckerMove(kOPlayerId, black_move_attempt, false);
         SPIEL_CHECK_FALSE(is_valid);
 
         std::cout << "✓ NoLandingOnOpponentTestBlack passed\n";
@@ -394,7 +394,7 @@ namespace open_spiel
         int illegal_die = 1;
         for (Action action : legal_actions)
         {
-          std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, action);
+          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, action);
           for (const auto &move : moves)
           {
             if (move.pos == illegal_from_pos && move.die == illegal_die && move.to_pos == illegal_to_pos)
@@ -431,7 +431,7 @@ namespace open_spiel
         SetupDice(lnstate, {3, 5, 0, 0});
 
         // Expecting only two half-moves: from point 24 with die 3 and die 5
-        std::set<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kXPlayerId, false);
+        std::set<LongNardeCheckerMove> half_moves = lnstate->LongNardeGenerateAllHalfMoves(kXPlayerId, false);
 
         bool found_point24_die3 = false;
         bool found_point24_die5 = false;
@@ -452,7 +452,7 @@ namespace open_spiel
         bool all_valid = true;
         for (Action action : legal_actions)
         {
-          std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
           bool action_valid = false;
           for (const auto &move : moves)
           {
@@ -576,9 +576,9 @@ namespace open_spiel
           if (!la.empty())
           {
             Action the_action = la[0];
-            std::vector<CheckerMove> actual_moves_vec = lnB->SpielMoveToCheckerMoves(kOPlayerId, the_action);
+            std::vector<LongNardeCheckerMove> actual_moves_vec = lnB->LongNardeSpielMoveToCheckerMoves(kOPlayerId, the_action);
             // Convert to set to ignore order and filter out pass moves easily
-            std::set<CheckerMove> actual_moves;
+            std::set<LongNardeCheckerMove> actual_moves;
             for (const auto &m : actual_moves_vec)
             {
               if (m.pos != kPassPos)
@@ -587,7 +587,7 @@ namespace open_spiel
               }
             }
 
-            std::set<CheckerMove> expected_moves = {
+            std::set<LongNardeCheckerMove> expected_moves = {
                 {11, 7, 4}, // Move from head
                 {7, 3, 4}   // Move from intermediate point
             };
@@ -620,7 +620,7 @@ namespace open_spiel
         SetupBoardState(lnstate, kOPlayerId, test_board_with_scores);
         SetupDice(lnstate, {4, 2, 0, 0});
 
-        std::set<CheckerMove> half_moves = lnstate->GenerateAllHalfMoves(kOPlayerId, false);
+        std::set<LongNardeCheckerMove> half_moves = lnstate->LongNardeGenerateAllHalfMoves(kOPlayerId, false);
         SPIEL_CHECK_EQ(half_moves.size(), 4); // Head(11) -> 7(d4), 9(d2); Point 17(16) -> 12(d4), 14(d2)
 
         std::vector<Action> legal_actions = lnstate->LegalActions();

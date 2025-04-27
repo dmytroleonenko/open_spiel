@@ -74,8 +74,8 @@ namespace open_spiel
         bool can_bear_off_with_1 = false;
         for (Action action : legal_actions)
         {
-          std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
-          for (const CheckerMove &move : moves)
+          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
+          for (const LongNardeCheckerMove &move : moves)
           {
             if (move.pos == 1 && move.die == 1 && lnstate->IsOff(kXPlayerId, move.to_pos))
             {
@@ -90,8 +90,8 @@ namespace open_spiel
         bool can_bear_off_with_3 = false;
         for (Action action : legal_actions)
         {
-          std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
-          for (const CheckerMove &move : moves)
+          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
+          for (const LongNardeCheckerMove &move : moves)
           {
             if (move.pos == 2 && move.die == 3 && lnstate->IsOff(kXPlayerId, move.to_pos))
             {
@@ -131,7 +131,7 @@ namespace open_spiel
 
         for (Action action : legal_actions)
         {
-          std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
           if (moves.size() >= 1 && moves[0].pos == 1 && moves[0].die == 1 && lnstate->IsOff(kXPlayerId, moves[0].to_pos))
           {
             can_bear_off_with_1 = true;
@@ -268,7 +268,7 @@ namespace open_spiel
         SetupDice(lnstate, {1, 2, 0, 0});
         std::vector<Action> legal_actions = lnstate->LegalActions();
         SPIEL_CHECK_EQ(legal_actions.size(), 1);
-        std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, legal_actions[0]);
+        std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, legal_actions[0]);
         SPIEL_CHECK_EQ(moves.size(), 2);
         bool found_22_to_20_with_die2 = false;
         bool found_20_to_19_with_die1 = false;
@@ -315,8 +315,8 @@ namespace open_spiel
         bool can_move_14_to_12_with_2 = false;
         for (Action action : legal_actions)
         {
-          std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, action);
-          for (const CheckerMove &move : moves)
+          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, action);
+          for (const LongNardeCheckerMove &move : moves)
           {
             if (move.pos == 13 && move.die == 2 && lnstate->IsOff(kOPlayerId, move.to_pos))
               can_bear_off_13_with_2 = true;
@@ -365,8 +365,8 @@ namespace open_spiel
         bool white_first_move_is_bear_off = false;
         for (Action action : legal_actions_white)
         {
-          std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
-          CheckerMove first_move = kPassMove;
+          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
+          LongNardeCheckerMove first_move = kPassMove;
           for (const auto &m : moves)
           {
             if (m.pos != kPassPos)
@@ -398,8 +398,8 @@ namespace open_spiel
           bool black_first_move_is_bear_off = false;
           for (Action action : legal_actions_black)
           {
-            std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, action);
-            CheckerMove first_move = kPassMove;
+            std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, action);
+            LongNardeCheckerMove first_move = kPassMove;
             for (const auto &m : moves)
             {
               if (m.pos != kPassPos)

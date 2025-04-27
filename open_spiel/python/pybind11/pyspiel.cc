@@ -33,6 +33,7 @@
 #include "open_spiel/python/pybind11/evaluation_sco.h"
 #include "open_spiel/python/pybind11/game_transforms.h"
 #include "open_spiel/python/pybind11/games_backgammon.h"
+#include "open_spiel/python/pybind11/games_long_narde.h"
 #include "open_spiel/python/pybind11/games_bargaining.h"
 #include "open_spiel/python/pybind11/games_blackjack.h"
 #include "open_spiel/python/pybind11/games_bridge.h"
@@ -672,6 +673,7 @@ PYBIND11_MODULE(pyspiel, m) {
   init_pyspiel_games_trade_comm(m);  // Game-specific functions for trade_comm.
   init_pyspiel_observer(m);      // Observers and observations.
   init_pyspiel_utils(m);         // Utilities.
+  open_spiel::long_narde::init_pyspiel_games_long_narde(m);  // Long Narde game.
 
   // List of optional python submodules.
 #if OPEN_SPIEL_BUILD_WITH_GAMUT

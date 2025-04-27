@@ -67,7 +67,7 @@ namespace open_spiel
 
     int LongNardeState::Opponent(int player) const { return 1 - player; }
 
-    void LongNardeState::ApplyCheckerMove(int player, const CheckerMove &move)
+    void LongNardeState::LongNardeApplyCheckerMove(int player, const LongNardeCheckerMove &move)
     {
       // Handle pass move
       if (move.pos == kPassPos)
@@ -176,7 +176,7 @@ namespace open_spiel
       }
     }
 
-    void LongNardeState::UndoCheckerMove(int player, const CheckerMove &move)
+    void LongNardeState::LongNardeUndoCheckerMove(int player, const LongNardeCheckerMove &move)
     {
       // Handle pass move undo
       if (move.pos == kPassPos)
@@ -273,6 +273,24 @@ namespace open_spiel
       // Note: Undoing moved_from_head_ requires history tracking, which is handled
       // by the ExplorationState in IterativeLegalMoves or TurnHistoryInfo in ApplyAction.
       // We don't reset moved_from_head_ here directly.
+    }
+
+    /**
+     * @brief Counts the total number of checkers for a player.
+     *
+     * Sums the checkers on the board and those already borne off (scores_).
+     * Should typically equal kNumCheckersPerPlayer (15) for a valid state.
+     *
+     * @param player The player ID (0 or 1).
+     * @return The total count of the player's checkers.
+     */
+    int LongNardeState::CountTotalCheckers(int player) const {
+      SPIEL_CHECK_TRUE(player == kXPlayerId || player == kOPlayerId);
+      int count = scores_[player]; // Start with borne-off checkers
+      for (int pos = 0; pos < kNumPoints; ++pos) {
+        count += board_[player][pos];
+      }
+      return count;
     }
 
   } // namespace long_narde

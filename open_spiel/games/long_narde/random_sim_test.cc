@@ -78,8 +78,8 @@ namespace open_spiel
 
               if (lnstate)
               {
-                std::vector<CheckerMove> moves =
-                    lnstate->SpielMoveToCheckerMoves(state->CurrentPlayer(), action);
+                std::vector<LongNardeCheckerMove> moves =
+                    lnstate->LongNardeSpielMoveToCheckerMoves(state->CurrentPlayer(), action);
 
                 std::unique_ptr<State> temp_state = state->Clone();
                 LongNardeState *temp_lnstate = dynamic_cast<LongNardeState *>(temp_state.get());
@@ -88,13 +88,13 @@ namespace open_spiel
                 {
                   if (move.pos == kPassPos)
                     continue;
-                  if (!temp_lnstate->IsValidCheckerMove(state->CurrentPlayer(), move, false))
+                  if (!temp_lnstate->LongNardeIsValidCheckerMove(state->CurrentPlayer(), move, false))
                   {
                     invalid_move_found = true;
                     invalid_moves_detected++;
                     break;
                   }
-                  temp_lnstate->ApplyCheckerMove(state->CurrentPlayer(), move);
+                  temp_lnstate->LongNardeApplyCheckerMove(state->CurrentPlayer(), move);
                 }
               }
 

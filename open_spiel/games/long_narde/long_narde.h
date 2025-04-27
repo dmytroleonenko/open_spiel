@@ -65,7 +65,7 @@ namespace open_spiel
     inline constexpr const int kPassDieValue = 1;
 
     // Move CheckerMove struct definition before its usage
-    struct CheckerMove
+    struct LongNardeCheckerMove
     {
       // Pass is encoded as pos = -1 (kPassPos)
       int pos;    // Valid board locations: 0-23; -1 represents a pass.
@@ -73,18 +73,18 @@ namespace open_spiel
       int die;    // Die value used (1-6, or -1 for pass)
 
       // Default constructor
-      constexpr CheckerMove()
+      constexpr LongNardeCheckerMove()
           : pos(kPassPos), to_pos(kPassPos), die(kPassDieValue) {}
 
       // Constructor
-      constexpr CheckerMove(int _pos, int _to_pos, int _die)
+      constexpr LongNardeCheckerMove(int _pos, int _to_pos, int _die)
           : pos(_pos), to_pos(_to_pos), die(_die) {}
 
       // Legacy constructor for compatibility
-      constexpr CheckerMove(int _pos, int _die)
+      constexpr LongNardeCheckerMove(int _pos, int _die)
           : pos(_pos), to_pos(-1), die(_die) {}
 
-      bool operator<(const CheckerMove &rhs) const
+      bool operator<(const LongNardeCheckerMove &rhs) const
       {
         if (pos != rhs.pos)
           return pos < rhs.pos;
@@ -93,17 +93,17 @@ namespace open_spiel
         return die < rhs.die;
       }
 
-      bool operator==(const CheckerMove &other) const
+      bool operator==(const LongNardeCheckerMove &other) const
       {
         return pos == other.pos && to_pos == other.to_pos && die == other.die;
       }
     };
 
     // Constant pass move to avoid repeated construction
-    inline constexpr const CheckerMove kPassMove(kPassPos, kPassPos, kPassDieValue);
+    inline constexpr const LongNardeCheckerMove kPassMove(kPassPos, kPassPos, kPassDieValue);
 
     // Constant vector of two pass moves
-    inline const std::vector<CheckerMove> kDoublePassMove = {kPassMove, kPassMove};
+    inline const std::vector<LongNardeCheckerMove> kDoublePassMove = {kPassMove, kPassMove};
 
     // Special constant for human-readable output of borne-off checkers
     inline constexpr const int kNumOffPosHumanReadable = -2;
@@ -248,7 +248,7 @@ namespace open_spiel
       // Action encoding / decoding functions. Note, the converted checker moves
       // do not contain the hit information; use the AddHitInfo function to get the
       // hit information.
-      std::vector<CheckerMove> SpielMoveToCheckerMoves(Player player,
+      std::vector<LongNardeCheckerMove> LongNardeSpielMoveToCheckerMoves(Player player,
                                                        Action spiel_move) const;
       Action TranslateAction(int from1, int from2, bool use_high_die_first) const;
 
@@ -258,14 +258,14 @@ namespace open_spiel
       bool IsLegalHeadMove(int player, int from_pos, bool moved_from_head_this_sequence) const;
 
       // Takes sequence context for head rule.
-      bool IsValidCheckerMove(int player, const CheckerMove &move,
+      bool LongNardeIsValidCheckerMove(int player, const LongNardeCheckerMove &move,
                               bool moved_from_head_this_sequence) const;
 
       // Returns the position of the furthest checker in the home of this player.
       // Returns -1 if none found.
 
-      void ApplyCheckerMove(int player, const CheckerMove &move);
-      void UndoCheckerMove(int player, const CheckerMove &move);
+      void LongNardeApplyCheckerMove(int player, const LongNardeCheckerMove &move);
+      void LongNardeUndoCheckerMove(int player, const LongNardeCheckerMove &move);
 
       // Path and position utilities
       int GetPathIndex(int player, int real_pos) const;
@@ -275,7 +275,7 @@ namespace open_spiel
       int GetVirtualCoords(int player, int real_pos) const;
 
       std::vector<Action> ProcessLegalMoves(int max_moves,
-                                            const std::vector<std::vector<CheckerMove>> &movelist) const;
+                                            const std::vector<std::vector<LongNardeCheckerMove>> &movelist) const;
 
       // Tests if a bridge (illegal formation) would be created by applying a move.
       // Returns true if a bridge would be formed, false otherwise.
@@ -298,11 +298,11 @@ namespace open_spiel
       int GetBlockPathStartRealPos(int player_for_path, int block_lowest_real_idx) const;
 
       // Finds all valid single half-moves from the current state for the player.
-      std::set<CheckerMove> GenerateAllHalfMoves(int player, bool moved_from_head_this_sequence) const;
+      std::set<LongNardeCheckerMove> LongNardeGenerateAllHalfMoves(int player, bool moved_from_head_this_sequence) const;
 
       // Iterative helper for move sequence generation.
-      int IterativeLegalMoves(const std::vector<CheckerMove> &current_sequence,
-                              std::vector<std::vector<CheckerMove>> *moves_list) const;
+      int LongNardeIterativeLegalMoves(const std::vector<LongNardeCheckerMove> &current_sequence,
+                              std::vector<std::vector<LongNardeCheckerMove>> *moves_list) const;
 
       // Helper function: checks if 'player' has any checker in [startPos, endPos] inclusive.
       bool HasAnyChecker(int player, int startPos, int endPos) const;
@@ -349,39 +349,38 @@ namespace open_spiel
       std::string BoardToString() const;
 
       // Encodes a sequence of checker moves into a Spiel action.
-      Action CheckerMovesToSpielMove(
-          const std::vector<CheckerMove> &move_list) const;
+      Action LongNardeCheckerMovesToSpielMove(
+          const std::vector<LongNardeCheckerMove> &move_list) const;
 
-      std::vector<int> &MutableDice() { return dice_; }
-      const std::vector<int> &InitialDice() const { return initial_dice_; }
-      std::vector<int> &MutableInitialDice() { return initial_dice_; }
+      std::vector<int> &LongNardeMutableDice() { return dice_; }
+      const std::vector<int> &LongNardeInitialDice() const { return initial_dice_; }
+      std::vector<int> &LongNardeMutableInitialDice() { return initial_dice_; }
 
     protected:
       void DoApplyAction(Action move_id) override;
 
     private:
       // Add back the missing private helper method declarations for LegalActions
-      std::vector<std::vector<CheckerMove>> GenerateMoveSequences(Player player) const;
-      std::pair<std::vector<std::vector<CheckerMove>>, int> FilterBestMoveSequences(
-          const std::vector<std::vector<CheckerMove>> &movelist) const;
-      std::vector<Action> ApplyHigherDieRuleIfNeeded(
+      std::vector<std::vector<LongNardeCheckerMove>> LongNardeGenerateMoveSequences(Player player) const;
+      std::pair<std::vector<std::vector<LongNardeCheckerMove>>, int> LongNardeFilterBestMoveSequences(
+          const std::vector<std::vector<LongNardeCheckerMove>> &movelist) const;
+      std::vector<Action> LongNardeApplyHigherDieRuleIfNeeded(
           const std::vector<Action> &current_legal_moves,
-          const std::vector<std::vector<CheckerMove>> &original_movelist) const;
+          const std::vector<std::vector<LongNardeCheckerMove>> &original_movelist) const;
 
       void SetupInitialBoard();
       void RollDice(Action outcome);
       int CheckersInHome(int player) const;
       int NumOppCheckers(int player, int pos) const;
-      std::string DiceToString(int outcome) const;
       int DiceValue(int i) const;
       int HighestUsableDiceOutcome() const;
-      void AdvanceToNextPlayer(const std::vector<CheckerMove> &applied_moves, Action spiel_action);
+      void LongNardeAdvanceToNextPlayer(const std::vector<LongNardeCheckerMove> &applied_moves, Action spiel_action);
 
       // A helper function used by ActionToString to compute the end position
       // of a move and determine whether it goes off the board.
-      int GetMoveEndPosition(CheckerMove *cmove, int player, int start) const;
+      int LongNardeGetMoveEndPosition(LongNardeCheckerMove *cmove, int player, int start) const;
 
-      std::set<CheckerMove> LegalCheckerMoves(int player) const;
+      std::set<LongNardeCheckerMove> LongNardeLegalCheckerMoves(int player) const;
 
       friend class LongNardeGame;
 
@@ -408,13 +407,13 @@ namespace open_spiel
       return os;
     }
 
-    inline std::ostream &operator<<(std::ostream &os, const CheckerMove &move)
+    inline std::ostream &operator<<(std::ostream &os, const LongNardeCheckerMove &move)
     {
-      os << "CheckerMove(from=" << move.pos << ", to=" << move.to_pos << ")";
+      os << "LongNardeCheckerMove(from=" << move.pos << ", to=" << move.to_pos << ")";
       return os;
     }
 
-    inline std::ostream &operator<<(std::ostream &os, const std::set<CheckerMove> &moves)
+    inline std::ostream &operator<<(std::ostream &os, const std::set<LongNardeCheckerMove> &moves)
     {
       os << "{" << moves.size() << " moves: ";
       bool first = true;

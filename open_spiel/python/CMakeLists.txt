@@ -133,6 +133,8 @@ set(PYTHON_BINDINGS ${PYTHON_BINDINGS}
   pybind11/python_policy.h
   pybind11/utils.cc
   pybind11/utils.h
+  pybind11/games_long_narde.cc
+  pybind11/games_long_narde.h
   )
 
 if (OPEN_SPIEL_BUILD_WITH_ACPC)

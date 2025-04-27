@@ -201,6 +201,85 @@ namespace open_spiel
     }
 
     /**
+     * @brief Generates a string representation of the board layout only.
+     *
+     * Creates a visual representation similar to ToString() but omits dice, scores,
+     * and other game state information.
+     *
+     * @return A multi-line string depicting the board configuration.
+     */
+    std::string LongNardeState::BoardToString() const
+    {
+      std::vector<std::string> board_array = {
+          "+-------------------------------------+", // Exactly matches expected width
+          "|13 14 15 16 17 18| |19 20 21 22 23 24|", // No extra space before final |
+          "|                 | |                 |", // Top checker row
+          "|                 | |                 |", // Ownership row for double-digit piles
+          "|                 | |                 |", // Spacer row
+          "|                 | |                 |", // Bottom checker row
+          "|12 11 10  9  8  7| |6  5  4  3  2  1 |", // Space between '1' and final |
+          "+-------------------------------------+"  // Bottom border
+      };
+      const int PADDING_TOP = 2;   // Top checker row
+      const int OWNERSHIP_ROW = 3; // New row for double-digit ownership
+      const int PADDING_BOT = 5;   // Bottom checker row (incremented from 4 to 5)
+      const int BAR_COL = 19;      // Column index where the bar starts
+
+      // Fill the board representation
+      for (int player = 0; player < 2; ++player)
+      {
+        char symbol = (player == kXPlayerId ? 'X' : 'O');
+
+        for (int pos_idx = 0; pos_idx < kNumPoints; ++pos_idx)
+        {
+          int count = board(player, pos_idx);
+          if (count > 0)
+          {
+            int row;
+            int col;
+
+            // Determine row based on point index
+            if (pos_idx >= 12)
+            { // Points 13-24 go on top row
+              row = PADDING_TOP;
+              col = 1 + (pos_idx - 12) * 3;
+            }
+            else
+            { // Points 1-12 go on bottom row
+              row = PADDING_BOT;
+              col = 1 + (11 - pos_idx) * 3;
+            }
+
+            // Adjust for bar separator
+            if (col >= BAR_COL)
+              col += 2; // Skip the "| |" bar (2 chars wide)
+
+            // Place checker symbol and count
+            if (count < 10)
+            {
+              // Single-digit format: Keep "X1" or "O5" format
+              board_array[row][col] = symbol;
+              board_array[row][col + 1] = '0' + count;
+            }
+            else
+            {
+              // Double-digit format: Show "15" on checker row
+              board_array[row][col] = '0' + (count / 10);
+              board_array[row][col + 1] = '0' + (count % 10);
+
+              // Show player symbol on ownership row
+              int ownership_row = (row == PADDING_TOP) ? OWNERSHIP_ROW : OWNERSHIP_ROW + 1;
+              board_array[ownership_row][col] = symbol;
+            }
+          }
+        }
+      }
+
+      // Use single backslash for newline separator
+      return absl::StrJoin(board_array, "\n") + "\n";
+    }
+
+    /**
      * @brief Converts a Spiel action (move ID) into a human-readable string.
      *
      * Handles both chance outcomes (dice rolls) and player moves.
@@ -248,7 +327,7 @@ namespace open_spiel
         }
       }
 
-      std::vector<CheckerMove> cmoves = SpielMoveToCheckerMoves(player, move_id);
+      std::vector<LongNardeCheckerMove> cmoves = LongNardeSpielMoveToCheckerMoves(player, move_id);
 
       std::string returnVal = absl::StrCat(move_id, " -");
       bool any_move = false;

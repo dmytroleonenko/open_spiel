@@ -53,17 +53,17 @@ namespace open_spiel
           auto lnstate = static_cast<LongNardeState *>(state.get());
           SetupBoardState(lnstate, kXPlayerId, modified_board);
           SetupDice(lnstate, {5, 3, 0, 0});
-          std::vector<CheckerMove> test_moves = {
+          std::vector<LongNardeCheckerMove> test_moves = {
               {14, lnstate->GetToPos(kXPlayerId, 14, 5), 5},
               {19, lnstate->GetToPos(kXPlayerId, 19, 3), 3}};
-          Action action = lnstate->CheckerMovesToSpielMove(test_moves);
+          Action action = lnstate->LongNardeCheckerMovesToSpielMove(test_moves);
           SPIEL_CHECK_GE(action, 0);
           SPIEL_CHECK_LT(action, kNumDistinctActions);
-          std::vector<CheckerMove> decoded_moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+          std::vector<LongNardeCheckerMove> decoded_moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
           SPIEL_CHECK_EQ(decoded_moves.size(), 2);
           bool first_move_found = false;
           bool second_move_found = false;
-          for (const CheckerMove &move : decoded_moves)
+          for (const LongNardeCheckerMove &move : decoded_moves)
           {
             if (move.pos == test_moves[0].pos && move.die == test_moves[0].die)
               first_move_found = true;
@@ -81,17 +81,17 @@ namespace open_spiel
           auto lnstate = static_cast<LongNardeState *>(state.get());
           SetupBoardState(lnstate, kXPlayerId, modified_board);
           SetupDice(lnstate, {5, 3, 0, 0});
-          std::vector<CheckerMove> pass_moves = {
+          std::vector<LongNardeCheckerMove> pass_moves = {
               {kPassPos, kPassPos, 5},
               {kPassPos, kPassPos, 3}};
-          Action action = lnstate->CheckerMovesToSpielMove(pass_moves);
+          Action action = lnstate->LongNardeCheckerMovesToSpielMove(pass_moves);
           SPIEL_CHECK_GE(action, 0);
           SPIEL_CHECK_LT(action, kNumDistinctActions);
-          std::vector<CheckerMove> decoded_moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+          std::vector<LongNardeCheckerMove> decoded_moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
           SPIEL_CHECK_EQ(decoded_moves.size(), 2);
           bool first_pass_found = false;
           bool second_pass_found = false;
-          for (const CheckerMove &move : decoded_moves)
+          for (const LongNardeCheckerMove &move : decoded_moves)
           {
             if (move.pos == kPassPos && move.die == 5)
               first_pass_found = true;
@@ -109,17 +109,17 @@ namespace open_spiel
           auto lnstate = static_cast<LongNardeState *>(state.get());
           SetupBoardState(lnstate, kXPlayerId, modified_board);
           SetupDice(lnstate, {3, 5, 0, 0});
-          std::vector<CheckerMove> test_moves = {
+          std::vector<LongNardeCheckerMove> test_moves = {
               {14, lnstate->GetToPos(kXPlayerId, 14, 5), 5},
               {19, lnstate->GetToPos(kXPlayerId, 19, 3), 3}};
-          Action action_low_roll = lnstate->CheckerMovesToSpielMove(test_moves);
+          Action action_low_roll = lnstate->LongNardeCheckerMovesToSpielMove(test_moves);
           SPIEL_CHECK_GE(action_low_roll, 0);
           SPIEL_CHECK_LT(action_low_roll, kNumDistinctActions);
-          std::vector<CheckerMove> decoded_moves_low_roll = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action_low_roll);
+          std::vector<LongNardeCheckerMove> decoded_moves_low_roll = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action_low_roll);
           SPIEL_CHECK_EQ(decoded_moves_low_roll.size(), 2);
           bool first_move_found = false;
           bool second_move_found = false;
-          for (const CheckerMove &move : decoded_moves_low_roll)
+          for (const LongNardeCheckerMove &move : decoded_moves_low_roll)
           {
             if (move.pos == test_moves[0].pos && move.die == test_moves[0].die)
               first_move_found = true;
@@ -144,15 +144,15 @@ namespace open_spiel
           doubles_board[kOPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer;
           SetupBoardState(lnstate, kXPlayerId, doubles_board);
           SetupDice(lnstate, {2, 2, 2, 2});
-          std::vector<CheckerMove> doubles_moves = {
+          std::vector<LongNardeCheckerMove> doubles_moves = {
               {23, lnstate->GetToPos(kXPlayerId, 23, 2), 2},
               {22, lnstate->GetToPos(kXPlayerId, 22, 2), 2},
               {21, lnstate->GetToPos(kXPlayerId, 21, 2), 2},
               {20, lnstate->GetToPos(kXPlayerId, 20, 2), 2}};
-          Action doubles_action = lnstate->CheckerMovesToSpielMove(doubles_moves);
+          Action doubles_action = lnstate->LongNardeCheckerMovesToSpielMove(doubles_moves);
           SPIEL_CHECK_GE(doubles_action, 0);
           SPIEL_CHECK_LT(doubles_action, kNumDistinctActions);
-          std::vector<CheckerMove> decoded_doubles_moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, doubles_action);
+          std::vector<LongNardeCheckerMove> decoded_doubles_moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, doubles_action);
           SPIEL_CHECK_GE(decoded_doubles_moves.size(), 4);
           int moves_matched = 0;
           for (size_t i = 0; i < doubles_moves.size(); ++i)
@@ -186,15 +186,15 @@ namespace open_spiel
           doubles_board[kOPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer;
           SetupBoardState(lnstate, kXPlayerId, doubles_board);
           SetupDice(lnstate, {2, 2, 2, 2});
-          std::vector<CheckerMove> doubles_moves_with_pass = {
+          std::vector<LongNardeCheckerMove> doubles_moves_with_pass = {
               {23, lnstate->GetToPos(kXPlayerId, 23, 2), 2},
               {22, lnstate->GetToPos(kXPlayerId, 22, 2), 2},
               {21, lnstate->GetToPos(kXPlayerId, 21, 2), 2},
               kPassMove};
-          Action doubles_pass_action = lnstate->CheckerMovesToSpielMove(doubles_moves_with_pass);
+          Action doubles_pass_action = lnstate->LongNardeCheckerMovesToSpielMove(doubles_moves_with_pass);
           SPIEL_CHECK_GE(doubles_pass_action, 0);
           SPIEL_CHECK_LT(doubles_pass_action, kNumDistinctActions);
-          std::vector<CheckerMove> decoded_doubles_pass_moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, doubles_pass_action);
+          std::vector<LongNardeCheckerMove> decoded_doubles_pass_moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, doubles_pass_action);
           SPIEL_CHECK_GE(decoded_doubles_pass_moves.size(), 4);
           std::map<int, int> matched_pos_count;
           int passes_found = 0;
@@ -227,12 +227,12 @@ namespace open_spiel
           auto lnstate = static_cast<LongNardeState *>(state.get());
           SetupBoardState(lnstate, kXPlayerId, modified_board);
           SetupDice(lnstate, {4, 1, 0, 0});
-          std::vector<CheckerMove> single_move_pass = {
+          std::vector<LongNardeCheckerMove> single_move_pass = {
               {14, lnstate->GetToPos(kXPlayerId, 14, 4), 4},
               {kPassPos, kPassPos, 1}};
-          Action action_single_pass = lnstate->CheckerMovesToSpielMove(single_move_pass);
+          Action action_single_pass = lnstate->LongNardeCheckerMovesToSpielMove(single_move_pass);
           SPIEL_CHECK_GE(action_single_pass, 0);
-          std::vector<CheckerMove> decoded_single_pass = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action_single_pass);
+          std::vector<LongNardeCheckerMove> decoded_single_pass = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action_single_pass);
           SPIEL_CHECK_EQ(decoded_single_pass.size(), 2);
           bool move_14_d4_found = false;
           bool pass_d1_found = false;
@@ -254,12 +254,12 @@ namespace open_spiel
           auto lnstate = static_cast<LongNardeState *>(state.get());
           SetupBoardState(lnstate, kXPlayerId, modified_board);
           SetupDice(lnstate, {6, 5, 0, 0});
-          std::vector<CheckerMove> double_pass_moves = {
+          std::vector<LongNardeCheckerMove> double_pass_moves = {
               {kPassPos, kPassPos, 6},
               {kPassPos, kPassPos, 5}};
-          Action action_double_pass = lnstate->CheckerMovesToSpielMove(double_pass_moves);
+          Action action_double_pass = lnstate->LongNardeCheckerMovesToSpielMove(double_pass_moves);
           SPIEL_CHECK_GE(action_double_pass, 0);
-          std::vector<CheckerMove> decoded_double_pass = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action_double_pass);
+          std::vector<LongNardeCheckerMove> decoded_double_pass = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action_double_pass);
           SPIEL_CHECK_EQ(decoded_double_pass.size(), 2);
           bool pass_d6_found = false;
           bool pass_d5_found = false;
@@ -291,7 +291,7 @@ namespace open_spiel
           auto legal_actions = lnstate->LegalActions();
           SPIEL_CHECK_EQ(legal_actions.size(), 1);
           Action action = legal_actions[0];
-          std::vector<CheckerMove> decoded = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+          std::vector<LongNardeCheckerMove> decoded = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
           int bearoff_count = 0;
           int pass_count = 0;
           for (const auto &move : decoded)
@@ -337,7 +337,7 @@ namespace open_spiel
           if (!legal_actions.empty())
           {
             Action the_action = legal_actions[0];
-            std::vector<CheckerMove> decoded_moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, the_action);
+            std::vector<LongNardeCheckerMove> decoded_moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, the_action);
             for (const auto &move : decoded_moves)
             {
               if (move.pos != kPassPos)
@@ -475,8 +475,8 @@ namespace open_spiel
           no_moves_board[kOPlayerId][kBlackHeadPos] += 12;
           SetupBoardState(lnstate, kXPlayerId, no_moves_board);
           SetupDice(lnstate, {1, 3, 0, 0});
-          std::vector<CheckerMove> expected_pass_encoding_1_3 = {{kPassPos, kPassPos, 1}, {kPassPos, kPassPos, 3}};
-          Action expected_pass_action_1_3 = lnstate->CheckerMovesToSpielMove(expected_pass_encoding_1_3);
+          std::vector<LongNardeCheckerMove> expected_pass_encoding_1_3 = {{kPassPos, kPassPos, 1}, {kPassPos, kPassPos, 3}};
+          Action expected_pass_action_1_3 = lnstate->LongNardeCheckerMovesToSpielMove(expected_pass_encoding_1_3);
           auto legal_actions = lnstate->LegalActions();
           SPIEL_CHECK_EQ(legal_actions.size(), 1);
           SPIEL_CHECK_EQ(legal_actions[0], expected_pass_action_1_3);
@@ -493,8 +493,8 @@ namespace open_spiel
           SetupBoardState(lnstate, kXPlayerId, valid_moves_board);
           SetupDice(lnstate, {1, 3, 0, 0});
           auto legal_actions = lnstate->LegalActions();
-          std::vector<CheckerMove> expected_pass_encoding_1_3 = {{kPassPos, kPassPos, 1}, {kPassPos, kPassPos, 3}};
-          Action expected_pass_action_1_3 = lnstate->CheckerMovesToSpielMove(expected_pass_encoding_1_3);
+          std::vector<LongNardeCheckerMove> expected_pass_encoding_1_3 = {{kPassPos, kPassPos, 1}, {kPassPos, kPassPos, 3}};
+          Action expected_pass_action_1_3 = lnstate->LongNardeCheckerMovesToSpielMove(expected_pass_encoding_1_3);
           bool pass_found = false;
           for (Action action : legal_actions)
           {
@@ -522,8 +522,8 @@ namespace open_spiel
           no_moves_doubles_board[kOPlayerId][kBlackHeadPos] = 13;
           SetupBoardState(lnstate, kOPlayerId, no_moves_doubles_board);
           SetupDice(lnstate, {2, 2, 2, 2});
-          std::vector<CheckerMove> expected_pass_encoding_2_2 = {{kPassPos, kPassPos, 2}, {kPassPos, kPassPos, 2}};
-          Action expected_pass_action_2_2 = lnstate->CheckerMovesToSpielMove(expected_pass_encoding_2_2);
+          std::vector<LongNardeCheckerMove> expected_pass_encoding_2_2 = {{kPassPos, kPassPos, 2}, {kPassPos, kPassPos, 2}};
+          Action expected_pass_action_2_2 = lnstate->LongNardeCheckerMovesToSpielMove(expected_pass_encoding_2_2);
           auto legal_actions = lnstate->LegalActions();
           SPIEL_CHECK_EQ(legal_actions.size(), 1);
           SPIEL_CHECK_EQ(legal_actions[0], expected_pass_action_2_2);
@@ -554,7 +554,7 @@ namespace open_spiel
           SPIEL_CHECK_EQ(legal_actions.size(), 1);
           for (Action action : legal_actions)
           {
-            std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+            std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
             SPIEL_CHECK_EQ(moves.size(), 2);
             bool found_8_3_d5 = false;
             bool found_pass_d3 = false;
@@ -595,7 +595,7 @@ namespace open_spiel
           bool all_used_lower_die = true;
           for (Action action : legal_actions)
           {
-            std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+            std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
             SPIEL_CHECK_GE(moves.size(), 2);
             int non_pass_count = 0;
             bool used_correct_die = false;
@@ -646,7 +646,7 @@ namespace open_spiel
           bool found_direct_bearoff = false;
           for (Action action : legal_actions)
           {
-            std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, action);
+            std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
             if (moves.size() == 2)
             {
               bool move1_ok = (moves[0].pos == 0 && moves[0].die == 1 && moves[0].to_pos == kBearOffPos) ||
@@ -679,7 +679,7 @@ namespace open_spiel
           bool found_direct_bearoff = false;
           for (Action action : legal_actions)
           {
-            std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, action);
+            std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, action);
             if (moves.size() == 2)
             {
               bool move1_ok = (moves[0].pos == 13 && moves[0].die == 2 && moves[0].to_pos == kBearOffPos) ||
@@ -716,7 +716,7 @@ namespace open_spiel
           SetupDice(lnstate, {1, 6, 0, 0});
           auto legal_actionsW = lnstate->LegalActions();
           SPIEL_CHECK_EQ(legal_actionsW.size(), 1);
-          std::vector<CheckerMove> movesW = lnstate->SpielMoveToCheckerMoves(kXPlayerId, legal_actionsW[0]);
+          std::vector<LongNardeCheckerMove> movesW = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, legal_actionsW[0]);
           bool found_die6W = false;
           for (const auto &m : movesW)
           {
@@ -739,7 +739,7 @@ namespace open_spiel
           SetupDice(lnstate, {1, 6, 0, 0});
           auto legal_actionsB = lnstate->LegalActions();
           SPIEL_CHECK_EQ(legal_actionsB.size(), 1);
-          std::vector<CheckerMove> movesB = lnstate->SpielMoveToCheckerMoves(kOPlayerId, legal_actionsB[0]);
+          std::vector<LongNardeCheckerMove> movesB = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, legal_actionsB[0]);
           bool found_die6B = false;
           for (const auto &m : movesB)
           {
@@ -762,7 +762,7 @@ namespace open_spiel
           SetupDice(lnstate, {1, 3, 0, 0});
           auto legal_actionsB = lnstate->LegalActions();
           SPIEL_CHECK_EQ(legal_actionsB.size(), 1);
-          std::vector<CheckerMove> movesB = lnstate->SpielMoveToCheckerMoves(kOPlayerId, legal_actionsB[0]);
+          std::vector<LongNardeCheckerMove> movesB = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, legal_actionsB[0]);
           bool found_die1B = false;
           bool found_die3B = false;
           for (const auto &m : movesB)
@@ -791,7 +791,7 @@ namespace open_spiel
           bool found_direct_bearoff = false;
           for (const auto &action : legal_actionsB)
           {
-            std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, action);
+            std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, action);
             if (moves.size() == 2)
             {
               bool has_move_step = false;
@@ -841,7 +841,7 @@ namespace open_spiel
           SetupDice(lnstate, {4, 5, 0, 0});
           auto legal_actions = lnstate->LegalActions();
           SPIEL_CHECK_EQ(legal_actions.size(), 1);
-          std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kXPlayerId, legal_actions[0]);
+          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, legal_actions[0]);
           SPIEL_CHECK_EQ(moves.size(), 2);
           bool found_bear_off = false;
           bool found_pass = false;
@@ -877,7 +877,7 @@ namespace open_spiel
           SetupDice(lnstate, {4, 5, 0, 0});
           auto legal_actions = lnstate->LegalActions();
           SPIEL_CHECK_EQ(legal_actions.size(), 1);
-          std::vector<CheckerMove> moves = lnstate->SpielMoveToCheckerMoves(kOPlayerId, legal_actions[0]);
+          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, legal_actions[0]);
           SPIEL_CHECK_EQ(moves.size(), 2);
           bool found_bear_off = false;
           bool found_pass = false;

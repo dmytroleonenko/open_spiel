@@ -42,8 +42,8 @@ namespace open_spiel
         return;
       }
 
-      std::vector<CheckerMove> original_moves = SpielMoveToCheckerMoves(cur_player_, move_id);
-      std::vector<CheckerMove> filtered_moves;
+      std::vector<LongNardeCheckerMove> original_moves = LongNardeSpielMoveToCheckerMoves(cur_player_, move_id);
+      std::vector<LongNardeCheckerMove> filtered_moves;
       int head_pos = (cur_player_ == kXPlayerId) ? kWhiteHeadPos : kBlackHeadPos;
       bool used_head_move = false;
 
@@ -105,7 +105,7 @@ namespace open_spiel
         {
           // ApplyCheckerMove internally checks validity again (without head rule)
           // and sets moved_from_head_
-          ApplyCheckerMove(cur_player_, m);
+          LongNardeApplyCheckerMove(cur_player_, m);
         }
       }
 
@@ -121,7 +121,7 @@ namespace open_spiel
       moved_from_head_ = false;
 
       // Determine next player state (sets cur_player_ to kChancePlayerId and stores next actual player in prev_player_)
-      AdvanceToNextPlayer(filtered_moves, move_id);
+      LongNardeAdvanceToNextPlayer(filtered_moves, move_id);
 
       // No need for further updates to cur_player_ or prev_player_ here, AdvanceToNextPlayer handles it.
       // No need to clear dice_ again, done above.
@@ -170,12 +170,12 @@ namespace open_spiel
         {
           cur_player_ = player;
         }
-        std::vector<CheckerMove> moves = SpielMoveToCheckerMoves(player, action);
+        std::vector<LongNardeCheckerMove> moves = LongNardeSpielMoveToCheckerMoves(player, action);
 
         // Undo moves in reverse order
         for (int i = moves.size() - 1; i >= 0; --i)
         {
-          UndoCheckerMove(player, moves[i]);
+          LongNardeUndoCheckerMove(player, moves[i]);
         }
 
         // Determine if the undone roll was doubles based on restored dice
@@ -473,7 +473,7 @@ namespace open_spiel
       }
     }
 
-    void LongNardeState::AdvanceToNextPlayer(const std::vector<CheckerMove> &applied_moves,
+    void LongNardeState::LongNardeAdvanceToNextPlayer(const std::vector<LongNardeCheckerMove> &applied_moves,
                                              Action spiel_action)
     {
       Player moving_player = cur_player_; // Player who just finished moving

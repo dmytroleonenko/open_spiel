@@ -29,24 +29,21 @@ namespace open_spiel
                 return LegalChanceOutcomes();
 
             // Generate all possible move sequences
-            std::vector<std::vector<CheckerMove>> movelist = GenerateMoveSequences(CurrentPlayer());
+            std::vector<std::vector<LongNardeCheckerMove>> movelist = LongNardeGenerateMoveSequences(CurrentPlayer());
 
             // Filter for the best move sequences (longest, max non-pass)
-            auto filter_result = FilterBestMoveSequences(movelist);
-            std::vector<std::vector<CheckerMove>> filtered_movelist = filter_result.first;
+            auto filter_result = LongNardeFilterBestMoveSequences(movelist);
+            std::vector<std::vector<LongNardeCheckerMove>> filtered_movelist = filter_result.first;
             int max_non_pass = filter_result.second;
 
             // If filtering resulted in only a pass sequence (and original was pass-only), convert and return it.
             if (max_non_pass == 0 && !filtered_movelist.empty())
             {
-                // FilterBestMoveSequences guarantees the set contains one canonical pass sequence here.
-                // HOWEVER, that sequence might just be the placeholder {kPassPos, kPassPos, 0} or {kPassPos, kPassPos, 1}.
-                // We need to construct the *correct* pass sequence using the actual dice for encoding.
-                SPIEL_CHECK_GE(dice_.size(), 2); // Should have dice if we reached here needing to pass.
-                std::vector<CheckerMove> actual_pass_sequence;
-                actual_pass_sequence.push_back({kPassPos, kPassPos, DiceValue(0)}); // Use first die value
-                actual_pass_sequence.push_back({kPassPos, kPassPos, DiceValue(1)}); // Use second die value
-                return {CheckerMovesToSpielMove(actual_pass_sequence)};             // Encode the correct sequence
+                SPIEL_CHECK_GE(dice_.size(), 2);
+                std::vector<LongNardeCheckerMove> actual_pass_sequence;
+                actual_pass_sequence.push_back({kPassPos, kPassPos, DiceValue(0)});
+                actual_pass_sequence.push_back({kPassPos, kPassPos, DiceValue(1)});
+                return {LongNardeCheckerMovesToSpielMove(actual_pass_sequence)};
             }
 
             // Convert filtered move sequences to Spiel Actions
@@ -55,10 +52,9 @@ namespace open_spiel
 
             for (const auto &moveseq : filtered_movelist)
             {
-                // The filtering logic previously here is now in FilterBestMoveSequences
                 if (unique_actions.size() >= kMaxActionsToGenerate)
                     break;
-                Action action = CheckerMovesToSpielMove(moveseq);
+                Action action = LongNardeCheckerMovesToSpielMove(moveseq);
                 unique_actions.insert(action);
             }
 
@@ -66,7 +62,7 @@ namespace open_spiel
             legal_moves.assign(unique_actions.begin(), unique_actions.end());
 
             // **** Apply Higher Die Rule ****
-            std::vector<Action> final_actions = ApplyHigherDieRuleIfNeeded(legal_moves, filtered_movelist);
+            std::vector<Action> final_actions = LongNardeApplyHigherDieRuleIfNeeded(legal_moves, filtered_movelist);
             return final_actions;
         }
 
@@ -76,9 +72,8 @@ namespace open_spiel
             if (IsChanceNode() || IsTerminal())
                 return illegal_actions;
 
-            // Check dice validity before proceeding
             if (dice_.size() < 2)
-                return illegal_actions; // Cannot determine rolls
+                return illegal_actions;
 
             int high_roll = DiceValue(0);
             int low_roll = DiceValue(1);
@@ -86,21 +81,16 @@ namespace open_spiel
                 std::swap(high_roll, low_roll);
             int kMaxActionId = NumDistinctActions();
 
-            std::vector<Action> legal_actions = LegalActions(); // Get legal actions once
+            std::vector<Action> legal_actions = LegalActions();
             std::set<Action> legal_set(legal_actions.begin(), legal_actions.end());
 
             for (Action action = 0; action < kMaxActionId; ++action)
             {
                 if (legal_set.count(action))
-                    continue; // Skip known legal actions
-
-                // Simple heuristic check: Check if it decodes reasonably.
-                // Full validation is complex and already done by LegalActions.
-                // This mainly catches encoding ranges that don't make sense.
+                    continue;
                 try
                 {
-                    std::vector<CheckerMove> moves = SpielMoveToCheckerMoves(cur_player_, action);
-                    // Basic check: pass moves should correspond to valid die values if possible
+                    std::vector<LongNardeCheckerMove> moves = LongNardeSpielMoveToCheckerMoves(cur_player_, action);
                     bool is_pass = true;
                     for (const auto &m : moves)
                     {
@@ -112,7 +102,6 @@ namespace open_spiel
                     }
                     if (is_pass)
                     {
-                        // Check if die values encoded in pass make sense with current roll
                         if (moves.size() >= 1 && moves[0].die != DiceValue(0) && moves[0].die != DiceValue(1))
                         {
                             illegal_actions.push_back(action);
@@ -124,16 +113,12 @@ namespace open_spiel
                             continue;
                         }
                     }
-                    // Further checks could be added, but might duplicate LegalActions logic.
-                    // The main goal is to identify actions outside the *possible* range or clearly invalid encodings.
                 }
                 catch (...)
                 {
-                    // If decoding itself fails, it's illegal
                     illegal_actions.push_back(action);
                     continue;
                 }
-                // If it wasn't caught by simple checks and isn't legal, add it.
                 if (!legal_set.count(action))
                 {
                     illegal_actions.push_back(action);
@@ -142,77 +127,59 @@ namespace open_spiel
             return illegal_actions;
         }
 
-        // Helper function to generate all valid move sequences.
-        std::vector<std::vector<CheckerMove>> LongNardeState::GenerateMoveSequences(
-            Player player /* Removed: int max_moves */) const
+        std::vector<std::vector<LongNardeCheckerMove>> LongNardeState::LongNardeGenerateMoveSequences(
+            Player player) const
         {
-            std::vector<std::vector<CheckerMove>> movelist; // Changed from std::set
-            // Use the new iterative function - remove max_moves argument
-            IterativeLegalMoves({}, &movelist);
-
-            // Sort and remove duplicates to mimic std::set behavior
+            std::vector<std::vector<LongNardeCheckerMove>> movelist;
+            LongNardeIterativeLegalMoves({}, &movelist);
             std::sort(movelist.begin(), movelist.end());
             movelist.erase(std::unique(movelist.begin(), movelist.end()), movelist.end());
-
-            // Add pass move sequence if no moves possible
             if (movelist.empty())
             {
-                const auto &initial = this->InitialDice();
-                std::vector<CheckerMove> pass_seq;
+                const auto &initial = this->LongNardeInitialDice();
+                std::vector<LongNardeCheckerMove> pass_seq;
                 if (initial.size() >= 2 && initial[0] == initial[1])
                 {
-                    pass_seq = {CheckerMove(kPassPos, kPassPos, initial[0]),
-                                CheckerMove(kPassPos, kPassPos, initial[0])};
+                    pass_seq.clear();
+                    pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, initial[0]));
+                    pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, initial[0]));
                 }
                 else if (initial.size() >= 2)
                 {
-                    pass_seq = {CheckerMove(kPassPos, kPassPos, initial[0]),
-                                CheckerMove(kPassPos, kPassPos, initial[1])};
+                    pass_seq.clear();
+                    pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, initial[0]));
+                    pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, initial[1]));
                 }
                 else if (!initial.empty())
                 {
-                    pass_seq = {CheckerMove(kPassPos, kPassPos, initial[0]),
-                                CheckerMove(kPassPos, kPassPos, initial[0])};
+                    pass_seq.clear();
+                    pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, initial[0]));
+                    pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, initial[0]));
                 }
                 movelist.push_back(pass_seq);
             }
-
             return movelist;
         }
 
-        std::set<CheckerMove> LongNardeState::GenerateAllHalfMoves(int player, bool moved_from_head_this_sequence) const
+        std::set<LongNardeCheckerMove> LongNardeState::LongNardeGenerateAllHalfMoves(int player, bool moved_from_head_this_sequence) const
         {
-            std::set<CheckerMove> half_moves;
-
-            // For each checker belonging to the player
+            std::set<LongNardeCheckerMove> half_moves;
             for (int pos = 0; pos < kNumPoints; ++pos)
             {
                 if (board(player, pos) <= 0)
-                    continue; // Skip points with no checkers for this player
-
-                // For each usable die slot (always 4 slots)
+                    continue;
                 for (int die_idx = 0; die_idx < dice_.size(); ++die_idx)
                 {
                     if (IsDieUsable(die_idx))
-                    {                                       // Check if the die slot itself is usable
-                        int die_value = DiceValue(die_idx); // Get the actual die value (1-6)
-
-                        // Calculate destination based on the *checker's position* (pos)
+                    {
+                        int die_value = DiceValue(die_idx);
                         int to_pos = GetToPos(player, pos, die_value);
-
-                        // Check if this specific half-move is valid *now*
-                        // Use the checker's position (pos) as the starting point
-                        CheckerMove current_move(pos, to_pos, die_value); // Create the move struct
-
-                        // If the calculated to_pos indicates any type of bear-off (is < 0),
-                        // standardize it to kBearOffPos for consistency before validation/insertion.
+                        LongNardeCheckerMove current_move(pos, to_pos, die_value);
                         if (current_move.to_pos < 0)
                         {
                             current_move.to_pos = kBearOffPos;
                         }
-
-                        bool is_valid = IsValidCheckerMove(player, current_move, moved_from_head_this_sequence);
-
+                        bool is_valid = LongNardeIsValidCheckerMove(player, current_move, moved_from_head_this_sequence);
                         if (is_valid)
                         {
                             half_moves.insert(current_move);
@@ -220,17 +187,10 @@ namespace open_spiel
                     }
                 }
             }
-
-            // If no valid moves were found after checking all checkers and dice,
-            // the player *must* pass. We add a pass move placeholder.
-            // The encoding function will handle assigning dice values to the pass.
             if (half_moves.empty())
             {
-                // Add a single pass move. LegalActions/Encoding will handle using correct dice.
-                // Use die=1 as a placeholder.
-                half_moves.insert(CheckerMove(kPassPos, kPassPos, 1));
+                half_moves.insert(LongNardeCheckerMove(kPassPos, kPassPos, 1));
             }
-
             return half_moves;
         }
 
@@ -240,8 +200,8 @@ namespace open_spiel
         struct ExplorationState
         {
             std::unique_ptr<LongNardeState> state; // Represents the state *after* the move is applied
-            std::vector<CheckerMove> current_sequence;
-            CheckerMove move_applied;         // The move that led to this state (or a dummy {kPassPos, kPassPos, 0} for root)
+            std::vector<LongNardeCheckerMove> current_sequence;
+            LongNardeCheckerMove move_applied;         // The move that led to this state (or a dummy {kPassPos, kPassPos, 0} for root)
             int depth;                        // To track recursion depth limit
             bool moved_from_head_in_sequence; // Tracks if head move occurred *in this path*
 
@@ -251,8 +211,8 @@ namespace open_spiel
 
             // Constructor for subsequent states
             ExplorationState(std::unique_ptr<LongNardeState> s,
-                             const std::vector<CheckerMove> &seq,
-                             const CheckerMove &move, // Pass the move that was applied
+                             const std::vector<LongNardeCheckerMove> &seq,
+                             const LongNardeCheckerMove &move, // Pass the move that was applied
                              int d,
                              bool moved_head) // Added parameter
                 : state(std::move(s)), current_sequence(seq), move_applied(move), depth(d), moved_from_head_in_sequence(moved_head)
@@ -261,9 +221,9 @@ namespace open_spiel
         };
 
         // Iterative helper for LegalActions. Explores possible move sequences using DFS.
-        int LongNardeState::IterativeLegalMoves(
-            const std::vector<CheckerMove> &current_sequence, // Changed from initial_moveseq
-            std::vector<std::vector<CheckerMove>> *moves_list // Changed from movelist
+        int LongNardeState::LongNardeIterativeLegalMoves(
+            const std::vector<LongNardeCheckerMove> &current_sequence, // Changed from initial_moveseq
+            std::vector<std::vector<LongNardeCheckerMove>> *moves_list // Changed from movelist
             /* int max_moves_param - Removed */) const
         {
 
@@ -303,8 +263,8 @@ namespace open_spiel
                 // Extract data (state pointer is now owned by current_exploration)
                 std::unique_ptr<LongNardeState> current_state_ptr = std::move(current_exploration.state);
                 LongNardeState *current_state = current_state_ptr.get(); // Get raw pointer for use
-                const std::vector<CheckerMove> &current_sequence = current_exploration.current_sequence;
-                const CheckerMove &move_applied_to_reach_this = current_exploration.move_applied;
+                const std::vector<LongNardeCheckerMove> &current_sequence = current_exploration.current_sequence;
+                const LongNardeCheckerMove &move_applied_to_reach_this = current_exploration.move_applied;
                 int current_depth = current_exploration.depth;
 
                 // *** Log State Immediately After Pop ***
@@ -314,7 +274,7 @@ namespace open_spiel
                               << " | Player: " << current_state->CurrentPlayer()
                               << " | Dice: " << current_state->DiceToString()
                               << " | Initial: [";
-                    for (int d : current_state->InitialDice())
+                    for (int d : current_state->LongNardeInitialDice())
                     {
                         std::cerr << d << " ";
                     }
@@ -328,10 +288,8 @@ namespace open_spiel
                 // Check for the specific intermediate state in ConsecutiveMovesTest Scenario 1
                 if (current_exploration.current_sequence.size() == 1)
                 {
-                    const CheckerMove &first_move = current_exploration.current_sequence[0];
-                    // Check if the first move applied was {pos=8, to=5, die=3}
-                    // AND ensure we are Player 0 with initial dice [5, 3]
-                    const auto &initial_dice = current_state->InitialDice();
+                    const LongNardeCheckerMove &first_move = current_exploration.current_sequence[0];
+                    const auto &initial_dice = current_state->LongNardeInitialDice();
                     bool dice_match = initial_dice.size() >= 2 && initial_dice[0] == 5 && initial_dice[1] == 3;
                     if (current_state->CurrentPlayer() == kXPlayerId && dice_match &&
                         first_move.pos == 8 && first_move.to_pos == 5 && first_move.die == 3)
@@ -345,11 +303,10 @@ namespace open_spiel
                             std::cerr << "  Current State Player: " << current_state->CurrentPlayer() << "\n"
                                       << std::flush;
                             std::cerr << "  Current State Dice (Usable): " << current_state->DiceToString() << "\n"
-                                      << std::flush; // Keep this line
-                            // Display initial dice as stored in the *current* state object
+                                      << std::flush;
                             std::cerr << "  Initial Dice (as stored): [";
                             for (size_t i = 0; i < initial_dice.size(); ++i)
-                            { // This loop should now work
+                            {
                                 std::cerr << initial_dice[i] << (i == initial_dice.size() - 1 ? "" : ", ");
                             }
                             std::cerr << "]\n"
@@ -456,7 +413,7 @@ namespace open_spiel
 
                 // Generate possible next half-moves from the current state
                 // Pass the current_moved_from_head status.
-                std::set<CheckerMove> half_moves = current_state->GenerateAllHalfMoves(current_state->CurrentPlayer(), current_moved_from_head);
+                std::set<LongNardeCheckerMove> half_moves = current_state->LongNardeGenerateAllHalfMoves(current_state->CurrentPlayer(), current_moved_from_head);
 
                 // ADDED: Log the content of half_moves, specifically checking for the illegal move
                 if (kDebugging && current_state->CurrentPlayer() == 1)
@@ -545,9 +502,8 @@ namespace open_spiel
                     {
                         // This means GenerateAllHalfMoves found no valid checker moves and added a placeholder pass.
                         // Construct the actual pass sequence using the initial dice for this turn.
-                        std::vector<CheckerMove> actual_pass_sequence;
-                        // Access initial_dice_ from the *original* state (this) as current_state might have changed dice
-                        const std::vector<int> &initial_dice = this->InitialDice();
+                        std::vector<LongNardeCheckerMove> actual_pass_sequence;
+                        const std::vector<int> &initial_dice = this->LongNardeInitialDice();
 
                         SPIEL_CHECK_GE(initial_dice.size(), 2); // Ensure we have dice info
 
@@ -600,7 +556,7 @@ namespace open_spiel
                 Player player = current_state->CurrentPlayer(); // Get player once
 
                 // Convert to vector to easily check the index for the last move optimization
-                std::vector<CheckerMove> moves_to_explore;
+                std::vector<LongNardeCheckerMove> moves_to_explore;
                 for (const auto &move : half_moves)
                 {
                     if (move.pos != kPassPos)
@@ -612,7 +568,7 @@ namespace open_spiel
                 bool ownership_transferred = false; // Track if the unique_ptr was moved
                 for (int i = 0; i < moves_to_explore.size(); ++i)
                 {
-                    const CheckerMove &next_move = moves_to_explore[i];
+                    const LongNardeCheckerMove &next_move = moves_to_explore[i];
                     // No need to check for kPassPos here, already filtered
 
                     if (explored_branches >= kMaxBranchingFactor)
@@ -624,11 +580,11 @@ namespace open_spiel
                     }
 
                     // --- Apply Move ---
-                    current_state->ApplyCheckerMove(player, next_move);
+                    current_state->LongNardeApplyCheckerMove(player, next_move);
                     found_move_in_iteration = true;
 
                     // Create the new sequence
-                    std::vector<CheckerMove> next_sequence = current_sequence;
+                    std::vector<LongNardeCheckerMove> next_sequence = current_sequence;
                     next_sequence.push_back(next_move);
 
                     // Calculate the head move status for the next state
@@ -658,7 +614,7 @@ namespace open_spiel
                         // Need to undo the move if we are not transferring ownership (i.e., not the last move)
                         if (i != moves_to_explore.size() - 1)
                         {
-                            current_state->UndoCheckerMove(player, next_move);
+                            current_state->LongNardeUndoCheckerMove(player, next_move);
                         }
                         // If it *was* the last move, ownership will be transferred implicitly when current_state_ptr goes out of scope if not moved.
                     }
@@ -676,7 +632,7 @@ namespace open_spiel
                                 std::cerr << "[DEBUG ILM Before Push (Clone)] Player: " << current_state->CurrentPlayer()
                                           << " | Dice: " << current_state->DiceToString()
                                           << " | Initial: [";
-                                for (int d : current_state->InitialDice())
+                                for (int d : current_state->LongNardeInitialDice())
                                 {
                                     std::cerr << d << " ";
                                 }
@@ -695,7 +651,7 @@ namespace open_spiel
                                     std::cerr << "\n[DEBUG ILM After Push (Clone)] Top State - Player: " << top_state->CurrentPlayer()
                                               << " | Dice: " << top_state->DiceToString()
                                               << " | Initial: [";
-                                    for (int d : top_state->InitialDice())
+                                    for (int d : top_state->LongNardeInitialDice())
                                     {
                                         std::cerr << d << " ";
                                     }
@@ -706,7 +662,7 @@ namespace open_spiel
                             // if (kDebugging) std::cout << "  Iterative (Clone): Pushed state for move {" << next_move.pos << "," << next_move.to_pos << "," << next_move.die << "} at depth " << current_depth + 1 << std::endl;
 
                             // --- Undo Move ---
-                            current_state->UndoCheckerMove(player, next_move);
+                            current_state->LongNardeUndoCheckerMove(player, next_move);
                         }
                         else
                         {
@@ -717,7 +673,7 @@ namespace open_spiel
                                 std::cerr << "[DEBUG ILM Before Push (Move)] Player: " << current_state->CurrentPlayer()
                                           << " | Dice: " << current_state->DiceToString()
                                           << " | Initial: [";
-                                for (int d : current_state->InitialDice())
+                                for (int d : current_state->LongNardeInitialDice())
                                 {
                                     std::cerr << d << " ";
                                 }
@@ -735,7 +691,7 @@ namespace open_spiel
                                     std::cerr << "\n[DEBUG ILM After Push (Move)] Top State - Player: " << top_state->CurrentPlayer()
                                               << " | Dice: " << top_state->DiceToString()
                                               << " | Initial: [";
-                                    for (int d : top_state->InitialDice())
+                                    for (int d : top_state->LongNardeInitialDice())
                                     {
                                         std::cerr << d << " ";
                                     }
@@ -784,8 +740,8 @@ namespace open_spiel
                         if (pass_die_value != -1)
                         {
                             // Append the pass move to the sequence before adding it
-                            std::vector<CheckerMove> sequence_with_pass = current_sequence;
-                            sequence_with_pass.push_back(CheckerMove(kPassPos, kPassPos, pass_die_value));
+                            std::vector<LongNardeCheckerMove> sequence_with_pass = current_sequence;
+                            sequence_with_pass.push_back(LongNardeCheckerMove(kPassPos, kPassPos, pass_die_value));
                             // Log and add the sequence *with* the pass
                             if (kDebugging)
                             {
@@ -865,8 +821,8 @@ namespace open_spiel
         // ----- End Iterative Implementation -----
 
         // Helper function to filter generated sequences for the best ones.
-        std::pair<std::vector<std::vector<CheckerMove>>, int> LongNardeState::FilterBestMoveSequences(
-            const std::vector<std::vector<CheckerMove>> &movelist) const
+        std::pair<std::vector<std::vector<LongNardeCheckerMove>>, int> LongNardeState::LongNardeFilterBestMoveSequences(
+            const std::vector<std::vector<LongNardeCheckerMove>> &movelist) const
         {
 
             // *** ADDED DEBUG LOG ***
@@ -923,12 +879,12 @@ namespace open_spiel
             // *** END ADDED DEBUG LOG ***
 
             // Filter the sequences: keep only those with the longest length AND max non-pass moves
-            std::vector<std::vector<CheckerMove>> filtered_movelist;
+            std::vector<std::vector<LongNardeCheckerMove>> filtered_movelist;
             bool pass_possible = false; // Track if pass is a potentially valid "best" move
 
             // Check if any sequence leads to a terminal state
             bool has_terminal_sequence = false;
-            std::vector<std::vector<CheckerMove>> terminal_sequences;
+            std::vector<std::vector<LongNardeCheckerMove>> terminal_sequences;
 
             // First pass: identify terminal sequences
             for (const auto &moveseq : movelist)
@@ -941,7 +897,7 @@ namespace open_spiel
                 {
                     if (move.pos != kPassPos)
                     {
-                        test_state->ApplyCheckerMove(test_state->CurrentPlayer(), move);
+                        test_state->LongNardeApplyCheckerMove(test_state->CurrentPlayer(), move);
                     }
                 }
 
@@ -1034,7 +990,7 @@ namespace open_spiel
                 // Use GenerateAllHalfMoves to check validity from the current state.
                 // Determine initial home status for this specific check
                 bool check_initial_home_status = mutable_this->AllInHome(current_player);
-                std::set<CheckerMove> all_half_moves = mutable_this->GenerateAllHalfMoves(current_player, mutable_this->moved_from_head_);
+                std::set<LongNardeCheckerMove> all_half_moves = mutable_this->LongNardeGenerateAllHalfMoves(current_player, mutable_this->moved_from_head_);
 
                 // Restore the original state immediately after the call
                 mutable_this->dice_ = original_dice;
@@ -1075,9 +1031,9 @@ namespace open_spiel
         }
 
         // Helper function to apply the "play higher die" rule if necessary.
-        std::vector<Action> LongNardeState::ApplyHigherDieRuleIfNeeded(
+        std::vector<Action> LongNardeState::LongNardeApplyHigherDieRuleIfNeeded(
             const std::vector<Action> &current_legal_moves,
-            const std::vector<std::vector<CheckerMove>> &original_movelist /* Keep arg for now */) const
+            const std::vector<std::vector<LongNardeCheckerMove>> &original_movelist /* Keep arg for now */) const
         {
 
             // Recalculate max_non_pass (consider refactoring LegalActions to pass this)
@@ -1134,7 +1090,7 @@ namespace open_spiel
 
                 for (Action action : current_legal_moves)
                 {
-                    std::vector<CheckerMove> decoded_moves = SpielMoveToCheckerMoves(cur_player_, action);
+                    std::vector<LongNardeCheckerMove> decoded_moves = LongNardeSpielMoveToCheckerMoves(cur_player_, action);
                     // Find the single non-pass move
                     for (const auto &m : decoded_moves)
                     {

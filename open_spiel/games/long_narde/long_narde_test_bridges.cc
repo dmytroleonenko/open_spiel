@@ -78,8 +78,8 @@ namespace open_spiel
         std::vector<std::vector<int>> test_board = {white_row, black_row};
         SetupBoardState(lnstate, kXPlayerId, test_board);
         SetupDice(lnstate, {4, 1, 0, 0});
-        CheckerMove move1(4, 3, 1);
-        bool direct_move_valid = lnstate->IsValidCheckerMove(kXPlayerId, move1, false);
+        LongNardeCheckerMove move1(4, 3, 1);
+        bool direct_move_valid = lnstate->LongNardeIsValidCheckerMove(kXPlayerId, move1, false);
         SPIEL_CHECK_FALSE(direct_move_valid);
       }
       // EndTest: test-bridgetest-3
@@ -105,8 +105,8 @@ namespace open_spiel
         SetupDice(lnstate, {5, 1, 0, 0});
         bool bridge_illegal = lnstate->WouldFormBlockingBridge(kOPlayerId, 20, 15);
         SPIEL_CHECK_TRUE(bridge_illegal);
-        CheckerMove move4(20, 15, 5);
-        bool direct_move_valid = lnstate->IsValidCheckerMove(kOPlayerId, move4, false);
+        LongNardeCheckerMove move4(20, 15, 5);
+        bool direct_move_valid = lnstate->LongNardeIsValidCheckerMove(kOPlayerId, move4, false);
         SPIEL_CHECK_FALSE(direct_move_valid);
       }
       // EndTest: test-bridgetest-4
@@ -131,8 +131,8 @@ namespace open_spiel
         SetupDice(lnstate, {5, 1, 0, 0});
         bool bridge_illegal = lnstate->WouldFormBlockingBridge(kOPlayerId, 20, 15);
         SPIEL_CHECK_FALSE(bridge_illegal);
-        CheckerMove move5(20, 15, 5);
-        bool direct_move_valid = lnstate->IsValidCheckerMove(kOPlayerId, move5, false);
+        LongNardeCheckerMove move5(20, 15, 5);
+        bool direct_move_valid = lnstate->LongNardeIsValidCheckerMove(kOPlayerId, move5, false);
         SPIEL_CHECK_TRUE(direct_move_valid);
       }
       // EndTest: test-bridgetest-5
@@ -154,10 +154,10 @@ namespace open_spiel
         std::vector<std::vector<int>> test_board = {white_row, black_row};
         SetupBoardState(lnstate, kXPlayerId, test_board);
         SetupDice(lnstate, {1, 1, 0, 0});
-        CheckerMove move1(23, 22, 1);
-        SPIEL_CHECK_FALSE(lnstate->IsValidCheckerMove(kXPlayerId, move1, false));
-        CheckerMove move2(5, 4, 1);
-        SPIEL_CHECK_FALSE(lnstate->IsValidCheckerMove(kXPlayerId, move2, false));
+        LongNardeCheckerMove move1(23, 22, 1);
+        SPIEL_CHECK_FALSE(lnstate->LongNardeIsValidCheckerMove(kXPlayerId, move1, false));
+        LongNardeCheckerMove move2(5, 4, 1);
+        SPIEL_CHECK_FALSE(lnstate->LongNardeIsValidCheckerMove(kXPlayerId, move2, false));
         std::vector<int> white_row_seq = white_row;
         white_row_seq[3] -= 1;
         white_row_seq[2] += 1;
@@ -168,16 +168,16 @@ namespace open_spiel
         std::vector<std::vector<int>> test_board_seq = {white_row_seq, black_row};
         SetupBoardState(lnstate, kXPlayerId, test_board_seq);
         SetupDice(lnstate, {1, 1, 0, 0});
-        CheckerMove move3(4, 3, 1);
-        SPIEL_CHECK_FALSE(lnstate->IsValidCheckerMove(kXPlayerId, move3, true));
+        LongNardeCheckerMove move3(4, 3, 1);
+        SPIEL_CHECK_FALSE(lnstate->LongNardeIsValidCheckerMove(kXPlayerId, move3, true));
         std::vector<int> white_row_seq2 = white_row_seq;
         white_row_seq2[4] -= 1;
         white_row_seq2[3] += 1;
         std::vector<std::vector<int>> test_board_seq2 = {white_row_seq2, black_row};
         SetupBoardState(lnstate, kXPlayerId, test_board_seq2);
         SetupDice(lnstate, {1, 1, 0, 0});
-        CheckerMove move4(23, 22, 1);
-        SPIEL_CHECK_FALSE(lnstate->IsValidCheckerMove(kXPlayerId, move4, true));
+        LongNardeCheckerMove move4(23, 22, 1);
+        SPIEL_CHECK_FALSE(lnstate->LongNardeIsValidCheckerMove(kXPlayerId, move4, true));
       }
       // EndTest: test-bridgetest-6
 
@@ -198,10 +198,10 @@ namespace open_spiel
         std::vector<std::vector<int>> test_board = {white_row, black_row};
         SetupBoardState(lnstate, kXPlayerId, test_board);
         SetupDice(lnstate, {1, 3, 0, 0});
-        CheckerMove check_move1(9, 8, 1);
-        SPIEL_CHECK_TRUE(lnstate->IsValidCheckerMove(kXPlayerId, check_move1, false));
-        CheckerMove check_move2(10, 7, 3);
-        SPIEL_CHECK_TRUE(lnstate->IsValidCheckerMove(kXPlayerId, check_move2, false));
+        LongNardeCheckerMove check_move1(9, 8, 1);
+        SPIEL_CHECK_TRUE(lnstate->LongNardeIsValidCheckerMove(kXPlayerId, check_move1, false));
+        LongNardeCheckerMove check_move2(10, 7, 3);
+        SPIEL_CHECK_TRUE(lnstate->LongNardeIsValidCheckerMove(kXPlayerId, check_move2, false));
         SPIEL_CHECK_FALSE(lnstate->WouldFormBlockingBridge(kXPlayerId, 8, 7));
         std::cout << "✓ Move 8 -> 7 correctly verified as legal (doesn't create illegal bridge).\n";
       }
