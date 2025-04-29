@@ -16,6 +16,10 @@
 
 import collections
 import numpy as np
+import os
+import pickle
+import yaml
+import pyspiel
 
 from open_spiel.python import rl_agent
 from open_spiel.python import rl_tools
@@ -38,20 +42,47 @@ class QLearner(rl_agent.AbstractAgent):
                player_id,
                num_actions,
                step_size=0.1,
-               epsilon_schedule=rl_tools.ConstantSchedule(0.2),
+               epsilon_start=0.2,
+               epsilon_end=0.2,
+               epsilon_decay_duration=1,
                discount_factor=1.0,
-               centralized=False):
+               q_init=0.0,
+               centralized=False,
+               **kwargs):
     """Initialize the Q-Learning agent."""
     self._player_id = player_id
     self._num_actions = num_actions
     self._step_size = step_size
-    self._epsilon_schedule = epsilon_schedule
-    self._epsilon = epsilon_schedule.value
+    if 'epsilon_schedule' in kwargs:
+        self._epsilon_schedule = kwargs['epsilon_schedule']
+    elif epsilon_decay_duration > 1 and epsilon_start != epsilon_end:
+        self._epsilon_schedule = rl_tools.EpsilonSchedule(
+            epsilon_start=epsilon_start,
+            epsilon_end=epsilon_end,
+            epsilon_decay_duration=epsilon_decay_duration)
+    else:
+         self._epsilon_schedule = rl_tools.ConstantSchedule(epsilon_start)
+
+    self._epsilon = self._epsilon_schedule.value
     self._discount_factor = discount_factor
     self._centralized = centralized
-    self._q_values = collections.defaultdict(valuedict)
+    self._q_values = collections.defaultdict(lambda: collections.defaultdict(lambda: q_init))
     self._prev_info_state = None
     self._last_loss_value = None
+    self._step_counter = 0
+
+    self._hparams = {
+        'player_id': player_id,
+        'num_actions': num_actions,
+        'step_size': step_size,
+        'discount_factor': discount_factor,
+        'centralized': centralized,
+        'q_init': q_init,
+        'epsilon_start': self._epsilon_schedule.epsilon_start if hasattr(self._epsilon_schedule, 'epsilon_start') else self._epsilon_schedule.value,
+        'epsilon_end': self._epsilon_schedule.epsilon_end if hasattr(self._epsilon_schedule, 'epsilon_end') else self._epsilon_schedule.value,
+        'epsilon_decay_duration': self._epsilon_schedule.epsilon_decay_duration if hasattr(self._epsilon_schedule, 'epsilon_decay_duration') else 1,
+    }
+    self._hparams.update(kwargs)
 
   def _epsilon_greedy(self, info_state, legal_actions, epsilon):
     """Returns a valid epsilon-greedy action and valid action probs.
@@ -130,6 +161,7 @@ class QLearner(rl_agent.AbstractAgent):
 
       # Decay epsilon, if necessary.
       self._epsilon = self._epsilon_schedule.step()
+      self._step_counter += 1
 
       if time_step.last():  # prepare for the next episode.
         self._prev_info_state = None
@@ -144,3 +176,50 @@ class QLearner(rl_agent.AbstractAgent):
   @property
   def loss(self):
     return self._last_loss_value
+
+  def save(self, path):
+    """Saves the Q-learner state and metadata.
+
+    Creates the directory if it doesn't exist. Saves the Q-table,
+    the current step counter for the epsilon schedule, and a metadata file.
+
+    Args:
+      path: Directory path to save the agent data.
+    """
+    os.makedirs(path, exist_ok=True)
+
+    # 1. Save Q-table (convert to standard dict for better compatibility)
+    q_values_dict = {k: dict(v) for k, v in self._q_values.items()}
+    q_table_path = os.path.join(path, "q_table.pkl")
+    try:
+        with open(q_table_path, 'wb') as f:
+            pickle.dump(q_values_dict, f)
+    except Exception as e:
+        raise IOError(f"Could not save Q-table to {q_table_path}: {e}")
+
+    # 2. Save internal state (step counter for epsilon schedule)
+    agent_state_path = os.path.join(path, "agent_state.pkl")
+    agent_state = {"step_counter": self._step_counter}
+    try:
+        with open(agent_state_path, 'wb') as f:
+            pickle.dump(agent_state, f)
+    except Exception as e:
+        raise IOError(f"Could not save agent state to {agent_state_path}: {e}")
+
+    # 3. Save metadata
+    metadata = {
+        "agent_class": self.__class__.__name__,
+        "agent_hparams": self._hparams,
+        "serialization_format_version": "1.0",
+        "openspiel_version": pyspiel.__version__,
+    }
+    metadata_path = os.path.join(path, "metadata.yaml")
+    try:
+        with open(metadata_path, 'w') as f:
+            yaml.dump(metadata, f, default_flow_style=False)
+    except Exception as e:
+        raise IOError(f"Could not save metadata to {metadata_path}: {e}")
+
+    print(f"QLearner saved successfully to {path}")
+
+  # TODO: Implement restore(path) method
