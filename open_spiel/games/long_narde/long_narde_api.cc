@@ -4,6 +4,7 @@
 #include <memory>   // For std::unique_ptr, std::make_unique
 #include <iostream> // For std::cout (used in Clone #ifndef NDEBUG)
 #include "open_spiel/abseil-cpp/absl/types/span.h"
+#include <sstream> // Added for logging board state
 
 namespace open_spiel
 {
@@ -36,6 +37,33 @@ namespace open_spiel
      */
     void LongNardeState::DoApplyAction(Action move_id)
     {
+      if (kDebugging) {
+        // --- Full State Dump --- 
+        std::cerr << "\n===== [DEBUG API] DoApplyAction START =====\n"
+                  << "  Action ID: " << move_id << "\n"
+                  << "  CurrentPlayer(): " << CurrentPlayer() << " (Internal cur_player_: " << cur_player_ << ")\n"
+                  << "  Prev Player: " << prev_player_ << "\n"
+                  << "  Turns: " << turns_ << " (X: " << x_turns_ << ", O: " << o_turns_ << ")\n"
+                  << "  Moves Remaining: " << moves_remaining_ << "\n"
+                  << "  Dice: {" << (dice_.size() > 0 ? std::to_string(dice_[0]) : "N") << ", "
+                                   << (dice_.size() > 1 ? std::to_string(dice_[1]) : "N") << ", "
+                                   << (dice_.size() > 2 ? std::to_string(dice_[2]) : "N") << ", "
+                                   << (dice_.size() > 3 ? std::to_string(dice_[3]) : "N") << "}\n"
+                  << "  Moved From Head (State): " << moved_from_head_ << "\n"
+                  << "  Is First Turn (State): " << is_on_first_turn_ << "\n"
+                  << "  Allow Last Roll Tie: " << allow_last_roll_tie_ << "\n"
+                  << "  Scores: {X: " << scores_[kXPlayerId] << ", O: " << scores_[kOPlayerId] << "}\n"
+                  << "  Board (X=0, O=1):\n";
+        for (int p = 0; p < kNumPlayers; ++p) {
+          std::cerr << "    P" << p << ": ";
+          for (int i = 0; i < kNumPoints; ++i) {
+            std::cerr << board_[p][i] << (i == kNumPoints - 1 ? "" : ",");
+          }
+          std::cerr << "\n";
+        }
+        std::cerr << "=========================================\n" << std::endl;
+      }
+
       if (IsChanceNode()) {
         // Process new dice roll and initialize half-move counter
         ProcessChanceRoll(move_id);
@@ -48,25 +76,39 @@ namespace open_spiel
       SPIEL_CHECK_GT(moves_remaining_, 0);
       // Decode the single half-move action
       auto cmoves = LongNardeSpielMoveToCheckerMoves(cur_player_, move_id);
-      // Record history for undo (before dice mutation)
-      turn_history_info_.push_back(
-          TurnHistoryInfo(cur_player_, prev_player_, dice_, move_id,
-                          moved_from_head_, cmoves[0]));
-      // Apply the half-move
-      LongNardeApplyCheckerMove(cur_player_, cmoves[0]);
-      // Decrement remaining moves
-      moves_remaining_--;
-      if (moves_remaining_ > 0) {
-        return;
+
+      // Store the move that was actually applied for history/undo
+      // Ensure we only store one move here as DoApplyAction handles one half-move action ID at a time.
+      SPIEL_CHECK_EQ(cmoves.size(), 1);
+      LongNardeCheckerMove applied_move = cmoves[0];
+
+      // Handle pass separately first
+      if (applied_move.pos == kPassPos)
+      {
+        moves_remaining_ = 0;
       }
-      // All half-moves done: end of turn
-      // Clear dice before next chance node
-      dice_.assign(4, 0);
-      // Reset head-move flag
-      moved_from_head_ = false;
-      // Advance to next player via chance node
+      else
+      {
+        // Store previous head move status before applying
+        bool prev_moved_from_head = moved_from_head_;
+
+        // Apply the single checker move
+        LongNardeApplyCheckerMove(cur_player_, applied_move);
+
+        moves_remaining_--;
+
+        // Check for terminal state *after* applying the move
+        if (IsTerminal())
+        {
+          return; // Game over
+        }
+      }
+
+      // Add to history AFTER applying the move and updating state
+      history_.emplace_back(TurnHistoryInfo(cur_player_, prev_player_, dice_, move_id, prev_moved_from_head, applied_move));
+
+      // After applying the move, determine next player or if turn continues
       LongNardeAdvanceToNextPlayer(cmoves, move_id);
-      return;
     }
 
     /**
