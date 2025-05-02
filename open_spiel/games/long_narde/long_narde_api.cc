@@ -36,96 +36,37 @@ namespace open_spiel
      */
     void LongNardeState::DoApplyAction(Action move_id)
     {
-      if (IsChanceNode())
-      {
+      if (IsChanceNode()) {
+        // Process new dice roll and initialize half-move counter
         ProcessChanceRoll(move_id);
+        // On non-doubles: 2 half-moves; on doubles: 4 half-moves
+        moves_remaining_ = (dice_[0] == dice_[1] ? 4 : 2);
         return;
       }
 
-      std::vector<LongNardeCheckerMove> original_moves = LongNardeSpielMoveToCheckerMoves(cur_player_, move_id);
-      std::vector<LongNardeCheckerMove> filtered_moves;
-      int head_pos = (cur_player_ == kXPlayerId) ? kWhiteHeadPos : kBlackHeadPos;
-      bool used_head_move = false;
-
-      for (const auto &m : original_moves)
-      {
-        if (m.pos == kPassPos)
-        {
-          filtered_moves.push_back(m);
-          continue;
-        }
-
-        // Allow second head move only if:
-        // (A) It is the first turn AND dice are double 6, 4, or 3, OR
-        // (B) Not first turn => no second head move.
-        // This check remains as a safeguard, although LegalActions should prevent invalid sequences.
-        if (IsHeadPos(cur_player_, m.pos) && used_head_move)
-        {
-          // Use is_on_first_turn_ member variable and initial_dice_
-          if (is_on_first_turn_)
-          {
-            // Check initial_dice_ for special doubles
-            bool is_special_double = false;
-            if (initial_dice_.size() >= 2 && initial_dice_[0] > 0 && initial_dice_[0] == initial_dice_[1])
-            {
-              int dieVal = initial_dice_[0];
-              if (dieVal == 6 || dieVal == 4 || dieVal == 3)
-              {
-                is_special_double = true;
-              }
-            }
-            if (!is_special_double)
-            {
-              // This move is invalid in the sequence, replace with Pass
-              // Note: LegalActions should ideally not generate such sequences.
-              filtered_moves.push_back(kPassMove);
-              continue;
-            }
-          }
-          else
-          {
-            // Normal turns: only one checker can leave the head.
-            // Replace invalid second head move with Pass.
-            filtered_moves.push_back(kPassMove);
-            continue;
-          }
-        }
-        if (IsHeadPos(cur_player_, m.pos))
-        {
-          used_head_move = true;
-          // moved_from_head_ is set within ApplyCheckerMove now
-        }
-        filtered_moves.push_back(m); // Add the original move if it passed checks
-      }
-
-      // Apply all valid moves from the filtered sequence
-      for (const auto &m : filtered_moves)
-      {
-        if (m.pos != kPassPos)
-        {
-          // ApplyCheckerMove internally checks validity again (without head rule)
-          // and sets moved_from_head_
-          LongNardeApplyCheckerMove(cur_player_, m);
-        }
-      }
-
-      // Store the state before applying the move for undo purposes.
+      // ----- Half-Move Branch (2 or 4 sequential moves per turn) -----
+      SPIEL_CHECK_GT(moves_remaining_, 0);
+      // Decode the single half-move action
+      auto cmoves = LongNardeSpielMoveToCheckerMoves(cur_player_, move_id);
+      // Record history for undo (before dice mutation)
       turn_history_info_.push_back(
           TurnHistoryInfo(cur_player_, prev_player_, dice_, move_id,
-                          moved_from_head_));
-
-      // Clear dice *before* advancing to the next player/chance node
-      dice_.assign(4, 0); // NEW WAY - Reset dice slots to 0, maintaining size 4
-
-      // Reset head move flag here as well, before AdvanceToNextPlayer might use it indirectly
+                          moved_from_head_, cmoves[0]));
+      // Apply the half-move
+      LongNardeApplyCheckerMove(cur_player_, cmoves[0]);
+      // Decrement remaining moves
+      moves_remaining_--;
+      if (moves_remaining_ > 0) {
+        return;
+      }
+      // All half-moves done: end of turn
+      // Clear dice before next chance node
+      dice_.assign(4, 0);
+      // Reset head-move flag
       moved_from_head_ = false;
-
-      // Determine next player state (sets cur_player_ to kChancePlayerId and stores next actual player in prev_player_)
-      LongNardeAdvanceToNextPlayer(filtered_moves, move_id);
-
-      // No need for further updates to cur_player_ or prev_player_ here, AdvanceToNextPlayer handles it.
-      // No need to clear dice_ again, done above.
-      // No need to reset moved_from_head_ again, done above.
+      // Advance to next player via chance node
+      LongNardeAdvanceToNextPlayer(cmoves, move_id);
+      return;
     }
 
     /**
@@ -144,20 +85,19 @@ namespace open_spiel
       TurnHistoryInfo info = turn_history_info_.back();
       turn_history_info_.pop_back();
 
-      // Restore state
+      // Restore state parts needed *before* undoing the checker move
       moved_from_head_ = info.moved_from_head;
       cur_player_ = info.player;
       prev_player_ = info.prev_player;
-      // dice_ = info.dice; // OLD WAY - Could restore a 2-element vector
-      // NEW WAY: Restore dice values while ensuring dice_ remains size 4
-      dice_.assign(4, 0); // Reset to 4 zeros
-      for (size_t i = 0; i < info.dice.size() && i < 4; ++i)
-      {
-        dice_[i] = info.dice[i]; // Copy values from history (up to 4)
-      }
 
       if (player == kChancePlayerId && info.dice.empty())
       {
+        // If undoing the initial chance roll, restore dice and reset turns
+        dice_.assign(4, 0); // Reset to 4 zeros
+        for (size_t i = 0; i < info.dice.size() && i < 4; ++i)
+        {
+          dice_[i] = info.dice[i]; // Copy values from history (up to 4)
+        }
         cur_player_ = kChancePlayerId;
         prev_player_ = kChancePlayerId;
         turns_ = -1;
@@ -170,12 +110,16 @@ namespace open_spiel
         {
           cur_player_ = player;
         }
-        std::vector<LongNardeCheckerMove> moves = LongNardeSpielMoveToCheckerMoves(player, action);
 
-        // Undo moves in reverse order
-        for (int i = moves.size() - 1; i >= 0; --i)
+        // --- Undo the checker move FIRST, using the state *before* dice restoration ---
+        // The dice_ array still reflects the state *after* the move was applied here.
+        LongNardeUndoCheckerMove(player, info.applied_move);
+
+        // --- Now restore the dice to the state *before* the move was applied ---
+        dice_.assign(4, 0); // Reset to 4 zeros
+        for (size_t i = 0; i < info.dice.size() && i < 4; ++i)
         {
-          LongNardeUndoCheckerMove(player, moves[i]);
+          dice_[i] = info.dice[i]; // Copy values from history (up to 4)
         }
 
         // Determine if the undone roll was doubles based on restored dice
@@ -414,7 +358,7 @@ namespace open_spiel
       // Record the chance outcome in turn history.
       turn_history_info_.push_back(
           TurnHistoryInfo(kChancePlayerId, prev_player_, dice_, move_id,
-                          moved_from_head_));
+                          moved_from_head_, LongNardeCheckerMove()));
 
       // Ensure we have no dice set yet, then apply this new roll.
       RollDice(move_id); // Sets dice_ based on outcome
