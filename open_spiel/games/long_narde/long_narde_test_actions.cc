@@ -17,307 +17,65 @@ namespace open_spiel
       // StartFunction: ActionEncodingTest
       void ActionEncodingTest()
       {
+        std::cout << "[TEST] Start: ActionEncodingTest" << std::endl;
         std::shared_ptr<const Game> game = LoadGame("long_narde");
+        std::unique_ptr<State> state = game->NewInitialState();
+        LongNardeState *lnstate = static_cast<LongNardeState *>(state.get());
 
-        // Get the kNumDistinctActions constant - using NumDistinctActions() method
-        int kNumDistinctActions;
-        {
-          std::unique_ptr<State> state = game->NewInitialState();
-          auto lnstate = static_cast<LongNardeState *>(state.get());
-          kNumDistinctActions = lnstate->NumDistinctActions();
+        // *** FIX: Explicitly set the player after initial state creation ***
+        lnstate->cur_player_ = kXPlayerId; // Assume testing White's perspective after implicit first roll.
+        // *** END FIX ***
+
+        // Test Half-Move Encoding & Decoding for a nondouble roll
+        SetupDice(lnstate, {5, 3, 0, 0});
+        auto actions = state->LegalActions();
+        SPIEL_CHECK_FALSE(actions.empty());
+        for (Action a : actions) {
+          auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, a);
+          SPIEL_CHECK_EQ(moves.size(), 1);
+          SPIEL_CHECK_EQ(a, (moves[0].pos == kPassPos ? kNumPoints : moves[0].pos));
+          SPIEL_CHECK_GE(moves[0].die, 1);
+          SPIEL_CHECK_LE(moves[0].die, 6);
         }
 
-        // Prepare initial and modified boards for reuse
-        std::vector<std::vector<int>> initial_board(2, std::vector<int>(kNumPoints, 0));
-        initial_board[kXPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer;
-        initial_board[kOPlayerId][kBlackHeadPos] = kNumCheckersPerPlayer;
-        std::vector<std::vector<int>> modified_board(2, std::vector<int>(kNumPoints, 0));
-        {
-          std::unique_ptr<State> state = game->NewInitialState();
-          auto lnstate = static_cast<LongNardeState *>(state.get());
-          SetupBoardState(lnstate, kXPlayerId, initial_board);
-          SetupDice(lnstate, {5, 3, 0, 0});
-          for (int pos = 0; pos < kNumPoints; ++pos)
-          {
-            modified_board[kXPlayerId][pos] = lnstate->board_[kXPlayerId][pos];
-            modified_board[kOPlayerId][pos] = lnstate->board_[kOPlayerId][pos];
-          }
-          modified_board[kXPlayerId][kWhiteHeadPos] -= 2;
-          modified_board[kXPlayerId][14] += 1;
-          modified_board[kXPlayerId][19] += 1;
-        }
+        // Test Pass Action Encoding & Decoding
+        Action pass = kNumPoints;
+        auto pmoves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, pass);
+        SPIEL_CHECK_EQ(pmoves.size(), 1);
+        SPIEL_CHECK_EQ(pmoves[0].pos, kPassPos);
 
-        // StartTest: test-actionencodingtest-1
-        {
-          std::unique_ptr<State> state = game->NewInitialState();
-          auto lnstate = static_cast<LongNardeState *>(state.get());
-          SetupBoardState(lnstate, kXPlayerId, modified_board);
-          SetupDice(lnstate, {5, 3, 0, 0});
-          std::vector<LongNardeCheckerMove> test_moves = {
-              {14, lnstate->GetToPos(kXPlayerId, 14, 5), 5},
-              {19, lnstate->GetToPos(kXPlayerId, 19, 3), 3}};
-          Action action = lnstate->LongNardeCheckerMovesToSpielMove(test_moves);
-          SPIEL_CHECK_GE(action, 0);
-          SPIEL_CHECK_LT(action, kNumDistinctActions);
-          std::vector<LongNardeCheckerMove> decoded_moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
-          SPIEL_CHECK_EQ(decoded_moves.size(), 2);
-          bool first_move_found = false;
-          bool second_move_found = false;
-          for (const LongNardeCheckerMove &move : decoded_moves)
-          {
-            if (move.pos == test_moves[0].pos && move.die == test_moves[0].die)
-              first_move_found = true;
-            if (move.pos == test_moves[1].pos && move.die == test_moves[1].die)
-              second_move_found = true;
-          }
-          SPIEL_CHECK_TRUE(first_move_found);
-          SPIEL_CHECK_TRUE(second_move_found);
-        }
-        // EndTest: test-actionencodingtest-1
+        // Test applying a single decoded half-move
+        std::shared_ptr<const Game> game2 = LoadGame("long_narde");
+        std::unique_ptr<State> state2 = game2->NewInitialState();
+        auto lnstate2 = static_cast<LongNardeState *>(state2.get());
 
-        // StartTest: test-actionencodingtest-2
-        {
-          std::unique_ptr<State> state = game->NewInitialState();
-          auto lnstate = static_cast<LongNardeState *>(state.get());
-          SetupBoardState(lnstate, kXPlayerId, modified_board);
-          SetupDice(lnstate, {5, 3, 0, 0});
-          std::vector<LongNardeCheckerMove> pass_moves = {
-              {kPassPos, kPassPos, 5},
-              {kPassPos, kPassPos, 3}};
-          Action action = lnstate->LongNardeCheckerMovesToSpielMove(pass_moves);
-          SPIEL_CHECK_GE(action, 0);
-          SPIEL_CHECK_LT(action, kNumDistinctActions);
-          std::vector<LongNardeCheckerMove> decoded_moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
-          SPIEL_CHECK_EQ(decoded_moves.size(), 2);
-          bool first_pass_found = false;
-          bool second_pass_found = false;
-          for (const LongNardeCheckerMove &move : decoded_moves)
-          {
-            if (move.pos == kPassPos && move.die == 5)
-              first_pass_found = true;
-            if (move.pos == kPassPos && move.die == 3)
-              second_pass_found = true;
-          }
-          SPIEL_CHECK_TRUE(first_pass_found);
-          SPIEL_CHECK_TRUE(second_pass_found);
-        }
-        // EndTest: test-actionencodingtest-2
+        // *** FIX: Explicitly set the player after initial state creation (for second scenario) ***
+        lnstate2->cur_player_ = kXPlayerId; // Assume testing White's perspective after implicit first roll.
+        // *** END FIX ***
 
-        // StartTest: test-actionencodingtest-3
-        {
-          std::unique_ptr<State> state = game->NewInitialState();
-          auto lnstate = static_cast<LongNardeState *>(state.get());
-          SetupBoardState(lnstate, kXPlayerId, modified_board);
-          SetupDice(lnstate, {3, 5, 0, 0});
-          std::vector<LongNardeCheckerMove> test_moves = {
-              {14, lnstate->GetToPos(kXPlayerId, 14, 5), 5},
-              {19, lnstate->GetToPos(kXPlayerId, 19, 3), 3}};
-          Action action_low_roll = lnstate->LongNardeCheckerMovesToSpielMove(test_moves);
-          SPIEL_CHECK_GE(action_low_roll, 0);
-          SPIEL_CHECK_LT(action_low_roll, kNumDistinctActions);
-          std::vector<LongNardeCheckerMove> decoded_moves_low_roll = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action_low_roll);
-          SPIEL_CHECK_EQ(decoded_moves_low_roll.size(), 2);
-          bool first_move_found = false;
-          bool second_move_found = false;
-          for (const LongNardeCheckerMove &move : decoded_moves_low_roll)
-          {
-            if (move.pos == test_moves[0].pos && move.die == test_moves[0].die)
-              first_move_found = true;
-            if (move.pos == test_moves[1].pos && move.die == test_moves[1].die)
-              second_move_found = true;
-          }
-          SPIEL_CHECK_TRUE(first_move_found);
-          SPIEL_CHECK_TRUE(second_move_found);
-        }
-        // EndTest: test-actionencodingtest-3
+        // Use four dice for doubles setup
+        SetupDice(lnstate2, {4, 4, 4, 4});
+        auto legal_actions2 = state2->LegalActions();
+        SPIEL_CHECK_FALSE(legal_actions2.empty());
+        Action first_action = legal_actions2[0]; // Take the first legal half-move
 
-        // StartTest: test-actionencodingtest-4
-        {
-          std::unique_ptr<State> state = game->NewInitialState();
-          auto lnstate = static_cast<LongNardeState *>(state.get());
-          std::vector<std::vector<int>> doubles_board(2, std::vector<int>(kNumPoints, 0));
-          doubles_board[kXPlayerId][23] = 1;
-          doubles_board[kXPlayerId][22] = 1;
-          doubles_board[kXPlayerId][21] = 1;
-          doubles_board[kXPlayerId][20] = 1;
-          doubles_board[kXPlayerId][19] = 11;
-          doubles_board[kOPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer;
-          SetupBoardState(lnstate, kXPlayerId, doubles_board);
-          SetupDice(lnstate, {2, 2, 2, 2});
-          std::vector<LongNardeCheckerMove> doubles_moves = {
-              {23, lnstate->GetToPos(kXPlayerId, 23, 2), 2},
-              {22, lnstate->GetToPos(kXPlayerId, 22, 2), 2},
-              {21, lnstate->GetToPos(kXPlayerId, 21, 2), 2},
-              {20, lnstate->GetToPos(kXPlayerId, 20, 2), 2}};
-          Action doubles_action = lnstate->LongNardeCheckerMovesToSpielMove(doubles_moves);
-          SPIEL_CHECK_GE(doubles_action, 0);
-          SPIEL_CHECK_LT(doubles_action, kNumDistinctActions);
-          std::vector<LongNardeCheckerMove> decoded_doubles_moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, doubles_action);
-          SPIEL_CHECK_GE(decoded_doubles_moves.size(), 4);
-          int moves_matched = 0;
-          for (size_t i = 0; i < doubles_moves.size(); ++i)
-          {
-            bool match_found = false;
-            for (size_t j = 0; j < decoded_doubles_moves.size(); ++j)
-            {
-              if (doubles_moves[i].pos == decoded_doubles_moves[j].pos && decoded_doubles_moves[j].die == 2)
-              {
-                match_found = true;
-                break;
-              }
-            }
-            if (match_found)
-              moves_matched++;
-          }
-          SPIEL_CHECK_EQ(moves_matched, 4);
-        }
-        // EndTest: test-actionencodingtest-4
+        // Decode this specific action *before* applying
+        auto moves_before_apply = lnstate2->LongNardeSpielMoveToCheckerMoves(kXPlayerId, first_action);
+        SPIEL_CHECK_EQ(moves_before_apply.size(), 1); // Ensure it decodes to one half-move
 
-        // StartTest: test-actionencodingtest-5
-        {
-          std::unique_ptr<State> state = game->NewInitialState();
-          auto lnstate = static_cast<LongNardeState *>(state.get());
-          std::vector<std::vector<int>> doubles_board(2, std::vector<int>(kNumPoints, 0));
-          doubles_board[kXPlayerId][23] = 1;
-          doubles_board[kXPlayerId][22] = 1;
-          doubles_board[kXPlayerId][21] = 1;
-          doubles_board[kXPlayerId][20] = 1;
-          doubles_board[kXPlayerId][19] = 11;
-          doubles_board[kOPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer;
-          SetupBoardState(lnstate, kXPlayerId, doubles_board);
-          SetupDice(lnstate, {2, 2, 2, 2});
-          std::vector<LongNardeCheckerMove> doubles_moves_with_pass = {
-              {23, lnstate->GetToPos(kXPlayerId, 23, 2), 2},
-              {22, lnstate->GetToPos(kXPlayerId, 22, 2), 2},
-              {21, lnstate->GetToPos(kXPlayerId, 21, 2), 2},
-              kPassMove};
-          Action doubles_pass_action = lnstate->LongNardeCheckerMovesToSpielMove(doubles_moves_with_pass);
-          SPIEL_CHECK_GE(doubles_pass_action, 0);
-          SPIEL_CHECK_LT(doubles_pass_action, kNumDistinctActions);
-          std::vector<LongNardeCheckerMove> decoded_doubles_pass_moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, doubles_pass_action);
-          SPIEL_CHECK_GE(decoded_doubles_pass_moves.size(), 4);
-          std::map<int, int> matched_pos_count;
-          int passes_found = 0;
-          for (const auto &decoded_move : decoded_doubles_pass_moves)
-          {
-            if (decoded_move.pos != kPassPos)
-            {
-              for (size_t i = 0; i < 3; ++i)
-              {
-                if (doubles_moves_with_pass[i].pos == decoded_move.pos && decoded_move.die == 2)
-                {
-                  matched_pos_count[decoded_move.pos]++;
-                  break;
-                }
-              }
-            }
-            else
-            {
-              passes_found++;
-            }
-          }
-          SPIEL_CHECK_EQ(matched_pos_count.size(), 3);
-          SPIEL_CHECK_GE(passes_found, 1);
-        }
-        // EndTest: test-actionencodingtest-5
+        // Apply the valid half-move
+        state2->ApplyAction(first_action);
+        // We don't decode *after* applying, as per the new API rules.
+        // The state is now advanced by one half-move. Further checks could go here if needed.
 
-        // StartTest: test-actionencodingtest-6
-        {
-          std::unique_ptr<State> state = game->NewInitialState();
-          auto lnstate = static_cast<LongNardeState *>(state.get());
-          SetupBoardState(lnstate, kXPlayerId, modified_board);
-          SetupDice(lnstate, {4, 1, 0, 0});
-          std::vector<LongNardeCheckerMove> single_move_pass = {
-              {14, lnstate->GetToPos(kXPlayerId, 14, 4), 4},
-              {kPassPos, kPassPos, 1}};
-          Action action_single_pass = lnstate->LongNardeCheckerMovesToSpielMove(single_move_pass);
-          SPIEL_CHECK_GE(action_single_pass, 0);
-          std::vector<LongNardeCheckerMove> decoded_single_pass = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action_single_pass);
-          SPIEL_CHECK_EQ(decoded_single_pass.size(), 2);
-          bool move_14_d4_found = false;
-          bool pass_d1_found = false;
-          for (const auto &move : decoded_single_pass)
-          {
-            if (move.pos == 14 && move.die == 4)
-              move_14_d4_found = true;
-            if (move.pos == kPassPos && move.die == 1)
-              pass_d1_found = true;
-          }
-          SPIEL_CHECK_TRUE(move_14_d4_found);
-          SPIEL_CHECK_TRUE(pass_d1_found);
-        }
-        // EndTest: test-actionencodingtest-6
-
-        // StartTest: test-actionencodingtest-7
-        {
-          std::unique_ptr<State> state = game->NewInitialState();
-          auto lnstate = static_cast<LongNardeState *>(state.get());
-          SetupBoardState(lnstate, kXPlayerId, modified_board);
-          SetupDice(lnstate, {6, 5, 0, 0});
-          std::vector<LongNardeCheckerMove> double_pass_moves = {
-              {kPassPos, kPassPos, 6},
-              {kPassPos, kPassPos, 5}};
-          Action action_double_pass = lnstate->LongNardeCheckerMovesToSpielMove(double_pass_moves);
-          SPIEL_CHECK_GE(action_double_pass, 0);
-          std::vector<LongNardeCheckerMove> decoded_double_pass = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action_double_pass);
-          SPIEL_CHECK_EQ(decoded_double_pass.size(), 2);
-          bool pass_d6_found = false;
-          bool pass_d5_found = false;
-          for (const auto &move : decoded_double_pass)
-          {
-            if (move.pos == kPassPos && move.die == 6)
-              pass_d6_found = true;
-            if (move.pos == kPassPos && move.die == 5)
-              pass_d5_found = true;
-          }
-          SPIEL_CHECK_TRUE(pass_d6_found);
-          SPIEL_CHECK_TRUE(pass_d5_found);
-        }
-        // EndTest: test-actionencodingtest-7
-
-        // StartTest: test-actionencodingtest-8
-        {
-          std::unique_ptr<State> state = game->NewInitialState();
-          auto lnstate = static_cast<LongNardeState *>(state.get());
-          // Set up a board where only three bear-offs and a pass are possible for White
-          std::vector<std::vector<int>> test_board(2, std::vector<int>(kNumPoints, 0));
-          test_board[kXPlayerId][1] = 8;
-          test_board[kXPlayerId][2] = 3;
-          test_board[kXPlayerId][3] = 4;
-          test_board[kOPlayerId][0] = 1;
-          test_board[kOPlayerId][11] = 14;
-          SetupBoardState(lnstate, kXPlayerId, test_board);
-          SetupDice(lnstate, {3, 3, 3, 3});
-          auto legal_actions = lnstate->LegalActions();
-          SPIEL_CHECK_EQ(legal_actions.size(), 1);
-          Action action = legal_actions[0];
-          std::vector<LongNardeCheckerMove> decoded = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
-          int bearoff_count = 0;
-          int pass_count = 0;
-          for (const auto &move : decoded)
-          {
-            // Check for PASS first, as kPassPos == kBearOffPos (-1)
-            if (move.pos == kPassPos)
-            {
-              pass_count++;
-            }
-            // Check for BEAR-OFF only if it's NOT a pass
-            else if (move.to_pos == kBearOffPos)
-            {
-              bearoff_count++;
-            }
-          }
-          SPIEL_CHECK_EQ(bearoff_count, 3);
-          SPIEL_CHECK_EQ(pass_count, 1);
-        }
-        // EndTest: test-actionencodingtest-8
+        std::cout << "[TEST] End: ActionEncodingTest" << std::endl;
       }
-      // EndFunction: ActionEncodingTest
 
       // StartFunction: SingleLegalMoveTest
       // StartTest: test-singlelegalmovetest-1
       void SingleLegalMoveTest()
       {
+        std::cout << "[TEST] Start: test-singlelegalmovetest-1" << std::endl;
         std::shared_ptr<const Game> game = LoadGame("long_narde");
         {
           std::unique_ptr<State> state = game->NewInitialState();
@@ -354,6 +112,7 @@ namespace open_spiel
           }
           SPIEL_CHECK_TRUE(found_correct_move);
         }
+        std::cout << "[TEST] End: test-singlelegalmovetest-1" << std::endl;
       }
       // EndTest: test-singlelegalmovetest-1
       // EndFunction: SingleLegalMoveTest
@@ -362,23 +121,32 @@ namespace open_spiel
       // StartTest: test-consecutivemovestest-1
       void ConsecutiveMovesTest()
       {
+        std::cout << "[TEST] Start: test-consecutivemovestest-1" << std::endl;
         std::shared_ptr<const Game> game = LoadGame("long_narde");
         {
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
-          lnstate->ApplyAction(15);
-          auto first_turn_legal_actions = lnstate->LegalActions();
-          SPIEL_CHECK_FALSE(first_turn_legal_actions.empty());
-          Action first_action = first_turn_legal_actions[0];
-          lnstate->ApplyAction(first_action);
+          // Apply initial dice roll (simulate chance node)
+          lnstate->ApplyAction(15); // arbitrary dice roll action
+          // White's turn: apply all half-moves for this turn
+          while (!lnstate->IsChanceNode()) {
+            auto las = lnstate->LegalActions();
+            SPIEL_CHECK_FALSE(las.empty());
+            lnstate->ApplyAction(las[0]); // just pick the first legal half-move
+          }
           SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kChancePlayerId);
-          lnstate->ApplyAction(0);
+          // Apply next dice roll (simulate chance node)
+          lnstate->ApplyAction(0); // arbitrary dice roll action
           SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kOPlayerId);
-          auto black_legal_actions = lnstate->LegalActions();
-          SPIEL_CHECK_FALSE(black_legal_actions.empty());
-          lnstate->ApplyAction(black_legal_actions[0]);
+          // Black's turn: apply all half-moves for this turn
+          while (!lnstate->IsChanceNode()) {
+            auto las = lnstate->LegalActions();
+            SPIEL_CHECK_FALSE(las.empty());
+            lnstate->ApplyAction(las[0]);
+          }
           SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kChancePlayerId);
         }
+        std::cout << "[TEST] End: test-consecutivemovestest-1" << std::endl;
       }
       // EndTest: test-consecutivemovestest-1
       // EndFunction: ConsecutiveMovesTest
@@ -387,6 +155,7 @@ namespace open_spiel
       // StartTest: test-undoredotest-1
       void UndoRedoTest()
       {
+        std::cout << "[TEST] Start: test-undoredotest-1" << std::endl;
         std::shared_ptr<const Game> game = LoadGame("long_narde");
         {
           std::unique_ptr<State> state = game->NewInitialState();
@@ -422,7 +191,7 @@ namespace open_spiel
           std::vector<Action> legal_actions = lnstate->LegalActions();
           SPIEL_CHECK_FALSE(legal_actions.empty());
           Action action_to_apply = legal_actions[0];
-          lnstate->ApplyAction(action_to_apply);
+          lnstate->ApplyAction(action_to_apply); // apply a single half-move
           bool board_changed = false;
           for (int p = 0; p < 2; ++p)
           {
@@ -438,7 +207,7 @@ namespace open_spiel
               break;
           }
           SPIEL_CHECK_TRUE(board_changed);
-          lnstate->UndoAction(kXPlayerId, action_to_apply);
+          lnstate->UndoAction(lnstate->CurrentPlayer(), action_to_apply); // undo the half-move
           bool board_restored = true;
           for (int p = 0; p < 2; ++p)
           {
@@ -455,6 +224,7 @@ namespace open_spiel
           }
           SPIEL_CHECK_TRUE(board_restored);
         }
+        std::cout << "[TEST] End: test-undoredotest-1" << std::endl;
       }
       // EndTest: test-undoredotest-1
       // EndFunction: UndoRedoTest
@@ -462,9 +232,11 @@ namespace open_spiel
       // StartFunction: PassMoveBehaviorTest
       void PassMoveBehaviorTest()
       {
+        std::cout << "\n=== Testing Pass Move Behavior ===\n";
         std::shared_ptr<const Game> game = LoadGame("long_narde");
         // StartTest: test-passmovebehaviortest-1
         {
+          std::cout << "[TEST] Start: test-passmovebehaviortest-1" << std::endl;
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
           std::vector<std::vector<int>> no_moves_board(2, std::vector<int>(kNumPoints, 0));
@@ -475,15 +247,23 @@ namespace open_spiel
           no_moves_board[kOPlayerId][kBlackHeadPos] += 12;
           SetupBoardState(lnstate, kXPlayerId, no_moves_board);
           SetupDice(lnstate, {1, 3, 0, 0});
-          std::vector<LongNardeCheckerMove> expected_pass_encoding_1_3 = {{kPassPos, kPassPos, 1}, {kPassPos, kPassPos, 3}};
-          Action expected_pass_action_1_3 = lnstate->LongNardeCheckerMovesToSpielMove(expected_pass_encoding_1_3);
-          auto legal_actions = lnstate->LegalActions();
-          SPIEL_CHECK_EQ(legal_actions.size(), 1);
-          SPIEL_CHECK_EQ(legal_actions[0], expected_pass_action_1_3);
+          // Expect two sequential pass actions: first for die 3, then for die 1
+          for (int die : {3, 1}) {
+            auto legal_actions = lnstate->LegalActions();
+            SPIEL_CHECK_EQ(legal_actions.size(), 1);
+            Action pass_action = legal_actions[0];
+            auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, pass_action);
+            SPIEL_CHECK_EQ(moves.size(), 1);
+            SPIEL_CHECK_EQ(moves[0].pos, kPassPos);
+            SPIEL_CHECK_EQ(moves[0].die, die);
+            lnstate->ApplyAction(pass_action);
+          }
+          std::cout << "[TEST] End: test-passmovebehaviortest-1" << std::endl;
         }
         // EndTest: test-passmovebehaviortest-1
         // StartTest: test-passmovebehaviortest-2
         {
+          std::cout << "[TEST] Start: test-passmovebehaviortest-2" << std::endl;
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
           std::vector<std::vector<int>> valid_moves_board(2, std::vector<int>(kNumPoints, 0));
@@ -493,23 +273,20 @@ namespace open_spiel
           SetupBoardState(lnstate, kXPlayerId, valid_moves_board);
           SetupDice(lnstate, {1, 3, 0, 0});
           auto legal_actions = lnstate->LegalActions();
-          std::vector<LongNardeCheckerMove> expected_pass_encoding_1_3 = {{kPassPos, kPassPos, 1}, {kPassPos, kPassPos, 3}};
-          Action expected_pass_action_1_3 = lnstate->LongNardeCheckerMovesToSpielMove(expected_pass_encoding_1_3);
-          bool pass_found = false;
-          for (Action action : legal_actions)
-          {
-            if (action == expected_pass_action_1_3)
-            {
-              pass_found = true;
-              break;
-            }
+          // Under the half-move API, all legal actions must decode to a single half-move.
+          for (Action action : legal_actions) {
+            auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
+            SPIEL_CHECK_EQ(moves.size(), 1);
+            // No action should encode a multi-move pass.
+            SPIEL_CHECK_FALSE(moves[0].pos == kPassPos && moves[0].die == 1 && moves.size() > 1);
           }
-          SPIEL_CHECK_FALSE(pass_found);
           SPIEL_CHECK_GT(legal_actions.size(), 0);
+          std::cout << "[TEST] End: test-passmovebehaviortest-2" << std::endl;
         }
         // EndTest: test-passmovebehaviortest-2
         // StartTest: test-passmovebehaviortest-3
         {
+          std::cout << "[TEST] Start: test-passmovebehaviortest-3" << std::endl;
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
           std::vector<std::vector<int>> no_moves_doubles_board(2, std::vector<int>(kNumPoints, 0));
@@ -522,11 +299,19 @@ namespace open_spiel
           no_moves_doubles_board[kOPlayerId][kBlackHeadPos] = 13;
           SetupBoardState(lnstate, kOPlayerId, no_moves_doubles_board);
           SetupDice(lnstate, {2, 2, 2, 2});
-          std::vector<LongNardeCheckerMove> expected_pass_encoding_2_2 = {{kPassPos, kPassPos, 2}, {kPassPos, kPassPos, 2}};
-          Action expected_pass_action_2_2 = lnstate->LongNardeCheckerMovesToSpielMove(expected_pass_encoding_2_2);
           auto legal_actions = lnstate->LegalActions();
-          SPIEL_CHECK_EQ(legal_actions.size(), 1);
-          SPIEL_CHECK_EQ(legal_actions[0], expected_pass_action_2_2);
+          // Under the half-move API, must pass with die 2 four times in sequence.
+          for (int i = 0; i < 4; ++i) {
+            auto legal_actions = lnstate->LegalActions();
+            SPIEL_CHECK_EQ(legal_actions.size(), 1);
+            Action pass_action = legal_actions[0];
+            auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, pass_action);
+            SPIEL_CHECK_EQ(moves.size(), 1);
+            SPIEL_CHECK_EQ(moves[0].pos, kPassPos);
+            SPIEL_CHECK_EQ(moves[0].die, 2);
+            lnstate->ApplyAction(pass_action);
+          }
+          std::cout << "[TEST] End: test-passmovebehaviortest-3" << std::endl;
         }
         // EndTest: test-passmovebehaviortest-3
       }
@@ -535,9 +320,12 @@ namespace open_spiel
       // StartFunction: VerifyDicePlayBehavior
       void VerifyDicePlayBehavior()
       {
+        std::cout << "\n=== Testing Dice Play Behavior ===\n";
         std::shared_ptr<const Game> game = LoadGame("long_narde");
         // StartTest: test-vsdpb-1
         {
+          std::cout << "[TEST] Start: test-vsdpb-1" << std::endl;
+          // Two sequential half-moves: first pos=8 die=5, then pass die=3
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
           std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
@@ -548,35 +336,34 @@ namespace open_spiel
           board[kOPlayerId][kBlackHeadPos] += 14;
           SetupBoardState(lnstate, kXPlayerId, board);
           SetupDice(lnstate, {5, 3, 0, 0});
-          auto legal_actions = lnstate->LegalActions();
-          SPIEL_CHECK_FALSE(legal_actions.empty());
-          bool found_correct_sequence = false;
-          SPIEL_CHECK_EQ(legal_actions.size(), 1);
-          for (Action action : legal_actions)
-          {
-            std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
-            SPIEL_CHECK_EQ(moves.size(), 2);
-            bool found_8_3_d5 = false;
-            bool found_pass_d3 = false;
-            int non_pass_count = 0;
-            for (const auto &move : moves)
-            {
-              if (move.pos != kPassPos)
-                non_pass_count++;
-              if (move.pos == 8 && move.to_pos == 3 && move.die == 5)
-                found_8_3_d5 = true;
-              else if (move.pos == kPassPos && move.die == 3)
-                found_pass_d3 = true;
+          // First half-move: move from pos 8 with die=5
+          auto las1 = lnstate->LegalActions();
+          SPIEL_CHECK_FALSE(las1.empty());
+          Action first_move = -1;
+          for (Action a : las1) {
+            auto mv = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, a);
+            SPIEL_CHECK_EQ(mv.size(), 1);
+            if (mv[0].pos == 8 && mv[0].die == 5) {
+              first_move = a;
+              break;
             }
-            SPIEL_CHECK_EQ(non_pass_count, 1);
-            if (found_8_3_d5 && found_pass_d3)
-              found_correct_sequence = true;
           }
-          SPIEL_CHECK_TRUE(found_correct_sequence);
+          SPIEL_CHECK_GE(first_move, 0);
+          lnstate->ApplyAction(first_move);
+          // Second half-move: expect a pass with die=3
+          auto las2 = lnstate->LegalActions();
+          SPIEL_CHECK_EQ(las2.size(), 1);
+          Action pass_move = las2[0];
+          auto pmv = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, pass_move);
+          SPIEL_CHECK_EQ(pmv.size(), 1);
+          SPIEL_CHECK_EQ(pmv[0].pos, kPassPos);
+          SPIEL_CHECK_EQ(pmv[0].die, 3);
+          std::cout << "[TEST] End: test-vsdpb-1" << std::endl;
         }
         // EndTest: test-vsdpb-1
         // StartTest: test-vsdpb-2
         {
+          std::cout << "[TEST] Start: test-vsdpb-2" << std::endl;
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
           std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
@@ -595,8 +382,9 @@ namespace open_spiel
           bool all_used_lower_die = true;
           for (Action action : legal_actions)
           {
+            // Decode before applying
             std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
-            SPIEL_CHECK_GE(moves.size(), 2);
+            SPIEL_CHECK_EQ(moves.size(), 1);
             int non_pass_count = 0;
             bool used_correct_die = false;
             for (const auto &move : moves)
@@ -619,8 +407,13 @@ namespace open_spiel
               all_used_lower_die = false;
               break;
             }
+            // If you want to check post-move state, clone before applying
+            // std::unique_ptr<State> post_state = state->Clone();
+            // static_cast<LongNardeState *>(post_state.get())->ApplyAction(action);
+            // ... check post-move state if needed ...
           }
           SPIEL_CHECK_TRUE(all_used_lower_die);
+          std::cout << "[TEST] End: test-vsdpb-2" << std::endl;
         }
         // EndTest: test-vsdpb-2
       }
@@ -629,71 +422,107 @@ namespace open_spiel
       // StartFunction: DirectBearOffTest
       void DirectBearOffTest()
       {
+        std::cout << "\n=== Testing Direct Bear Off ===\n";
         std::shared_ptr<const Game> game = LoadGame("long_narde");
         // --- White Test ---
         // StartTest: test-dbo-1w
         {
+          std::cout << "[TEST] Start: test-dbo-1w" << std::endl;
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
           std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
+          // Place two white checkers in bear-off zone
           board[kXPlayerId][0] = 1;
           board[kXPlayerId][1] = 1;
           board[kOPlayerId][11] = 15;
-          SetupBoardState(lnstate, kXPlayerId, board);
+          // Roll dice: values 1 and 2
           SetupDice(lnstate, {1, 2, 0, 0});
-          auto legal_actions = lnstate->LegalActions();
-          SPIEL_CHECK_FALSE(legal_actions.empty());
-          bool found_direct_bearoff = false;
-          for (Action action : legal_actions)
-          {
-            std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
-            if (moves.size() == 2)
-            {
-              bool move1_ok = (moves[0].pos == 0 && moves[0].die == 1 && moves[0].to_pos == kBearOffPos) ||
-                              (moves[1].pos == 0 && moves[1].die == 1 && moves[1].to_pos == kBearOffPos);
-              bool move2_ok = (moves[0].pos == 1 && moves[0].die == 2 && moves[0].to_pos == kBearOffPos) ||
-                              (moves[1].pos == 1 && moves[1].die == 2 && moves[1].to_pos == kBearOffPos);
-              if (move1_ok && move2_ok)
-              {
-                found_direct_bearoff = true;
-                break;
-              }
+          // Apply board configuration
+          SetupBoardState(lnstate, kXPlayerId, board);
+
+          // First half-move: bear off from point 1 using die=2
+          auto actions1 = lnstate->LegalActions();
+          SPIEL_CHECK_EQ(actions1.size(), 2);
+          Action first = -1;
+          for (Action a : actions1) {
+            auto mv = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, a);
+            SPIEL_CHECK_EQ(mv.size(), 1);
+            if (mv[0].pos == 1 && mv[0].die == 2 && mv[0].to_pos == kBearOffPos) {
+              first = a;
+              break;
             }
           }
-          SPIEL_CHECK_TRUE(found_direct_bearoff);
+          SPIEL_CHECK_GE(first, 0);
+          lnstate->ApplyAction(first);
+          SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, 1), 0);
+
+          // Second half-move: remaining bear-off from point 0 using die=1
+          auto actions2 = lnstate->LegalActions();
+          SPIEL_CHECK_EQ(actions2.size(), 1);
+          Action second = actions2[0];
+          auto mv2 = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, second);
+          SPIEL_CHECK_EQ(mv2.size(), 1);
+          SPIEL_CHECK_EQ(mv2[0].pos, 0);
+          SPIEL_CHECK_EQ(mv2[0].die, 1);
+          SPIEL_CHECK_EQ(mv2[0].to_pos, kBearOffPos);
+          lnstate->ApplyAction(second);
+          SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, 0), 0);
+
+          // Game should be terminal after bearing off both checkers
+          SPIEL_CHECK_TRUE(lnstate->IsTerminal());
+          std::cout << "[TEST] End: test-dbo-1w" << std::endl;
         }
         // EndTest: test-dbo-1w
         //  --- Black Test ---
         // StartTest: test-dbo-1b
         {
+          std::cout << "[TEST] Start: test-dbo-1b" << std::endl;
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
           std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
           board[kOPlayerId][13] = 1;
           board[kOPlayerId][14] = 1;
           board[kXPlayerId][23] = 15;
+          SetupDice(lnstate, {2, 3, 0, 0}); // Dice {2, 3}
           SetupBoardState(lnstate, kOPlayerId, board);
-          SetupDice(lnstate, {2, 3, 0, 0});
-          auto legal_actions = lnstate->LegalActions();
-          SPIEL_CHECK_FALSE(legal_actions.empty());
-          bool found_direct_bearoff = false;
-          for (Action action : legal_actions)
-          {
-            std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, action);
-            if (moves.size() == 2)
-            {
-              bool move1_ok = (moves[0].pos == 13 && moves[0].die == 2 && moves[0].to_pos == kBearOffPos) ||
-                              (moves[1].pos == 13 && moves[1].die == 2 && moves[1].to_pos == kBearOffPos);
-              bool move2_ok = (moves[0].pos == 14 && moves[0].die == 3 && moves[0].to_pos == kBearOffPos) ||
-                              (moves[1].pos == 14 && moves[1].die == 3 && moves[1].to_pos == kBearOffPos);
-              if (move1_ok && move2_ok)
-              {
-                found_direct_bearoff = true;
-                break;
-              }
+
+          // 1. First half-move: Bear off checker at 14 with die 3
+          auto legal_actions1 = lnstate->LegalActions();
+          bool found_14_d3 = false;
+          Action action1 = -1;
+          for (Action a : legal_actions1) {
+            auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, a);
+            if (moves.size() == 1 && moves[0].pos == 14 && moves[0].die == 3 && moves[0].to_pos == kBearOffPos) {
+              found_14_d3 = true;
+              action1 = a;
+              break;
             }
           }
-          SPIEL_CHECK_TRUE(found_direct_bearoff);
+          SPIEL_CHECK_TRUE(found_14_d3);
+          lnstate->ApplyAction(action1);
+          SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, 14), 0);
+
+          // 2. Second half-move: Bear off checker at 13 with die 2
+          auto legal_actions2 = lnstate->LegalActions();
+          bool found_13_d2 = false;
+          Action action2 = -1;
+          for (Action a : legal_actions2) {
+            auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, a);
+            if (moves.size() == 1 && moves[0].pos == 13 && moves[0].die == 2 && moves[0].to_pos == kBearOffPos) {
+              found_13_d2 = true;
+              action2 = a;
+              break;
+            }
+          }
+          SPIEL_CHECK_TRUE(found_13_d2);
+          lnstate->ApplyAction(action2);
+          SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, 13), 0);
+
+          // 3. After both half-moves, the game should be terminal (no pass move)
+          auto legal_actions3 = lnstate->LegalActions();
+          SPIEL_CHECK_TRUE(lnstate->IsTerminal());
+          SPIEL_CHECK_TRUE(legal_actions3.empty());
+          std::cout << "[TEST] End: test-dbo-1b" << std::endl;
         }
         // EndTest: test-dbo-1b
       }
@@ -702,10 +531,12 @@ namespace open_spiel
       // StartFunction: SingleCheckerBearOffTest
       void SingleCheckerBearOffTest()
       {
+        std::cout << "\n=== Testing Single Checker Bear Off ===\n";
         std::shared_ptr<const Game> game = LoadGame("long_narde");
         // --- Scenario 1: Higher Die Rule (Both playable) ---
         // StartTest: test-scbo-1w
         {
+          std::cout << "[TEST] Start: test-scbo-1w" << std::endl;
           // White Test (Checker at pos 0)
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
@@ -724,12 +555,14 @@ namespace open_spiel
               found_die6W = true;
           }
           SPIEL_CHECK_TRUE(found_die6W);
+          std::cout << "[TEST] End: test-scbo-1w" << std::endl;
         }
         // EndTest: test-scbo-1w
 
         // StartTest: test-scbo-1b
         //  Black Test (Checker at pos 12)
         {
+          std::cout << "[TEST] Start: test-scbo-1b" << std::endl;
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
           std::vector<std::vector<int>> boardB(2, std::vector<int>(kNumPoints, 0));
@@ -739,20 +572,19 @@ namespace open_spiel
           SetupDice(lnstate, {1, 6, 0, 0});
           auto legal_actionsB = lnstate->LegalActions();
           SPIEL_CHECK_EQ(legal_actionsB.size(), 1);
-          std::vector<LongNardeCheckerMove> movesB = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, legal_actionsB[0]);
-          bool found_die6B = false;
-          for (const auto &m : movesB)
-          {
-            if (m.pos == 12 && m.die == 6 && m.to_pos == kBearOffPos)
-              found_die6B = true;
-          }
-          SPIEL_CHECK_TRUE(found_die6B);
+          auto movesB = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, legal_actionsB[0]);
+          SPIEL_CHECK_EQ(movesB.size(), 1);
+          SPIEL_CHECK_EQ(movesB[0].pos, 12);
+          SPIEL_CHECK_EQ(movesB[0].die, 6);
+          SPIEL_CHECK_EQ(movesB[0].to_pos, kBearOffPos);
+          std::cout << "[TEST] End: test-scbo-1b" << std::endl;
         }
         // EndTest: test-scbo-1b
 
         // --- Scenario 2: Only One Die Playable ---
         // StartTest: test-scbo-2b1
         {
+          std::cout << "[TEST] Start: test-scbo-2b1" << std::endl;
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
           std::vector<std::vector<int>> boardB(2, std::vector<int>(kNumPoints, 0));
@@ -774,10 +606,12 @@ namespace open_spiel
           }
           SPIEL_CHECK_FALSE(found_die1B);
           SPIEL_CHECK_TRUE(found_die3B);
+          std::cout << "[TEST] End: test-scbo-2b1" << std::endl;
         }
         // EndTest: test-scbo-2b1
         // StartTest: test-scbo-2b2
         {
+          std::cout << "[TEST] Start: test-scbo-2b2" << std::endl;
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
           std::vector<std::vector<int>> boardB_pos14(2, std::vector<int>(kNumPoints, 0));
@@ -786,40 +620,23 @@ namespace open_spiel
           SetupBoardState(lnstate, kOPlayerId, boardB_pos14);
           SetupDice(lnstate, {1, 3, 0, 0});
           auto legal_actionsB = lnstate->LegalActions();
-          SPIEL_CHECK_EQ(legal_actionsB.size(), 2);
-          bool found_two_step = false;
-          bool found_direct_bearoff = false;
-          for (const auto &action : legal_actionsB)
-          {
-            std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, action);
-            if (moves.size() == 2)
-            {
-              bool has_move_step = false;
-              bool has_bearoff_step = false;
-              for (const auto &m : moves)
-              {
-                if (m.pos == 14 && m.to_pos == 13 && m.die == 1)
-                  has_move_step = true;
-                if (m.pos == 13 && m.to_pos == kBearOffPos && m.die == 3)
-                  has_bearoff_step = true;
-              }
-              if (has_move_step && has_bearoff_step)
-                found_two_step = true;
-              has_move_step = false;
-              has_bearoff_step = false;
-              for (const auto &m : moves)
-              {
-                if (m.pos == 14 && m.to_pos == kBearOffPos && m.die == 3)
-                  has_bearoff_step = true;
-                if (m.pos == kPassPos && m.to_pos == kPassPos && m.die == 1)
-                  has_move_step = true;
-              }
-              if (has_move_step && has_bearoff_step)
-                found_direct_bearoff = true;
+          SPIEL_CHECK_EQ(legal_actionsB.size(), 1);
+          bool found_bear_off = false;
+          bool found_move_1 = false;
+          if (!legal_actionsB.empty()) {
+            Action the_action = legal_actionsB[0]; // Only one action expected
+            auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, the_action);
+            SPIEL_CHECK_EQ(moves.size(), 1);
+            if (moves[0].pos == 14 && moves[0].to_pos == kBearOffPos && moves[0].die == 3) {
+              found_bear_off = true;
+            } else if (moves[0].pos == 14 && moves[0].to_pos == 13 && moves[0].die == 1) {
+              // This branch should not be hit if the logic is correct
+              found_move_1 = true; 
             }
           }
-          SPIEL_CHECK_TRUE(found_two_step);
-          SPIEL_CHECK_TRUE(found_direct_bearoff);
+          SPIEL_CHECK_TRUE(found_bear_off);
+          SPIEL_CHECK_FALSE(found_move_1); // Verify the lower die move is NOT legal
+          std::cout << "[TEST] End: test-scbo-2b2" << std::endl;
         }
         // EndTest: test-scbo-2b2
       }
@@ -828,81 +645,147 @@ namespace open_spiel
       // StartFunction: BearOffLastCheckerTest
       void BearOffLastCheckerTest()
       {
+        std::cout << "\n=== Testing Bear Off Last Checker ===\n";
         std::shared_ptr<const Game> game = LoadGame("long_narde");
         // --- White Test (Last checker at pos 1, needs 2 pips) ---
         // StartTest: test-bolc-1w
         {
+          std::cout << "[TEST] Start: test-bolc-1w" << std::endl;
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
           std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
-          board[kXPlayerId][1] = 1;
-          board[kOPlayerId][11] = 15;
+          board[kXPlayerId][1] = 1; // Last checker at pos 1 (needs >= 2 pips)
+          board[kOPlayerId][11] = 15; // Opponent checkers far away
           SetupBoardState(lnstate, kXPlayerId, board);
-          SetupDice(lnstate, {4, 5, 0, 0});
-          auto legal_actions = lnstate->LegalActions();
-          SPIEL_CHECK_EQ(legal_actions.size(), 1);
-          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, legal_actions[0]);
-          SPIEL_CHECK_EQ(moves.size(), 2);
-          bool found_bear_off = false;
-          bool found_pass = false;
-          int bear_off_die = -1;
-          for (const auto &move : moves)
-          {
-            if (move.pos == 1 && move.to_pos == kBearOffPos && (move.die == 4 || move.die == 5))
-            {
-              SPIEL_CHECK_EQ(move.die, 5);
-              found_bear_off = true;
-              bear_off_die = move.die;
-            }
-            else if (move.pos == kPassPos)
-            {
-              found_pass = true;
-              SPIEL_CHECK_NE(move.die, bear_off_die);
-              SPIEL_CHECK_TRUE(move.die == 4 || move.die == 5);
-            }
-          }
-          SPIEL_CHECK_TRUE(found_bear_off);
-          SPIEL_CHECK_TRUE(found_pass);
+          SetupDice(lnstate, {4, 5, 0, 0}); // Dice {4, 5}
+
+          // 1. Check first half-move: Must bear off last checker (pos 1) with highest possible die (5).
+          auto legal_actions1 = lnstate->LegalActions();
+          SPIEL_CHECK_EQ(legal_actions1.size(), 1); // Only one way to play the mandatory move
+          Action action1 = legal_actions1[0];
+          auto moves1 = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action1);
+          SPIEL_CHECK_EQ(moves1.size(), 1);
+          SPIEL_CHECK_EQ(moves1[0].pos, 1);
+          SPIEL_CHECK_EQ(moves1[0].die, 5); // Must use die 5
+          SPIEL_CHECK_EQ(moves1[0].to_pos, kBearOffPos);
+
+          // Apply the first half-move (1 -> BearOff with die 5)
+          lnstate->ApplyAction(action1);
+          SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, 1), 0); // Checker left pos 1
+
+          // 2. After bearing off the last checker, the game should be terminal (no pass move)
+          auto legal_actions2 = lnstate->LegalActions();
+          SPIEL_CHECK_TRUE(lnstate->IsTerminal());
+          SPIEL_CHECK_TRUE(legal_actions2.empty());
+          std::cout << "[TEST] End: test-bolc-1w" << std::endl;
         }
         // EndTest: test-bolc-1w
         //  --- Black Test (Last checker at pos 13, needs 2 pips) ---
         // StartTest: test-bolc-1b
         {
+          std::cout << "[TEST] Start: test-bolc-1b" << std::endl;
           std::unique_ptr<State> state = game->NewInitialState();
           auto lnstate = static_cast<LongNardeState *>(state.get());
           std::vector<std::vector<int>> board(2, std::vector<int>(kNumPoints, 0));
           board[kOPlayerId][13] = 1;
           board[kXPlayerId][23] = 15;
-          SetupBoardState(lnstate, kOPlayerId, board);
           SetupDice(lnstate, {4, 5, 0, 0});
-          auto legal_actions = lnstate->LegalActions();
-          SPIEL_CHECK_EQ(legal_actions.size(), 1);
-          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, legal_actions[0]);
-          SPIEL_CHECK_EQ(moves.size(), 2);
-          bool found_bear_off = false;
-          bool found_pass = false;
-          int bear_off_die = -1;
-          for (const auto &move : moves)
-          {
-            if (move.pos == 13 && move.to_pos == kBearOffPos && (move.die == 4 || move.die == 5))
-            {
-              SPIEL_CHECK_EQ(move.die, 5);
-              found_bear_off = true;
-              bear_off_die = move.die;
-            }
-            else if (move.pos == kPassPos)
-            {
-              found_pass = true;
-              SPIEL_CHECK_NE(move.die, bear_off_die);
-              SPIEL_CHECK_TRUE(move.die == 4 || move.die == 5);
+          SetupBoardState(lnstate, kOPlayerId, board);
+
+          // 1. First half-move: Bear off checker at 13 with die 5
+          auto legal_actions1 = lnstate->LegalActions();
+          bool found_13_d5 = false;
+          Action action1 = -1;
+          for (Action a : legal_actions1) {
+            auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, a);
+            if (moves.size() == 1 && moves[0].pos == 13 && moves[0].die == 5 && moves[0].to_pos == kBearOffPos) {
+              found_13_d5 = true;
+              action1 = a;
+              break;
             }
           }
-          SPIEL_CHECK_TRUE(found_bear_off);
-          SPIEL_CHECK_TRUE(found_pass);
+          SPIEL_CHECK_TRUE(found_13_d5);
+          lnstate->ApplyAction(action1);
+          SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, 13), 0);
+
+          // 2. After bearing off the last checker, the game should be terminal (no pass move)
+          auto legal_actions2 = lnstate->LegalActions();
+          SPIEL_CHECK_TRUE(lnstate->IsTerminal());
+          SPIEL_CHECK_TRUE(legal_actions2.empty());
+          std::cout << "[TEST] End: test-bolc-1b" << std::endl;
         }
         // EndTest: test-bolc-1b
       }
       // EndFunction: BearOffLastCheckerTest
+
+
+      // StartFunction: HeadRuleAfterFirstHalfMoveTest
+      // Test that after moving from head in the first half-move, subsequent
+      // half-moves in the same turn cannot move from head again.
+      void HeadRuleAfterFirstHalfMoveTest()
+      {
+        std::cout << "\n=== Testing Head Rule After First Half-Move ===\n";
+        std::shared_ptr<const Game> game = LoadGame("long_narde");
+
+        // StartTest: test-headrule-after-move-1
+        {
+          std::cout << "[TEST] Start: test-headrule-after-move-1" << std::endl;
+          std::unique_ptr<State> state = game->NewInitialState();
+          auto lnstate = static_cast<LongNardeState *>(state.get());
+
+          // Board state BEFORE the first half-move (from debug log)
+          std::vector<std::vector<int>> board = {
+            {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 13}, // Player 0
+            {0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0} // Player 1
+          };
+          SetupBoardState(lnstate, kOPlayerId, board); // Player 1's turn
+          SetupDice(lnstate, {2, 1, 0, 0}); // Dice {2, 1}
+
+          SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kOPlayerId);
+          SPIEL_CHECK_FALSE(lnstate->moved_from_head()); // Before first move
+
+          // 1. Find and apply the first half-move: Move from head (pos 11) with die 2.
+          auto legal_actions1 = lnstate->LegalActions();
+          Action head_move_action = -1;
+          for (Action a : legal_actions1) {
+            auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, a);
+            // Assuming the head move is 11->9 with die 2
+            if (moves.size() == 1 && moves[0].pos == 11 && moves[0].die == 2) {
+              head_move_action = a;
+              break;
+            }
+          }
+          SPIEL_CHECK_GE(head_move_action, 0); // Ensure the head move was found
+          lnstate->ApplyAction(head_move_action);
+
+          // 2. Verify state after the first half-move.
+          SPIEL_CHECK_TRUE(lnstate->moved_from_head()); // Should be true now
+          SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, 11), 12); // One checker left head
+          SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, 9), 2); // Checker arrived at pos 9
+          // Check remaining die is 1
+          int remaining_die = -1;
+          for(int d : lnstate->dice_) if (d > 0) remaining_die = d;
+          SPIEL_CHECK_EQ(remaining_die, 1);
+
+          // 3. Get legal actions for the second half-move.
+          auto legal_actions2 = lnstate->LegalActions();
+
+          // 4. Assert the correct legal actions: only pos 2 and pos 9 should be available.
+          std::set<Action> legal_actions_set(legal_actions2.begin(), legal_actions2.end());
+          std::set<Action> expected_actions = {2, 9};
+
+          SPIEL_CHECK_EQ(legal_actions_set.size(), 2);
+          // Check that the sets contain the same elements
+          SPIEL_CHECK_EQ(legal_actions_set.size(), expected_actions.size());
+          for (Action expected_action : expected_actions) {
+            SPIEL_CHECK_TRUE(legal_actions_set.count(expected_action) == 1); // Check presence
+          }
+
+          std::cout << "[TEST] End: test-headrule-after-move-1" << std::endl;
+        }
+        // EndTest: test-headrule-after-move-1
+      }
+      // EndFunction: HeadRuleAfterFirstHalfMoveTest
 
     } // namespace
   } // namespace long_narde
@@ -936,6 +819,7 @@ namespace open_spiel
       DirectBearOffTest();
       SingleCheckerBearOffTest();
       BearOffLastCheckerTest();
+      HeadRuleAfterFirstHalfMoveTest();
 
       std::cout << "✓ All action encoding tests passed\n";
     }

@@ -9,9 +9,6 @@ int main(int argc, char **argv)
 
   // Run all major test groups for Long Narde.
   open_spiel::long_narde::TestMovementRules();
-  // open_spiel::long_narde::TestBasicSetup();
-  // open_spiel::long_narde::TestSimpleNonDoubleMove();
-  // open_spiel::long_narde::BasicLongNardeTests(); // Legacy tests
   open_spiel::long_narde::TestActionEncoding();
   open_spiel::long_narde::TestEndgame();
   open_spiel::long_narde::TestPassMoveBehavior();

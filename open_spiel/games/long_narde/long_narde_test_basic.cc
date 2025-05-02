@@ -56,15 +56,31 @@ namespace open_spiel
         auto game = LoadGame("long_narde");
         std::unique_ptr<State> state = game->NewInitialState();
 
-        // Apply the first chance outcome (dice roll) to resolve the initial player.
-        if (state->IsChanceNode())
-        {
-          auto outcomes = state->ChanceOutcomes();
-          state->ApplyAction(outcomes[0].first);
-        }
+        // Force a nondouble dice roll (4,2) for deterministic two half-move turn.
+        LongNardeState* lnstate = static_cast<LongNardeState*>(state.get());
+        SetupDice(lnstate, {4, 2, 0, 0});
 
-        auto lnstate = static_cast<const LongNardeState *>(state.get());
+        // 1) Two half-moves should remain after our forced roll
+        SPIEL_CHECK_EQ(lnstate->moves_remaining(), 2);
+        // Current player should still be X
         SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kXPlayerId);
+
+        // 2) First half-move options (filtered by full-turn lookahead)
+        auto legal1 = state->LegalActions();
+        SPIEL_CHECK_EQ(legal1.size(), 1);
+        SPIEL_CHECK_TRUE(ActionsContains(legal1, kWhiteHeadPos));
+
+        // 3) Apply the selected half-move
+        state->ApplyAction(legal1[0]);
+        // Now only one half-move remains
+        SPIEL_CHECK_EQ(lnstate->moves_remaining(), 1);
+
+        // 4) Last half-move options: enumerate all remaining half-move sources
+        auto legal2 = state->LegalActions();
+        // Should present two distinct source positions (head and post-move head)
+        SPIEL_CHECK_EQ(legal2.size(), 2);
+        SPIEL_CHECK_TRUE(ActionsContains(legal2, legal1[0]));
+        SPIEL_CHECK_NE(legal2[0], legal2[1]);
       }
       // EndTest: test-white-moves-first
       // EndFunction: WhiteMovesFirstTest

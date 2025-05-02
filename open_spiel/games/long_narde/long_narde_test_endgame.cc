@@ -72,6 +72,7 @@ namespace open_spiel
         std::vector<Action> legal_actions = lnstate->LegalActions();
 
         bool can_bear_off_with_1 = false;
+        bool can_bear_off_with_3 = false;
         for (Action action : legal_actions)
         {
           std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
@@ -80,27 +81,12 @@ namespace open_spiel
             if (move.pos == 1 && move.die == 1 && lnstate->IsOff(kXPlayerId, move.to_pos))
             {
               can_bear_off_with_1 = true;
-              break;
             }
-          }
-          if (can_bear_off_with_1)
-            break;
-        }
-
-        bool can_bear_off_with_3 = false;
-        for (Action action : legal_actions)
-        {
-          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, action);
-          for (const LongNardeCheckerMove &move : moves)
-          {
             if (move.pos == 2 && move.die == 3 && lnstate->IsOff(kXPlayerId, move.to_pos))
             {
               can_bear_off_with_3 = true;
-              break;
             }
           }
-          if (can_bear_off_with_3)
-            break;
         }
 
         SPIEL_CHECK_FALSE(can_bear_off_with_1);
@@ -266,25 +252,26 @@ namespace open_spiel
         // No scores needed as no checkers are borne off
         SetupBoardState(lnstate, kOPlayerId, test_board);
         SetupDice(lnstate, {1, 2, 0, 0});
-        std::vector<Action> legal_actions = lnstate->LegalActions();
-        SPIEL_CHECK_EQ(legal_actions.size(), 1);
-        std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, legal_actions[0]);
-        SPIEL_CHECK_EQ(moves.size(), 2);
-        bool found_22_to_20_with_die2 = false;
-        bool found_20_to_19_with_die1 = false;
-        for (const auto &move : moves)
-        {
-          if (move.pos == 22 && move.die == 2 && move.to_pos == 20)
-          {
-            found_22_to_20_with_die2 = true;
-          }
-          if (move.pos == 20 && move.die == 1 && move.to_pos == 19)
-          {
-            found_20_to_19_with_die1 = true;
-          }
-        }
-        SPIEL_CHECK_TRUE(found_22_to_20_with_die2);
-        SPIEL_CHECK_TRUE(found_20_to_19_with_die1);
+        // First half-move: move 22->20 with die 2
+        auto legal_actions1 = lnstate->LegalActions();
+        SPIEL_CHECK_EQ(legal_actions1.size(), 1);
+        Action action1 = legal_actions1[0];
+        auto moves1 = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, action1);
+        SPIEL_CHECK_EQ(moves1.size(), 1);
+        SPIEL_CHECK_EQ(moves1[0].pos, 22);
+        SPIEL_CHECK_EQ(moves1[0].die, 2);
+        SPIEL_CHECK_EQ(moves1[0].to_pos, 20);
+        lnstate->ApplyAction(action1);
+        // Second half-move: move 20->19 with die 1
+        auto legal_actions2 = lnstate->LegalActions();
+        SPIEL_CHECK_EQ(legal_actions2.size(), 1);
+        Action action2 = legal_actions2[0];
+        auto moves2 = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, action2);
+        SPIEL_CHECK_EQ(moves2.size(), 1);
+        SPIEL_CHECK_EQ(moves2[0].pos, 20);
+        SPIEL_CHECK_EQ(moves2[0].die, 1);
+        SPIEL_CHECK_EQ(moves2[0].to_pos, 19);
+        lnstate->ApplyAction(action2);
         std::cout << "✓ SingleLegalMoveTestBlack passed\n";
         // EndTest: test-slmtb-1
       }
@@ -306,35 +293,62 @@ namespace open_spiel
         SetupBoardState(lnstate, kOPlayerId, test_board);
         SetupDice(lnstate, {5, 2, 0, 0});
         SPIEL_CHECK_TRUE(lnstate->AllInHome(kOPlayerId));
-        std::vector<Action> legal_actions = lnstate->LegalActions();
-        SPIEL_CHECK_FALSE(legal_actions.empty());
-        bool can_bear_off_13_with_2 = false;
-        bool can_bear_off_13_with_5 = false;
-        bool can_bear_off_14_with_5 = false;
-        bool can_bear_off_14_with_2 = false;
-        bool can_move_14_to_12_with_2 = false;
-        for (Action action : legal_actions)
-        {
-          std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, action);
-          for (const LongNardeCheckerMove &move : moves)
-          {
-            if (move.pos == 13 && move.die == 2 && lnstate->IsOff(kOPlayerId, move.to_pos))
-              can_bear_off_13_with_2 = true;
-            if (move.pos == 13 && move.die == 5 && lnstate->IsOff(kOPlayerId, move.to_pos))
-              can_bear_off_13_with_5 = true;
-            if (move.pos == 14 && move.die == 5 && lnstate->IsOff(kOPlayerId, move.to_pos))
-              can_bear_off_14_with_5 = true;
-            if (move.pos == 14 && move.die == 2 && lnstate->IsOff(kOPlayerId, move.to_pos))
-              can_bear_off_14_with_2 = true;
-            if (move.pos == 14 && move.die == 2 && move.to_pos == 12)
-              can_move_14_to_12_with_2 = true;
-          }
+
+        // 1. First half-move: Valid first moves are 14->off(5) and 13->off(2).
+        auto legal_actions1 = lnstate->LegalActions();
+
+        // Verify that the expected two actions are present.
+        SPIEL_CHECK_EQ(legal_actions1.size(), 2);
+        bool found_14_off_5 = false;
+        bool found_13_off_2 = false;
+        Action action_14_off_5 = -1;
+
+        for (Action action : legal_actions1) {
+            if (action == kNumPoints) continue; // Ignore pass
+            std::vector<LongNardeCheckerMove> moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, action);
+            if (moves.size() == 1) {
+                const auto& move = moves[0];
+                if (move.pos == 14 && move.die == 5 && lnstate->IsOff(kOPlayerId, move.to_pos)) {
+                    found_14_off_5 = true;
+                    action_14_off_5 = action; // Store the action for later use
+                }
+                if (move.pos == 13 && move.die == 2 && lnstate->IsOff(kOPlayerId, move.to_pos)) {
+                    found_13_off_2 = true;
+                }
+            }
         }
-        SPIEL_CHECK_TRUE(can_bear_off_13_with_2);
-        SPIEL_CHECK_FALSE(can_bear_off_13_with_5);
-        SPIEL_CHECK_TRUE(can_bear_off_14_with_5);
-        SPIEL_CHECK_FALSE(can_bear_off_14_with_2);
-        SPIEL_CHECK_FALSE(can_move_14_to_12_with_2);
+        SPIEL_CHECK_TRUE(found_14_off_5);
+        SPIEL_CHECK_TRUE(found_13_off_2);
+        SPIEL_CHECK_NE(action_14_off_5, -1); // Ensure we found the action we want to apply
+
+        // Proceed with the test sequence, applying 14->off(5) first.
+        Action action1 = action_14_off_5; // Use the identified action
+        auto moves1 = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, action1);
+        SPIEL_CHECK_EQ(moves1.size(), 1);
+
+        // Apply the first half-move (bear off 14 with die 5)
+        lnstate->ApplyAction(action1);
+        SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, 14), 0);
+
+        // 2. Second half-move: Only legal move should be bear off from 13 with die 2.
+        auto legal_actions2 = lnstate->LegalActions();
+        SPIEL_CHECK_EQ(legal_actions2.size(), 1);
+        Action action2 = legal_actions2[0];
+        auto moves2 = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, action2);
+        SPIEL_CHECK_EQ(moves2.size(), 1);
+        SPIEL_CHECK_EQ(moves2[0].pos, 13);
+        SPIEL_CHECK_EQ(moves2[0].die, 2);
+        SPIEL_CHECK_EQ(moves2[0].to_pos, kBearOffPos);
+
+        // Apply the second half-move (bear off 13 with die 2)
+        lnstate->ApplyAction(action2);
+        SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, 13), 0);
+
+        // 3. After both half-moves, the game should be terminal or next player.
+        // (If this is the last checkers, game is terminal; otherwise, next player.)
+        // For this test, just check that both checkers are off the board.
+        SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, 13), 0);
+        SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, 14), 0);
         std::cout << "✓ BearingOffLogicTestBlackNearEnd passed\n";
         // EndTest: test-boltbne-1
       }

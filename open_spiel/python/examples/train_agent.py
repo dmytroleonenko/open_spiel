@@ -19,13 +19,14 @@ from absl import flags
 
 import pyspiel
 from open_spiel.python import rl_environment
+from open_spiel.python import rl_agent # Import rl_agent module
 from open_spiel.python.algorithms import tabular_qlearner # Start with Q-learner
 from open_spiel.python.algorithms import dqn
 from open_spiel.python.pytorch import ppo
 import torch # Required for PPO
 import tensorflow.compat.v1 as tf # type: ignore # Required for DQN
 from open_spiel.python.utils import training
-from open_spiel.python.utils import agent_serialization # Added
+from open_spiel.python.utils import agent_serialization
 import csv # For logging
 import os # For path manipulation
 import sys # For checking agent types
@@ -34,6 +35,10 @@ import yaml # Added for config file loading
 import json # Added for config file loading
 from tensorboardX import SummaryWriter # Added for TensorBoard logging
 from open_spiel.python.vector_env import SyncVectorEnv # Added for Task 18
+import cProfile
+import pstats
+import atexit
+import time
 
 FLAGS = flags.FLAGS
 
@@ -74,8 +79,15 @@ flags.DEFINE_integer("num_envs", 4, "Number of parallel environments to use if u
 # flags.DEFINE_float("q_learning_rate", 0.01, "DEPRECATED: Use --agent_hparams learning_rate=...")
 # ... (other deprecated flags can be listed here if needed) ...
 
+profiler = cProfile.Profile()
+profiler.enable()
+def print_stats():
+    profiler.disable()
+    stats = pstats.Stats(profiler).sort_stats('cumtime')
+    stats.print_stats(30)
+atexit.register(print_stats)
 
-def _train_episode(env: rl_environment.Environment, agent: rl_environment.AbstractAgent, is_evaluation: bool = False) -> float:
+def _train_episode(env: rl_environment.Environment, agent: rl_agent.AbstractAgent, is_evaluation: bool = False) -> float:
   """Runs a single training or evaluation episode for a single agent.
 
   DEPRECATED: This function is kept for reference but the main loop now handles
@@ -218,7 +230,9 @@ def _apply_config_to_flags(config: dict, flags_obj):
 # TODO: Make this more robust or discoverable if possible
 ALGORITHM_CLASS_PATHS = {
     "tabular_qlearner": "open_spiel.python.algorithms.tabular_qlearner.QLearner",
+    "tabular_qlearner_long_narde": "open_spiel.python.algorithms.tabular_qlearner_long_narde.QLearnerLongNarde",  # For Long Narde/Backgammon
     "dqn": "open_spiel.python.algorithms.dqn.DQN",
+    "dqn_long_narde": "open_spiel.python.algorithms.dqn_long_narde.DQNLongNarde", # Added for Long Narde/Backgammon DQN
     "ppo": "open_spiel.python.pytorch.ppo.PPO",
 }
 
@@ -273,29 +287,37 @@ def main(_):
   game = pyspiel.load_game(FLAGS.game_name)
   print("Game loaded.")
 
+  # --- Get Specs from Game Instance FIRST ---
+  # These specs are the same whether using single or vector env
+  num_players = game.num_players()
+  temp_env_for_specs = rl_environment.Environment(game) # Create temp env for specs
+  action_spec = temp_env_for_specs.action_spec()
+  observation_spec = temp_env_for_specs.observation_spec()
+  num_actions = action_spec["num_actions"]
+  # We don't need the temp env anymore
+  del temp_env_for_specs
+
   # --- 2. Create the RL Environment ---
   print("Creating RL environment...")
-  env = rl_environment.Environment(game)
   if FLAGS.use_vector_env:
        if FLAGS.num_envs <= 0:
             raise ValueError("num_envs must be positive when use_vector_env is True.")
-       # Create a list of environment factory functions
-       env_fns = [lambda: rl_environment.Environment(FLAGS.game_name)] * FLAGS.num_envs
-       env = SyncVectorEnv(env_fns)
+       # Create a list of environment *instances* (not functions)
+       env_instances = [rl_environment.Environment(game) for _ in range(FLAGS.num_envs)]
+       env = SyncVectorEnv(env_instances)
        print(f"Using SyncVectorEnv with {FLAGS.num_envs} environments.")
   else:
        env = rl_environment.Environment(game)
        print("Using standard single RL environment.")
 
   # Get specs from the environment (works for both single and vector env)
-  num_players = env.num_players
-  num_actions = env.action_spec()["num_actions"]
   env_specs = {
       "num_actions": num_actions,
-      "observation_spec": env.observation_spec(),
-      "action_spec": env.action_spec(),
+      "observation_spec": observation_spec, # Use spec from game instance
+      "action_spec": action_spec,       # Use spec from game instance
       # Add game name for potential use during loading/validation
       "game_name": FLAGS.game_name,
+      "num_players": num_players # Explicitly add num_players here
   }
   # Modify print statement slightly for clarity
   env_type = "SyncVectorEnv" if FLAGS.use_vector_env else "Single Env"
@@ -315,6 +337,14 @@ def main(_):
 
       # Prepare base hparams (filtered from CLI) - specific checks done in wrapper
       base_hparams = agent_hparams.copy()
+
+      # --- Manually add state_representation_size for DQN/DQNLongNarde --- #
+      if FLAGS.algorithm_name in ["dqn", "dqn_long_narde"]:
+          state_size = env_specs["observation_spec"]["info_state"][0]
+          base_hparams['state_representation_size'] = state_size
+          print(f"  Adding state_representation_size={state_size} to base hparams for {FLAGS.algorithm_name}")
+      # ------------------------------------------------------------------ #
+
       # Add device flag to hparams if relevant for the agent (Task 17)
       if FLAGS.algorithm_name in ["dqn", "ppo"]: # Add other DL agents here
           base_hparams['device'] = FLAGS.device
@@ -322,11 +352,11 @@ def main(_):
 
       # DQN needs TF session managed externally if restoring/sharing
       tf_session = None
-      if FLAGS.algorithm_name == "dqn":
+      if FLAGS.algorithm_name in ["dqn", "dqn_long_narde"]:
           tf.disable_eager_execution() # Ensure TF1 behavior
           tf_session = tf.Session()
           base_hparams['session'] = tf_session # Pass session to wrapper/agent
-          print("  Created TF Session for DQN.")
+          print(f"  Created TF Session for {FLAGS.algorithm_name}.")
 
       # PPO might need device handling here
       # ...
@@ -365,6 +395,9 @@ def main(_):
   # Use the wrapped agents for the training loop
   agents_to_use_in_loop = agents_wrapped
 
+  # Before the training loop, after defining num_players:
+  loss_history = {p: [] for p in range(num_players)}
+
   # --- 5. Training Loop ---
   print(f"Starting training loop for {FLAGS.num_episodes} episodes...")
   metrics = [] # Store metrics if logging enabled
@@ -397,9 +430,19 @@ def main(_):
 
         while not time_step.last():
             player_id = time_step.observations["current_player"]
-            agent = agents_to_use_in_loop[player_id] # Get the current player's agent
 
-            # Agent takes a step
+            # --- Debug Check: Ensure legal actions exist if not terminal ---
+            current_legal_actions = time_step.observations["legal_actions"][player_id]
+            if not time_step.last() and not current_legal_actions:
+                raise ValueError(
+                    f"Error: time_step is not terminal for player {player_id}, but legal_actions is empty. "
+                    f"State: {env.get_state}"
+                )
+            # --- End Debug Check ---
+
+            agent = agents_to_use_in_loop[player_id]
+
+            # Agent takes a step based on the *current* time_step
             agent_output = agent.step(time_step, is_evaluation=False)
 
             if agent_output is None:
@@ -411,19 +454,24 @@ def main(_):
                 for p in range(num_players):
                     episode_rewards[p] += time_step.rewards[p]
 
+            # Update other agents if the environment step didn't end the game
+            # Note: For Q-learning, all agents learn from the same transition,
+            # so we call step() on all agents after the environment step.
+            # This was previously incorrect and only called step if not time_step.last().
+            # Now it correctly calls step even if the env step was terminal,
+            # allowing the agent to process the final transition.
+            # if not time_step.last(): # This condition was removed
             for ag_idx, ag in enumerate(agents_to_use_in_loop):
+                # Pass the time_step *resulting* from the action taken by player_id
                 ag.step(time_step, is_evaluation=False)
                 # Capture loss after agent step if available
                 agent_loss = ag.loss
                 if agent_loss is not None:
                     episode_losses[ag_idx].append(agent_loss)
+                    loss_history[ag_idx].append(agent_loss)
 
-        # End of episode learning step
-        for ag_idx, ag in enumerate(agents_to_use_in_loop):
-            ag.step(time_step, is_evaluation=False)
-            agent_loss = ag.loss
-            if agent_loss is not None:
-                episode_losses[ag_idx].append(agent_loss)
+        # End of episode - The final step processing is now handled within the loop above.
+        # No separate end-of-episode agent step call is needed here anymore.
 
         # --- Logging (Single Env) ---
         avg_episode_losses = [sum(episode_losses[p]) / len(episode_losses[p]) if episode_losses[p] else None for p in range(num_players)]
@@ -444,7 +492,17 @@ def main(_):
         if (ep + 1) % 100 == 0:
             reward_str = ", ".join([f"P{i}: {r:.2f}" for i, r in enumerate(episode_rewards)])
             loss_str = ", ".join([f"P{i}: {l:.4f}" if l else "N/A" for i, l in enumerate(avg_episode_losses)])
-            print(f"  Episode {ep + 1}/{FLAGS.num_episodes}. Rewards: [{reward_str}]. Avg Losses: [{loss_str}]")
+            print(f"Episodes {ep - 98}-{ep + 1}:")
+            for p in range(num_players):
+                if loss_history[p]:
+                    avg_loss = sum(loss_history[p]) / len(loss_history[p])
+                    min_loss = min(loss_history[p])
+                    max_loss = max(loss_history[p])
+                    print(f"  Player {p}: Avg Loss: {avg_loss:.4f}, Min: {min_loss:.4f}, Max: {max_loss:.4f}")
+                else:
+                    print(f"  Player {p}: No loss data.")
+            # Reset loss history for next 100 episodes
+            loss_history = {p: [] for p in range(num_players)}
             if log_file_handle:
               log_file_handle.flush()
 
@@ -485,27 +543,35 @@ def main(_):
         while episodes_completed < total_episodes_target:
             total_steps += num_envs # Increment step count
 
-            # --- Agent Step (Requires Agent Modification - Task 18d) ---
-            # Placeholder logic - needs agent batch support
+            # --- Agent Step (Handle Batch Directly for PPO) ---
             batch_actions = []
-            current_players = [ts.observations["current_player"] for ts in time_steps]
-            # In a real implementation, this would likely be a single call:
-            # batch_agent_outputs = agents.step_batch(time_steps, is_evaluation=False)
-            # For now, iterate (INEFFICIENT):
-            for i, ts in enumerate(time_steps):
-                 player_id = current_players[i]
-                 if player_id >= 0:
-                      agent = agents_to_use_in_loop[player_id]
-                      # This step needs modification to handle batched input (Task 18d)
-                      agent_output = agent.step(ts, is_evaluation=False)
-                      if agent_output is None: raise ValueError("Agent returned None")
-                      batch_actions.append(agent_output.action)
-                 else:
-                      # Handle cases where an environment might start terminal/chance (unlikely for SyncVectorEnv reset)
-                      batch_actions.append(None) # Should match env expectation
+            # For PPO, call step once with the full batch of time_steps.
+            # Assume self-play or agent implementation handles multiple players/envs.
+            # We need outputs for all environments.
+            # Need to decide which agent instance to call step on, or if PPO needs refactor.
+            # Let's assume for now PPO's step called via wrapper can handle the batch
+            # and we only need to call it once (e.g., via player 0 agent).
+
+            # TODO: Review if PPO step returns actions for all envs and players correctly.
+            # This logic might be overly simplistic if agents are distinct.
+            current_player_for_batch_step = 0 # Or determine dynamically if needed
+            agent_for_batch_step = agents_to_use_in_loop[current_player_for_batch_step]
+
+            # Pass the entire list of time_steps
+            batch_agent_outputs = agent_for_batch_step.step(time_steps, is_evaluation=False)
+
+            # Ensure batch_agent_outputs is a list of StepOutput (or similar)
+            if not isinstance(batch_agent_outputs, list) or len(batch_agent_outputs) != num_envs:
+                 raise ValueError(f"Agent step did not return a list of outputs matching num_envs. Got: {batch_agent_outputs}")
+
+            # Extract actions for the env.step call
+            batch_actions = [output.action if output else None for output in batch_agent_outputs]
 
             # --- Environment Step --- Returns list of TimeStep
+            t0 = time.perf_counter()
             next_time_steps = env.step(batch_actions)
+            t1 = time.perf_counter()
+            env_step_time = t1 - t0
 
             # --- Agent Learning Step (Handles Batches - Task 18e) ---
             # Assumes agents can handle batch learning internally (e.g., PPO) or via a specific method.
@@ -519,7 +585,10 @@ def main(_):
                     # This might include current time_steps, actions taken, next_time_steps
                     # The exact signature depends on the agent implementation.
                     # Placeholder call:
+                    t2 = time.perf_counter()
                     loss = agent.learn_batch(time_steps, batch_actions, next_time_steps)
+                    t3 = time.perf_counter()
+                    agent_step_time = t3 - t2
                     if loss is not None:
                          current_batch_losses[p_id].append(loss) # Or handle batch loss
                 else:
@@ -593,6 +662,35 @@ def main(_):
 
             # Prepare for next iteration
             time_steps = next_time_steps
+
+            # --- Agent Step (uses the updated step method which handles batches) ---
+            t2 = time.perf_counter()
+            # Call .step() on the wrapper, which delegates and handles batches internally
+            agent_outputs = agent_for_batch_step.step(time_steps)
+            t3 = time.perf_counter()
+            agent_step_time = t3 - t2
+            # --- End Agent Step ---
+
+            # Extract actions for env.step
+            batch_actions = [output.action if output else None for output in agent_outputs]
+
+            # --- Environment Step ---
+            t0 = time.perf_counter()
+            next_time_steps = env.step(batch_actions)
+            t1 = time.perf_counter()
+            env_step_time = t1 - t0
+            # --- End Environment Step ---
+
+            # --- Agent Learning Step ---
+            # (Assuming learn happens within agent.step or via a separate learn_batch if available)
+            # Placeholder for loss gathering if needed
+            # ... (loss gathering logic) ...
+            # --- End Agent Learning ---
+
+            # Print Timing Info
+            if episodes_completed % 10 == 0:
+                print(f"[DEBUG] Episode {episodes_completed}: env.step took {env_step_time:.6f}s, agent.step took {agent_step_time:.6f}s")
+                sys.stdout.flush() # Ensure debug output is seen immediately
 
   print("--- Training Finished ---")
 

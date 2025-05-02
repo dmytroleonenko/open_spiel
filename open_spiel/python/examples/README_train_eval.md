@@ -2,9 +2,48 @@
 
 This document explains how to use the `train_agent.py` and `evaluate_agent.py` scripts located in `open_spiel/python/examples/`. These scripts provide a command-line interface for training various reinforcement learning agents on OpenSpiel games and evaluating their performance.
 
+## 1a. `tabular_qlearner_long_narde` - Special Q-Learner for Long Narde and Backgammon
+
+For games like Long Narde and Backgammon, where some states have no legal actions (forced pass turns), use the custom agent `tabular_qlearner_long_narde` instead of the default `tabular_qlearner`. This agent is a necessary fork because:
+1.  It is robust to forced pass turns, correctly handling states with empty legal action sets.
+2.  It works correctly with the `agent_serialization.py` wrapper to ensure proper saving of agent state and metadata, resolving issues encountered with the standard QLearner and the wrapper interaction (specifically related to saving metadata including the `pyspiel.__version__`).
+
+### Usage Example
+
+```bash
+python open_spiel/python/examples/train_agent.py --game_name=long_narde --algorithm_name=tabular_qlearner_long_narde --num_episodes=10000 --checkpoint_dir=/tmp/long_narde_q_checkpoints --checkpoint_every=1000 --device=cpu --agent_hparams step_size=0.02 --agent_hparams discount_factor=0.99
+```
+
+- Set `--algorithm_name=tabular_qlearner_long_narde` for Long Narde or Backgammon.
+- All other arguments remain the same as for the default QLearner.
+
+## 1b. Using DQN for Long Narde/Backgammon (`dqn_long_narde`)
+
+Games like Long Narde and Backgammon feature states where a player has no legal moves and must pass (a "forced pass"). The standard DQN agent may encounter errors in these situations.
+
+To address this, a dedicated agent fork, `dqn_long_narde`, is provided (`open_spiel/python/algorithms/dqn_long_narde.py`).
+
+*   **How it works:**
+    1.  When faced with a forced pass (`legal_actions` is empty), the agent correctly recognizes no action can be chosen (`action=None`).
+    2.  Crucially, the agent's `step` method **skips adding the transition** to the replay buffer if the action taken in the previous state was `None`. This ensures the replay buffer only contains transitions resulting from actual agent decisions, preventing downstream errors during learning.
+*   **Requirement:** You **must** use the specific algorithm name `--algorithm_name=dqn_long_narde` when training DQN on games like Long Narde or Backgammon.
+
+### Usage Example (DQN for Long Narde using the fork)
+
+```bash
+python open_spiel/python/examples/train_agent.py \
+    --game_name=long_narde \
+    --algorithm_name=dqn_long_narde \
+    --num_episodes=15000 \
+    --checkpoint_dir=/tmp/long_narde_dqn_checkpoints \
+    --checkpoint_every=1000 \
+    --agent_hparams hidden_layers_sizes=[128,128] \
+    --agent_hparams learning_rate=0.0001
+```
+
 ## 1. `train_agent.py` - Training an Agent
 
-This script trains an RL agent (Tabular Q-learning, DQN, PPO supported initially) on a specified OpenSpiel game, typically in a multi-agent self-play setting. It utilizes a standardized wrapper (`agent_serialization.py`) for saving agent state and metadata.
+This script trains an RL agent on a specified OpenSpiel game, typically in a multi-agent self-play setting. It utilizes a standardized wrapper (`agent_serialization.py`) for saving agent state and metadata.
 
 ### Usage
 
@@ -15,7 +54,7 @@ python open_spiel/python/examples/train_agent.py --game_name=<game> --algorithm_
 ### Core Arguments
 
 *   `--game_name`: (String, Required) The name of the OpenSpiel game to train on (e.g., `tic_tac_toe`, `kuhn_poker`, `long_narde`).
-*   `--algorithm_name`: (String, Required) The RL algorithm to use for *all* players. Check `--list_algorithms` for available options (currently `tabular_qlearner`, `dqn`, `ppo`).
+*   `--algorithm_name`: (String, Required) The RL algorithm to use for *all* players. Check `--list_algorithms` for available options (currently `tabular_qlearner`, `tabular_qlearner_long_narde`, `dqn`, `ppo`).
 *   `--num_episodes`: (Integer, Default: 10000) The total number of training episodes to run. Note: For vectorized environments, this is the target number of *completed* episodes across all parallel environments.
 
 ### Agent Hyperparameters
@@ -33,8 +72,11 @@ python open_spiel/python/examples/train_agent.py --game_name=<game> --algorithm_
 *   `--checkpoint_dir`: (String, Optional) Directory where agent checkpoints will be saved. If not provided, checkpointing is disabled.
 *   `--checkpoint_every`: (Integer, Default: 1000) Save a checkpoint every N episodes (for single env) or every N *completed* episodes (for vectorized env). Only active if `checkpoint_dir` is provided and this value is greater than 0.
 *   **Checkpoint Structure:** Checkpoints are saved in subdirectories named `agent_p<ID>_ep<EPISODE>` within the `checkpoint_dir`. Each subdirectory contains:
-    *   `metadata.yaml`: Information about the agent class, hyperparameters used at creation, OpenSpiel version, environment specs, etc.
-    *   Agent-specific state files (e.g., `q_table.pkl`, `agent_state.pkl` for QLearner; TensorFlow checkpoints and `agent_state.pkl` for DQN; PyTorch state dict for PPO - TBD).
+    *   `metadata.yaml`: Information about the agent class, hyperparameters used at creation, environment specs, etc. (Note: `openspiel_version` is currently excluded due to saving issues).
+    *   Agent-specific state files:
+        *   `tabular_qlearner` / `tabular_qlearner_long_narde`: `q_table.pkl`, `agent_state.pkl`
+        *   `dqn`: TensorFlow checkpoints (`q_network.*`, `target_q_network.*`), `agent_state.pkl`
+        *   `ppo`: PyTorch state dict (`policy_state_dict.pt`), `agent_state.pkl` (Implementation TBD)
 
 ### Configuration File
 
@@ -152,4 +194,4 @@ python open_spiel/python/examples/evaluate_agent.py \
 *   **Hyperparameters:** Evaluation (`evaluate_agent.py`) primarily uses the agent's learned parameters loaded from the checkpoint. Training hyperparameters are generally not needed unless the agent's loading logic specifically requires them (which is currently not the case).
 *   **Dependencies:** DQN requires TensorFlow 1.x (`tensorflow-compat-v1`), while PPO requires PyTorch (`torch`). Ensure these are installed if you use those algorithms. TensorBoard logging requires `tensorboardX` or `tensorboard`. YAML support requires `PyYAML`.
 *   **Vectorized Environment:** Using `--use_vector_env` in `train_agent.py` can significantly speed up training for algorithms that can process batches (like PPO), but it requires the agent implementation to correctly handle batched inputs and outputs. The current implementation has placeholders and might need further refinement in the agent wrappers or specific agent code (Tasks 18d, 18e).
-*   **Checkpoint Paths:** Always ensure `agent_path` and `opponent_path` point to the specific subdirectory created during checkpointing (e.g., `.../checkpoint_dir/agent_p0_ep10000`), which contains the `metadata.yaml` and other necessary files. 
+*   **Checkpoint Paths:** Always ensure `agent_path` and `opponent_path` point to the specific subdirectory created during checkpointing (e.g., `.../checkpoint_dir/agent_p0_ep10000`), which contains the `

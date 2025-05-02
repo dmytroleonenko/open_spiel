@@ -1,0 +1,294 @@
+diff --git a/open_spiel/games/long_narde/long_narde_legal_actions.cc b/open_spiel/games/long_narde/long_narde_legal_actions.cc
+index e69995986..923e16d4a 100644
+--- a/open_spiel/games/long_narde/long_narde_legal_actions.cc
++++ b/open_spiel/games/long_narde/long_narde_legal_actions.cc
+@@ -21,49 +21,55 @@ namespace open_spiel
+ 
+         std::vector<Action> LongNardeState::LegalActions() const
+         {
+-            std::vector<Action> legal_actions;
++            // 1) Terminal or chance nodes
++            if (IsTerminal()) return {};
++            if (IsChanceNode()) return LegalChanceOutcomes();
+ 
+-            if (IsTerminal())
++            std::set<Action> unique_actions;
++            if (moves_remaining_ > 0) {
++                auto all_sequences = LongNardeGenerateMoveSequences(CurrentPlayer());
++                if (kDebugging) {
++                    std::cerr << "[DEBUG LA] All move sequences (" << all_sequences.size() << "):\n";
++                    for (const auto& seq : all_sequences) {
++                        std::cerr << "  Seq: ";
++                        for (const auto& m : seq) {
++                            std::cerr << "{" << m.pos << "," << m.to_pos << "," << m.die << "} ";
++                        }
++                        std::cerr << std::endl;
++                    }
++                }
++                auto filter_result = LongNardeFilterBestMoveSequences(all_sequences);
++                if (kDebugging) {
++                    std::cerr << "[DEBUG LA] Filtered best sequences (" << filter_result.first.size() << "):\n";
++                    for (const auto& seq : filter_result.first) {
++                        std::cerr << "  Seq: ";
++                        for (const auto& m : seq) {
++                            std::cerr << "{" << m.pos << "," << m.to_pos << "," << m.die << "} ";
++                        }
++                        std::cerr << std::endl;
++                    }
++                }
++                for (const auto& seq : filter_result.first) {
++                    if (seq.empty()) continue;
++                    int next_pos = seq[0].pos;
++                    Action a = (next_pos == kPassPos ? kNumPoints : next_pos);
++                    unique_actions.insert(a);
++                    if (kDebugging) {
++                        std::cerr << "[DEBUG LA] Adding action ID: " << a << " (from pos=" << next_pos << ")\n";
++                    }
++                }
++            } else {
+                 return {};
+-            if (IsChanceNode())
+-                return LegalChanceOutcomes();
+-
+-            // Generate all possible move sequences
+-            std::vector<std::vector<LongNardeCheckerMove>> movelist = LongNardeGenerateMoveSequences(CurrentPlayer());
+-
+-            // Filter for the best move sequences (longest, max non-pass)
+-            auto filter_result = LongNardeFilterBestMoveSequences(movelist);
+-            std::vector<std::vector<LongNardeCheckerMove>> filtered_movelist = filter_result.first;
+-            int max_non_pass = filter_result.second;
+-
+-            // If filtering resulted in only a pass sequence (and original was pass-only), convert and return it.
+-            if (max_non_pass == 0 && !filtered_movelist.empty())
+-            {
+-                SPIEL_CHECK_GE(dice_.size(), 2);
+-                std::vector<LongNardeCheckerMove> actual_pass_sequence;
+-                actual_pass_sequence.push_back({kPassPos, kPassPos, DiceValue(0)});
+-                actual_pass_sequence.push_back({kPassPos, kPassPos, DiceValue(1)});
+-                return {LongNardeCheckerMovesToSpielMove(actual_pass_sequence)};
+             }
+-
+-            // Convert filtered move sequences to Spiel Actions
+-            const size_t kMaxActionsToGenerate = 20;
+-            std::set<Action> unique_actions;
+-
+-            for (const auto &moveseq : filtered_movelist)
+-            {
+-                if (unique_actions.size() >= kMaxActionsToGenerate)
+-                    break;
+-                Action action = LongNardeCheckerMovesToSpielMove(moveseq);
+-                unique_actions.insert(action);
++            std::vector<Action> actions(unique_actions.begin(), unique_actions.end());
++            if (kDebugging) {
++                std::cerr << "[DEBUG LA] Final legal actions: ";
++                for (Action a : actions) {
++                    std::cerr << a << " ";
++                }
++                std::cerr << std::endl;
+             }
+-
+-            std::vector<Action> legal_moves;
+-            legal_moves.assign(unique_actions.begin(), unique_actions.end());
+-
+-            // **** Apply Higher Die Rule ****
+-            std::vector<Action> final_actions = LongNardeApplyHigherDieRuleIfNeeded(legal_moves, filtered_movelist);
+-            return final_actions;
++            return actions;
+         }
+ 
+         std::vector<Action> LongNardeState::IllegalActions() const
+@@ -164,6 +170,13 @@ namespace open_spiel
+         std::set<LongNardeCheckerMove> LongNardeState::LongNardeGenerateAllHalfMoves(int player, bool moved_from_head_this_sequence) const
+         {
+             std::set<LongNardeCheckerMove> half_moves;
++            if (kDebugging) {
++                std::cerr << "[DEBUG GAHM] Board for player " << player << ": ";
++                for (int pos = 0; pos < kNumPoints; ++pos) {
++                    std::cerr << board(player, pos) << " ";
++                }
++                std::cerr << std::endl;
++            }
+             for (int pos = 0; pos < kNumPoints; ++pos)
+             {
+                 if (board(player, pos) <= 0)
+@@ -187,6 +200,13 @@ namespace open_spiel
+                     }
+                 }
+             }
++            if (kDebugging) {
++                std::cerr << "[DEBUG GAHM] Generated half-moves for player " << player << ": ";
++                for (const auto& m : half_moves) {
++                    std::cerr << "(pos=" << m.pos << ", die=" << m.die << ") ";
++                }
++                std::cerr << std::endl;
++            }
+             if (half_moves.empty())
+             {
+                 half_moves.insert(LongNardeCheckerMove(kPassPos, kPassPos, 1));
+@@ -242,14 +262,14 @@ namespace open_spiel
+ 
+             std::stack<ExplorationState> exploration_stack;
+ 
+-            // Determine AllInHome status at the very beginning of the turn
+-            bool initial_all_in_home = this->AllInHome(this->CurrentPlayer());
++            // Determine if a head move has already occurred at the very beginning of exploration
++            bool initial_moved_from_head = this->moved_from_head_;
+ 
+-            // Push the initial state onto the stack (cloned once)
++            // Push the initial state onto the stack (cloned once), with moved-from-head flag
+             exploration_stack.emplace(
+                 std::unique_ptr<LongNardeState>(static_cast<LongNardeState *>(this->Clone().release())),
+-                0,                  // Initial depth is 0
+-                initial_all_in_home // Pass initial home status
++                0,                        // Initial depth is 0
++                initial_moved_from_head   // Pass initial moved_from_head status
+             );
+ 
+             int max_non_pass_found = 0; // Track the overall maximum non-pass moves
+@@ -824,8 +844,7 @@ namespace open_spiel
+         std::pair<std::vector<std::vector<LongNardeCheckerMove>>, int> LongNardeState::LongNardeFilterBestMoveSequences(
+             const std::vector<std::vector<LongNardeCheckerMove>> &movelist) const
+         {
+-
+-            // *** ADDED DEBUG LOG ***
++            // *** ADDED DEBUG LOG: Function Entry ***
+             if (kDebugging)
+             {
+                 std::cout << "[DEBUG FBS Entry] Player=" << CurrentPlayer() << " Input movelist (" << movelist.size() << "):\n";
+@@ -871,7 +890,7 @@ namespace open_spiel
+                 }
+             }
+ 
+-            // *** ADDED DEBUG LOG ***
++            // *** ADDED DEBUG LOG: Calculated Stats ***
+             if (kDebugging)
+             {
+                 std::cout << "[DEBUG FBS Stats] longest_sequence=" << longest_sequence << ", max_non_pass=" << max_non_pass << std::endl;
+@@ -897,6 +916,10 @@ namespace open_spiel
+                 {
+                     if (move.pos != kPassPos)
+                     {
++                         // *** ADDED DEBUG LOG: Applying move in terminal check ***
++                        if (kDebugging) {
++                            std::cout << "[DEBUG FBS Terminal Check Apply] Applying: {" << move.pos << "," << move.to_pos << "," << move.die << "}\n";
++                        }
+                         test_state->LongNardeApplyCheckerMove(test_state->CurrentPlayer(), move);
+                     }
+                 }
+@@ -906,10 +929,10 @@ namespace open_spiel
+                 {
+                     has_terminal_sequence = true;
+                     terminal_sequences.push_back(moveseq);
+-
++                    // *** ADDED DEBUG LOG: Found Terminal Sequence ***
+                     if (kDebugging)
+                     {
+-                        std::cout << "[DEBUG FBS Terminal] Found terminal sequence:";
++                        std::cout << "[DEBUG FBS Terminal Found] Sequence:";
+                         for (const auto &m : moveseq)
+                         {
+                             std::cout << " {" << m.pos << "," << m.to_pos << "," << m.die << "}";
+@@ -922,14 +945,19 @@ namespace open_spiel
+             // If we have terminal sequences, include all of them regardless of length
+             if (has_terminal_sequence)
+             {
++                // *** ADDED DEBUG LOG: Using Terminal Sequences ***
+                 if (kDebugging)
+                 {
+-                    std::cout << "[DEBUG FBS Terminal] Including " << terminal_sequences.size() << " terminal sequences" << std::endl;
++                    std::cout << "[DEBUG FBS Terminal Branch] Including " << terminal_sequences.size() << " terminal sequences" << std::endl;
+                 }
+                 filtered_movelist = terminal_sequences;
+             }
+             else
+             {
++                 // *** ADDED DEBUG LOG: Using Non-Terminal Filter Branch ***
++                if (kDebugging) {
++                    std::cout << "[DEBUG FBS Non-Terminal Branch] Applying standard filters.\n";
++                }
+                 // Standard filtering for non-terminal sequences
+                 for (const auto &moveseq : movelist)
+                 {
+@@ -946,6 +974,12 @@ namespace open_spiel
+ 
+                     if (moveseq.size() == longest_sequence && current_non_pass == max_non_pass)
+                     {
++                         // *** ADDED DEBUG LOG: Adding sequence based on length/non-pass ***
++                        if (kDebugging) {
++                            std::cout << "[DEBUG FBS Filter Add] Seq (len=" << moveseq.size() << ", nonpass=" << current_non_pass << "): ";
++                            for(const auto& m : moveseq) { std::cout << " {" << m.pos << "," << m.to_pos << "," << m.die << "}"; }
++                            std::cout << std::endl;
++                        }
+                         filtered_movelist.push_back(moveseq);
+                         if (is_pass_sequence)
+                         {
+@@ -954,6 +988,12 @@ namespace open_spiel
+                     }
+                     else if (is_pass_sequence && max_non_pass == 0 && longest_sequence <= 1)
+                     {
++                        // *** ADDED DEBUG LOG: Adding pass sequence via special case ***
++                        if (kDebugging) {
++                            std::cout << "[DEBUG FBS Filter Add Special Pass] Seq: ";
++                            for(const auto& m : moveseq) { std::cout << " {" << m.pos << "," << m.to_pos << "," << m.die << "}"; }
++                            std::cout << std::endl;
++                        }
+                         // Special case: If the best move is "pass" (max_non_pass = 0) and
+                         // the longest sequences are size 0 or 1, ensure the explicit pass
+                         // sequence {kPassMove} is included if it exists in the original list.
+@@ -967,54 +1007,10 @@ namespace open_spiel
+                 }
+             }
+ 
+-            // If the filtered list is empty AND the original list only contained sequences
+-            // ending because no moves were possible from the start, we need to check
+-            // if a single pass move is valid.
+-            if (filtered_movelist.empty() && max_non_pass == 0 && longest_sequence == 0)
+-            {
+-                // if (kDebugging) std::cout << "FilterBest: Filtered list empty, checking for pass validity." << std::endl;
+-
+-                // Avoid cloning: Save relevant state, call GenerateAllHalfMoves, restore state.
+-                // Store potentially modified state variables
+-                std::vector<int> original_dice = this->dice_;
+-                bool original_moved_from_head = this->moved_from_head_;
+-                Player current_player = this->cur_player_; // Use member variable
+-
+-                // Temporarily modify 'this' state for the check
+-                // Need a non-const version of 'this' to modify members and call non-const GenerateAllHalfMoves
+-                LongNardeState *mutable_this = const_cast<LongNardeState *>(this);
+-
+-                // Reset potentially affected state for the check
+-                mutable_this->moved_from_head_ = false; // Reset head move status for the check
+-
+-                // Use GenerateAllHalfMoves to check validity from the current state.
+-                // Determine initial home status for this specific check
+-                bool check_initial_home_status = mutable_this->AllInHome(current_player);
+-                std::set<LongNardeCheckerMove> all_half_moves = mutable_this->LongNardeGenerateAllHalfMoves(current_player, mutable_this->moved_from_head_);
+-
+-                // Restore the original state immediately after the call
+-                mutable_this->dice_ = original_dice;
+-                mutable_this->moved_from_head_ = original_moved_from_head;
+-
+-                if (all_half_moves.size() == 1 && all_half_moves.begin()->pos == kPassPos)
+-                {
+-                    // if (kDebugging) std::cout << "FilterBest: Only pass move is valid. Adding pass sequence." << std::endl;
+-                    filtered_movelist.push_back({kPassMove});
+-                    pass_possible = true; // Pass is the only option
+-                }
+-                /*else if (kDebugging) { // Remove debug block
+-                    std::cout << "FilterBest: Pass check - found " << all_half_moves.size() << " half moves. Pass not added." << std::endl;
+-                    for(const auto& mv : all_half_moves) {
+-                       std::cout << "  - Move:{" << mv.pos << "," << mv.to_pos << "," << mv.die << "}" << std::endl;
+-                    }
+-                }*/
+-                // Remove debug block
+-            }
+-
+-            // *** ADDED DEBUG LOG ***
++            // *** ADDED DEBUG LOG: Before Return ***
+             if (kDebugging)
+             {
+-                std::cout << "[DEBUG FBS Exit] Returning filtered_movelist (" << filtered_movelist.size() << "):\n";
++                std::cout << "[DEBUG FBS Exit] Player=" << CurrentPlayer() << " Returning filtered_movelist (" << filtered_movelist.size() << "):\n";
+                 for (const auto &seq : filtered_movelist)
+                 {
+                     std::cout << "  Seq: ";

@@ -34,40 +34,21 @@ namespace open_spiel
     bool LongNardeState::IsLegalHeadMove(int player, int from_pos, bool moved_from_head_this_sequence) const
     {
       bool is_head = IsHeadPos(player, from_pos);
-      if (!is_head)
-        return true; // Not a head move, always allowed by this rule.
-
-      // Head Rule 5: Only 1 checker may leave the head per turn.
-      // Exception: First turn double 6, 4, or 3 allows moving 2 checkers.
-
-      // Use the member variable 'is_first_turn_' which reflects the turn status
-      // at the beginning of the turn, not the current simulation state.
+      // Detect special double roll of 3,4,6 at start of the turn
       bool is_special_double_roll = false;
-
-      // *** Use initial_dice_ for this check ***
-      if (initial_dice_.size() >= 2)
-      {                                  // Check the roll at the start of the turn
-        int die1_val = initial_dice_[0]; // Raw value is fine here (1-6)
-        int die2_val = initial_dice_[1];
-        if (die1_val == die2_val && (die1_val == 3 || die1_val == 4 || die1_val == 6))
-        {
-          is_special_double_roll = true;
-        }
+      if (initial_dice_.size() >= 2) {
+        int d0 = initial_dice_[0], d1 = initial_dice_[1];
+        if (d0 == d1 && (d0 == 3 || d0 == 4 || d0 == 6)) is_special_double_roll = true;
       }
-
-      // Check for first turn special doubles exception
-      // *** Use the MEMBER VARIABLE 'is_on_first_turn_' instead of the method IsFirstTurn(player) ***
-      if (is_on_first_turn_ && is_special_double_roll)
-      {
-        // On special first turn doubles, we can move up to two checkers from head.
-        // This function checks the validity of a *single* potential move.
-        // The limit of two moves is handled implicitly by the sequence generation
-        // (RecLegalMoves) and its depth limit combined with state updates.
-        return true; // Allow potential head move during special first turn double.
+      // For a special double, only head moves are allowed for the first two half-moves
+      if (is_special_double_roll && moves_remaining_ > 2) {
+        return is_head;
       }
-
-      // Normal case (not first turn OR not a special double roll):
-      // Can only move from head if no checker has moved from head *yet* this sequence.
+      // Non-head moves are always allowed
+      if (!is_head) {
+        return true;
+      }
+      // Head moves: only if no checker has moved from head yet in this sequence
       return !moved_from_head_this_sequence;
     }
 
@@ -447,8 +428,8 @@ namespace open_spiel
         }
       }
       else
-      { // Black home: 12-17. Furthest is lowest index.
-        for (int pos = kBlackHomeStart; pos <= kBlackHomeEnd; ++pos)
+      { // Black home: 12-17. Furthest is highest index (closest to 23).
+        for (int pos = kBlackHomeEnd; pos >= kBlackHomeStart; --pos) // Iterate backwards
         {
           if (board_[player][pos] > 0)
           {

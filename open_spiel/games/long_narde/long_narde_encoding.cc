@@ -258,7 +258,7 @@ namespace open_spiel
      * @param moves A vector of CheckerMove objects representing the full turn.
      * @return The encoded Spiel Action.
      */
-    Action LongNardeState::LongNardeCheckerMovesToSpielMove(
+Action LongNardeState::LongNardeCheckerMovesToSpielMove(
         const std::vector<LongNardeCheckerMove> &moves) const
     {
       SPIEL_CHECK_LE(moves.size(), 4); // Allow up to 4 moves for doubles
@@ -406,8 +406,8 @@ namespace open_spiel
             // pos is 0-23, die is 1-6.
             // Max value is 23 * 6 + 5 = 143.
             // This ensures no overlap with the pass encoding range (144-149).
-            SPIEL_CHECK_GE(move.pos, 0);
-            SPIEL_CHECK_LT(move.pos, kNumPoints);
+  SPIEL_CHECK_GE(move.pos, 0);
+  SPIEL_CHECK_LT(move.pos, kNumPoints);
             SPIEL_CHECK_GE(move.die, 1);
             SPIEL_CHECK_LE(move.die, 6);
             return move.pos * 6 + (move.die - 1); // 0..143

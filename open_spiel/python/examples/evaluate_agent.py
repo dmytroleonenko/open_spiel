@@ -3,6 +3,7 @@
 import pyspiel
 from open_spiel.python import rl_environment
 from open_spiel.python.algorithms import random_agent # For random opponent
+from open_spiel.python.algorithms import tabular_qlearner_long_narde # For Long Narde/Backgammon forced pass Q-learner
 from open_spiel.python.utils import agent_serialization # Added
 import csv # For output
 import os # For path checks

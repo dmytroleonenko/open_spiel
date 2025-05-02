@@ -26,6 +26,7 @@ class SyncVectorEnv(object):
       raise ValueError(
           "Need to call this with a list of rl_environment.Environment objects")
     self.envs = envs
+    self.num_envs = len(envs)
 
   def __len__(self):
     return len(self.envs)
@@ -37,34 +38,32 @@ class SyncVectorEnv(object):
   def num_players(self):
     return self.envs[0].num_players
 
-  def step(self, step_outputs, reset_if_done=False):
-    """Apply one step.
+  def step(self, step_outputs):
+    """Steps the underlying environments.
 
     Args:
-      step_outputs: the step outputs
-      reset_if_done: if True, automatically reset the environment
-          when the epsiode ends
+      step_outputs: A list containing the outputs for each environment. This
+        should be a list of actions, one per environment.
 
     Returns:
-      time_steps: the time steps,
-      reward: the reward
-      done: done flag
-      unreset_time_steps: unreset time steps
+      A list of TimeStep objects, one from each environment.
     """
-    time_steps = [
-        self.envs[i].step([step_outputs[i].action])
-        for i in range(len(self.envs))
-    ]
-    reward = [step.rewards for step in time_steps]
-    done = [step.last() for step in time_steps]
-    unreset_time_steps = time_steps  # Copy these because you may want to look
-                                     # at the unreset versions to extract
-                                     # information from them
+    # Verify input is a list of actions matching the number of envs
+    assert len(step_outputs) == self.num_envs
 
-    if reset_if_done:
-      time_steps = self.reset(envs_to_reset=done)
-
-    return time_steps, reward, done, unreset_time_steps
+    time_steps = []
+    for i in range(self.num_envs):
+      action_for_env_i = step_outputs[i]
+      # If the action is None (e.g., env is terminal or not this player's turn),
+      # don't step the environment, just get the current TimeStep.
+      if action_for_env_i is None:
+          time_steps.append(self.envs[i].get_time_step())
+      else:
+          # Otherwise, step the environment with the provided action.
+          # Each internal env expects a list of actions.
+          action_list_for_env_i = [action_for_env_i]
+          time_steps.append(self.envs[i].step(action_list_for_env_i))
+    return time_steps
 
   def reset(self, envs_to_reset=None):
     if envs_to_reset is None:
@@ -76,3 +75,7 @@ class SyncVectorEnv(object):
         for i in range(len(self.envs))
     ]
     return time_steps
+
+  def close(self):
+    # Implementation of close method
+    pass

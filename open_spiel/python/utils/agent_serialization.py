@@ -159,7 +159,11 @@ class SerializableAgentWrapper(rl_agent.AbstractAgent):
         else:
             # Batch handling (Task 18d)
             agent_class_name = self.agent.__class__.__name__
-            if hasattr(self.agent, 'step_batch'):
+
+            # If the agent is PPO, pass the whole batch directly
+            if agent_class_name == 'PPO':
+                return self.agent.step(time_step, is_evaluation=is_evaluation)
+            elif hasattr(self.agent, 'step_batch'):
                 # Use explicit batch stepping if available (e.g., for PPO)
                 return self.agent.step_batch(time_step, is_evaluation=is_evaluation)
             elif agent_class_name in ['QLearner', 'DQN']:
@@ -185,6 +189,12 @@ class SerializableAgentWrapper(rl_agent.AbstractAgent):
         if hasattr(self.agent, 'loss'):
             return self.agent.loss
         return None # Or raise AttributeError?
+
+    @property
+    def player_id(self):
+        if hasattr(self.agent, 'player_id'):
+            return self.agent.player_id
+        return self._player_id
 
     # ... potentially delegate other methods like add_transition if needed ...
 
@@ -219,10 +229,32 @@ class SerializableAgentWrapper(rl_agent.AbstractAgent):
                  with open(state_path, 'wb') as f:
                      pickle.dump(agent_state, f)
 
-            # elif agent_class_name == 'PPO':
-            #     # TODO: Implement PPO saving logic (likely using torch.save)
-            #     print(f"Warning: Saving not fully implemented for {agent_class_name}")
-            #     pass
+            elif agent_class_name == 'QLearnerLongNarde':
+                # Get state from agent
+                q_table_dict, agent_state_dict = self.agent.save(path) # path is unused by agent now
+
+                # Save Q-table
+                q_table_path = os.path.join(path, QLEARNER_QTABLE_FILENAME)
+                try:
+                    with open(q_table_path, 'wb') as f:
+                        pickle.dump(q_table_dict, f)
+                    print(f"[WRAPPER_QLN_DEBUG] Successfully pickled Q-table to {q_table_path}")
+                except Exception as e:
+                    print(f"[WRAPPER_QLN_ERROR] Failed pickling Q-table: {e}", file=sys.stderr)
+                    raise IOError(f"Could not save Q-table to {q_table_path}: {e}")
+
+                # Save internal state
+                state_path = os.path.join(path, QLEARNER_STATE_FILENAME)
+                try:
+                    with open(state_path, 'wb') as f:
+                        pickle.dump(agent_state_dict, f)
+                    print(f"[WRAPPER_QLN_DEBUG] Successfully pickled agent state to {state_path}")
+                except Exception as e:
+                    print(f"[WRAPPER_QLN_ERROR] Failed pickling agent state: {e}", file=sys.stderr)
+                    raise IOError(f"Could not save agent state to {state_path}: {e}")
+
+                print(f"Saved QLearnerLongNarde state via wrapper")
+                print(f"[WRAPPER_DEBUG] Finished agent-specific block for {agent_class_name}")
 
             else:
                 # Fallback/Warning for unsupported agents
@@ -236,14 +268,17 @@ class SerializableAgentWrapper(rl_agent.AbstractAgent):
             "agent_class_path": self._agent_class_path,
             "agent_hparams": self._serializable_hparams, # Use cleaned hparams
             "serialization_format_version": "1.0",
-            "openspiel_version": pyspiel.__version__,
+            # "openspiel_version": pyspiel.__version__, # REMOVED temporarily
             "env_specs": self._env_specs # Include env specs used at creation
         }
         metadata_path = os.path.join(path, METADATA_FILENAME)
-        try:
+        try: 
             with open(metadata_path, 'w') as f:
                 yaml.dump(metadata, f, default_flow_style=False)
         except Exception as e:
+            # Log error clearly
+            print(f"[WRAPPER_SAVE_ERROR] Could not save metadata to {metadata_path}. Error: {e}", file=sys.stderr)
+            # Still raise original error type for upstream handling
             raise IOError(f"Could not save metadata to {metadata_path}: {e}")
 
         print(f"Agent saved successfully to {path}")
@@ -371,10 +406,10 @@ def load_agent(path: str, env=None):
                  print(f"  Warning: Agent state file not found: {state_path}")
 
 
-        # elif class_name == 'PPO':
-        #     # TODO: Implement PPO loading (likely using torch.load)
-        #     print(f"Warning: Loading not fully implemented for {agent_class_name}")
-        #     pass
+        elif class_name == 'QLearnerLongNarde':
+            # Explicitly call the save method of our custom agent
+            agent.save(path)
+            print(f"Called custom save method for {class_name}")
 
         else:
             print(f"Warning: No specific restore logic implemented for agent type {class_name}.", file=sys.stderr)
