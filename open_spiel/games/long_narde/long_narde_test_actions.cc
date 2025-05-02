@@ -247,17 +247,26 @@ namespace open_spiel
           no_moves_board[kOPlayerId][kBlackHeadPos] += 12;
           SetupBoardState(lnstate, kXPlayerId, no_moves_board);
           SetupDice(lnstate, {1, 3, 0, 0});
-          // Expect two sequential pass actions: first for die 3, then for die 1
-          for (int die : {3, 1}) {
-            auto legal_actions = lnstate->LegalActions();
-            SPIEL_CHECK_EQ(legal_actions.size(), 1);
-            Action pass_action = legal_actions[0];
-            auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, pass_action);
-            SPIEL_CHECK_EQ(moves.size(), 1);
-            SPIEL_CHECK_EQ(moves[0].pos, kPassPos);
-            SPIEL_CHECK_EQ(moves[0].die, die);
-            lnstate->ApplyAction(pass_action);
-          }
+          
+          // Expect the ONLY legal action to be pass (Action 24)
+          auto legal_actions = lnstate->LegalActions();
+          SPIEL_CHECK_EQ(legal_actions.size(), 1); // Should only be the pass action available
+          Action pass_action = legal_actions[0];
+          SPIEL_CHECK_EQ(pass_action, kNumPoints); // Check it is the pass action ID (24)
+
+          // Decode should confirm it's a pass using the highest die (3)
+          auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kXPlayerId, pass_action);
+          SPIEL_CHECK_EQ(moves.size(), 1);
+          SPIEL_CHECK_EQ(moves[0].pos, kPassPos);
+          SPIEL_CHECK_EQ(moves[0].die, 3); // Check it used the higher die (3)
+
+          // Apply the pass
+          lnstate->ApplyAction(pass_action);
+
+          // Verify state is now Chance Node
+          SPIEL_CHECK_TRUE(lnstate->IsChanceNode());
+          SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kChancePlayerId);
+
           std::cout << "[TEST] End: test-passmovebehaviortest-1" << std::endl;
         }
         // EndTest: test-passmovebehaviortest-1
@@ -299,18 +308,26 @@ namespace open_spiel
           no_moves_doubles_board[kOPlayerId][kBlackHeadPos] = 13;
           SetupBoardState(lnstate, kOPlayerId, no_moves_doubles_board);
           SetupDice(lnstate, {2, 2, 2, 2});
+
+          // Expect the ONLY legal action to be pass (Action 24)
           auto legal_actions = lnstate->LegalActions();
-          // Under the half-move API, must pass with die 2 four times in sequence.
-          for (int i = 0; i < 4; ++i) {
-            auto legal_actions = lnstate->LegalActions();
-            SPIEL_CHECK_EQ(legal_actions.size(), 1);
-            Action pass_action = legal_actions[0];
-            auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, pass_action);
-            SPIEL_CHECK_EQ(moves.size(), 1);
-            SPIEL_CHECK_EQ(moves[0].pos, kPassPos);
-            SPIEL_CHECK_EQ(moves[0].die, 2);
-            lnstate->ApplyAction(pass_action);
-          }
+          SPIEL_CHECK_EQ(legal_actions.size(), 1); // Should only be the pass action available
+          Action pass_action = legal_actions[0];
+          SPIEL_CHECK_EQ(pass_action, kNumPoints); // Check it is the pass action ID (24)
+
+          // Decode should confirm it's a pass using the correct die (2 for doubles)
+          auto moves = lnstate->LongNardeSpielMoveToCheckerMoves(kOPlayerId, pass_action);
+          SPIEL_CHECK_EQ(moves.size(), 1);
+          SPIEL_CHECK_EQ(moves[0].pos, kPassPos);
+          SPIEL_CHECK_EQ(moves[0].die, 2); // Check it used die 2
+
+          // Apply the pass
+          lnstate->ApplyAction(pass_action);
+
+          // Verify state is now Chance Node
+          SPIEL_CHECK_TRUE(lnstate->IsChanceNode());
+          SPIEL_CHECK_EQ(lnstate->CurrentPlayer(), kChancePlayerId);
+
           std::cout << "[TEST] End: test-passmovebehaviortest-3" << std::endl;
         }
         // EndTest: test-passmovebehaviortest-3

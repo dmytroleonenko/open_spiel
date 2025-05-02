@@ -177,14 +177,17 @@ namespace open_spiel
       std::vector<int> dice;
       Action action;
       bool moved_from_head;
+      LongNardeCheckerMove applied_move;
+
       TurnHistoryInfo(int _player, int _prev_player, std::vector<int> _dice,
-                      int _action,
-                      bool _moved_from_head)
+                      int _action, bool _moved_from_head,
+                      LongNardeCheckerMove _applied_move)
           : player(_player),
             prev_player(_prev_player),
             dice(_dice),
             action(_action),
-            moved_from_head(_moved_from_head) {}
+            moved_from_head(_moved_from_head),
+            applied_move(_applied_move) {}
     };
 
     class LongNardeGame;
@@ -321,6 +324,7 @@ namespace open_spiel
       bool allow_last_roll_tie_;                       // Special flag for WinLossTie scoring rule
       std::vector<int> initial_dice_;                  // Dice rolled at start of player's turn (1-6)
       std::vector<TurnHistoryInfo> turn_history_info_; // Info needed for Undo.
+      int moves_remaining_ = 0;                     // Half-moves left in current turn
 
       int FurthestChecker(Player player) const; // Furthest checker from 0 (home)
 
@@ -355,6 +359,12 @@ namespace open_spiel
       std::vector<int> &LongNardeMutableDice() { return dice_; }
       const std::vector<int> &LongNardeInitialDice() const { return initial_dice_; }
       std::vector<int> &LongNardeMutableInitialDice() { return initial_dice_; }
+
+      int TurnsCompleted() const { return turns_; }
+      int moves_remaining() const { return moves_remaining_; }
+
+      // Returns the number of checkers borne off for a player.
+      int Score(Player player) const { return scores_[player]; }
 
     protected:
       void DoApplyAction(Action move_id) override;

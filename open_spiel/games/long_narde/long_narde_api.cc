@@ -37,33 +37,6 @@ namespace open_spiel
      */
     void LongNardeState::DoApplyAction(Action move_id)
     {
-      if (kDebugging) {
-        // --- Full State Dump --- 
-        std::cerr << "\n===== [DEBUG API] DoApplyAction START =====\n"
-                  << "  Action ID: " << move_id << "\n"
-                  << "  CurrentPlayer(): " << CurrentPlayer() << " (Internal cur_player_: " << cur_player_ << ")\n"
-                  << "  Prev Player: " << prev_player_ << "\n"
-                  << "  Turns: " << turns_ << " (X: " << x_turns_ << ", O: " << o_turns_ << ")\n"
-                  << "  Moves Remaining: " << moves_remaining_ << "\n"
-                  << "  Dice: {" << (dice_.size() > 0 ? std::to_string(dice_[0]) : "N") << ", "
-                                   << (dice_.size() > 1 ? std::to_string(dice_[1]) : "N") << ", "
-                                   << (dice_.size() > 2 ? std::to_string(dice_[2]) : "N") << ", "
-                                   << (dice_.size() > 3 ? std::to_string(dice_[3]) : "N") << "}\n"
-                  << "  Moved From Head (State): " << moved_from_head_ << "\n"
-                  << "  Is First Turn (State): " << is_on_first_turn_ << "\n"
-                  << "  Allow Last Roll Tie: " << allow_last_roll_tie_ << "\n"
-                  << "  Scores: {X: " << scores_[kXPlayerId] << ", O: " << scores_[kOPlayerId] << "}\n"
-                  << "  Board (X=0, O=1):\n";
-        for (int p = 0; p < kNumPlayers; ++p) {
-          std::cerr << "    P" << p << ": ";
-          for (int i = 0; i < kNumPoints; ++i) {
-            std::cerr << board_[p][i] << (i == kNumPoints - 1 ? "" : ",");
-          }
-          std::cerr << "\n";
-        }
-        std::cerr << "=========================================\n" << std::endl;
-      }
-
       if (IsChanceNode()) {
         // Process new dice roll and initialize half-move counter
         ProcessChanceRoll(move_id);
@@ -82,6 +55,9 @@ namespace open_spiel
       SPIEL_CHECK_EQ(cmoves.size(), 1);
       LongNardeCheckerMove applied_move = cmoves[0];
 
+      // Store previous head move status before handling pass or applying move
+      bool prev_moved_from_head = moved_from_head_;
+
       // Handle pass separately first
       if (applied_move.pos == kPassPos)
       {
@@ -89,9 +65,6 @@ namespace open_spiel
       }
       else
       {
-        // Store previous head move status before applying
-        bool prev_moved_from_head = moved_from_head_;
-
         // Apply the single checker move
         LongNardeApplyCheckerMove(cur_player_, applied_move);
 
@@ -105,7 +78,7 @@ namespace open_spiel
       }
 
       // Add to history AFTER applying the move and updating state
-      history_.emplace_back(TurnHistoryInfo(cur_player_, prev_player_, dice_, move_id, prev_moved_from_head, applied_move));
+      turn_history_info_.emplace_back(TurnHistoryInfo(cur_player_, prev_player_, dice_, move_id, prev_moved_from_head, applied_move));
 
       // After applying the move, determine next player or if turn continues
       LongNardeAdvanceToNextPlayer(cmoves, move_id);
@@ -421,8 +394,6 @@ namespace open_spiel
         // For subsequent turns, the player who should move was determined by
         // AdvanceToNextPlayer and stored in prev_player_ by DoApplyAction.
         cur_player_ = prev_player_;
-
-        // Set is_on_first_turn_ correctly for the upcoming player turn
         is_on_first_turn_ = (turns_ == 0 && cur_player_ == kXPlayerId) || (turns_ == 1 && cur_player_ == kOPlayerId);
       }
 
@@ -480,24 +451,39 @@ namespace open_spiel
 
       Player next_player_id; // Who will play AFTER the next dice roll?
 
-      // ALWAYS advance to the next player
-      next_player_id = NextPlayerRoundRobin(moving_player, num_players_);
-      is_on_first_turn_ = false; // Can never be the first turn after the first move sequence
-      // Always increment turn counters
-      turns_++;
-      if (next_player_id == kXPlayerId)
-        x_turns_++;
-      else
-        o_turns_++; // Increment for the player whose turn is STARTING
+      bool player_passed = (applied_moves.size() == 1 && applied_moves[0].pos == kPassPos);
 
-      // Reset head move flag for the upcoming turn
-      moved_from_head_ = false;
+      // Only advance player if no moves are left OR if the player passed
+      if (moves_remaining_ == 0 || player_passed) {
+        // Turn completed or passed, switch to the opponent
+        Player next_player = Opponent(cur_player_); // Calculate opponent first
+        
+        // Store the player who will play *after* the chance node.
+        prev_player_ = next_player; 
+        
+        // Reset head move flag for the new player's turn
+        moved_from_head_ = false; 
+        
+        // Reset dice to signal the need for a new roll (chance node)
+        dice_.assign(4, 0);
+        
+        // Update turn counters based on whose turn it WILL be (next_player)
+        if (next_player == kOPlayerId) { 
+            o_turns_++;
+        } else if (next_player == kXPlayerId) { 
+            x_turns_++;
+        }
+        turns_++; // Increment main turn counter only on player switch
 
-      // Store the player who will play *after* the chance node
-      prev_player_ = next_player_id;
+        // Can never be the first turn after a player finishes their move sequence
+        is_on_first_turn_ = false; 
 
-      // Set the current player to Chance to trigger dice roll on next ApplyAction
-      cur_player_ = kChancePlayerId;
+        // Set the current player state to Chance node to trigger dice roll
+        cur_player_ = kChancePlayerId;
+
+      } else {
+        // Turn continues, same player.
+      }
     }
 
     /**

@@ -21,27 +21,6 @@ namespace open_spiel
 
         std::vector<Action> LongNardeState::LegalActions() const
         {
-            if (kDebugging) {
-                // --- Full State Dump --- 
-                std::cerr << "\n===== [DEBUG LA] LegalActions START =====\n"
-                          << "  CurrentPlayer(): " << CurrentPlayer() << " (Internal cur_player_: " << cur_player_ << ")\n"
-                          << "  Dice: {" << (dice_.size() > 0 ? std::to_string(dice_[0]) : "N") << ", "
-                                           << (dice_.size() > 1 ? std::to_string(dice_[1]) : "N") << ", "
-                                           << (dice_.size() > 2 ? std::to_string(dice_[2]) : "N") << ", "
-                                           << (dice_.size() > 3 ? std::to_string(dice_[3]) : "N") << "}\n"
-                          << "  Moved From Head (State): " << moved_from_head_ << "\n"
-                          << "  Moves Remaining: " << moves_remaining_ << "\n"
-                          << "  Scores: {X: " << scores_[kXPlayerId] << ", O: " << scores_[kOPlayerId] << "}\n"
-                          << "  Board (X=0, O=1):\n";
-                for (int p = 0; p < kNumPlayers; ++p) {
-                  std::cerr << "    P" << p << ": ";
-                  for (int i = 0; i < kNumPoints; ++i) {
-                    std::cerr << board_[p][i] << (i == kNumPoints - 1 ? "" : ",");
-                  }
-                  std::cerr << "\n";
-                }
-                std::cerr << "=======================================\n" << std::endl;
-            }
             if (IsTerminal())
                 return {};
             if (IsChanceNode())
@@ -173,37 +152,12 @@ namespace open_spiel
 
         std::set<LongNardeCheckerMove> LongNardeState::LongNardeGenerateAllHalfMoves(int player, bool moved_from_head_this_sequence) const
         {
-            if (kDebugging) {
-                // --- Full State Dump --- 
-                std::cerr << "\n===== [DEBUG HMG] GenerateAllHalfMoves START =====\n"
-                          << "  Player Arg: " << player << ", Moved Head Seq Arg: " << moved_from_head_this_sequence << "\n"
-                          << "  Internal cur_player_: " << cur_player_ << "\n"
-                          << "  Dice: {" << (dice_.size() > 0 ? std::to_string(dice_[0]) : "N") << ", "
-                                           << (dice_.size() > 1 ? std::to_string(dice_[1]) : "N") << ", "
-                                           << (dice_.size() > 2 ? std::to_string(dice_[2]) : "N") << ", "
-                                           << (dice_.size() > 3 ? std::to_string(dice_[3]) : "N") << "}\n"
-                          << "  Moved From Head (State): " << moved_from_head_ << "\n"
-                          << "  Moves Remaining: " << moves_remaining_ << "\n"
-                          << "  Scores: {X: " << scores_[kXPlayerId] << ", O: " << scores_[kOPlayerId] << "}\n"
-                          << "  Board (X=0, O=1):\n";
-                          for (int p = 0; p < kNumPlayers; ++p) {
-                            std::cerr << "    P" << p << ": ";
-                            for (int i = 0; i < kNumPoints; ++i) {
-                              std::cerr << board_[p][i] << (i == kNumPoints - 1 ? "" : ",");
-                            }
-                            std::cerr << "\n";
-                          }
-                          std::cerr << "=============================================\n" << std::endl;
-            }
             std::set<LongNardeCheckerMove> half_moves;
             for (int pos = 0; pos < kNumPoints; ++pos)
             {
                 if (board(player, pos) <= 0)
                     continue;
                 bool is_critical_pos = (pos == 13 || pos == 18);
-                if (kDebugging && is_critical_pos) {
-                    std::cerr << "[DEBUG HMG] Checking pos=" << pos << " for player " << player << ". Checkers here: " << board(player, pos) << std::endl;
-                }
 
                 for (int die_idx = 0; die_idx < dice_.size(); ++die_idx)
                 {
@@ -212,18 +166,12 @@ namespace open_spiel
                         int die_value = DiceValue(die_idx);
                         int to_pos = GetToPos(player, pos, die_value);
                         LongNardeCheckerMove current_move(pos, to_pos, die_value);
-                        if (kDebugging && is_critical_pos) {
-                            std::cerr << "[DEBUG HMG]   Attempting move: (pos=" << pos << ", die=" << die_value << ", to=" << to_pos << ")" << std::endl;
-                        }
 
                         if (current_move.to_pos < 0)
                         {
                             current_move.to_pos = kBearOffPos;
                         }
                         bool is_valid = LongNardeIsValidCheckerMove(player, current_move, moved_from_head_this_sequence);
-                        if (kDebugging && is_critical_pos) {
-                            std::cerr << "[DEBUG HMG]   Validation result for (pos=" << pos << ", die=" << die_value << "): " << (is_valid ? "VALID" : "INVALID") << std::endl;
-                        }
 
                         if (is_valid)
                         {
@@ -234,14 +182,7 @@ namespace open_spiel
             }
             if (half_moves.empty())
             {
-                int pass_die = HighestUsableDiceOutcome();
-                if (kDebugging) std::cerr << "[DEBUG HMG] No valid moves found, adding pass move with die=" << pass_die << std::endl;
-                half_moves.insert(LongNardeCheckerMove(kPassPos, kPassPos, pass_die > 0 ? pass_die : 1));
-            }
-            if (kDebugging) {
-                std::cerr << "[DEBUG HMG] GenerateAllHalfMoves returning: { ";
-                for(const auto& m : half_moves) std::cerr << "(pos=" << m.pos << ", die=" << m.die << ") ";
-                std::cerr << "}" << std::endl;
+                half_moves.insert(LongNardeCheckerMove(kPassPos, kPassPos, 1));
             }
             return half_moves;
         }

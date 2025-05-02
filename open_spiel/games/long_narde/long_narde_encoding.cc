@@ -21,27 +21,6 @@ Action LongNardeState::LongNardeCheckerMovesToSpielMove(
 // Returns a vector of size 1.
 std::vector<LongNardeCheckerMove> LongNardeState::LongNardeSpielMoveToCheckerMoves(
     Player player, Action action) const {
-  if (kDebugging) {
-    // --- Full State Dump --- 
-    std::cerr << "\n===== [DEBUG ENC] SpielMoveToCheckerMoves START =====\n"
-              << "  Player Arg: " << player << ", Action Arg: " << action << "\n"
-              << "  Internal cur_player_: " << cur_player_ << "\n"
-              << "  Dice: {" << (dice_.size() > 0 ? std::to_string(dice_[0]) : "N") << ", "
-                               << (dice_.size() > 1 ? std::to_string(dice_[1]) : "N") << ", "
-                               << (dice_.size() > 2 ? std::to_string(dice_[2]) : "N") << ", "
-                               << (dice_.size() > 3 ? std::to_string(dice_[3]) : "N") << "}\n"
-              << "  Moved From Head (State): " << moved_from_head_ << "\n"
-              << "  Scores: {X: " << scores_[kXPlayerId] << ", O: " << scores_[kOPlayerId] << "}\n"
-              << "  Board (X=0, O=1):\n";
-    for (int p = 0; p < kNumPlayers; ++p) {
-      std::cerr << "    P" << p << ": ";
-      for (int i = 0; i < kNumPoints; ++i) {
-        std::cerr << board_[p][i] << (i == kNumPoints - 1 ? "" : ",");
-      }
-      std::cerr << "\n";
-    }
-    std::cerr << "==============================================\n" << std::endl;
-  }
   SPIEL_CHECK_LE(action, kNumPoints);
   std::vector<LongNardeCheckerMove> result;
   if (action == kNumPoints) {
@@ -70,20 +49,10 @@ std::vector<LongNardeCheckerMove> LongNardeState::LongNardeSpielMoveToCheckerMov
       }
     }
     if (!found) {
-      if (kDebugging) {
-        std::cerr << "[DEBUG] Failed to decode action " << action << " for player " << player << std::endl;
-        std::cerr << "[DEBUG] Available half-moves: ";
-        for (const auto& m : half_moves) {
-          std::cerr << "(pos=" << m.pos << ", die=" << m.die << ") ";
-        }
-        std::cerr << std::endl;
-      }
+      // This check is redundant now, but kept the log message for context
+      SPIEL_CHECK_TRUE(found);
     }
-    SPIEL_CHECK_TRUE(found);
     result.push_back(best_move);
-    if (kDebugging) {
-      std::cerr << "[DEBUG ENC] SpielMoveToCheckerMoves decoded action " << action << " to (pos=" << best_move.pos << ", die=" << best_move.die << ")" << std::endl;
-    }
   }
   return result;
 }
