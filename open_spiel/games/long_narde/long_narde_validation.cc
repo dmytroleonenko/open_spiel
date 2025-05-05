@@ -24,6 +24,14 @@ namespace open_spiel
 
     bool LongNardeState::IsFirstTurn(int player) const
     {
+      // Add check for terminal state
+      if (IsTerminal()) {
+        return false;
+      }
+
+      SPIEL_CHECK_GE(player, 0);
+      SPIEL_CHECK_LE(player, 1);
+
       // The first turn is characterized by having all 15 checkers on the head point.
       int head_pos = (player == kXPlayerId) ? kWhiteHeadPos : kBlackHeadPos;
       return board_[player][head_pos] == kNumCheckersPerPlayer;

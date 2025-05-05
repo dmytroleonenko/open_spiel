@@ -195,9 +195,14 @@ namespace open_spiel
       SPIEL_CHECK_GE(player, 0);
       SPIEL_CHECK_LT(player, num_players_);
 
-      int opponent = Opponent(player);
+      if (IsTerminal()) {
+        return;
+      }
+
       SPIEL_CHECK_EQ(values.size(), kStateEncodingSize);
       auto value_it = values.begin();
+
+      int opponent = Opponent(player);
 
       // Board representation: Player's checkers perspective
       for (int i = 0; i < kNumPoints; ++i)

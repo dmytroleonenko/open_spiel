@@ -84,6 +84,17 @@ namespace open_spiel
      */
     std::string LongNardeState::ToString() const
     {
+      if (IsTerminal())
+      {
+        // Provide a minimal representation for terminal states
+        std::string terminal_str = "Terminal State\n";
+        absl::StrAppend(&terminal_str, "Scores, X: ", scores_[kXPlayerId],
+                          ", O: ", scores_[kOPlayerId], "\n");
+        // Add final board state if desired, but keep it simple
+        // terminal_str += RenderBoard(); // Example if RenderBoard helper exists
+        return terminal_str;
+      }
+
       std::vector<std::string> board_array = {
           "+-------------------------------------+", // Exactly matches expected width
           "|13 14 15 16 17 18| |19 20 21 22 23 24|", // No extra space before final |
