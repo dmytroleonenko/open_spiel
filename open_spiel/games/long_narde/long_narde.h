@@ -138,7 +138,7 @@ namespace open_spiel
     //    (Max action value depends on kDoublesOffset + 25^4)
     // The NumDistinctActions() method calculates the true maximum based on the implementation.
     // This constant might be legacy or require revision.
-    inline constexpr const int kNumDistinctActions = 1250; // Potential maximum number of distinct actions. See comment above.
+    inline constexpr const int kNumDistinctActions = 25;
 
     // Base used to combine two half-move "digits" in the non-doubles encoding scheme.
     // Must be >= 150 to accommodate the max digit value (149).

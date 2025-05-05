@@ -21,3 +21,21 @@
     - Add/adjust tests to verify that the new encoding is correct and minimal.
 7. Run the full test suite and verify all tests pass with the new encoding.
 8. Document any changes in test coverage or behavior due to the encoding refactor.
+
+---
+
+### HIGH PRIORITY: Action Encoding Bug Prevents Playing Lower Die First
+
+**Issue:** The current action encoding and decoding mechanism prevents the agent from choosing a valid first half-move if it involves using the lower die when the higher die is also playable from the same starting position.
+
+**Cause:**
+1.  **Ambiguous Encoding:** The `LegalActions` function (in `open_spiel/games/long_narde/long_narde_legal_actions.cc`) generates Spiel Action IDs based solely on the starting position (`move.pos`) of the first half-move in a valid sequence. If multiple sequences start by moving the same checker but using different dice (e.g., dice 2-1, checker at pos 17 can move via die 2 to 15 OR via die 1 to 16), both generate the *same* Action ID (e.g., `17`). See lines `36-40` in `long_narde_legal_actions.cc`.
+2.  **Deterministic Decoding to Higher Die:** The `LongNardeSpielMoveToCheckerMoves` function (in `open_spiel/games/long_narde/long_narde_encoding.cc`), when decoding a non-pass Action ID, iterates through all possible valid half-moves (`LongNardeGenerateAllHalfMoves`). If it finds multiple half-moves matching the Action ID's position (e.g., `pos == 17`), it *always* selects the one using the *higher* die value (`m.die > best_move.die`). See lines `37-48` in `long_narde_encoding.cc`.
+3.  **Consequence:** When `DoApplyAction` (in `open_spiel/games/long_narde/long_narde_api.cc`) receives an ambiguous Action ID like `17`, it invariably decodes and applies the move corresponding to the higher die (e.g., `(17, 15, 2)`). The agent is *never* given the option to choose the perfectly legal first half-move using the lower die (e.g., `(17, 16, 1)`).
+
+**Impact:** This fundamentally limits the agent's available actions, contradicting the rules of Long Narde which allow playing either die first if both moves are possible. It prevents exploring potentially advantageous lines of play that start with the lower die. This needs to be addressed by the action space refactoring outlined above to ensure each distinct first half-move corresponds to a unique Spiel Action ID.
+
+**Relevant Files:**
+- `open_spiel/games/long_narde/long_narde_api.cc` (specifically `DoApplyAction`)
+- `open_spiel/games/long_narde/long_narde_legal_actions.cc` (specifically `LegalActions`, `LongNardeFilterBestMoveSequences`)
+- `open_spiel/games/long_narde/long_narde_encoding.cc` (specifically `LongNardeSpielMoveToCheckerMoves`, `LongNardeCheckerMovesToSpielMove`)
