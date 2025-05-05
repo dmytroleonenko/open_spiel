@@ -117,7 +117,7 @@ class SerializableAgentWrapper(rl_agent.AbstractAgent):
                   logging.warning("No device specified for PPO, using default.")
              # Remove device from hparams passed directly if it's handled by init_args
              # agent_hparams.pop('device', None)
-             # pass # Placeholder removed
+             pass # Placeholder removed
 
 
         # Combine inferred/required args with provided hparams
@@ -197,6 +197,28 @@ class SerializableAgentWrapper(rl_agent.AbstractAgent):
         return self._player_id
 
     # ... potentially delegate other methods like add_transition if needed ...
+    def add_transition(self, prev_time_step, prev_action, time_step):
+        """Delegates add_transition to the underlying agent."""
+        if hasattr(self.agent, 'add_transition'):
+            self.agent.add_transition(prev_time_step, prev_action, time_step)
+        else:
+            logging.warning(f"Agent {type(self.agent).__name__} has no add_transition method.")
+
+    def learn(self):
+        """Delegates learn to the underlying agent and returns the loss."""
+        if hasattr(self.agent, 'learn'):
+            return self.agent.learn()
+        else:
+            logging.warning(f"Agent {type(self.agent).__name__} has no learn method.")
+            return None
+
+    def sync_target_network(self):
+        """Delegates sync_target_network to the underlying agent."""
+        if hasattr(self.agent, 'sync_target_network'):
+            self.agent.sync_target_network()
+        else:
+            # Not all agents have target networks
+            logging.debug(f"Agent {type(self.agent).__name__} has no sync_target_network method. Skipping.")
 
     def save(self, path):
         """Saves the underlying agent's state and metadata."""
@@ -228,6 +250,14 @@ class SerializableAgentWrapper(rl_agent.AbstractAgent):
                  state_path = os.path.join(path, DQN_STATE_FILENAME)
                  with open(state_path, 'wb') as f:
                      pickle.dump(agent_state, f)
+
+            elif agent_class_name == 'DQNLongNarde':
+                # Use DQNLongNarde's save method which expects a path prefix.
+                # The wrapper passes the directory 'path' which serves as the prefix.
+                self.agent.save(path)
+                # Note: DQNLongNarde.save currently doesn't handle saving/returning the step counter.
+                # If resuming training is required, this state needs to be saved.
+                # For now, we just save the network weights.
 
             elif agent_class_name == 'QLearnerLongNarde':
                 # Get state from agent
@@ -308,9 +338,9 @@ def load_agent(path: str, env=None):
     except Exception as e:
         raise IOError(f"Could not load metadata from {metadata_path}: {e}")
 
-    agent_class_path = metadata.get("agent_class_path")
-    agent_hparams = metadata.get("agent_hparams", {})
-    # env_specs_from_meta = metadata.get("env_specs", {}) # Load if needed
+    # --- Extract Key Info ---
+    agent_class_path = metadata.get('agent_class_path')
+    agent_hparams = metadata.get('agent_init_hparams', {}) # Defaults to empty dict if missing
 
     if not agent_class_path:
         raise ValueError("Metadata missing 'agent_class_path'.")
@@ -318,6 +348,33 @@ def load_agent(path: str, env=None):
     print(f"Loading agent from path: {path}")
     print(f"  Agent class path: {agent_class_path}")
     print(f"  Agent hparams: {agent_hparams}")
+
+    # --- Dynamically import class FIRST ---
+    try:
+        module_path, class_name = agent_class_path.rsplit('.', 1)
+        module = importlib.import_module(module_path)
+        agent_class = getattr(module, class_name)
+    except (ImportError, AttributeError, ValueError) as e:
+        raise ValueError(f"Could not import agent class '{agent_class_path}': {e}")
+
+    # --- Validate HParams (Now that class is known, could potentially do class-specific validation) ---
+    if 'player_id' not in agent_hparams:
+        raise ValueError("Metadata's agent_hparams missing 'player_id'.")
+
+    # --- Handle Special Agent Args (Session for DQN, etc.) ---
+    # This block now runs AFTER class_name is defined
+    if class_name == 'DQN' or class_name == 'DQNLongNarde':
+        session = agent_hparams.get('session')
+        if session is None:
+            logging.info("Creating new TF session for loading DQN/DQNLongNarde.")
+            tf.disable_v2_behavior()
+            session = tf.Session()
+            agent_hparams['session'] = session # Update the dict that will be used for instantiation
+        else:
+            logging.info("Using session provided in metadata for DQN/DQNLongNarde.")
+    elif class_name == 'PPO':
+        # PPO specific logic (device handling)
+        pass # Placeholder for potential future PPO loading logic
 
     # 2. Dynamically import and instantiate the agent class
     try:
@@ -333,35 +390,33 @@ def load_agent(path: str, env=None):
     if 'player_id' not in init_args:
          raise ValueError("Metadata's agent_hparams missing 'player_id'.")
 
-
     # Special handling for DQN session
     if class_name == 'DQN':
-        # DQN needs a session, create one if not somehow passed via hparams (unlikely)
-        # The session state is implicitly restored by saver.restore()
-        if 'session' not in init_args:
-             tf.disable_eager_execution()
-             init_args['session'] = tf.Session()
-             # Need to initialize variables *before* restoring
-             # This is tricky, maybe restore should happen *after* init?
-             # Let's try initializing first.
-             # tf.global_variables_initializer().run(session=init_args['session'])
+        # Ensure TF1 behavior if needed
+        tf.disable_eager_execution()
 
-
-    # Instantiate the agent
+    # --- Instantiate Agent ---
     try:
-        agent = agent_class(**init_args)
-        # For DQN, run initializer *after* graph construction in __init__
-        if class_name == 'DQN':
-             logging.info("Initializing TF variables before restoring DQN checkpoint.")
-             agent._session.run(tf.global_variables_initializer())
+        agent = agent_class(**agent_hparams) # Use the potentially modified agent_hparams
+        # Initialize TF variables *only* if we just created the session
+        # Check needs refinement - how to reliably know if session was just created?
+        # Let's assume initialization should happen within the agent's restore logic if needed.
+        # Removing the explicit global_variables_initializer call here as restore should handle it.
+        # if class_name == 'DQN' and agent_hparams.get('session') is session and 'session' not in metadata.get('agent_init_hparams', {}):
+        #     logging.info("Initializing TF variables for newly created DQN session during load.")
+        #     session.run(tf.global_variables_initializer())
 
     except Exception as e:
-        raise ValueError(f"Could not instantiate agent {class_name} with hparams {init_args}: {e}")
+        # Log the hparams passed during the failing instantiation attempt
+        logging.error(f"Failed to instantiate agent {class_name} with hparams {agent_hparams}: {e}")
+        raise ValueError(f"Could not instantiate agent {class_name} with hparams {agent_hparams}: {e}") from e
 
     print(f"Agent {class_name} instantiated.")
 
     # 3. Restore Agent State
     print("Restoring agent state...")
+    # Expand path here too, just in case - REVERTED
+    # expanded_path = os.path.expanduser(path)
     try:
         if class_name == 'QLearner':
             # Load Q-table
@@ -406,10 +461,36 @@ def load_agent(path: str, env=None):
                  print(f"  Warning: Agent state file not found: {state_path}")
 
 
+        elif class_name == 'DQNLongNarde':
+            # Use DQNLongNarde's restore method, identical to DQN
+            agent.restore(path) # Call restore on the *loaded* agent instance
+
+            # Load additional pickled state (step counter) if it exists
+            state_path = os.path.join(path, DQN_STATE_FILENAME) # Reuse DQN state filename
+            if os.path.exists(state_path):
+                 with open(state_path, 'rb') as f:
+                      agent_state = pickle.load(f)
+                 # Use get_step_counter() if direct access isn't available, or set directly if possible
+                 # Assuming _step_counter is accessible for now, like in DQN
+                 if hasattr(agent, '_step_counter'):
+                     agent._step_counter = agent_state.get("step_counter", 0)
+                     print(f"  Restored step_counter: {agent._step_counter}")
+                 else:
+                     # If _step_counter isn't directly accessible, we might need a set_step_counter method
+                     print("  Warning: Could not restore step_counter (attribute not found).")
+            else:
+                 print(f"  Warning: Agent state file ({DQN_STATE_FILENAME}) not found for {class_name}.")
+
         elif class_name == 'QLearnerLongNarde':
-            # Explicitly call the save method of our custom agent
-            agent.save(path)
-            print(f"Called custom save method for {class_name}")
+            # This seems wrong for restore logic. Should call agent.load() or equivalent
+            # Assuming QLearnerLongNarde has a load method that takes the path
+            if hasattr(agent, 'load'):
+                agent.load(path)
+                print(f"Called custom load method for {class_name}")
+            else:
+                print(f"Warning: {class_name} has no load method. Cannot restore state.", file=sys.stderr)
+            # agent.save(path)
+            # print(f"Called custom save method for {class_name}")
 
         else:
             print(f"Warning: No specific restore logic implemented for agent type {class_name}.", file=sys.stderr)

@@ -20,13 +20,47 @@ from absl import flags
 import pyspiel
 from open_spiel.python import rl_environment
 from open_spiel.python import rl_agent # Import rl_agent module
-from open_spiel.python.algorithms import tabular_qlearner # Start with Q-learner
-from open_spiel.python.algorithms import dqn
-from open_spiel.python.pytorch import ppo
-import torch # Required for PPO
-import tensorflow.compat.v1 as tf # type: ignore # Required for DQN
-from open_spiel.python.utils import training
-from open_spiel.python.utils import agent_serialization
+from open_spiel.python.algorithms import tabular_qlearner, tabular_qlearner_long_narde # Import specific modules
+
+# Conditional imports based on algorithm
+try:
+    import tensorflow.compat.v1 as tf
+    # Need to disable TensorFlow 2.x behavior when using V1 code.
+    tf.disable_v2_behavior()
+    tf_available = True
+except ImportError:
+    tf = None # Set tf to None if TensorFlow is not available
+    tf_available = False
+    print("TensorFlow not available. DQN algorithm will not work.")
+
+try:
+    import torch
+    pytorch_available = True
+    from open_spiel.python.algorithms.ppo import PPOAgent # Import PPOAgent if torch available
+    # --- Stochastic MuZero Imports --- #
+    from open_spiel.python.algorithms.stochastic_muzero import StochasticMuZero, map_dice_to_index
+    from open_spiel.python.algorithms.stochastic_muzero_config import StochasticMuZeroConfig, new_long_narde_config
+    from open_spiel.python.algorithms.stochastic_muzero_nets import muzero_network_factory
+    # --- End Stochastic MuZero Imports --- #
+except ImportError:
+    torch = None # Set torch to None if PyTorch is not available
+    pytorch_available = False
+    print("PyTorch not available. PPO and StochasticMuZero algorithms will not work.")
+    PPOAgent = None # Define as None if PyTorch unavailable
+    StochasticMuZero = None
+    StochasticMuZeroConfig = None
+    new_long_narde_config = None
+    muzero_network_factory = None
+    map_dice_to_index = None
+
+# Import DQN agents separately if TF is available
+if tf_available:
+    from open_spiel.python.algorithms import dqn, dqn_long_narde
+else:
+    dqn = None
+    dqn_long_narde = None
+
+from open_spiel.python.utils import training # Keep for potential future use
 import csv # For logging
 import os # For path manipulation
 import sys # For checking agent types
@@ -39,28 +73,35 @@ import cProfile
 import pstats
 import atexit
 import time
+import numpy as np
+import collections
+import datetime
+import logging
+from typing import List, Optional, Type, Dict, Any
 
 FLAGS = flags.FLAGS
 
 # --- Core Training Parameters ---
 flags.DEFINE_string("game_name", "tic_tac_toe", "Name of the game to train on.")
 flags.DEFINE_integer("num_episodes", 10000, "Number of training episodes.")
-flags.DEFINE_string("algorithm_name", "tabular_qlearner",
-                    "Name of the RL algorithm to use (e.g., 'tabular_qlearner', 'dqn', 'ppo').")
+flags.DEFINE_enum("algorithm_name", "tabular_qlearner",
+                  # Dynamically create the list based on available imports
+                  ([name for name in ["tabular_qlearner", "tabular_qlearner_long_narde"]]
+                   + [name for name in ["dqn", "dqn_long_narde"] if tf_available]
+                   + [name for name in ["ppo", "stochastic_muzero"] if pytorch_available]),
+                  "Name of the RL algorithm to use.")
 
 # --- Agent Hyperparameters ---
-# Task 31: Generic hyperparameter flag using ast.literal_eval for type parsing
-flags.DEFINE_multi_string("agent_hparams", [],
-                          "Agent-specific hyperparameters as key=value pairs. "
-                          "Example: --agent_hparams learning_rate=0.01 --agent_hparams hidden_layers_sizes=[64,64]. "
-                          "Values are parsed automatically (int, float, bool, list, dict).")
+# Shortened help string
+flags.DEFINE_list("agent_hparams", [], "Agent hyperparameters as key=value pairs.")
 
 # --- Utilities ---
 flags.DEFINE_boolean("list_algorithms", False, "List available algorithms and exit.")
 
 # --- Logging and Checkpointing ---
 flags.DEFINE_string("log_file", None, "Path to save training metrics (CSV). If None, logging is disabled.")
-flags.DEFINE_string("checkpoint_dir", None, "Directory to save agent checkpoints. If None, checkpointing is disabled.")
+flags.DEFINE_string("checkpoint_dir", "/tmp/os_checkpoints",
+                     "Directory to save agent checkpoints. If None, checkpointing is disabled.")
 flags.DEFINE_integer("checkpoint_every", 1000,
                    "Save agent checkpoint every N episodes. If 0 or checkpoint_dir is None, disables checkpointing.")
 
@@ -87,52 +128,22 @@ def print_stats():
     stats.print_stats(30)
 atexit.register(print_stats)
 
-def _train_episode(env: rl_environment.Environment, agent: rl_agent.AbstractAgent, is_evaluation: bool = False) -> float:
-  """Runs a single training or evaluation episode for a single agent.
+# Algorithm mapping using the actual imported classes
+ALGORITHMS = {
+    "tabular_qlearner": tabular_qlearner.QLearner,
+    "tabular_qlearner_long_narde": tabular_qlearner_long_narde.QLearnerLongNarde,
+}
+if tf_available and dqn and dqn_long_narde:
+    ALGORITHMS["dqn"] = dqn.DQN
+    ALGORITHMS["dqn_long_narde"] = dqn_long_narde.DQNLongNarde
+if pytorch_available and PPOAgent and StochasticMuZero:
+    ALGORITHMS["ppo"] = PPOAgent # Use the specific agent class
+    ALGORITHMS["stochastic_muzero"] = StochasticMuZero
 
-  DEPRECATED: This function is kept for reference but the main loop now handles
-  multi-agent interaction directly.
-
-  Args:
-    env: The rl_environment instance.
-    agent: The agent instance to train/evaluate.
-    is_evaluation: If true, the agent should act greedily (no exploration).
-
-  Returns:
-    The total reward accumulated by the agent during the episode.
-  """
-  total_reward = 0.
-  time_step = env.reset()
-  while not time_step.last():
-    # Agent takes a step based on the current time_step (observation, etc.)
-    agent_output = agent.step(time_step, is_evaluation=is_evaluation)
-
-    # If the agent returned an action (it might not, e.g., if waiting)
-    if agent_output is not None:
-      action_list = [agent_output.action]
-      # Environment steps based on the agent's action
-      time_step = env.step(action_list)
-      # Accumulate reward. Assumes single-agent focus or player 0 reward.
-      # Might need adjustment for multi-agent training where rewards are shared/different.
-      if time_step.rewards: # Rewards list might be empty
-        total_reward += time_step.rewards[agent.player_id] # Index reward by agent's player_id
-
-  # Final step for the agent after the episode ends (e.g., for learning from the final state)
-  agent.step(time_step)
-  return total_reward
+# Removed ALGORITHM_CLASS_PATHS
 
 def _parse_hparams(hparam_list: list[str]) -> dict:
-    """Parses a list of 'key=value' strings into a dictionary with typed values.
-
-    Uses `ast.literal_eval` for safe parsing of basic Python types (int, float,
-    bool, list, dict). Falls back to string if parsing fails.
-
-    Args:
-      hparam_list: A list of strings, each in the format "key=value".
-
-    Returns:
-      A dictionary where keys are hyperparameter names and values are parsed types.
-    """
+    """Parses a list of 'key=value' strings into a dictionary with typed values."""
     params = {}
     if not hparam_list:
       return params
@@ -169,47 +180,26 @@ def _load_config_from_file(config_path: str) -> dict:
         return {}
 
 def _apply_config_to_flags(config: dict, flags_obj):
-    """Applies loaded configuration values to flags, respecting CLI precedence.
-
-    Iterates through the loaded config dictionary. For each key that corresponds
-    to a defined flag, if that flag was *not* set explicitly on the command line,
-    its value is updated from the config file.
-
-    Args:
-        config: The dictionary loaded from the config file.
-        flags_obj: The Abseil FLAGS object.
-    """
+    """Applies loaded configuration values to flags, respecting CLI precedence."""
     print("Applying config values to flags (respecting CLI precedence)...")
     flags_dict = flags_obj.flag_values_dict()
     applied_count = 0
     ignored_count = 0
-
     for key, value in config.items():
         if key in flags_dict:
             flag = flags_obj[key]
-            # Check if the flag was set from the command line or code
-            # Note: This check isn't perfect for multi_strings as they are always parsed.
-            # We will override multi_strings if the config provides a list.
             is_multi_string = isinstance(flag.value, list) and flag.value != flag.default
-
             if not flag.present and not is_multi_string:
                 try:
-                    # Special handling for multi_string flags if config provides a list
                     if isinstance(flags_obj.find_flag_values_object(key).value, list) and isinstance(value, list):
-                         # Clear default/existing value and set from config
-                         # flags_obj.__setattr__(key, []) # This seems difficult with absl
-                         # For multi_string, append might be safer, but override is intended
-                         # Let's try setting directly, might require specific handling
                          print(f"  Overriding multi_string '{key}' from config: {value}")
                          flags_obj.__setattr__(key, value)
                          applied_count += 1
                     elif not isinstance(flags_obj.find_flag_values_object(key).value, list):
-                         # For regular flags, set the value
                          print(f"  Setting flag '{key}' from config: {value}")
                          flags_obj.__setattr__(key, value)
                          applied_count += 1
                     else:
-                         # Don't override multi_string with non-list from config
                          print(f"  Ignoring config value for multi_string '{key}' because config value is not a list.")
                          ignored_count += 1
                 except Exception as e:
@@ -219,45 +209,87 @@ def _apply_config_to_flags(config: dict, flags_obj):
                 print(f"  Flag '{key}' was set via command line. Ignoring config value '{value}'.")
                 ignored_count += 1
             elif is_multi_string:
-                 print(f"  Flag '{key}' is a multi_string set by default/code. Ignoring config value '{value}'.") # Decide if override needed
+                 print(f"  Flag '{key}' is a multi_string set by default/code. Ignoring config value '{value}'.")
                  ignored_count += 1
         else:
             print(f"  Warning: Key '{key}' from config file does not match any defined flag. Ignoring.", file=sys.stderr)
             ignored_count += 1
     print(f"Config application complete. Applied: {applied_count}, Ignored/Skipped: {ignored_count}")
 
-# Mapping algorithm names to their class paths
-# TODO: Make this more robust or discoverable if possible
-ALGORITHM_CLASS_PATHS = {
-    "tabular_qlearner": "open_spiel.python.algorithms.tabular_qlearner.QLearner",
-    "tabular_qlearner_long_narde": "open_spiel.python.algorithms.tabular_qlearner_long_narde.QLearnerLongNarde",  # For Long Narde/Backgammon
-    "dqn": "open_spiel.python.algorithms.dqn.DQN",
-    "dqn_long_narde": "open_spiel.python.algorithms.dqn_long_narde.DQNLongNarde", # Added for Long Narde/Backgammon DQN
-    "ppo": "open_spiel.python.pytorch.ppo.PPO",
-}
+def _train_agent_single_process(agent, env, num_episodes):
+    """Trains a single agent instance.
+    Handles storing chance outcomes for Stochastic MuZero.
+    """
+    total_steps = 0
+    total_loss = 0.0
+    num_episodes_completed = 0
+
+    is_smz = isinstance(agent, StochasticMuZero)
+
+    for ep in range(num_episodes):
+        time_step = env.reset()
+        cumulative_reward = 0.0
+        steps_in_episode = 0
+        agent.reset() # Assuming agent has a reset method
+
+        while not time_step.last():
+            current_player = time_step.current_player()
+            agent_output = agent.step(time_step)
+            action = agent_output.action
+
+            # Store data associated *before* this action
+            if not agent.is_evaluation:
+                agent.store_step_data(time_step, action, agent_output)
+
+            # Environment step
+            time_step = env.step([action])
+            total_steps += 1
+            steps_in_episode += 1
+            cumulative_reward += time_step.rewards[agent.player_id]
+
+            # --- Store chance outcome for the *next* state --- #
+            # The chance outcome c_{k+1} occurs *after* action a_k leading to state s_{k+1}
+            if not agent.is_evaluation and is_smz:
+                chance_outcome_index = -1 # Default/invalid
+                # Check if the game state has dice info (specific to Backgammon/Narde)
+                if hasattr(env.get_state(), 'dice'):
+                    dice = env.get_state().dice() # Should be (d1, d2)
+                    if dice and len(dice) == 2:
+                        try:
+                            chance_outcome_index = map_dice_to_index(dice[0], dice[1])
+                        except ValueError as e:
+                            print(f"[WARN] Invalid dice value in state: {dice}. Error: {e}")
+                # Add this chance outcome to the last stored step data
+                agent.add_chance_outcome_to_trajectory(chance_outcome_index)
+            # --- End Chance Outcome --- #
+
+            # Check if learning is possible
+            if not agent.is_evaluation and agent.is_ready_to_learn():
+                 loss = agent.learn()
+                 if loss is not None:
+                     total_loss += loss
+
+        # End of episode
+        num_episodes_completed += 1
+        if not agent.is_evaluation:
+            agent.finalize_trajectory(time_step)
+            # Add episode stats logging here
+
+        # TODO: Checkpointing logic
+
+    return total_steps, total_loss / total_steps if total_steps > 0 else 0.0
 
 def main(_):
   """Main training script execution."""
-
-  # --- Load Config File (before parsing flags) ---
-  # We need to parse the config_file flag *itself* first.
-  # Abseil doesn't easily allow parsing just one flag early.
-  # A common workaround is to check sys.argv directly, but this is brittle.
-  # For simplicity here, we'll load config *after* initial flag parsing,
-  # acknowledging that the config file path itself cannot be set *in* the config file.
+  # --- Load Config File --- #
   config_from_file = {}
   if FLAGS.config_file:
       print(f"Loading configuration from: {FLAGS.config_file}")
       config_from_file = _load_config_from_file(FLAGS.config_file)
       print(f"  Config loaded: {config_from_file}")
-
-  # --- Apply Config to Flags ---
   _apply_config_to_flags(config_from_file, FLAGS)
 
-  # Now, flag values reflect the combination of defaults, config file, and CLI overrides.
-  # Proceed with using FLAGS as usual.
-
-  # --- Setup TensorBoard Writer (if logdir is provided) ---
+  # --- Setup TensorBoard --- #
   tb_writer = None
   if FLAGS.tensorboard_logdir:
       try:
@@ -265,446 +297,343 @@ def main(_):
           print(f"TensorBoard logging enabled. Log directory: {FLAGS.tensorboard_logdir}")
       except Exception as e:
           print(f"Warning: Could not initialize TensorBoard SummaryWriter at '{FLAGS.tensorboard_logdir}'. Error: {e}", file=sys.stderr)
-          tb_writer = None # Disable if initialization fails
+          tb_writer = None
 
   if FLAGS.list_algorithms:
-    # Simple listing, could be made more dynamic if needed
     print("Available algorithms (supported by this script):")
-    for name in ALGORITHM_CLASS_PATHS:
+    for name in ALGORITHMS:
         print(f"- {name}")
-    return # Exit cleanly after listing
+    return
 
-  print(f"--- Training Configuration ---")
-  print(f"Game: {FLAGS.game_name}")
-  print(f"Algorithm: {FLAGS.algorithm_name}")
-  print(f"Number of Episodes: {FLAGS.num_episodes}")
-  print(f"Logging to: {FLAGS.log_file or 'Disabled'}")
-  print(f"Checkpointing to: {FLAGS.checkpoint_dir or 'Disabled'} (every {FLAGS.checkpoint_every if FLAGS.checkpoint_dir and FLAGS.checkpoint_every > 0 else 'N/A'} episodes)")
-  print(f"-----------------------------")
+  # --- Algorithm Availability Check --- #
+  if FLAGS.algorithm_name not in ALGORITHMS:
+      logging.error(f"Algorithm '{FLAGS.algorithm_name}' is not available or its dependencies (TensorFlow/PyTorch) are missing.")
+      logging.error(f"Available algorithms: {list(ALGORITHMS.keys())}")
+      sys.exit(1)
 
-  # --- 1. Load the Game ---
+  if FLAGS.algorithm_name == "stochastic_muzero" and FLAGS.use_vector_env:
+        logging.error("Vector environment (--use_vector_env) is not yet supported for StochasticMuZero.")
+        sys.exit(1)
+
+  logging.basicConfig(level=logging.INFO)
+  logging.info(f"--- Training Configuration ---")
+  logging.info(f"Game: {FLAGS.game_name}")
+  logging.info(f"Algorithm: {FLAGS.algorithm_name}")
+  logging.info(f"Number of Episodes: {FLAGS.num_episodes}")
+  logging.info(f"Device: {FLAGS.device}")
+  logging.info(f"Use Vector Env: {FLAGS.use_vector_env} (Num Envs: {FLAGS.num_envs if FLAGS.use_vector_env else 'N/A'})")
+  logging.info(f"Logging to: {FLAGS.log_file or 'Disabled'}")
+  logging.info(f"Checkpointing to: {FLAGS.checkpoint_dir or 'Disabled'} (every {FLAGS.checkpoint_every if FLAGS.checkpoint_dir and FLAGS.checkpoint_every > 0 else 'N/A'} episodes)")
+  logging.info(f"-----------------------------")
+
+  # --- 1. Load the Game --- #
   print(f"Loading game '{FLAGS.game_name}'...")
-  game = pyspiel.load_game(FLAGS.game_name)
-  print("Game loaded.")
+  try:
+    game = pyspiel.load_game(FLAGS.game_name)
+    print("Game loaded.")
+  except Exception as e:
+      logging.error(f"Error loading game '{FLAGS.game_name}': {e}")
+      sys.exit(1)
 
-  # --- Get Specs from Game Instance FIRST ---
-  # These specs are the same whether using single or vector env
   num_players = game.num_players()
-  temp_env_for_specs = rl_environment.Environment(game) # Create temp env for specs
+  temp_env_for_specs = rl_environment.Environment(game)
   action_spec = temp_env_for_specs.action_spec()
   observation_spec = temp_env_for_specs.observation_spec()
   num_actions = action_spec["num_actions"]
-  # We don't need the temp env anymore
   del temp_env_for_specs
 
-  # --- 2. Create the RL Environment ---
+  # --- 2. Create the RL Environment --- #
   print("Creating RL environment...")
   if FLAGS.use_vector_env:
        if FLAGS.num_envs <= 0:
             raise ValueError("num_envs must be positive when use_vector_env is True.")
-       # Create a list of environment *instances* (not functions)
        env_instances = [rl_environment.Environment(game) for _ in range(FLAGS.num_envs)]
-       env = SyncVectorEnv(env_instances)
-       print(f"Using SyncVectorEnv with {FLAGS.num_envs} environments.")
+       try:
+           env = SyncVectorEnv(env_instances)
+           print(f"Using SyncVectorEnv with {FLAGS.num_envs} environments.")
+       except Exception as e:
+           logging.error(f"Error creating SyncVectorEnv: {e}")
+           sys.exit(1)
   else:
-       env = rl_environment.Environment(game)
-       print("Using standard single RL environment.")
+       try:
+           env = rl_environment.Environment(game)
+           print("Using standard single RL environment.")
+       except Exception as e:
+            logging.error(f"Error creating Environment: {e}")
+            sys.exit(1)
 
-  # Get specs from the environment (works for both single and vector env)
   env_specs = {
       "num_actions": num_actions,
-      "observation_spec": observation_spec, # Use spec from game instance
-      "action_spec": action_spec,       # Use spec from game instance
-      # Add game name for potential use during loading/validation
+      "observation_spec": observation_spec,
+      "action_spec": action_spec,
       "game_name": FLAGS.game_name,
-      "num_players": num_players # Explicitly add num_players here
+      "num_players": num_players
   }
-  # Modify print statement slightly for clarity
   env_type = "SyncVectorEnv" if FLAGS.use_vector_env else "Single Env"
   print(f"Environment created ({env_type}): num_players={num_players}, num_actions={num_actions}")
 
-  # --- 3. Parse Hyperparameters ---
+  # --- 3. Parse Hyperparameters --- #
   agent_hparams = _parse_hparams(FLAGS.agent_hparams)
   print(f"Parsed agent hyperparameters: {agent_hparams}")
 
-  # --- 4. Create Agents using the Wrapper ---
-  print(f"Creating agent wrappers for algorithm '{FLAGS.algorithm_name}'...")
-  agents_wrapped = []
+  # --- 4. Create Agents --- #
+  print(f"Creating agents for algorithm '{FLAGS.algorithm_name}'...")
+  agents: List[rl_agent.AbstractAgent] = []
+  tf_sess = None
+
   try:
-      agent_class_path = ALGORITHM_CLASS_PATHS.get(FLAGS.algorithm_name)
-      if not agent_class_path:
-          raise ValueError(f"Unsupported algorithm: {FLAGS.algorithm_name}. Use --list_algorithms to see options.")
+      agent_class: Type[rl_agent.AbstractAgent] = ALGORITHMS[FLAGS.algorithm_name]
 
-      # Prepare base hparams (filtered from CLI) - specific checks done in wrapper
-      base_hparams = agent_hparams.copy()
-
-      # --- Manually add state_representation_size for DQN/DQNLongNarde --- #
       if FLAGS.algorithm_name in ["dqn", "dqn_long_narde"]:
-          state_size = env_specs["observation_spec"]["info_state"][0]
-          base_hparams['state_representation_size'] = state_size
-          print(f"  Adding state_representation_size={state_size} to base hparams for {FLAGS.algorithm_name}")
-      # ------------------------------------------------------------------ #
+          state_representation_size = env_specs["observation_spec"]["info_state"][0]
+          tf_sess = tf.Session()
+          for player_id in range(num_players):
+              agent = agent_class(
+                  session=tf_sess, player_id=player_id,
+                  state_representation_size=state_representation_size,
+                  num_actions=num_actions, **agent_hparams)
+              agents.append(agent)
+          tf_sess.run(tf.global_variables_initializer())
+          print(f"Initialized DQN agents with TF session.")
 
-      # Add device flag to hparams if relevant for the agent (Task 17)
-      if FLAGS.algorithm_name in ["dqn", "ppo"]: # Add other DL agents here
-          base_hparams['device'] = FLAGS.device
-          print(f"  Adding device='{FLAGS.device}' to base hparams for {FLAGS.algorithm_name}")
+      elif FLAGS.algorithm_name == "ppo":
+          state_representation_size = env_specs["observation_spec"]["info_state"][0]
+          for player_id in range(num_players):
+              agent = agent_class(
+                  player_id=player_id,
+                  state_representation_size=state_representation_size,
+                  num_actions=num_actions, device=FLAGS.device, **agent_hparams)
+              agents.append(agent)
+          print(f"Initialized PPO agents.")
 
-      # DQN needs TF session managed externally if restoring/sharing
-      tf_session = None
-      if FLAGS.algorithm_name in ["dqn", "dqn_long_narde"]:
-          tf.disable_eager_execution() # Ensure TF1 behavior
-          tf_session = tf.Session()
-          base_hparams['session'] = tf_session # Pass session to wrapper/agent
-          print(f"  Created TF Session for {FLAGS.algorithm_name}.")
+      elif FLAGS.algorithm_name == "stochastic_muzero":
+          if "long_narde" in FLAGS.game_name:
+              config = new_long_narde_config()
+          else:
+              logging.warning(f"No default SMZ config for {FLAGS.game_name}. Using basic settings.")
+              config = StochasticMuZeroConfig()
 
-      # PPO might need device handling here
-      # ...
+          config.game_name = FLAGS.game_name
+          config.num_players = num_players
+          config.observation_shape = env_specs["observation_spec"]["info_state"]
+          config.state_representation_size = env_specs["observation_spec"]["info_state"][0]
+          config.action_space_size = num_actions
 
-      # Instantiate wrappers
-      for idx in range(num_players):
-          print(f"  Creating wrapper for Player {idx}...")
-          # The wrapper handles passing necessary env specs and hparams
-          wrapper = agent_serialization.SerializableAgentWrapper(
-              agent_class_path=agent_class_path,
-              player_id=idx,
-              env_specs=env_specs,
-              agent_hparams=base_hparams
-          )
-          agents_wrapped.append(wrapper)
-          print(f"    Wrapper created, underlying agent: {type(wrapper.agent).__name__}")
+          if muzero_network_factory is None:
+              raise RuntimeError("Stochastic MuZero network factory is not available.")
+          config.network_factory = lambda: muzero_network_factory(config)
 
-      # Initialize TF variables if a session was created for DQN
-      # This is done inside the wrapper now if it creates the session.
-      # if tf_session:
-      #     tf_session.run(tf.global_variables_initializer())
-      #     print("  Initialized TF global variables.")
+          for key, value in agent_hparams.items():
+              if hasattr(config, key):
+                  if key == "known_bounds" and isinstance(value, (list, str)):
+                      try:
+                          if map_dice_to_index is None: raise RuntimeError("map_dice_to_index not imported.")
+                          bounds_list = ast.literal_eval(value) if isinstance(value, str) else value
+                          if isinstance(bounds_list, list) and len(bounds_list) == 2:
+                              setattr(config, key, map_dice_to_index(bounds_list[0], bounds_list[1]))
+                              logging.info(f"Overriding config.{key} = map_dice_to_index({bounds_list[0]}, {bounds_list[1]})")
+                          else:
+                              logging.warning(f"Could not parse known_bounds: {value}.")
+                      except Exception as e:
+                           logging.warning(f"Error parsing known_bounds hparam: {value}. Error: {e}")
+                  else:
+                      setattr(config, key, value)
+                      logging.info(f"Overriding config.{key} = {value}")
+              else:
+                  logging.warning(f"Ignoring unknown hparam for StochasticMuZero: {key}")
 
-      print(f"Agent wrappers created: {len(agents_wrapped)} agent(s) of type {FLAGS.algorithm_name}")
+          config.device = FLAGS.device
+          config.checkpoint_dir = FLAGS.checkpoint_dir
+
+          for player_id in range(num_players):
+              agent = agent_class(player_id=player_id, config=config)
+              agents.append(agent)
+          logging.info(f"Initialized StochasticMuZero agents with Config: {config}")
+
+      else: # Tabular QLearner variants
+          # NOTE: Using direct instantiation for tabular now for consistency
+          # Revert to SerializableAgentWrapper if needed for specific serialization features.
+          state_representation_size = env_specs["observation_spec"]["info_state"][0]
+          for player_id in range(num_players):
+              agent = agent_class(
+                  player_id=player_id,
+                  state_representation_size=state_representation_size,
+                  num_actions=num_actions,
+                  **agent_hparams
+              )
+              agents.append(agent)
+          print(f"Initialized Tabular agents directly.")
 
   except Exception as e:
-      # Catch errors during agent wrapper creation
-      print(f"Error creating agent wrappers: {e}", file=sys.stderr)
-      # Clean up TF session if created
-      if tf_session:
-           tf_session.close()
-      print("Please check the algorithm name and hyperparameters.", file=sys.stderr)
-      return # Exit if agents couldn't be created
+      logging.error(f"Error initializing agent {FLAGS.algorithm_name}: {e}")
+      import traceback
+      traceback.print_exc()
+      if tf_sess: tf_sess.close()
+      sys.exit(1)
 
-
-  # Use the wrapped agents for the training loop
-  agents_to_use_in_loop = agents_wrapped
-
-  # Before the training loop, after defining num_players:
-  loss_history = {p: [] for p in range(num_players)}
-
-  # --- 5. Training Loop ---
+  # --- 5. Training Loop --- #
   print(f"Starting training loop for {FLAGS.num_episodes} episodes...")
-  metrics = [] # Store metrics if logging enabled
+  start_time = time.time()
+  total_steps = 0
+  episodes_completed = 0
+  last_checkpoint_time = time.time()
+  rolling_losses = {p: collections.deque(maxlen=1000) for p in range(num_players)}
+
+  # Setup logging
   log_writer = None
   log_file_handle = None
-
-  # Setup logging if log_file is provided
   if FLAGS.log_file:
     try:
       log_file_handle = open(FLAGS.log_file, 'w', newline='')
       log_writer = csv.writer(log_file_handle)
-      # Write header row based on the number of players
-      log_header = ["episode"] + [f"player_{p}_reward" for p in range(num_players)]
+      log_header = ["episode"] + [f"player_{p}_reward" for p in range(num_players)] + [f"player_{p}_avg_loss" for p in range(num_players)]
       log_writer.writerow(log_header)
       print(f"Logging metrics to: {FLAGS.log_file}")
     except IOError as e:
       print(f"Warning: Could not open log file '{FLAGS.log_file}'. Logging disabled. Error: {e}", file=sys.stderr)
-      log_writer = None # Disable logging if file fails to open
+      log_writer = None
       log_file_handle = None
 
-  # Select loop based on environment type
-  if not FLAGS.use_vector_env:
-      # --- Standard Single-Environment Training Loop ---
-      print(f"Running standard loop for {FLAGS.num_episodes} episodes...")
-      for ep in range(FLAGS.num_episodes):
-        # --- Run one training episode (Multi-Agent Self-Play) ---
-        time_step = env.reset()
-        episode_rewards = [0.0] * num_players # Initialize rewards for this episode
-        episode_losses = {p: [] for p in range(num_players)} # Track losses per player within episode
+  try:
+      if not FLAGS.use_vector_env:
+          # --- Standard Single-Environment Training Loop --- #
+          print(f"Running standard loop for {FLAGS.num_episodes} episodes...")
+          for ep in range(FLAGS.num_episodes):
+            time_step = env.reset()
+            episode_rewards = [0.0] * num_players
+            current_episode_losses = {p: [] for p in range(num_players)}
+            ep_step_counter = 0
 
-        while not time_step.last():
-            player_id = time_step.observations["current_player"]
+            while not time_step.last():
+                ep_step_counter += 1
+                player_id = time_step.observations["current_player"]
 
-            # --- Debug Check: Ensure legal actions exist if not terminal ---
-            current_legal_actions = time_step.observations["legal_actions"][player_id]
-            if not time_step.last() and not current_legal_actions:
-                raise ValueError(
-                    f"Error: time_step is not terminal for player {player_id}, but legal_actions is empty. "
-                    f"State: {env.get_state}"
-                )
-            # --- End Debug Check ---
+                if player_id >= 0:
+                    current_legal_actions = time_step.observations["legal_actions"][player_id]
+                    if not current_legal_actions and not time_step.is_chance_node():
+                        if "long_narde" not in FLAGS.game_name and "backgammon" not in FLAGS.game_name:
+                             logging.warning(f"Episode {ep+1}, Step {ep_step_counter}: Player {player_id} has no legal actions in non-terminal/non-chance state.")
+                        # Agent step should still be called to potentially handle forced pass
 
-            agent = agents_to_use_in_loop[player_id]
+                    agent = agents[player_id]
+                    agent_output = agent.step(time_step, is_evaluation=False)
 
-            # Agent takes a step based on the *current* time_step
-            agent_output = agent.step(time_step, is_evaluation=False)
+                    action_list = [agent_output.action] if agent_output and agent_output.action is not None else []
 
-            if agent_output is None:
-                 raise ValueError(f"Agent {player_id} returned None output during training step.")
-            action_list = [agent_output.action]
-            time_step = env.step(action_list)
-
-            if time_step.rewards:
-                for p in range(num_players):
-                    episode_rewards[p] += time_step.rewards[p]
-
-            # Update other agents if the environment step didn't end the game
-            # Note: For Q-learning, all agents learn from the same transition,
-            # so we call step() on all agents after the environment step.
-            # This was previously incorrect and only called step if not time_step.last().
-            # Now it correctly calls step even if the env step was terminal,
-            # allowing the agent to process the final transition.
-            # if not time_step.last(): # This condition was removed
-            for ag_idx, ag in enumerate(agents_to_use_in_loop):
-                # Pass the time_step *resulting* from the action taken by player_id
-                ag.step(time_step, is_evaluation=False)
-                # Capture loss after agent step if available
-                agent_loss = ag.loss
-                if agent_loss is not None:
-                    episode_losses[ag_idx].append(agent_loss)
-                    loss_history[ag_idx].append(agent_loss)
-
-        # End of episode - The final step processing is now handled within the loop above.
-        # No separate end-of-episode agent step call is needed here anymore.
-
-        # --- Logging (Single Env) ---
-        avg_episode_losses = [sum(episode_losses[p]) / len(episode_losses[p]) if episode_losses[p] else None for p in range(num_players)]
-        if log_writer:
-          log_row = [ep + 1] + episode_rewards
-          # Add average losses to CSV if calculated
-          # log_row += [f"{l:.4f}" if l is not None else "" for l in avg_episode_losses]
-          log_writer.writerow(log_row)
-          metrics.append({"episode": ep + 1, "rewards": episode_rewards, "avg_losses": avg_episode_losses})
-
-        if tb_writer:
-            for p_id, reward in enumerate(episode_rewards):
-                tb_writer.add_scalar(f'Reward/Player_{p_id}', reward, ep + 1)
-            for p_id, avg_loss in enumerate(avg_episode_losses):
-                if avg_loss is not None:
-                     tb_writer.add_scalar(f'Loss/Player_{p_id}', avg_loss, ep + 1)
-
-        if (ep + 1) % 100 == 0:
-            reward_str = ", ".join([f"P{i}: {r:.2f}" for i, r in enumerate(episode_rewards)])
-            loss_str = ", ".join([f"P{i}: {l:.4f}" if l else "N/A" for i, l in enumerate(avg_episode_losses)])
-            print(f"Episodes {ep - 98}-{ep + 1}:")
-            for p in range(num_players):
-                if loss_history[p]:
-                    avg_loss = sum(loss_history[p]) / len(loss_history[p])
-                    min_loss = min(loss_history[p])
-                    max_loss = max(loss_history[p])
-                    print(f"  Player {p}: Avg Loss: {avg_loss:.4f}, Min: {min_loss:.4f}, Max: {max_loss:.4f}")
-                else:
-                    print(f"  Player {p}: No loss data.")
-            # Reset loss history for next 100 episodes
-            loss_history = {p: [] for p in range(num_players)}
-            if log_file_handle:
-              log_file_handle.flush()
-
-        # --- Checkpoint Saving (Single Env) ---
-        if FLAGS.checkpoint_dir and FLAGS.checkpoint_every > 0 and (ep + 1) % FLAGS.checkpoint_every == 0:
-          if not os.path.exists(FLAGS.checkpoint_dir):
-               try:
-                    os.makedirs(FLAGS.checkpoint_dir)
-                    print(f"Created checkpoint directory: {FLAGS.checkpoint_dir}")
-               except OSError as e:
-                    print(f"Warning: Could not create checkpoint directory '{FLAGS.checkpoint_dir}'. Checkpointing disabled for this episode. Error: {e}", file=sys.stderr)
-                    continue
-
-          for agent_wrapper in agents_to_use_in_loop:
-               try:
-                    agent_path = os.path.join(FLAGS.checkpoint_dir, f"agent_p{agent_wrapper.player_id}_ep{ep+1}")
-                    agent_wrapper.save(agent_path)
-               except Exception as e:
-                    print(f"Warning: Failed to save checkpoint for player {agent_wrapper.player_id} using wrapper. Error: {e}", file=sys.stderr)
-
-  else: # FLAGS.use_vector_env is True
-        # --- Vectorized Environment Training Loop ---
-        print(f"Running vectorized loop for {FLAGS.num_episodes} episodes across {FLAGS.num_envs} environments...")
-        num_envs = FLAGS.num_envs
-        total_episodes_target = FLAGS.num_episodes
-        episodes_completed = 0
-        total_steps = 0 # Track total environment steps across all envs
-
-        # Track rewards per environment for the current *ongoing* episode
-        current_episode_rewards = [[0.0] * num_players for _ in range(num_envs)]
-        # Store rewards of completed episodes for logging averages
-        completed_episode_rewards_all = []
-        # Track current step losses per environment? Or maybe just overall average?
-        # For simplicity, let's track loss across the batch at each step
-
-        time_steps = env.reset() # Returns list of TimeStep objects
-
-        while episodes_completed < total_episodes_target:
-            total_steps += num_envs # Increment step count
-
-            # --- Agent Step (Handle Batch Directly for PPO) ---
-            batch_actions = []
-            # For PPO, call step once with the full batch of time_steps.
-            # Assume self-play or agent implementation handles multiple players/envs.
-            # We need outputs for all environments.
-            # Need to decide which agent instance to call step on, or if PPO needs refactor.
-            # Let's assume for now PPO's step called via wrapper can handle the batch
-            # and we only need to call it once (e.g., via player 0 agent).
-
-            # TODO: Review if PPO step returns actions for all envs and players correctly.
-            # This logic might be overly simplistic if agents are distinct.
-            current_player_for_batch_step = 0 # Or determine dynamically if needed
-            agent_for_batch_step = agents_to_use_in_loop[current_player_for_batch_step]
-
-            # Pass the entire list of time_steps
-            batch_agent_outputs = agent_for_batch_step.step(time_steps, is_evaluation=False)
-
-            # Ensure batch_agent_outputs is a list of StepOutput (or similar)
-            if not isinstance(batch_agent_outputs, list) or len(batch_agent_outputs) != num_envs:
-                 raise ValueError(f"Agent step did not return a list of outputs matching num_envs. Got: {batch_agent_outputs}")
-
-            # Extract actions for the env.step call
-            batch_actions = [output.action if output else None for output in batch_agent_outputs]
-
-            # --- Environment Step --- Returns list of TimeStep
-            t0 = time.perf_counter()
-            next_time_steps = env.step(batch_actions)
-            t1 = time.perf_counter()
-            env_step_time = t1 - t0
-
-            # --- Agent Learning Step (Handles Batches - Task 18e) ---
-            # Assumes agents can handle batch learning internally (e.g., PPO) or via a specific method.
-            current_batch_losses = {p: [] for p in range(num_players)}
-            for p_id, agent in enumerate(agents_to_use_in_loop):
-                # Option 1: Agent handles learning internally during its step/step_batch method.
-                #           In this case, this block might just be for gathering losses.
-                # Option 2: Agent has an explicit batch learning method.
-                if hasattr(agent, 'learn_batch'):
-                    # Pass the relevant information for batch learning
-                    # This might include current time_steps, actions taken, next_time_steps
-                    # The exact signature depends on the agent implementation.
-                    # Placeholder call:
-                    t2 = time.perf_counter()
-                    loss = agent.learn_batch(time_steps, batch_actions, next_time_steps)
-                    t3 = time.perf_counter()
-                    agent_step_time = t3 - t2
-                    if loss is not None:
-                         current_batch_losses[p_id].append(loss) # Or handle batch loss
-                else:
-                    # Fallback: If learn_batch not present, assume learning happened in step()
-                    # (as handled by the wrapper's step fallback for Q/DQN)
-                    # We just gather the loss reported by the agent property.
                     agent_loss = agent.loss
                     if agent_loss is not None:
-                        # This might be a single value even after processing a batch,
-                        # representing avg loss over the batch, or the most recent loss.
-                        current_batch_losses[p_id].append(agent_loss)
+                        current_episode_losses[player_id].append(agent_loss)
+                        rolling_losses[player_id].append(agent_loss)
 
-            # --- Reward Accumulation and Episode Tracking ---
-            for i in range(num_envs):
-                # Accumulate rewards for the ongoing episode in environment i
-                if next_time_steps[i].rewards:
-                     for p in range(num_players):
-                          current_episode_rewards[i][p] += next_time_steps[i].rewards[p]
+                    time_step = env.step(action_list)
+                else: # Chance node or terminal
+                    time_step = env.step([])
 
-                # Check if environment i finished an episode
-                if next_time_steps[i].last():
-                    episodes_completed += 1
-                    completed_episode_rewards_all.append(current_episode_rewards[i])
+                total_steps += 1 # Increment total steps
+                if time_step.rewards:
+                    for p in range(num_players):
+                        episode_rewards[p] += time_step.rewards[p]
 
-                    # Log completed episode reward to CSV
-                    if log_writer:
-                         log_row = [episodes_completed] + current_episode_rewards[i]
-                         log_writer.writerow(log_row)
+            # End of episode: Call step on the terminal time_step for all agents
+            for agent in agents:
+                agent.step(time_step, is_evaluation=False)
+                final_loss = agent.loss
+                if final_loss is not None:
+                     current_episode_losses[agent.player_id].append(final_loss)
+                     rolling_losses[agent.player_id].append(final_loss)
 
-                    # Reset rewards for this environment index for the new episode
-                    current_episode_rewards[i] = [0.0] * num_players
+            episodes_completed += 1
 
-                    # Print progress message occasionally
-                    if episodes_completed % (num_envs * 5) == 0: # Adjust frequency as needed
-                         print(f"  Completed {episodes_completed}/{total_episodes_target} episodes across all environments...")
+            # --- Logging (Single Env) --- #
+            avg_episode_losses = [sum(current_episode_losses[p]) / len(current_episode_losses[p]) if current_episode_losses[p] else None for p in range(num_players)]
+            if log_writer:
+              log_row = [ep + 1] + episode_rewards + [(f"{l:.6f}" if l is not None else "") for l in avg_episode_losses]
+              log_writer.writerow(log_row)
+            if tb_writer:
+                for p_id, reward in enumerate(episode_rewards):
+                    tb_writer.add_scalar(f'Reward/Player_{p_id}', reward, episodes_completed)
+                for p_id, avg_loss in enumerate(avg_episode_losses):
+                    if avg_loss is not None:
+                         tb_writer.add_scalar(f'Loss/Player_{p_id}', avg_loss, episodes_completed)
 
-                    # --- Checkpointing (Vectorized) --- (Based on completed episodes)
-                    checkpoint_freq = FLAGS.checkpoint_every # Checkpoint every N *completed* episodes
-                    if FLAGS.checkpoint_dir and checkpoint_freq > 0 and episodes_completed % checkpoint_freq == 0:
-                        print(f"Checkpointing agents at {episodes_completed} completed episodes...")
-                        if not os.path.exists(FLAGS.checkpoint_dir):
-                           try: os.makedirs(FLAGS.checkpoint_dir); print(f"Created checkpoint directory: {FLAGS.checkpoint_dir}")
-                           except OSError as e: print(f"Warning: Could not create checkpoint directory. Checkpointing skipped. Error: {e}", file=sys.stderr); continue
-                        for agent_wrapper in agents_to_use_in_loop:
-                           try:
-                               # Suffix checkpoint with total episodes completed
-                               agent_path = os.path.join(FLAGS.checkpoint_dir, f"agent_p{agent_wrapper.player_id}_ep{episodes_completed}")
-                               agent_wrapper.save(agent_path)
-                           except Exception as e:
-                               print(f"Warning: Failed to save checkpoint for player {agent_wrapper.player_id}. Error: {e}", file=sys.stderr)
+            if episodes_completed % 100 == 0:
+                reward_str = ", ".join([f"P{i}: {r:.2f}" for i, r in enumerate(episode_rewards)])
+                print(f"Episodes {episodes_completed - 99}-{episodes_completed}: Last Ep Rewards: {reward_str}")
+                print("  Loss Stats (rolling avg over ~last 1000 learning steps):")
+                for p in range(num_players):
+                    if rolling_losses[p]:
+                        avg_loss = sum(rolling_losses[p]) / len(rolling_losses[p])
+                        min_loss = min(rolling_losses[p])
+                        max_loss = max(rolling_losses[p])
+                        print(f"    Player {p}: Avg: {avg_loss:.4f}, Min: {min_loss:.4f}, Max: {max_loss:.4f} (n={len(rolling_losses[p])})")
+                    else:
+                        print(f"    Player {p}: No loss data recorded yet.")
+                if log_file_handle:
+                  log_file_handle.flush()
 
-            # --- Logging (Vectorized) --- (Based on recent episodes / steps)
-            log_interval_steps = 1000 * num_envs # Example: Log every 1000 steps per env average
-            if tb_writer and total_steps % log_interval_steps == 0 and total_steps > 0:
-                 # Calculate average reward from last N completed episodes
-                 last_n = min(len(completed_episode_rewards_all), num_envs * 10) # Log avg over last 10*N eps
-                 if last_n > 0:
-                      recent_rewards = completed_episode_rewards_all[-last_n:]
-                      for p in range(num_players):
-                           avg_reward = sum(r[p] for r in recent_rewards) / last_n
-                           tb_writer.add_scalar(f'Reward/AvgPlayer_{p}', avg_reward, total_steps)
+            # --- Checkpoint Saving (Single Env) --- #
+            if FLAGS.checkpoint_dir and FLAGS.checkpoint_every > 0 and episodes_completed % FLAGS.checkpoint_every == 0:
+              current_time = time.time()
+              logging.info(f"Episode {episodes_completed}. Saving checkpoint... "
+                           f"(Time since last chkpt: {current_time - last_checkpoint_time:.1f}s)")
+              if not os.path.exists(FLAGS.checkpoint_dir):
+                   try: os.makedirs(FLAGS.checkpoint_dir); print(f"Created checkpoint directory: {FLAGS.checkpoint_dir}")
+                   except OSError as e: print(f"Warning: Could not create checkpoint directory. Error: {e}", file=sys.stderr); continue
 
-                 # Calculate average loss from the last batch
-                 for p_id, losses in current_batch_losses.items():
-                      if losses:
-                           avg_loss = sum(losses) / len(losses)
-                           tb_writer.add_scalar(f'Loss/AvgPlayer_{p_id}', avg_loss, total_steps)
+              for agent in agents:
+                   try:
+                        checkpoint_prefix = os.path.join(FLAGS.checkpoint_dir, f"agent_p{agent.player_id}_ep{episodes_completed}")
+                        # Call save method directly on the agent
+                        agent.save(checkpoint_prefix)
+                   except Exception as e:
+                        print(f"Warning: Failed to save checkpoint for player {agent.player_id}. Error: {e}", file=sys.stderr)
+              last_checkpoint_time = current_time
+              logging.info("Checkpoint saved.")
 
-                 if log_file_handle: # Flush CSV periodically
-                     log_file_handle.flush()
+      else: # FLAGS.use_vector_env is True
+            # --- Vectorized Environment Loop --- #
+            # (Currently disallowed for SMZ, needs agent-specific implementation)
+            logging.error("Vector env loop is not implemented for this agent configuration.")
+            # Previously implemented vector loop was specific to DQN/ReplayBuffer interaction
+            pass
 
-            # Prepare for next iteration
-            time_steps = next_time_steps
+  except KeyboardInterrupt:
+      logging.info("Training interrupted by user.")
+  except Exception as e:
+      logging.error(f"Error during training loop: {e}")
+      import traceback
+      traceback.print_exc()
+  finally:
+      if tf_sess: # Close TF session if it exists
+          tf_sess.close()
+          logging.info("TensorFlow session closed.")
 
-            # --- Agent Step (uses the updated step method which handles batches) ---
-            t2 = time.perf_counter()
-            # Call .step() on the wrapper, which delegates and handles batches internally
-            agent_outputs = agent_for_batch_step.step(time_steps)
-            t3 = time.perf_counter()
-            agent_step_time = t3 - t2
-            # --- End Agent Step ---
+      logging.info(f"Training finished after {episodes_completed} episodes.")
+      elapsed_time = time.time() - start_time
+      logging.info(f"Total steps (approx single env equivalent): {total_steps}")
+      logging.info(f"Total time: {elapsed_time:.2f}s")
 
-            # Extract actions for env.step
-            batch_actions = [output.action if output else None for output in agent_outputs]
+      # Final checkpoint save
+      if FLAGS.checkpoint_dir and episodes_completed > 0:
+          logging.info("Saving final checkpoint...")
+          for agent in agents:
+              checkpoint_prefix = os.path.join(
+                  FLAGS.checkpoint_dir,
+                  f"agent_p{agent.player_id}_ep{episodes_completed}_final"
+              )
+              try:
+                  agent.save(checkpoint_prefix)
+              except Exception as e:
+                  logging.error(f"Error saving final agent {agent.player_id} checkpoint: {e}")
+          logging.info("Final checkpoint saved.")
+      else:
+          logging.info("Skipping final checkpoint save (checkpoint_dir not set or no episodes completed).")
 
-            # --- Environment Step ---
-            t0 = time.perf_counter()
-            next_time_steps = env.step(batch_actions)
-            t1 = time.perf_counter()
-            env_step_time = t1 - t0
-            # --- End Environment Step ---
-
-            # --- Agent Learning Step ---
-            # (Assuming learn happens within agent.step or via a separate learn_batch if available)
-            # Placeholder for loss gathering if needed
-            # ... (loss gathering logic) ...
-            # --- End Agent Learning ---
-
-            # Print Timing Info
-            if episodes_completed % 10 == 0:
-                print(f"[DEBUG] Episode {episodes_completed}: env.step took {env_step_time:.6f}s, agent.step took {agent_step_time:.6f}s")
-                sys.stdout.flush() # Ensure debug output is seen immediately
-
-  print("--- Training Finished ---")
-
-  # Close the TensorBoard writer
-  if tb_writer:
-      tb_writer.close()
-
-  # Close the log file if it was opened
-  if log_file_handle:
-    log_file_handle.close()
-    print(f"Training metrics saved to {FLAGS.log_file}")
-
-  # Note: Checkpoints are saved progressively during the loop.
+      if tb_writer:
+          tb_writer.close()
+      if log_file_handle:
+        log_file_handle.close()
+        print(f"Training metrics saved to {FLAGS.log_file}")
 
 if __name__ == "__main__":
-  # Standard way to run an Abseil app
   app.run(main)
