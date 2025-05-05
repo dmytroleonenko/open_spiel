@@ -143,6 +143,8 @@ class DQNLongNarde(rl_agent.AbstractAgent):
     target = (
         self._reward_ph +
         (1 - self._is_final_step_ph) * self._discount_factor * max_next_q)
+    # Clip the target TD value to prevent large swings
+    target = tf.clip_by_value(target, -1.0, 1.0)
 
     action_indices = tf.stack(
         [tf.range(tf.shape(self._q_values)[0]), self._action_ph], axis=-1)
@@ -162,6 +164,7 @@ class DQNLongNarde(rl_agent.AbstractAgent):
     self._loss = tf.reduce_mean(
         loss_class(labels=target, predictions=predictions))
 
+    # --- Optimizer and Gradient Clipping --- #
     if optimizer_str == "adam":
       self._optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
     elif optimizer_str == "sgd":
@@ -170,7 +173,21 @@ class DQNLongNarde(rl_agent.AbstractAgent):
     else:
       raise ValueError("Not implemented, choose from 'adam' and 'sgd'.")
 
-    self._learn_step = self._optimizer.minimize(self._loss)
+    # Compute gradients
+    grads_and_vars = self._optimizer.compute_gradients(self._loss)
+
+    # Clip gradients by value
+    clipped_grads_and_vars = []
+    for grad, var in grads_and_vars:
+        if grad is not None:
+            clipped_grad = tf.clip_by_value(grad, -1.0, 1.0)
+            clipped_grads_and_vars.append((clipped_grad, var))
+        else:
+            clipped_grads_and_vars.append((grad, var)) # Keep None gradients
+
+    # Apply clipped gradients
+    self._learn_step = self._optimizer.apply_gradients(clipped_grads_and_vars)
+
     self._initialize()
 
   def get_step_counter(self):
@@ -215,9 +232,21 @@ class DQNLongNarde(rl_agent.AbstractAgent):
         probs_selected = {} # Store probs for active envs
         if info_states_batch:
             epsilon = self._get_epsilon(is_evaluation)
+
+            # --- Normalize Batch States --- #
+            info_states_batch_np = np.array(info_states_batch)
+            # Board (0-47): Divide by 15.0
+            info_states_batch_np[:, 0:48] /= 15.0
+            # Scores (48-49): Divide by 15.0
+            info_states_batch_np[:, 48:50] /= 15.0
+            # Turn indicators (50-51): Already 0/1
+            # Dice (52-53): Divide by 6.0
+            info_states_batch_np[:, 52:54] /= 6.0
+            # --- End Normalize Batch States --- #
+
             # Run network for the batch of active states
             q_values_batch = self._session.run(
-                self._q_values, feed_dict={self._info_state_ph: np.array(info_states_batch)})
+                self._q_values, feed_dict={self._info_state_ph: info_states_batch_np}) # Use normalized batch
 
             # Epsilon-greedy for each active environment
             for i, active_idx in enumerate(active_envs_indices):
@@ -265,9 +294,21 @@ class DQNLongNarde(rl_agent.AbstractAgent):
           info_state = time_step.observations["info_state"][self.player_id]
           legal_actions = time_step.observations["legal_actions"][self.player_id]
           epsilon = self._get_epsilon(is_evaluation)
+
+          # --- Normalize Single State --- #
+          info_state_copy = np.array(info_state, dtype=np.float32) # Create float copy
+          # Board (0-47): Divide by 15.0
+          info_state_copy[0:48] /= 15.0
+          # Scores (48-49): Divide by 15.0
+          info_state_copy[48:50] /= 15.0
+          # Turn indicators (50-51): Already 0/1
+          # Dice (52-53): Divide by 6.0
+          info_state_copy[52:54] /= 6.0
+          # --- End Normalize Single State --- #
+
           # Compute Q-values for the single state (needed for _epsilon_greedy)
           # Reshape needed for the network
-          info_state_vector = np.reshape(info_state, [1, -1])
+          info_state_vector = np.reshape(info_state_copy, [1, -1]) # Use normalized copy
           self._current_q_values_single = self._session.run(
                self._q_values, feed_dict={self._info_state_ph: info_state_vector})[0]
           # Pass computed Q-values to helper
@@ -287,9 +328,13 @@ class DQNLongNarde(rl_agent.AbstractAgent):
           if self._step_counter % self._update_target_network_every == 0:
             self._session.run(self._update_target_network)
 
+          # --- Check if transition should be added --- #
           if self._prev_timestep and add_transition_record:
-            # We may omit record adding here if it's done elsewhere.
-            self.add_transition(self._prev_timestep, self._prev_action, time_step)
+            # Only add transitions if the current step is not FIRST (rewards is not None)
+            # and if the previous action was not None (handle forced pass cases)
+            if time_step.rewards is not None and self._prev_action is not None:
+              self.add_transition(self._prev_timestep, self._prev_action, time_step)
+          # --- End check --- #
 
           if time_step.last():  # prepare for the next episode.
             self._prev_timestep = None
@@ -314,9 +359,7 @@ class DQNLongNarde(rl_agent.AbstractAgent):
       time_step: current ts, an instance of rl_environment.TimeStep.
     """
     assert prev_time_step is not None
-    # --- Modification for Long Narde: Assert prev_action is not None --- #
-    assert prev_action is not None, "add_transition called with prev_action=None"
-    # ------------------------------------------------------------------ #
+    # assert prev_action is not None, "add_transition called with prev_action=None" # <-- Comment out this line
     legal_actions = (time_step.observations["legal_actions"][self.player_id])
     legal_actions_mask = np.zeros(self._num_actions)
     legal_actions_mask[legal_actions] = 1.0
@@ -366,12 +409,12 @@ class DQNLongNarde(rl_agent.AbstractAgent):
     probs = np.zeros(self._num_actions)
 
     # --- Debug Start ---
-    print(f"[DEBUG Agent] _epsilon_greedy_from_q_values received legal_actions: {legal_actions}")
+    # print(f"[DEBUG Agent] _epsilon_greedy_from_q_values received legal_actions: {legal_actions}")
     # --- Debug End ---
 
     # Handle forced pass turn first
     if not legal_actions:
-      print("[DEBUG Agent] _epsilon_greedy_from_q_values: No legal actions, returning None.") # Debug
+      # print("[DEBUG Agent] _epsilon_greedy_from_q_values: No legal actions, returning None.") # Debug
       return None, probs # Return None action, and zero probs
 
     # Epsilon-greedy choice
@@ -380,7 +423,7 @@ class DQNLongNarde(rl_agent.AbstractAgent):
       action = np.random.choice(legal_actions)
       # Assign uniform probability for exploration step
       probs[legal_actions] = 1.0 / len(legal_actions)
-      print(f"[DEBUG Agent] _epsilon_greedy_from_q_values: Chose random action {action} from {legal_actions}") # Debug
+      # print(f"[DEBUG Agent] _epsilon_greedy_from_q_values: Chose random action {action} from {legal_actions}") # Debug
     else:
       # Choose greedy action
       # Use the already computed q_values
@@ -388,7 +431,7 @@ class DQNLongNarde(rl_agent.AbstractAgent):
       action = legal_actions[np.argmax(legal_q_values)]
       # Assign full probability to the greedy action
       probs[action] = 1.0
-      print(f"[DEBUG Agent] _epsilon_greedy_from_q_values: Chose greedy action {action} (Q-values for legal: {legal_q_values})") # Debug
+      # print(f"[DEBUG Agent] _epsilon_greedy_from_q_values: Chose greedy action {action} (Q-values for legal: {legal_q_values})") # Debug
 
     # --- Debug Start ---
     # print(f"[DEBUG Agent] _epsilon_greedy_from_q_values returning action: {action}, probs: {probs}")
@@ -421,7 +464,6 @@ class DQNLongNarde(rl_agent.AbstractAgent):
     transitions = self._replay_buffer.sample(self._batch_size)
 
     # --- Debug Check: Ensure actions in sampled transitions are not None --- #
-    # This is a temporary check to help diagnose the TypeError
     for t in transitions:
         if t.action is None:
             # This indicates a potential problem from the step/epsilon_greedy method
@@ -432,9 +474,27 @@ class DQNLongNarde(rl_agent.AbstractAgent):
     # --- End Debug Check --- #
 
     info_states = np.array([t.info_state for t in transitions])
+    next_info_states = np.array([t.next_info_state for t in transitions])
+
+    # --- Normalize States --- #
+    # Board (0-47): Divide by 15.0
+    info_states[:, 0:48] /= 15.0
+    next_info_states[:, 0:48] /= 15.0
+    # Scores (48-49): Divide by 15.0
+    info_states[:, 48:50] /= 15.0
+    next_info_states[:, 48:50] /= 15.0
+    # Turn indicators (50-51): Already 0/1
+    # Dice (52-53): Divide by 6.0
+    info_states[:, 52:54] /= 6.0
+    next_info_states[:, 52:54] /= 6.0
+    # --- End Normalize States --- #
+
+    # --- Debug Print Input State Stats --- #
+    # print(f"[DEBUG LEARN] info_states shape: {info_states.shape}, min: {np.min(info_states)}, max: {np.max(info_states)}, mean: {np.mean(info_states)}")
+    # --- End Debug Print --- #
     actions = np.array([t.action for t in transitions])
     rewards = np.array([t.reward for t in transitions])
-    next_info_states = np.array([t.next_info_state for t in transitions])
+    # Reward Clipping is currently disabled
     are_final_steps = np.array([t.is_final_step for t in transitions])
     legal_actions_mask = np.array([t.legal_actions_mask for t in transitions])
 
@@ -458,24 +518,35 @@ class DQNLongNarde(rl_agent.AbstractAgent):
     checkpoint_filename = "_".join([name, "pid" + str(self.player_id)])
     return checkpoint_filename + "_latest"
 
-  def save(self, checkpoint_dir):
-    """Saves the q network and the target q-network.
-
-    Note that this does not save the experience replay buffers and should
-    only be used to restore the agent's policy, not resume training.
+  def save(self, path_prefix):
+    """Saves the q network and the target q-network using a path prefix.
 
     Args:
-      checkpoint_dir: directory where checkpoints will be saved.
+      path_prefix: The prefix for the checkpoint files (e.g., '/tmp/chkpt_p0_ep1000').
+                   Network names ('q_network', 'target_q_network') will be appended.
     """
-    for name, saver in self._savers:
-      path = saver.save(
-          self._session,
-          self._full_checkpoint_name(checkpoint_dir, name),
-          latest_filename=self._latest_checkpoint_filename(name))
-      logging.info("Saved to path: %s", path)
+    # We assume the directory structure exists (handled by the caller/wrapper)
+    try:
+      for name, saver in self._savers:
+        # Construct the full path for this specific network's checkpoint
+        # Note: saver.save() uses the provided path as the prefix
+        #       and appends internal checkpoint metadata.
+        #       We don't need _full_checkpoint_name or _latest_checkpoint_filename here
+        #       if the wrapper manages the overall naming scheme.
+        save_path = f"{path_prefix}_{name}"
+        returned_path = saver.save(self._session, save_path)
+        logging.info(f"Saved {name} for player {self.player_id} to path prefix: {returned_path}")
+    except Exception as e:
+      logging.error(f"Error saving agent for player {self.player_id} with prefix {path_prefix}: {e}")
+      raise # Re-raise the exception to notify the caller
 
-  def has_checkpoint(self, checkpoint_dir):
+  def has_checkpoint(self, checkpoint_dir): # Keep this potentially, or adapt?
+    # This might need adaptation if the wrapper handles checking existence
+    # based on the prefix convention.
     for name, _ in self._savers:
+      # Check based on the old directory structure? Or adapt to prefix?
+      # Let's keep the old logic for now, assuming it might still be used elsewhere,
+      # but acknowledge it might mismatch the new save logic if only the wrapper calls save/restore.
       if tf.train.latest_checkpoint(
           self._full_checkpoint_name(checkpoint_dir, name),
           os.path.join(checkpoint_dir,
@@ -483,19 +554,44 @@ class DQNLongNarde(rl_agent.AbstractAgent):
         return False
     return True
 
-  def restore(self, checkpoint_dir):
-    """Restores the q network and the target q-network.
-
-    Note that this does not restore the experience replay buffers and should
-    only be used to restore the agent's policy, not resume training.
+  def restore(self, path_prefix):
+    """Restores the q network and the target q-network from a path prefix.
 
     Args:
-      checkpoint_dir: directory from which checkpoints will be restored.
+      path_prefix: The base path prefix used when saving the agent (e.g.,
+                   '/tmp/checkpoints/agent_p0_ep1000'). The savers are expected
+                   to restore their respective variables from checkpoints matching
+                   this prefix, potentially with suffixes like '_q_network'.
     """
-    for name, saver in self._savers:
-      full_checkpoint_dir = self._full_checkpoint_name(checkpoint_dir, name)
-      logging.info("Restoring checkpoint: %s", full_checkpoint_dir)
-      saver.restore(self._session, full_checkpoint_dir)
+    logging.info(f"Attempting to restore agent {self.player_id} from prefix: {path_prefix}")
+    # Expand user path just in case '~' was used
+    expanded_prefix = os.path.expanduser(path_prefix)
+    logging.info(f"Expanded path prefix: {expanded_prefix}")
+
+    restored_q = False
+    restored_target = False
+    try:
+        for name, saver in self._savers:
+            # Construct the specific checkpoint prefix TF saver.save() uses
+            specific_checkpoint_prefix = f"{expanded_prefix}_{name}"
+            logging.info(f"  Attempting restore for '{name}' using checkpoint prefix: {specific_checkpoint_prefix}")
+
+            try:
+                # Try restoring directly using the specific prefix
+                saver.restore(self._session, specific_checkpoint_prefix)
+                logging.info(f"    Successfully restored {name} from {specific_checkpoint_prefix}")
+                if name == "q_network": restored_q = True
+                if name == "target_q_network": restored_target = True
+            except Exception as e:
+                 # Log the specific error during restore attempt
+                 logging.error(f"    Failed to restore {name} using prefix {specific_checkpoint_prefix}: {e}")
+                 # Note: Could add fallback logic using tf.train.latest_checkpoint here if needed
+
+    except Exception as e:
+        logging.error(f"Unexpected error during restore loop for agent {self.player_id}: {e}")
+
+    if not restored_q or not restored_target:
+        logging.error(f"Restore incomplete for agent {self.player_id}. Q Network restored: {restored_q}, Target Network restored: {restored_target}. Agent may have uninitialized weights.")
 
   @property
   def q_values(self):
@@ -591,3 +687,8 @@ class DQNLongNarde(rl_agent.AbstractAgent):
     """
     # The main step method already handles list input
     return self.step(time_step_list, is_evaluation=is_evaluation)
+
+  # Add sync_target_network method
+  def sync_target_network(self):
+    """Explicitly runs the TF operation to update the target network."""
+    self._session.run(self._update_target_network)

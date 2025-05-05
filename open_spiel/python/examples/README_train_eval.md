@@ -24,9 +24,16 @@ Games like Long Narde and Backgammon feature states where a player has no legal 
 To address this, a dedicated agent fork, `dqn_long_narde`, is provided (`open_spiel/python/algorithms/dqn_long_narde.py`).
 
 *   **How it works:**
-    1.  When faced with a forced pass (`legal_actions` is empty), the agent correctly recognizes no action can be chosen (`action=None`).
-    2.  Crucially, the agent's `step` method **skips adding the transition** to the replay buffer if the action taken in the previous state was `None`. This ensures the replay buffer only contains transitions resulting from actual agent decisions, preventing downstream errors during learning.
+    1.  Handles forced passes (`action=None`).
+    2.  Skips adding transitions with `prev_action=None` to the replay buffer.
+    3.  Includes input normalization using `tf.keras.layers.LayerNormalization` *within its neural network definition*. This step normalizes the input features (state representation) *before* they are processed by the main network layers. Input normalization is crucial for stabilizing training and improving convergence, especially when input features have significantly different scales or distributions, as can be the case in complex game states. Consider implementing similar normalization if developing new agents for games with complex or high-dimensional state representations.
 *   **Requirement:** You **must** use the specific algorithm name `--algorithm_name=dqn_long_narde` when training DQN on games like Long Narde or Backgammon.
+*   **Known Issues & Fixes:**
+    *   **Metadata Saving:** The `SerializableAgentWrapper` used by `train_agent.py` might fail to save the necessary `metadata.yaml` file alongside the TensorFlow checkpoints for `dqn_long_narde`. If this occurs, loading the agent via `evaluate_agent.py` will fail.
+        *   *Workaround:* Manually create the `metadata.yaml` file in the checkpoint directory (see previous debugging steps for structure).
+        *   *Fix Status:* Fixes in `agent_serialization.load_agent` help load manually created metadata, but the root saving issue might persist.
+    *   **Checkpoint Loading:** The `restore()` method within `dqn_long_narde.py` was previously incompatible with the checkpoint file structure saved by the wrapper (`agent_pX_epY_q_network.*`), causing the agent to play with uninitialized weights during evaluation.
+        *   *Fix Status:* The `restore` method in `dqn_long_narde.py` has been **updated** (as of recent debugging) to correctly load checkpoints saved by the wrapper using the expected path prefix.
 
 ### Usage Example (DQN for Long Narde using the fork)
 
@@ -54,48 +61,43 @@ python open_spiel/python/examples/train_agent.py --game_name=<game> --algorithm_
 ### Core Arguments
 
 *   `--game_name`: (String, Required) The name of the OpenSpiel game to train on (e.g., `tic_tac_toe`, `kuhn_poker`, `long_narde`).
-*   `--algorithm_name`: (String, Required) The RL algorithm to use for *all* players. Check `--list_algorithms` for available options (currently `tabular_qlearner`, `tabular_qlearner_long_narde`, `dqn`, `ppo`).
+*   `--algorithm_name`: (String, Required) The RL algorithm to use for *all* players. Check `--list_algorithms` for available options (currently `tabular_qlearner`, `tabular_qlearner_long_narde`, `dqn`, `dqn_long_narde`, `ppo`).
 *   `--num_episodes`: (Integer, Default: 10000) The total number of training episodes to run. Note: For vectorized environments, this is the target number of *completed* episodes across all parallel environments.
 
 ### Agent Hyperparameters
 
 *   `--agent_hparams`: (String, Can be specified multiple times) Agent-specific hyperparameters passed as key-value pairs. Values are parsed automatically into appropriate types (int, float, bool, list, dict). These hyperparameters are applied to **all** agents being trained.
-    *   **Example (QLearner):** `--agent_hparams step_size=0.01 --agent_hparams epsilon_start=1.0 --agent_hparams epsilon_end=0.1` (Note: `learning_rate` might be specific to DQN/PPO)
-    *   **Example (DQN):** `--agent_hparams learning_rate=0.001 --agent_hparams replay_buffer_capacity=100000 --agent_hparams hidden_layers_sizes="[128,128]"` (Note: Use quotes for lists/dicts if needed by your shell)
+    *   **Example (QLearner):** `--agent_hparams step_size=0.01 --agent_hparams epsilon_start=1.0 --agent_hparams epsilon_end=0.1`
+    *   **Example (DQN):** `--agent_hparams learning_rate=0.001 --agent_hparams replay_buffer_capacity=100000 --agent_hparams hidden_layers_sizes="[128,128]"`
     *   **Example (PPO):** `--agent_hparams learning_rate=3e-4 --agent_hparams batch_size=64 --agent_hparams num_epochs=10`
-    *   **Note:** Refer to the specific agent's implementation in `open_spiel/python/algorithms/` or `open_spiel/python/pytorch/` for available hyperparameter names and default values. The script passes these to the agent's `__init__` method via the `SerializableAgentWrapper`.
+    *   **Note:** Refer to the specific agent's implementation for available hyperparameters.
 
 ### Logging and Checkpointing
 
-*   `--log_file`: (String, Optional) Path to a CSV file where training metrics will be saved. Logs episode number and reward for each player. If not provided, CSV logging is disabled.
-*   `--tensorboard_logdir`: (String, Optional) Directory where TensorBoard logs will be saved. Logs per-player rewards and available agent losses. If not provided, TensorBoard logging is disabled.
-*   `--checkpoint_dir`: (String, Optional) Directory where agent checkpoints will be saved. If not provided, checkpointing is disabled.
-*   `--checkpoint_every`: (Integer, Default: 1000) Save a checkpoint every N episodes (for single env) or every N *completed* episodes (for vectorized env). Only active if `checkpoint_dir` is provided and this value is greater than 0.
-*   **Checkpoint Structure:** Checkpoints are saved in subdirectories named `agent_p<ID>_ep<EPISODE>` within the `checkpoint_dir`. Each subdirectory contains:
-    *   `metadata.yaml`: Information about the agent class, hyperparameters used at creation, environment specs, etc. (Note: `openspiel_version` is currently excluded due to saving issues).
-    *   Agent-specific state files:
-        *   `tabular_qlearner` / `tabular_qlearner_long_narde`: `q_table.pkl`, `agent_state.pkl`
-        *   `dqn`: TensorFlow checkpoints (`q_network.*`, `target_q_network.*`), `agent_state.pkl`
-        *   `ppo`: PyTorch state dict (`policy_state_dict.pt`), `agent_state.pkl` (Implementation TBD)
+*   `--log_file`: (String, Optional) Path to a CSV file for training metrics.
+*   `--tensorboard_logdir`: (String, Optional) Directory for TensorBoard logs.
+*   `--checkpoint_dir`: (String, Optional) Directory where agent checkpoints will be saved.
+*   `--checkpoint_every`: (Integer, Default: 1000) Save a checkpoint every N episodes.
+*   **Checkpoint Structure:** Checkpoints are saved in subdirectories named `agent_p<ID>_ep<EPISODE>` within the `checkpoint_dir`. Each subdirectory *should* contain `metadata.yaml` and agent-specific state files (e.g., TF checkpoints for DQN, `.pkl` files for QLearner). **Note:** Metadata saving for `dqn_long_narde` might be unreliable (see Section 1b).
 
 ### Configuration File
 
-*   `--config_file`: (String, Optional) Path to a YAML or JSON configuration file. Flags set in the file will override defaults but be overridden by explicit command-line flags. Keys in the config file should match the flag names (e.g., `game_name`, `num_episodes`, `agent_hparams`).
+*   `--config_file`: (String, Optional) Path to a YAML or JSON configuration file.
 
 ### Performance Optimization
 
-*   `--device`: (String, Default: "cpu") Specifies the device (`cpu`, `cuda`, `mps`) for deep learning models (currently passed to PPO). DQN (TF1) placement is handled externally.
-*   `--use_vector_env`: (Boolean, Default: False) If true, uses `SyncVectorEnv` to run multiple environments in parallel. This requires agent implementations that support batch processing for efficiency (Task 18d/e).
-*   `--num_envs`: (Integer, Default: 4) Number of parallel environments to use if `use_vector_env` is true.
+*   `--device`: (String, Default: "cpu") Device (`cpu`, `cuda`, `mps`) for deep learning models (PPO).
+*   `--use_vector_env`: (Boolean, Default: False) Use `SyncVectorEnv` for parallel environments.
+*   `--num_envs`: (Integer, Default: 4) Number of parallel environments if `use_vector_env` is true.
 
 ### Utility Arguments
 
-*   `--list_algorithms`: (Boolean, Default: False) If specified, lists the algorithms supported by the script (those mapped in `ALGORITHM_CLASS_PATHS`) and exits.
+*   `--list_algorithms`: (Boolean, Default: False) Lists supported algorithms and exits.
 
 ### Examples
 
 ```bash
-# Train Q-learner on Tic-Tac-Toe (self-play) for 50k episodes, log to CSV and TensorBoard, save checkpoints
+# Train Q-learner on Tic-Tac-Toe with logging and checkpoints
 python open_spiel/python/examples/train_agent.py \
     --game_name=tic_tac_toe \
     --algorithm_name=tabular_qlearner \
@@ -103,95 +105,96 @@ python open_spiel/python/examples/train_agent.py \
     --log_file=/tmp/ttt_q_log.csv \
     --tensorboard_logdir=/tmp/ttt_q_tb \
     --checkpoint_dir=/tmp/ttt_q_checkpoints \
-    --checkpoint_every=5000 \
-    --agent_hparams step_size=0.02 \
-    --agent_hparams discount_factor=0.99
+    --checkpoint_every=5000
 
-# Train PPO on Long Narde using 8 vectorized environments and CUDA device
+# Train DQN on Long Narde (using the specific fork) with vector env
 python open_spiel/python/examples/train_agent.py \
     --game_name=long_narde \
-    --algorithm_name=ppo \
-    --num_episodes=20000 \
-    --use_vector_env=True \
-    --num_envs=8 \
-    --device=cuda \
-    --tensorboard_logdir=/tmp/ln_ppo_tb \
-    --checkpoint_dir=/tmp/ln_ppo_checkpoints \
+    --algorithm_name=dqn_long_narde \
+    --num_episodes=15000 \
+    --use_vector_env=True --num_envs=4 \
+    --checkpoint_dir=/tmp/ln_dqn_vec_chkpts \
     --checkpoint_every=1000 \
-    --agent_hparams learning_rate=1e-4 \
-    --agent_hparams batch_size=256 \
-    --agent_hparams num_learning_epochs=4
+    --agent_hparams learning_rate=0.001 loss_str=huber optimizer_str=adam
 ```
 
 ## 2. `evaluate_agent.py` - Evaluating a Trained Agent
 
-This script loads a trained agent from a checkpoint directory (using the standardized `agent_serialization.load_agent` function) and evaluates its performance against an opponent (random or another trained agent) over a specified number of episodes.
+This script loads a trained agent from a checkpoint directory and evaluates its performance against an opponent.
+
+*   **Recent Updates:**
+    *   Added `--eval_random_vs_random` flag to run Random vs Random baseline.
+    *   Improved agent loading logic in `agent_serialization.py` (especially for DQN session handling).
+    *   Fixed `player_id` access for `RandomAgent` opponents.
+    *   Added missing `calculate_new_elo_ratings` helper function.
+    *   Fixed win/loss counting logic.
+    *   Fixed pip count calculation for Long Narde (avoids direct `pyspiel.long_narde` access).
 
 ### Usage
 
 ```bash
+# Evaluate a specific agent
 python open_spiel/python/examples/evaluate_agent.py --game_name=<game> --agent_path=<path_to_agent_dir> [options]
+
+# Evaluate Random vs Random baseline
+python open_spiel/python/examples/evaluate_agent.py --game_name=<game> --eval_random_vs_random [options]
 ```
 
 ### Core Arguments
 
-*   `--game_name`: (String, Required) The name of the OpenSpiel game the agent was trained on (must match the game used for training and in the checkpoint metadata).
-*   `--agent_path`: (String, Required) Path to the specific agent checkpoint *directory* to evaluate (e.g., `/tmp/ttt_q_checkpoints/agent_p0_ep50000`). This directory **must** contain `metadata.yaml` and the agent's state files.
-*   `--num_eval_episodes`: (Integer, Default: 100) The number of episodes to run for evaluation.
-*   `--output_file`: (String, Default: `evaluation_results.csv`) Path to the CSV file where evaluation metrics will be saved.
+*   `--game_name`: (String, Required) Name of the game.
+*   `--agent_path`: (String, Required unless `--eval_random_vs_random=True`) Path to the primary agent checkpoint directory.
+*   `--num_eval_episodes`: (Integer, Default: 100) Number of evaluation episodes.
+*   `--output_file`: (String, Default: `evaluation_results.csv`) Path for CSV output.
 
 ### Opponent Configuration
 
-*   `--opponent_type`: (String, Default: `random`) Specifies the type of opponent.
-    *   `random`: Pits the agent against a `random_agent.RandomAgent`.
-    *   `trained`: Pits the agent against another trained agent. Requires `--opponent_path`.
-*   `--opponent_path`: (String, Optional) Path to the specific checkpoint *directory* for the opponent agent. Required if `opponent_type=trained`.
+*   `--opponent_type`: (String, Default: `random`) Opponent type (`random` or `trained`). Ignored if `--eval_random_vs_random=True`.
+*   `--opponent_path`: (String, Optional) Path to trained opponent checkpoint. Ignored if `--eval_random_vs_random=True`.
+
+### Random vs Random Evaluation
+
+*   `--eval_random_vs_random`: (Boolean, Default: False) If true, evaluates RandomAgent vs RandomAgent. Ignores `agent_path`, `opponent_path`, and `opponent_type`. Useful for establishing baseline performance and first-player advantage in games like Long Narde.
 
 ### Evaluation Metrics
 
-*   `--initial_elo`: (Float, Default: 1200.0) Initial Elo rating assigned to both agents before evaluation.
-*   `--elo_k_factor`: (Float, Default: 32.0) K-factor used for updating Elo ratings after each game.
-*   **Output:**
-    *   **Console:** Prints summary statistics (average returns, wins/losses/ties, final Elo).
-    *   **CSV (`--output_file`):** Saves average returns, total wins, total losses, total ties, and final Elo ratings per player. Also includes game-specific metrics if available (e.g., average pip difference for `long_narde`).
-    *   **TensorBoard (`--tensorboard_logdir`):** Logs evaluation summary metrics (average returns, win/loss/tie rates, final Elo, average pip difference for `long_narde`) under an `eval` subdirectory.
+*   `--initial_elo`: (Float, Default: 1200.0) Initial Elo rating.
+*   `--elo_k_factor`: (Float, Default: 32.0) K-factor for Elo updates.
+*   **Output:** Console summary, CSV file, optional TensorBoard logs.
 
 ### Logging
 
-*   `--tensorboard_logdir`: (String, Optional) Directory where TensorBoard logs for evaluation metrics will be saved (in an `eval` subdirectory).
+*   `--tensorboard_logdir`: (String, Optional) Directory for TensorBoard evaluation logs.
 
 ### Configuration File
 
-*   `--config_file`: (String, Optional) Path to a YAML or JSON configuration file. Overrides defaults, but is overridden by command-line flags.
+*   `--config_file`: (String, Optional) Path to a YAML or JSON configuration file.
 
 ### Examples
 
 ```bash
-# Evaluate a trained Q-learner agent against a random opponent, log to TensorBoard
-python open_spiel/python/examples/evaluate_agent.py \
-    --game_name=tic_tac_toe \
-    --agent_path=/tmp/ttt_q_checkpoints/agent_p0_ep50000 \
-    --opponent_type=random \
-    --num_eval_episodes=500 \
-    --output_file=eval_ttt_q_vs_random.csv \
-    --tensorboard_logdir=/tmp/ttt_eval_tb
-
-# Evaluate two trained PPO Long Narde agents against each other, adjusting Elo K-factor
+# Evaluate trained DQN Long Narde agent vs Random (1000 episodes)
 python open_spiel/python/examples/evaluate_agent.py \
     --game_name=long_narde \
-    --agent_path=/tmp/ln_ppo_checkpoints/agent_p0_ep10000 \
-    --opponent_type=trained \
-    --opponent_path=/tmp/ln_ppo_checkpoints/agent_p1_ep10000 \
-    --num_eval_episodes=200 \
-    --elo_k_factor=16.0 \
-    --output_file=eval_ln_ppo_vs_ppo.csv \
+    --agent_path=/tmp/ln_dqn_vec_chkpts/agent_p0_ep15000 \
+    --opponent_type=random \
+    --num_eval_episodes=1000 \
+    --output_file=eval_dqn_vs_random.csv \
+    --tensorboard_logdir=/tmp/ln_eval_tb
+
+# Evaluate Random vs Random baseline for Long Narde (1000 episodes)
+python open_spiel/python/examples/evaluate_agent.py \
+    --game_name=long_narde \
+    --eval_random_vs_random \
+    --num_eval_episodes=1000 \
+    --output_file=eval_random_vs_random.csv \
     --tensorboard_logdir=/tmp/ln_eval_tb
 ```
 
 ## 3. General Notes
 
-*   **Agent Loading/Saving:** The `SerializableAgentWrapper` and `load_agent` function in `agent_serialization.py` handle the details of saving/loading agent state and metadata. You only interact with the checkpoint directory path.
-*   **Hyperparameters:** Evaluation (`evaluate_agent.py`) primarily uses the agent's learned parameters loaded from the checkpoint. Training hyperparameters are generally not needed unless the agent's loading logic specifically requires them (which is currently not the case).
-*   **Dependencies:** DQN requires TensorFlow 1.x (`tensorflow-compat-v1`), while PPO requires PyTorch (`torch`). Ensure these are installed if you use those algorithms. TensorBoard logging requires `tensorboardX` or `tensorboard`. YAML support requires `PyYAML`.
-*   **Vectorized Environment:** Using `--use_vector_env` in `train_agent.py` can significantly speed up training for algorithms that can process batches (like PPO), but it requires the agent implementation to correctly handle batched inputs and outputs. The current implementation has placeholders and might need further refinement in the agent wrappers or specific agent code (Tasks 18d, 18e).
-*   **Checkpoint Paths:** Always ensure `agent_path` and `opponent_path` point to the specific subdirectory created during checkpointing (e.g., `.../checkpoint_dir/agent_p0_ep10000`), which contains the `
+*   **Agent Loading/Saving:** Primarily handled by `agent_serialization.py`. **Verify `dqn_long_narde` loading/saving works correctly, especially metadata and weight restoration.**
+*   **Hyperparameters:** Evaluation uses learned parameters from checkpoints.
+*   **Dependencies:** DQN (TF1), PPO (PyTorch), TensorBoard (`tensorboardX`/`tensorboard`), YAML (`PyYAML`).
+*   **Vectorized Environment:** Use `--use_vector_env` in `train_agent.py` for potential speedup with batch-supporting agents.
+*   **Checkpoint Paths:** `agent_path`/`opponent_path` point to the specific checkpoint subdirectory (e.g., `.../agent_p0_ep10000`).
