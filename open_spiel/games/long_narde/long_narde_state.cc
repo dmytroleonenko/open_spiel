@@ -25,19 +25,25 @@ namespace open_spiel
           prev_player_(kChancePlayerId),
           turns_(-1), // Initial turns count before first roll
           moved_from_head_(false),
-          is_on_first_turn_(false),    // Default to false
-          dice_({0, 0, 0, 0}),         // Initialize dice_ with 4 elements
-          initial_dice_({0, 0, 0, 0}), // Initialize with 4 zeros
+          // is_on_first_turn_(false), // Already initialized in .h as part of TurnHistory or similar logic
+          dice_(4, 0),         // Initialize dice_ with 4 elements, all zero.
+          initial_dice_(4, 0), // Initialize with 4 zeros
           scores_({0, 0}),
-          board_({std::vector<int>(kNumPoints, 0), std::vector<int>(kNumPoints, 0)}),
-          turn_history_info_({}),
+          board_(kNumPlayers, std::vector<int>(kNumPoints, 0)), // Corrected initialization
+          // turn_history_info_({}), // Initialized via default constructor
           allow_last_roll_tie_(false),
-          // Initialize scoring_type_ based on game parameters
           scoring_type_(ParseScoringType(
-              game->GetParameters().count("scoring_type") > 0 ? game->GetParameters().at("scoring_type").string_value() : kDefaultScoringType))
+              game->GetParameters().count("scoring_type") > 0 ? game->GetParameters().at("scoring_type").string_value() : kDefaultScoringType)),
+          // Initialize new state variables for two-phase doubles
+          is_handling_second_phase_of_doubles_(false),
+          // current_turn_full_legal_sequences_cache_ is default-initialized (empty)
+          first_phase_selected_move1_({kPassPos, kPassPos, 0}),
+          first_phase_selected_move2_({kPassPos, kPassPos, 0}),
+          head_move_occurred_this_full_turn_(false)
     {
-      turn_history_info_.reserve(kMaxGameLengthEst);
+      turn_history_info_.reserve(kMaxGameLengthEst); // Assuming kMaxGameLengthEst is defined
       SetupInitialBoard();
+      // No need to initialize is_on_first_turn_ here if it's managed elsewhere or by default construction
     }
 
     /**
@@ -54,6 +60,12 @@ namespace open_spiel
     }
 
     // ===== Basic State Accessors =====
+
+    int LongNardeState::NumDistinctActions() const
+    {
+      // With the new encoding scheme, the number of distinct actions is fixed.
+      return kNumDistinctActions; // Should be 1250
+    }
 
     int LongNardeState::board(int player, int pos) const
     {
@@ -72,39 +84,42 @@ namespace open_spiel
       // Handle pass move
       if (move.pos == kPassPos)
       {
-        // Mark a die as used (placeholder logic, assumes pass uses die 1)
-        // Need robust logic to mark the *correct* die used if pass is forced.
-        // Mark a die corresponding to kPassDieValue (which is 1) if available
-        bool found_die = false;
-        for (int i = 0; i < dice_.size(); ++i)
-        {
-          if (dice_[i] == kPassDieValue)
-          {                // Find a '1'
-            dice_[i] = -1; // Mark as used
-            found_die = true;
+        // For a pass, a die must still be marked as "used".
+        // The specific die used for a pass might be determined by higher-level logic
+        // (e.g., if only one die is playable, or if forced to pass with a specific die).
+        // Here, we find the first *usable* die that matches move.die (typically kPassDieValue)
+        // or any usable die if kPassDieValue is not available/specified for the pass.
+        bool found_and_marked_die = false;
+        if (move.die > 0 && move.die <= kNumDiceOutcomes) { // Specific die for pass
+            for (int i = 0; i < dice_.size(); ++i) {
+                if (DiceValue(i) == move.die && !IsUsed(i)) {
+                    dice_[i] += kNumDiceOutcomes; // Mark as used
+                    found_and_marked_die = true;
             break;
           }
         }
-        // If die 1 wasn't available, mark the lowest available die (if any)
-        if (!found_die)
-        {
-          for (int i = 0; i < dice_.size(); ++i)
-          {
-            if (dice_[i] > 0)
-            {
-              dice_[i] = -1; // Mark as used
+        }
+        
+        if (!found_and_marked_die) { // Fallback: mark any available die if specific pass die not found/marked
+            for (int i = 0; i < dice_.size(); ++i) {
+                if (DiceValue(i) > 0 && !IsUsed(i)) {
+                    dice_[i] += kNumDiceOutcomes; // Mark as used
+                    found_and_marked_die = true;
               break;
             }
           }
         }
-        // No board changes needed for pass
-        return;
+
+        if (!found_and_marked_die && kDebugging) {
+             SpielFatalError("ApplyCheckerMove (Pass): No usable die to mark for pass.");
+        }
+        return; // No board changes needed for pass
       }
 
       // Check if this is a head move BEFORE modifying the board
       if (IsHeadPos(player, move.pos))
       {
-        moved_from_head_ = true;
+        moved_from_head_ = true; // This flag might need to be part of TurnHistory for undo
       }
 
       // Decrement checker count at the 'from' position
@@ -129,50 +144,44 @@ namespace open_spiel
         board_[player][move.to_pos]++;
       }
 
-      // Mark the die used for this move as inactive
-      bool found_die = false;
+      // Mark the die used for this move as inactive by adding kNumDiceOutcomes
+      bool found_die_to_mark = false;
       for (int i = 0; i < dice_.size(); ++i)
       {
-        if (dice_[i] == move.die)
+        if (DiceValue(i) == move.die && !IsUsed(i))
         {
-          dice_[i] = -1; // Mark as used
-          found_die = true;
+          dice_[i] += kNumDiceOutcomes; // Mark as used
+          found_die_to_mark = true;
           break;
         }
       }
-      if (!found_die)
-      {
-        // This might happen legitimately if a higher die was used to bear off the furthest checker
-        // Or if a pass move used the die needed.
-        // Try to find *any* usable die that *could* have been used (e.g. a higher die for bear off)
-        bool found_alternative = false;
-        if (move.to_pos == kBearOffPos)
-        {
-          int furthest_pos = FurthestCheckerInHome(player); // Re-check furthest after potential move
-          if (move.pos == furthest_pos)
-          { // Was this move bearing off the furthest checker?
-            for (int i = 0; i < dice_.size(); ++i)
-            {
-              if (dice_[i] > 0 && dice_[i] >= move.die)
-              { // Found a usable die >= the die value needed
-                dice_[i] = -1;
-                found_alternative = true;
-                break;
+      
+      // Handle bearing off with a higher die if exact die wasn't found marked yet
+      // This logic assumes the move itself (move.die) is valid for bearing off with a higher roll.
+      if (!found_die_to_mark && move.to_pos == kBearOffPos) {
+          // Use FurthestCheckerInHome to check if the move was for the furthest checker.
+          // FurthestCheckerInHome returns the board position (0-23 or -1 if none).
+          int furthest_checker_pos = FurthestCheckerInHome(player);
+          if (move.pos == furthest_checker_pos) { // Check if it was the furthest checker
+              for (int i = 0; i < dice_.size(); ++i) {
+                  if (!IsUsed(i) && DiceValue(i) >= move.die) {
+                      dice_[i] += kNumDiceOutcomes; // Mark the higher die as used
+                      found_die_to_mark = true;
+                      break;
+                  }
               }
-            }
           }
-        }
-        if (!found_alternative)
+      }
+
+      if (!found_die_to_mark)
         {
-          // Still haven't found a die. This shouldn't happen for valid moves.
-          std::cerr << "Current Dice: " << DiceToString() << std::endl;
-          std::cerr << "Initial Dice: { ";
-          for (int d : initial_dice_)
-            std::cerr << d << " ";
-          std::cerr << "}\n";
-          std::cerr << "Attempted Move: P" << player << " Pos:" << move.pos << " To:" << move.to_pos << " Die:" << move.die << std::endl;
-          SpielFatalError(absl::StrCat("ApplyCheckerMove: Die ", move.die, " not found or already used."));
-        }
+        // This condition indicates an issue: either the move is invalid,
+        // or dice state is not as expected.
+        std::string dice_str = "{";
+        for(int d_val : dice_) dice_str += std::to_string(d_val) + " ";
+        dice_str += "}";
+        SpielFatalError(absl::StrCat("ApplyCheckerMove: Die ", move.die,
+                                     " not found usable or already marked. Current dice_ state: ", dice_str));
       }
     }
 
@@ -181,67 +190,73 @@ namespace open_spiel
       // Handle pass move undo
       if (move.pos == kPassPos)
       {
-        // Restore the die used for the pass (placeholder logic)
-        // Need robust way to know *which* die was marked by ApplyCheckerMove for pass.
-        // For now, try restoring the placeholder kPassDieValue (1) if it's marked used.
-        bool found_used_die = false;
-        for (int i = 0; i < dice_.size(); ++i)
-        {
-          if (dice_[i] == -1)
-          { // Find a used die
-            // Was this the pass die?
-            // Heuristic: If initial dice had kPassDieValue, restore that.
-            // Otherwise restore the lowest value die? This is fragile.
-            // Assume for now the pass used kPassDieValue (1) if possible.
-            bool had_pass_die_initially = false;
-            for (int initial_d : initial_dice_)
-            {
-              if (initial_d == kPassDieValue)
-              {
-                had_pass_die_initially = true;
-                break;
-              }
-            }
-            if (had_pass_die_initially)
-            {
-              dice_[i] = kPassDieValue; // Restore '1'
-              found_used_die = true;
-              break;
-            } // Else: Need better logic to know which die the pass *actually* consumed.
-              // As a fallback, restore the lowest initial die value? Assume 1 for now.
-            else
-            {
-              dice_[i] = kPassDieValue; // Fallback restore '1'
-              found_used_die = true;
+        // Restore the die used for the pass.
+        // This requires knowing which die was marked. The move.die should indicate this.
+        bool found_and_unmarked_die = false;
+        if (move.die > 0 && move.die <= kNumDiceOutcomes) {
+            for (int i = 0; i < dice_.size(); ++i) {
+                // Check if this die slot was used for this specific die value
+                if (IsUsed(i) && (dice_[i] - kNumDiceOutcomes == move.die)) {
+                    dice_[i] -= kNumDiceOutcomes; // Mark as unused
+                    found_and_unmarked_die = true;
               break;
             }
           }
         }
-        if (!found_used_die)
-        {
-          // This implies pass was undone but no die was marked - shouldn't happen
-          SpielFatalError("UndoCheckerMove: Attempted to undo pass, but no die was marked as used.");
+        // Fallback: if specific die not found marked (e.g. pass used 'any' available die)
+        // This part is tricky without more context on how pass dice are chosen and recorded.
+        // Assuming the move.die for pass accurately reflects what was used.
+        // If not, the TurnHistoryInfo might need to store which dice index was used.
+        if (!found_and_unmarked_die && kDebugging) {
+             SpielFatalError(absl::StrCat("UndoCheckerMove (Pass): Could not find die ", move.die, " to unmark."));
         }
-        return; // No board changes needed
+        return; 
       }
 
-      // Restore the die used for the move
-      // This needs to handle the case where a higher die was used for bear-off.
-      // Find the first occurrence of -1 in dice_ and restore move.die.
-      // This assumes moves are undone in reverse order and dice are consumed deterministically.
-      bool found_used_die_slot = false;
-      for (int i = 0; i < dice_.size(); ++i)
-      {
-        if (dice_[i] == -1)
-        {
-          dice_[i] = move.die;
-          found_used_die_slot = true;
+      // Restore the die used for the move by subtracting kNumDiceOutcomes
+      // This needs to robustly find the die that was marked for *this* specific move.
+      // The simplest is if moves are undone in strict reverse of application and dice are chosen deterministically.
+      bool found_die_to_unmark = false;
+      for (int i = 0; i < dice_.size(); ++i) {
+        // Check if this die slot was used for *this* die value
+        if (IsUsed(i) && (dice_[i] - kNumDiceOutcomes == move.die)) {
+            dice_[i] -= kNumDiceOutcomes; // Mark as unused
+            found_die_to_unmark = true;
           break;
         }
       }
-      if (!found_used_die_slot)
+      
+      // If not found, it might be a bear-off with a higher die.
+      // This case is complex for undo because we need to know which *specific higher die* was marked.
+      // The `move.die` itself is the *required* roll, not necessarily the *actual higher roll* used.
+      // This suggests TurnHistoryInfo might need to store the actual dice indices used.
+      // For now, we assume `move.die` is sufficient to identify the marked die.
+      if (!found_die_to_unmark) {
+          // Attempt to find a die that was marked used, whose original value could be >= move.die
+          // This is still a heuristic and might not be robust.
+          // The problem is if multiple dice could satisfy this condition.
+          // This is a strong indicator that TurnHistoryInfo needs to store the index of the die used.
+          if (move.to_pos == kBearOffPos) {
+               for (int i = 0; i < dice_.size(); ++i) {
+                   if (IsUsed(i) && (dice_[i] - kNumDiceOutcomes >= move.die)) {
+                       // Potential candidate. If multiple, this is ambiguous.
+                       // For simplicity, unmark the first one found. This is a known limitation.
+                       dice_[i] -= kNumDiceOutcomes;
+                       found_die_to_unmark = true;
+                       break;
+                   }
+               }
+          }
+      }
+
+
+      if (!found_die_to_unmark)
       {
-        SpielFatalError(absl::StrCat("UndoCheckerMove: Could not find used die slot (-1) to restore die ", move.die));
+        std::string dice_str = "{";
+        for(int d_val : dice_) dice_str += std::to_string(d_val) + " ";
+        dice_str += "}";
+        SpielFatalError(absl::StrCat("UndoCheckerMove: Die ", move.die, 
+                                     " not found marked used. Current dice_ state: ", dice_str));
       }
 
       // Increment checker count at the 'from' position
@@ -250,6 +265,7 @@ namespace open_spiel
         SpielFatalError(absl::StrCat("UndoCheckerMove: Invalid from_pos ", move.pos, " for player ", player));
       }
       board_[player][move.pos]++;
+
 
       // Check if bearing off was undone
       if (move.to_pos == kBearOffPos)
@@ -263,16 +279,13 @@ namespace open_spiel
         {
           SpielFatalError(absl::StrCat("UndoCheckerMove: Invalid to_pos ", move.to_pos, " for player ", player));
         }
-        if (board_[player][move.to_pos] <= 0)
-        {
+        if (board_[player][move.to_pos] <= 0) {
           SpielFatalError(absl::StrCat("UndoCheckerMove: No checker to remove from to_pos ", move.to_pos, " for player ", player));
         }
         board_[player][move.to_pos]--;
       }
 
-      // Note: Undoing moved_from_head_ requires history tracking, which is handled
-      // by the ExplorationState in IterativeLegalMoves or TurnHistoryInfo in ApplyAction.
-      // We don't reset moved_from_head_ here directly.
+      // moved_from_head_ needs to be restored from TurnHistoryInfo by UndoAction
     }
 
     /**
@@ -291,6 +304,92 @@ namespace open_spiel
         count += board_[player][pos];
       }
       return count;
+    }
+
+    // The SetState function needs to be found or its signature assumed from .h
+    // Assuming it's similar to this, based on common patterns and .h:
+    void LongNardeState::SetState(int cur_player,
+                                  const std::vector<int>& p_dice, // p_dice should be size 4
+                                  const std::vector<int>& p_scores,
+                                  const std::vector<std::vector<int>>& p_board) {
+      cur_player_ = cur_player;
+      // double_turn parameter is removed.
+      
+      SPIEL_CHECK_EQ(p_dice.size(), 4);
+      dice_ = p_dice; // Directly assign, assuming p_dice is already in the new format (0 for unused/unrolled, 1-6 for rolled, 7-12 for used)
+
+      SPIEL_CHECK_EQ(p_scores.size(), kNumPlayers);
+      for (int p = 0; p < kNumPlayers; ++p) {
+        scores_[p] = p_scores[p];
+      }
+
+      SPIEL_CHECK_EQ(p_board.size(), kNumPlayers);
+      for (int p = 0; p < kNumPlayers; ++p) {
+        SPIEL_CHECK_EQ(p_board[p].size(), kNumPoints);
+        for (int i = 0; i < kNumPoints; ++i) {
+          board_[p][i] = p_board[p][i];
+        }
+      }
+      // Other members like turns_, prev_player_, history_ etc. might also need setting
+      // This is a simplified SetState. A full one would reset more.
+    }
+
+    int LongNardeState::DiceValue(int i) const
+    {
+      SPIEL_CHECK_GE(i, 0);
+      SPIEL_CHECK_LT(i, dice_.size());
+      int die_val = dice_[i];
+      if (die_val > kNumDiceOutcomes)
+      { // Die is marked as used
+        return die_val - kNumDiceOutcomes;
+      }
+      else if (die_val > 0 && die_val <= kNumDiceOutcomes)
+      { // Die is available
+        return die_val;
+      }
+      return 0; // Die is 0 (not rolled or placeholder)
+    }
+
+    bool LongNardeState::IsUsed(int i) const {
+      SPIEL_CHECK_GE(i, 0);
+      SPIEL_CHECK_LT(i, dice_.size());
+      return dice_[i] > kNumDiceOutcomes;
+    }
+    
+    // Removed conflicting definition of UsableDiceOutcome(int i)
+    // The function bool UsableDiceOutcome(int outcome) const; is declared in .h 
+    // and defined in long_narde_validation.cc.
+    // To check if a die at a given index 'i' is usable, use DiceValue(i) > 0.
+
+    /**
+     * @brief Generates all fully valid move sequences for the current player and dice,
+     *        filters them, and caches them in current_turn_full_legal_sequences_cache_.
+     *
+     * This function is called once per dice roll (typically within ProcessChanceRoll).
+     * It uses LongNardeGenerateMoveSequences to get all raw sequences, then applies
+     * LongNardeFilterBestMoveSequences to ensure that if a player *can* make more moves,
+     * sequences with fewer moves are pruned if they are part of longer valid sequences.
+     * The final, filtered list of canonical move sequences is stored.
+     */
+    void LongNardeState::GenerateAndCacheFullLegalSequences() {
+      // Ensure dice_ are populated for the current player.
+      // Player cur_player_ is already set by ProcessChanceRoll before this would be called.
+      
+      // 1. Generate all raw move sequences.
+      std::vector<std::vector<LongNardeCheckerMove>> raw_sequences = LongNardeGenerateMoveSequences(cur_player_);
+
+      // 2. Filter for best/maximal sequences.
+      // LongNardeFilterBestMoveSequences returns a pair: {filtered_sequences, max_moves_found}
+      // We only need the sequences themselves for the cache.
+      current_turn_full_legal_sequences_cache_ = LongNardeFilterBestMoveSequences(raw_sequences).first;
+
+      // TODO: Further canonicalization or sorting if needed? 
+      // The plan mentions "Ensures canonical sequences". LongNardeGenerateMoveSequences and 
+      // LongNardeFilterBestMoveSequences might inherently do this or require an additional step.
+      // For now, assuming the combination of the two provides sufficiently canonical sequences
+      // for LegalActions to correctly map them to unique Action IDs later.
+      // The "Higher Die Rule" is also mentioned. This is typically handled by LegalActions or its sub-components
+      // when deciding which dice to use, rather than filtering sequences here.
     }
 
   } // namespace long_narde

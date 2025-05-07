@@ -532,5 +532,34 @@ namespace open_spiel
       }
     }
 
+    /**
+     * @brief Converts a real board position (0-23) to a canonical home board point (0-5).
+     *
+     * For calculating pips needed to bear off, where 0 is the point closest to bear-off
+     * (e.g., point 1 for White, point 13 for Black) and 5 is the point furthest from bear-off
+     * (e.g., point 6 for White, point 18 for Black).
+     *
+     * @param player The player (kXPlayerId or kOPlayerId).
+     * @param pos The real board position index (0-23).
+     * @return The canonical home board point (0-5) if `pos` is in the player's home, otherwise -1.
+     */
+    int LongNardeState::GetCanonicalPoint(Player player, int pos) const {
+      SPIEL_CHECK_TRUE(player == kXPlayerId || player == kOPlayerId);
+      if (player == kXPlayerId) {
+        // White's home: points 1-6 (indices 0-5)
+        // Canonical: 0 (pt 1, idx 0) to 5 (pt 6, idx 5)
+        if (pos >= kWhiteHomeStart && pos <= kWhiteHomeEnd) {
+          return pos; // e.g. pos 0 (pt 1) -> 0; pos 5 (pt 6) -> 5
+        }
+      } else { // kOPlayerId
+        // Black's home: points 13-18 (indices 12-17)
+        // Canonical: 0 (pt 13, idx 12) to 5 (pt 18, idx 17)
+        if (pos >= kBlackHomeStart && pos <= kBlackHomeEnd) {
+          return pos - kBlackHomeStart; // e.g. pos 12 (pt 13) -> 0; pos 17 (pt 18) -> 5
+        }
+      }
+      return -1; // Not in home
+    }
+
   } // namespace long_narde
 } // namespace open_spiel

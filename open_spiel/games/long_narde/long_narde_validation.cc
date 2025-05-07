@@ -33,42 +33,41 @@ namespace open_spiel
 
     bool LongNardeState::IsLegalHeadMove(int player, int from_pos, bool moved_from_head_this_sequence) const
     {
-      bool is_head = IsHeadPos(player, from_pos);
-      if (!is_head)
+      if (!IsHeadPos(player, from_pos))
         return true; // Not a head move, always allowed by this rule.
 
-      // Head Rule 5: Only 1 checker may leave the head per turn.
-      // Exception: First turn double 6, 4, or 3 allows moving 2 checkers.
-
-      // Use the member variable 'is_first_turn_' which reflects the turn status
-      // at the beginning of the turn, not the current simulation state.
-      bool is_special_double_roll = false;
-
-      // *** Use initial_dice_ for this check ***
-      if (initial_dice_.size() >= 2)
-      {                                  // Check the roll at the start of the turn
-        int die1_val = initial_dice_[0]; // Raw value is fine here (1-6)
-        int die2_val = initial_dice_[1];
-        if (die1_val == die2_val && (die1_val == 3 || die1_val == 4 || die1_val == 6))
-        {
+      // If this is a head move, apply new logic incorporating head_move_occurred_this_full_turn_
+      
+      if (is_on_first_turn_) {
+        bool is_special_double_roll = false;
+        if (initial_dice_.size() >= 4 && // Need all 4 dice for initial check of doubles
+            initial_dice_[0] > 0 && initial_dice_[0] <= kNumDiceOutcomes && /* Check it's a real die value */
+            initial_dice_[0] == initial_dice_[1] && 
+            initial_dice_[0] == initial_dice_[2] && 
+            initial_dice_[0] == initial_dice_[3] && 
+            (initial_dice_[0] == 3 || initial_dice_[0] == 4 || initial_dice_[0] == 6)) {
           is_special_double_roll = true;
         }
-      }
 
-      // Check for first turn special doubles exception
-      // *** Use the MEMBER VARIABLE 'is_on_first_turn_' instead of the method IsFirstTurn(player) ***
-      if (is_on_first_turn_ && is_special_double_roll)
-      {
-        // On special first turn doubles, we can move up to two checkers from head.
-        // This function checks the validity of a *single* potential move.
-        // The limit of two moves is handled implicitly by the sequence generation
-        // (RecLegalMoves) and its depth limit combined with state updates.
-        return true; // Allow potential head move during special first turn double.
+        if (is_special_double_roll) {
+          // On special first turn doubles, up to two head moves are allowed in the entire turn.
+          if (!head_move_occurred_this_full_turn_) {
+            return true; // This is the first head move of the turn.
+          } else {
+            // One head move already occurred this turn.
+            // Allow this one if it's the first head move of the current sub-sequence.
+            return !moved_from_head_this_sequence; 
+          }
+        } else {
+          // First turn, but not a special double: only one head move allowed in the turn.
+          // It must also be the first in the current sub-sequence.
+          return !head_move_occurred_this_full_turn_ && !moved_from_head_this_sequence;
+        }
+      } else {
+        // Not on the first turn: only one head move allowed in the turn.
+        // It must also be the first in the current sub-sequence.
+        return !head_move_occurred_this_full_turn_ && !moved_from_head_this_sequence;
       }
-
-      // Normal case (not first turn OR not a special double roll):
-      // Can only move from head if no checker has moved from head *yet* this sequence.
-      return !moved_from_head_this_sequence;
     }
 
     /**
@@ -210,19 +209,34 @@ namespace open_spiel
     bool LongNardeState::LongNardeIsValidCheckerMove(int player, const LongNardeCheckerMove &move,
                                             bool moved_from_head_this_sequence) const
     {
+      // ADDING HYPER-SPECIFIC DEBUG FOR SCBO-1W scenario
+      if (player == kXPlayerId && move.pos == 0 && (move.die == 1 || move.die == 6) && AllInHome(player)) {
+        std::cout << "[DEBUG SCBO-1W IsValidMove ENTRY] P" << player << " Pos:" << move.pos << " Die:" << move.die << " ToPos:" << move.to_pos << " AllHome:true" << std::endl;
+      }
+
+      if (kDebugging) {
+        std::cout << "[DEBUG IsValidMove] Entry: P" << player << " Move:{pos:" << move.pos 
+                  << ", to:" << move.to_pos << ", die:" << move.die 
+                  << "}, moved_head_seq: " << moved_from_head_this_sequence << std::endl;
+      }
+
       // Check basic move properties
-      if (move.pos == kPassPos)
+      if (move.pos == kPassPos) {
+        if (kDebugging) std::cout << "[DEBUG IsValidMove] Return: true (Pass)" << std::endl;
         return true; // Pass is always valid conceptually
+      }
 
       // Validate inputs
-      SPIEL_CHECK_GE(move.pos, 0);
-      SPIEL_CHECK_LT(move.pos, kNumPoints);
-      SPIEL_CHECK_GT(board_[player][move.pos], 0); // Must have a checker to move
-      SPIEL_CHECK_GE(move.die, 1);
-      SPIEL_CHECK_LE(move.die, 6);
+      if (!(move.pos >= 0)) { return false; }
+      if (!(move.pos < kNumPoints)) { return false; }
+      if (!(board_[player][move.pos] > 0)) { 
+        return false; 
+      }
+      if (!(move.die >= 1)) { return false; }
+      if (!(move.die <= 6)) { return false; }
 
       // Calculate the potential destination position first.
-      int to_pos = GetToPos(player, move.pos, move.die);
+      int to_pos_calc = GetToPos(player, move.pos, move.die);
 
       // Check Bear Off conditions
       bool all_checkers_home = AllInHome(player); // Calculate once
@@ -231,66 +245,114 @@ namespace open_spiel
       if (all_checkers_home)
       {
         // --- Bear Off Validation ---
-        int pips_needed = (player == kXPlayerId) ? (move.pos + 1) : (move.pos - 12 + 1);
-
-        if (move.die == pips_needed)
-        {
-          return true; // Exact bear-off is always valid if all checkers are home
+        int pips_needed = (player == kXPlayerId) ? (move.pos + 1) : (GetCanonicalPoint(player, move.pos) + 1);
+        if (kDebugging) {
+            std::cout << "[DEBUG IsValidMove] BearOffCheck: P" << player << " Pos:" << move.pos << " Die:" << move.die 
+                      << " PipsNeeded:" << pips_needed << " AllHome:true" << std::endl;
         }
-        // If the die roll is less than needed, it might be a valid regular move within the home board.
-        // This case falls through to the regular move checks below.
-        else if (move.die > pips_needed)
+
+        if (move.die == pips_needed) // Exact bear-off
         {
-          int furthest_pos = FurthestCheckerInHome(player);
-          if (move.pos != furthest_pos)
-          {
-            return false; // Invalid bear-off (higher roll on non-furthest)
+          if (kDebugging) std::cout << "[DEBUG IsValidMove] ExactBearOff branch. move.die: " << move.die << " == pips_needed: " << pips_needed << std::endl;
+          // ADDING HYPER-SPECIFIC DEBUG FOR SCBO-1W scenario
+          if (player == kXPlayerId && move.pos == 0 && (move.die == 1 || move.die == 6) && AllInHome(player)) {
+            std::cout << "[DEBUG SCBO-1W IsValidMove EXACT BEAROFF CHECK] P" << player << " Pos:" << move.pos << " Die:" << move.die << " PipsNeeded:" << pips_needed << std::endl;
           }
-          // Valid bear-off move using a higher die roll on the furthest checker.
+          for (int i = 0; i < dice_.size(); ++i) {
+            if (IsDieUsable(i)) { 
+              int other_die_val = DiceValue(i);
+              if (kDebugging) {
+                std::cout << "[DEBUG IsValidMove] ExactBearOff HigherDieCheck: move.die:" << move.die 
+                          << ", other_die_slot:" << i << " (val:" << other_die_val << ", usable:true)" << std::endl;
+              }
+              if (other_die_val > move.die && other_die_val >= pips_needed) {
+                if (kDebugging) std::cout << "[DEBUG IsValidMove] Return: false (Higher die " << other_die_val << " could make exact/overkill bear_off for die " << move.die << ")" << std::endl;
+                // ADDING HYPER-SPECIFIC DEBUG FOR SCBO-1W scenario
+                if (player == kXPlayerId && move.pos == 0 && move.die == 1 && other_die_val == 6 && AllInHome(player)) {
+                    std::cout << "[DEBUG SCBO-1W IsValidMove DECISION] Die 1 invalidated by Die 6 for P0, Pos0. Returning false." << std::endl;
+                }
+                return false; 
+              }
+            }
+          }
+          if (move.to_pos != kBearOffPos) { 
+              if (kDebugging) std::cout << "[DEBUG IsValidMove] Return: false (Exact bear-off but to_pos != kBearOffPos)" << std::endl;
+              return false; 
+          }
+          if (kDebugging) std::cout << "[DEBUG IsValidMove] Return: true (Exact bear-off, no higher die conflict)" << std::endl;
+          // ADDING HYPER-SPECIFIC DEBUG FOR SCBO-1W scenario
+          if (player == kXPlayerId && move.pos == 0 && (move.die == 1 || move.die == 6) && AllInHome(player)) {
+            std::cout << "[DEBUG SCBO-1W IsValidMove FINAL RETURN TRUE] For P" << player << " Pos:" << move.pos << " Die:" << move.die << std::endl;
+          }
+          return true; 
+        }
+        else if (move.die > pips_needed) // Using a higher die than needed
+        {
+          if (kDebugging) std::cout << "[DEBUG IsValidMove] OverkillBearOff branch. move.die: " << move.die << " > pips_needed: " << pips_needed << std::endl;
+          if (move.pos != FurthestCheckerInHome(player)) {
+            if (kDebugging) std::cout << "[DEBUG IsValidMove] Return: false (Overkill on non-furthest)" << std::endl;
+            return false; 
+          }
+          if (move.to_pos != kBearOffPos) { 
+              if (kDebugging) std::cout << "[DEBUG IsValidMove] Return: false (Overkill bear-off but to_pos != kBearOffPos)" << std::endl;
+              return false; 
+          }
+          if (kDebugging) std::cout << "[DEBUG IsValidMove] Return: true (Overkill on furthest)" << std::endl;
           return true;
         }
-      }
-
-      // --- Regular Move Check (or move within home board if bear-off conditions not met) ---
-      bool is_target_off_board = IsOff(player, to_pos);
-      if (is_target_off_board)
-      {
-        return false;
-      }
-      if (to_pos < 0 || to_pos >= kNumPoints)
-      {
-        return false;
-      }
-
-      // Check opponent occupancy at the calculated on-board destination.
-      if (board(Opponent(player), to_pos) > 0)
-      {
-        return false;
-      }
-
-      // Check Head Rule
-      if (IsHeadPos(player, move.pos))
-      {
-        // Ensure GetToPos calculated correctly for head moves initially
-        SPIEL_CHECK_TRUE(to_pos >= 0 && to_pos < kNumPoints);
-        if (!IsLegalHeadMove(player, move.pos, moved_from_head_this_sequence))
-        {
-          return false;
+        else
+        { // move.die < pips_needed
+          if (kDebugging) std::cout << "[DEBUG IsValidMove] Die < PipsNeeded for bear-off. move.die: " << move.die << " < pips_needed: " << pips_needed << std::endl;
+          if (move.to_pos == kBearOffPos) {
+             if (kDebugging) std::cout << "[DEBUG IsValidMove] Return: false (Attempted bear-off with insufficient die)" << std::endl;
+             return false;
+          }
         }
       }
+      // else (not all checkers home), if move.to_pos is kBearOffPos, it's an error caught later.
 
-      if (player == kOPlayerId && move.pos >= kBlackHomeStart && to_pos < kBlackHomeStart)
-      {
+      // If we reach here, it's either a regular move, or a move within home that wasn't a direct bear-off.
+      // Ensure move.to_pos is consistent with to_pos_calc for non-bear-off, and not off-board.
+      if (move.to_pos == kBearOffPos) {
+          // If trying to bear_off but all_checkers_home was false, it's invalid.
+          if (!all_checkers_home) return false;
+          // If all_checkers_home is true, but previous logic didn't return true, it's an invalid bear-off.
+          return false; 
+      }
+      
+      // Regular move checks (destination must be on board)
+      if (IsOff(player, move.to_pos) || move.to_pos < 0 || move.to_pos >= kNumPoints) {
+          return false; // Calculated to_pos is off board or invalid, but not a valid bear-off context
+      }
+      // And calculated to_pos from GetToPos must match move.to_pos for non-bear-off moves.
+      if (to_pos_calc != move.to_pos) {
+          return false;
+      }
+
+      // Head Rule
+      bool legal_head_move = IsLegalHeadMove(player, move.pos, moved_from_head_this_sequence);
+      if (!legal_head_move) {
         return false;
       }
 
-      // Check bridge rule
-      if (WouldFormBlockingBridge(player, move.pos, to_pos))
-      {
-        return false; // Move would create an illegal bridge
+      // Opponent Occupancy
+      if (board_[Opponent(player)][move.to_pos] > 0) {
+        return false;
       }
 
-      return true; // Regular move (or move within home) is valid
+      // Bridge Rule
+      bool would_block = WouldFormBlockingBridge(player, move.pos, move.to_pos);
+      if (would_block) {
+        if (kDebugging) std::cout << "[DEBUG IsValidMove] Return: false (WouldFormBlockingBridge)" << std::endl;
+        return false;
+      }
+
+      if (kDebugging) std::cout << "[DEBUG IsValidMove] Return: true (All checks passed)" << std::endl;
+      // ADDING HYPER-SPECIFIC DEBUG FOR SCBO-1W scenario
+      if (player == kXPlayerId && move.pos == 0 && (move.die == 1 || move.die == 6) && AllInHome(player)) {
+            std::cout << "[DEBUG SCBO-1W IsValidMove FALLTHROUGH RETURN TRUE] For P" << player << " Pos:" << move.pos << " Die:" << move.die << std::endl;
+      }
+      return true; // All checks passed
     }
 
     bool LongNardeState::ValidateAction(Action action) const
@@ -461,18 +523,6 @@ namespace open_spiel
 
     // ===== Bridge Rule Checks =====
 
-    // Returns the actual die value (1-6) for a given index in dice_.
-    // Handles used dice markers.
-    int LongNardeState::DiceValue(int i) const
-    {
-      SPIEL_CHECK_GE(i, 0);
-      SPIEL_CHECK_LT(i, dice_.size()); // dice_.size() is now 4
-      int val = dice_[i];
-      if (val == 0)
-        return 0; // 0 represents an invalid/unused slot
-      return (val > kNumDiceOutcomes) ? (val - kNumDiceOutcomes) : val;
-    }
-
     // Checks if the die at the specified index in dice_ is usable.
     bool LongNardeState::IsDieUsable(int index) const
     {
@@ -495,3 +545,4 @@ namespace open_spiel
 
   } // namespace long_narde
 } // namespace open_spiel
+

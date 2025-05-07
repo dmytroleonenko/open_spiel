@@ -1,5 +1,4 @@
-#ifndef OPEN_SPIEL_GAMES_LONG_NARDE_H_
-#define OPEN_SPIEL_GAMES_LONG_NARDE_H_
+#pragma once
 
 #include <array>
 #include <memory>
@@ -53,16 +52,16 @@ namespace open_spiel
     inline const std::vector<std::vector<int>> kChanceOutcomeValues = {
         {1, 2}, {1, 3}, {1, 4}, {1, 5}, {1, 6}, {2, 3}, {2, 4}, {2, 5}, {2, 6}, {3, 4}, {3, 5}, {3, 6}, {4, 5}, {4, 6}, {5, 6}, {1, 1}, {2, 2}, {3, 3}, {4, 4}, {5, 5}, {6, 6}};
 
-    inline constexpr const int kNumPlayers = 2;
-    inline constexpr const int kNumChanceOutcomes = 21;
-    inline constexpr const int kNumPoints = 24;
-    inline constexpr const int kNumDiceOutcomes = 6;
-    inline constexpr const int kXPlayerId = 0; // White player
-    inline constexpr const int kOPlayerId = 1; // Black player
-    inline constexpr const int kPassPos = -1;
+    inline constexpr int kNumPlayers = 2;
+    inline constexpr int kNumChanceOutcomes = 21;
+    inline constexpr int kNumPoints = 24;
+    inline constexpr int kNumDiceOutcomes = 6;
+    inline constexpr int kXPlayerId = 0; // White player
+    inline constexpr int kOPlayerId = 1; // Black player
+    inline constexpr int kPassPos = -1;
 
     // Define the die value to use for pass moves
-    inline constexpr const int kPassDieValue = 1;
+    inline constexpr int kPassDieValue = 1;
 
     // Move CheckerMove struct definition before its usage
     struct LongNardeCheckerMove
@@ -80,10 +79,6 @@ namespace open_spiel
       constexpr LongNardeCheckerMove(int _pos, int _to_pos, int _die)
           : pos(_pos), to_pos(_to_pos), die(_die) {}
 
-      // Legacy constructor for compatibility
-      constexpr LongNardeCheckerMove(int _pos, int _die)
-          : pos(_pos), to_pos(-1), die(_die) {}
-
       bool operator<(const LongNardeCheckerMove &rhs) const
       {
         if (pos != rhs.pos)
@@ -100,49 +95,44 @@ namespace open_spiel
     };
 
     // Constant pass move to avoid repeated construction
-    inline constexpr const LongNardeCheckerMove kPassMove(kPassPos, kPassPos, kPassDieValue);
+    inline constexpr LongNardeCheckerMove kPassMove(kPassPos, kPassPos, kPassDieValue);
 
     // Constant vector of two pass moves
     inline const std::vector<LongNardeCheckerMove> kDoublePassMove = {kPassMove, kPassMove};
 
     // Special constant for human-readable output of borne-off checkers
-    inline constexpr const int kNumOffPosHumanReadable = -2;
+    inline constexpr int kNumOffPosHumanReadable = -2;
 
     // Number of checkers per player
-    inline constexpr const int kNumCheckersPerPlayer = 15;
+    inline constexpr int kNumCheckersPerPlayer = 15;
 
     // Debugging flag
-    inline constexpr const bool kDebugging = false;
+    inline constexpr bool kDebugging = true;
 
     // Head positions for each player
-    inline constexpr const int kWhiteHeadPos = 23; // Point 24 (0-indexed)
-    inline constexpr const int kBlackHeadPos = 11; // Point 12 (0-indexed)
+    inline constexpr int kWhiteHeadPos = 23; // Point 24 (0-indexed)
+    inline constexpr int kBlackHeadPos = 11; // Point 12 (0-indexed)
 
     // Home regions for each player
-    inline constexpr const int kWhiteHomeStart = 0;  // Point 1 (0-indexed)
-    inline constexpr const int kWhiteHomeEnd = 5;    // Point 6 (0-indexed)
-    inline constexpr const int kBlackHomeStart = 12; // Point 13 (0-indexed)
-    inline constexpr const int kBlackHomeEnd = 17;   // Point 18 (0-indexed)
+    inline constexpr int kWhiteHomeStart = 0;  // Point 1 (0-indexed)
+    inline constexpr int kWhiteHomeEnd = 5;    // Point 6 (0-indexed)
+    inline constexpr int kBlackHomeStart = 12; // Point 13 (0-indexed)
+    inline constexpr int kBlackHomeEnd = 17;   // Point 18 (0-indexed)
 
-    inline constexpr const int kScorePos = 101;            // Special sentinel value for scored checkers
-    inline constexpr const int kBearOffPos = -1;           // Canonical value used internally for bearing off. Note: NOT the same as kPassPos.
-    inline constexpr const int kNumNonDoubleOutcomes = 15; // Number of non-double dice outcomes (e.g., 1-2, 1-3, ..., 5-6)
+    inline constexpr int kScorePos = 101;            // Special sentinel value for scored checkers
+    inline constexpr int kBearOffPos = -1;           // Canonical value used internally for bearing off. Note: NOT the same as kPassPos.
+    inline constexpr int kNumNonDoubleOutcomes = 15; // Number of non-double dice outcomes (e.g., 1-2, 1-3, ..., 5-6)
 
     // Action Encoding Space:
-    // The action encoding aims to represent all possible moves within a single integer.
-    // However, the current constant kNumDistinctActions (1250) seems inconsistent with
-    // the actual encoding logic implemented in long_narde.cc, which uses:
-    // 1. A base-150 system (`kDigitBase`) for combining two half-moves in non-double scenarios.
-    //    (Max action value roughly 2 * 150 * 150 = 45000)
-    // 2. A base-25 system (`kEncodingBaseDouble`) for encoding up to 4 checker positions during doubles.
-    //    (Max action value depends on kDoublesOffset + 25^4)
-    // The NumDistinctActions() method calculates the true maximum based on the implementation.
-    // This constant might be legacy or require revision.
-    inline constexpr const int kNumDistinctActions = 1250; // Potential maximum number of distinct actions. See comment above.
+    // With the new two-phase doubles handling and 1250 action ID space (2 * 25 * 25),
+    // this constant represents the fixed number of distinct actions per player decision point.
+    // Each decision (either the first two moves of a double, or the last two moves of a double,
+    // or up to two moves of a non-double) is encoded into one of these 1250 actions.
+    inline constexpr int kNumDistinctActions = 1250;
 
     // Base used to combine two half-move "digits" in the non-doubles encoding scheme.
     // Must be >= 150 to accommodate the max digit value (149).
-    // inline constexpr const int kDigitBase = 150; // Moved to long_narde.cc
+    // inline constexpr int kDigitBase = 150; // Moved to long_narde.cc
 
     // Since Long Narde doesn't have hitting, we only need to track:
     // 1) If a point is occupied (and how many checkers)
@@ -150,12 +140,17 @@ namespace open_spiel
     inline constexpr const int kBoardEncodingSize = kNumPoints * kNumPlayers;
 
     // The state encoding size includes:
-    // - Board encoding: kBoardEncodingSize
+    // - Board encoding: kBoardEncodingSize (kNumPoints * kNumPlayers)
     // - Scores for each player: 2 (1 per player)
-    // - Current player indicator: 2 (1 per player)
-    // - Dice values: 2
+    // - Current player indicator: 2 (1 per player, 0 or 1)
+    // - Dice values for current phase: 2 (actual values, 0 if not applicable)
+    // - Second phase of doubles indicator: 1 (0 or 1)
     inline constexpr const int kStateEncodingSize =
-        2 * kNumPlayers + kBoardEncodingSize + 2;
+        (2 * kNumPlayers) +       // Scores
+        kBoardEncodingSize +      // Board
+        2 +                       // Current player indicators (one-hot for player, one-hot for opponent)
+        2 +                       // Dice for current phase
+        1;                        // is_handling_second_phase_of_doubles_
     inline constexpr const char *kDefaultScoringType = "winloss_scoring";
 
     // Game scoring type, whether to allow final black move for potential tie
@@ -178,11 +173,11 @@ namespace open_spiel
       Action action;
       bool moved_from_head;
       TurnHistoryInfo(int _player, int _prev_player, std::vector<int> _dice,
-                      int _action,
+                      Action _action,
                       bool _moved_from_head)
           : player(_player),
             prev_player(_prev_player),
-            dice(_dice),
+            dice(std::move(_dice)),
             action(_action),
             moved_from_head(_moved_from_head) {}
     };
@@ -210,7 +205,7 @@ namespace open_spiel
       std::unique_ptr<State> Clone() const override;
 
       // Sets the game state
-      void SetState(int cur_player, bool double_turn, const std::vector<int> &dice,
+      void SetState(int cur_player, const std::vector<int> &dice,
                     const std::vector<int> &scores,
                     const std::vector<std::vector<int>> &board);
 
@@ -236,14 +231,15 @@ namespace open_spiel
         return (player == kXPlayerId ? x_turns_ : o_turns_);
       }
       int score(int player) const { return scores_[player]; }
-      int dice(int i) const { return dice_[i]; }
-      bool double_turn() const { return dice_[0] == dice_[2]; }
       bool moved_from_head() const { return moved_from_head_; }
 
       // Get the number of checkers on the board in the specified position belonging
       // to the specified player. The position can be kScorePos, but use score() to get the number
       // of checkers born off.
       int board(int player, int pos) const;
+
+      // Accessor for dice value at the given index. Alias for DiceValue().
+      int dice(int index) const { return DiceValue(index); }
 
       // Action encoding / decoding functions. Note, the converted checker moves
       // do not contain the hit information; use the AddHitInfo function to get the
@@ -322,6 +318,13 @@ namespace open_spiel
       std::vector<int> initial_dice_;                  // Dice rolled at start of player's turn (1-6)
       std::vector<TurnHistoryInfo> turn_history_info_; // Info needed for Undo.
 
+      // New state variables for two-phase doubles handling (Task #2.II)
+      bool is_handling_second_phase_of_doubles_ = false;
+      std::vector<std::vector<LongNardeCheckerMove>> current_turn_full_legal_sequences_cache_;
+      LongNardeCheckerMove first_phase_selected_move1_ = {kPassPos, kPassPos, 0}; // Die 0 indicates unassigned
+      LongNardeCheckerMove first_phase_selected_move2_ = {kPassPos, kPassPos, 0}; // Die 0 indicates unassigned
+      bool head_move_occurred_this_full_turn_ = false;
+
       int FurthestChecker(Player player) const; // Furthest checker from 0 (home)
 
       // Returns the position on the board for a given point number (1-24).
@@ -342,6 +345,9 @@ namespace open_spiel
       // Checks if the die at a specific *index* in the dice_ vector is usable.
       bool IsDieUsable(int index) const;
 
+      // ADDED: Declaration for IsUsed
+      bool IsUsed(int i) const; 
+
       // Returns the dice values as a string.
       std::string DiceToString() const;
 
@@ -356,10 +362,16 @@ namespace open_spiel
       const std::vector<int> &LongNardeInitialDice() const { return initial_dice_; }
       std::vector<int> &LongNardeMutableInitialDice() { return initial_dice_; }
 
+      // ADDED DECLARATION
+      int GetCanonicalPoint(Player player, int pos) const;
+
     protected:
       void DoApplyAction(Action move_id) override;
 
     private:
+      // Helper function to generate and cache all legal move sequences for the current turn state.
+      void GenerateAndCacheFullLegalSequences();
+
       // Add back the missing private helper method declarations for LegalActions
       std::vector<std::vector<LongNardeCheckerMove>> LongNardeGenerateMoveSequences(Player player) const;
       std::pair<std::vector<std::vector<LongNardeCheckerMove>>, int> LongNardeFilterBestMoveSequences(
@@ -388,8 +400,7 @@ namespace open_spiel
       friend void SetupBoardState(LongNardeState *state, Player player,
                                   const std::vector<std::vector<int>> &board_config,
                                   const std::vector<int> &scores);
-      friend void SetupDice(LongNardeState *state, const std::vector<int> &dice,
-                            bool double_turn);
+      friend void SetupDice(LongNardeState *state, const std::vector<int> &dice);
     };
 
     // Add an overload for the << operator for ScoringType to fix compilation errors
@@ -472,11 +483,7 @@ namespace open_spiel
     // constexpr int kNumPoints = 24;
     // constexpr int kBearOffPos = -1; // Special value for bearing off
     // constexpr int kPassPos = -2;    // Special value for a pass move component
-    // constexpr int kPassDieValue = 1; // Placeholder die value consumed by pass
-    // constexpr int kMaxGameLengthEst = 300; // Estimated max moves for history reservation
-    inline constexpr const int kMaxGameLengthEst = 300; // Added missing constant definition
+    inline constexpr int kMaxGameLengthEst = 300; // Added missing constant definition
 
   } // namespace long_narde
 } // namespace open_spiel
-
-#endif // OPEN_SPIEL_GAMES_LONG_NARDE_H_

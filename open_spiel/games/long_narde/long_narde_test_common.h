@@ -57,20 +57,20 @@ namespace open_spiel
     {
       SPIEL_CHECK_TRUE(state != nullptr);
       SPIEL_CHECK_EQ(board_config.size(), kNumPlayers);
-      // Ensure the input board config has the correct size (only indices 0-23)
-      SPIEL_CHECK_EQ(board_config[0].size(), kNumPoints); // kNumPoints is 24
-      SPIEL_CHECK_EQ(board_config[1].size(), kNumPoints); // kNumPoints is 24
+      SPIEL_CHECK_EQ(board_config[0].size(), kNumPoints);
+      SPIEL_CHECK_EQ(board_config[1].size(), kNumPoints);
 
-      // Direct manipulation (allowed via friend declaration in LongNardeState)
       state->board_ = board_config;
-      // Calculate scores internally
       state->scores_[0] = kNumCheckersPerPlayer - std::accumulate(state->board_[0].begin(), state->board_[0].end(), 0);
       state->scores_[1] = kNumCheckersPerPlayer - std::accumulate(state->board_[1].begin(), state->board_[1].end(), 0);
       state->cur_player_ = player;
-      // Reset turn-specific flags that SetState would normally handle
-      state->moved_from_head_ = false; // Default assumption
-      // Reset outcome_ to indicate game is not over and turns_
-      state->turns_ = 0; // Assuming 0 is a reasonable reset value for turns
+      state->moved_from_head_ = false;
+      state->turns_ = 0;
+
+      // Verify that no point has checkers from both players
+      for (int i = 0; i < kNumPoints; ++i) {
+        SPIEL_CHECK_FALSE(state->board_[kXPlayerId][i] > 0 && state->board_[kOPlayerId][i] > 0);
+      }
     }
 
     // Sets the dice roll for a given state.
@@ -79,51 +79,38 @@ namespace open_spiel
       SPIEL_CHECK_TRUE(state != nullptr);
       SPIEL_CHECK_EQ(dice.size(), 4); // Input vector MUST have 4 elements
 
-      // *** ADDED DEBUG LOG ***
-      if (kDebugging)
-      {
-        std::cout << "[DEBUG SetupDice] Input dice: {"
-                  << (dice.size() > 0 ? std::to_string(dice[0]) : "?") << ", "
-                  << (dice.size() > 1 ? std::to_string(dice[1]) : "?") << ", "
-                  << (dice.size() > 2 ? std::to_string(dice[2]) : "?") << ", "
-                  << (dice.size() > 3 ? std::to_string(dice[3]) : "?") << "}\n";
+      // Correctly set initial_dice_ as a 4-element vector
+      state->initial_dice_.assign(4, 0); // Initialize with four 0s
+      if (dice[0] > 0 && dice[0] == dice[1] && dice[0] == dice[2] && dice[0] == dice[3]) {
+        // Doubles roll: copy all four dice values
+        state->initial_dice_[0] = dice[0];
+        state->initial_dice_[1] = dice[1];
+        state->initial_dice_[2] = dice[2];
+        state->initial_dice_[3] = dice[3];
+      } else if (dice[0] > 0 && dice[1] > 0) {
+        // Non-doubles roll (or incomplete doubles, treat as non-double for initial_dice purpose)
+        // Store the actual first two dice values, others remain 0
+        state->initial_dice_[0] = dice[0]; // Higher die by convention if non-double
+        state->initial_dice_[1] = dice[1]; // Lower die by convention if non-double
+        // initial_dice_[2] and initial_dice_[3] remain 0
+      } else if (dice[0] > 0) {
+        // Only one die value provided in the first two slots (should not happen for valid test setups)
+        state->initial_dice_[0] = dice[0];
+        // initial_dice_[1], initial_dice_[2], initial_dice_[3] remain 0
       }
-      // *** END ADDED DEBUG LOG ***
+      // If dice[0] is 0, initial_dice_ remains {0,0,0,0} (e.g. before any roll)
 
-      // Direct manipulation (allowed via friend declaration)
-      state->dice_ = dice; // Assign the 4-element input vector
+      state->dice_ = dice;
 
-      // *** ADDED DEBUG LOG ***
-      if (kDebugging)
-      {
-        std::cout << "[DEBUG SetupDice] Assigned state->dice_: {"
-                  << (state->dice_.size() > 0 ? std::to_string(state->dice_[0]) : "?") << ", "
-                  << (state->dice_.size() > 1 ? std::to_string(state->dice_[1]) : "?") << ", "
-                  << (state->dice_.size() > 2 ? std::to_string(state->dice_[2]) : "?") << ", "
-                  << (state->dice_.size() > 3 ? std::to_string(state->dice_[3]) : "?") << "}\n";
-      }
-      // *** END ADDED DEBUG LOG ***
+      // Reset phase-specific state before generating sequences, similar to ProcessChanceRoll
+      state->is_handling_second_phase_of_doubles_ = false;
+      state->head_move_occurred_this_full_turn_ = false;
+      state->first_phase_selected_move1_ = {kPassPos, kPassPos, 0};
+      state->first_phase_selected_move2_ = {kPassPos, kPassPos, 0};
+      // current_turn_full_legal_sequences_cache_ will be cleared/rebuilt by GenerateAndCacheFullLegalSequences() below
 
-      // Also set initial_dice_ based on the first two elements (the roll)
-      state->initial_dice_.clear();
-      if (dice.size() >= 1)
-        state->initial_dice_.push_back(dice[0]);
-      if (dice.size() >= 2)
-        state->initial_dice_.push_back(dice[1]);
-      // Ensure initial_dice_ has exactly 2 elements, padding with 0 if needed (though input dice should have >= 2 valid rolls)
-      while (state->initial_dice_.size() < 2)
-      {
-        state->initial_dice_.push_back(0); // Should ideally not happen with valid inputs
-      }
-
-      // *** ADDED DEBUG LOG ***
-      if (kDebugging)
-      {
-        std::cout << "[DEBUG SetupDice] Assigned state->initial_dice_: {"
-                  << (state->initial_dice_.size() > 0 ? std::to_string(state->initial_dice_[0]) : "?") << ", "
-                  << (state->initial_dice_.size() > 1 ? std::to_string(state->initial_dice_[1]) : "?") << "}\n";
-      }
-      // *** END ADDED DEBUG LOG ***
+      // Populate full legal sequences cache so LegalActions works correctly in tests
+      state->GenerateAndCacheFullLegalSequences();
     }
 
     // Test functions from long_narde_test_pass.cc (or similar)

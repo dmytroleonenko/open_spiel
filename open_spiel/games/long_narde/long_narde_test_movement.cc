@@ -34,20 +34,20 @@ namespace open_spiel
         SPIEL_CHECK_EQ(lnstate->dice(0), 4);
         SPIEL_CHECK_EQ(lnstate->dice(1), 4);
 
-        // Special double: four moves of 4
-        // Move two checkers from head (23 -> 19), then move those two again (19 -> 15)
-        std::vector<Action> legal_actions = lnstate->LegalActions();
-        SPIEL_CHECK_FALSE(legal_actions.empty());
-
-        std::vector<LongNardeCheckerMove> checkers_moves = {
-            {kWhiteHeadPos, kWhiteHeadPos - 4, 4},     // 23 -> 19
-            {kWhiteHeadPos - 4, kWhiteHeadPos - 8, 4}, // 19 -> 15
+        // Special double: four moves in two-phase encoding, split into two actions
+        std::vector<LongNardeCheckerMove> phase1_moves = {
             {kWhiteHeadPos, kWhiteHeadPos - 4, 4},     // 23 -> 19
             {kWhiteHeadPos - 4, kWhiteHeadPos - 8, 4}  // 19 -> 15
         };
-        Action action = lnstate->LongNardeCheckerMovesToSpielMove(checkers_moves);
+        Action action1 = lnstate->LongNardeCheckerMovesToSpielMove(phase1_moves);
+        lnstate->ApplyAction(action1);
 
-        lnstate->ApplyAction(action);
+        std::vector<LongNardeCheckerMove> phase2_moves = {
+            {kWhiteHeadPos, kWhiteHeadPos - 4, 4},     // 23 -> 19
+            {kWhiteHeadPos - 4, kWhiteHeadPos - 8, 4}  // 19 -> 15
+        };
+        Action action2 = lnstate->LongNardeCheckerMovesToSpielMove(phase2_moves);
+        lnstate->ApplyAction(action2);
 
         SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos), 13);    // 15 - 2 = 13 left on head
         SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos - 4), 0); // 0 left on point 19
@@ -430,18 +430,23 @@ namespace open_spiel
         SetupBoardState(lnstate, kXPlayerId, test_board_with_scores);
         SetupDice(lnstate, {3, 5, 0, 0});
 
-        // Expecting only two half-moves: from point 24 with die 3 and die 5
         std::set<LongNardeCheckerMove> half_moves = lnstate->LongNardeGenerateAllHalfMoves(kXPlayerId, false);
 
         bool found_point24_die3 = false;
         bool found_point24_die5 = false;
-        for (const auto &move : half_moves)
-        {
-          if (move.pos == 23 && move.die == 3)
-            found_point24_die3 = true;
-          if (move.pos == 23 && move.die == 5)
-            found_point24_die5 = true;
+
+        // Iterate through generated half_moves to find the expected ones
+        for (const auto& move : half_moves) {
+            if (move.pos == kWhiteHeadPos) { // kWhiteHeadPos is 23 (point 24)
+                if (move.die == 3) {
+                    found_point24_die3 = true;
+                }
+                if (move.die == 5) {
+                    found_point24_die5 = true;
+                }
+            }
         }
+
         SPIEL_CHECK_EQ(half_moves.size(), 2);
         SPIEL_CHECK_TRUE(found_point24_die3);
         SPIEL_CHECK_TRUE(found_point24_die5);

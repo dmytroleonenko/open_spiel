@@ -4,6 +4,7 @@
 #include <memory>   // For std::unique_ptr, std::make_unique
 #include <iostream> // For std::cout (used in Clone #ifndef NDEBUG)
 #include "open_spiel/abseil-cpp/absl/types/span.h"
+#include <algorithm>
 
 namespace open_spiel
 {
@@ -42,90 +43,52 @@ namespace open_spiel
         return;
       }
 
-      std::vector<LongNardeCheckerMove> original_moves = LongNardeSpielMoveToCheckerMoves(cur_player_, move_id);
-      std::vector<LongNardeCheckerMove> filtered_moves;
-      int head_pos = (cur_player_ == kXPlayerId) ? kWhiteHeadPos : kBlackHeadPos;
-      bool used_head_move = false;
+      std::vector<LongNardeCheckerMove> decoded_moves = LongNardeSpielMoveToCheckerMoves(cur_player_, move_id);
+      SPIEL_CHECK_EQ(decoded_moves.size(), 2); // New encoding always gives 2 moves (passes if needed)
 
-      for (const auto &m : original_moves)
+      bool local_head_move_occurred_this_phase = false;
+      for (const auto &m : decoded_moves)
       {
-        if (m.pos == kPassPos)
-        {
-          filtered_moves.push_back(m);
-          continue;
-        }
-
-        // Allow second head move only if:
-        // (A) It is the first turn AND dice are double 6, 4, or 3, OR
-        // (B) Not first turn => no second head move.
-        // This check remains as a safeguard, although LegalActions should prevent invalid sequences.
-        if (IsHeadPos(cur_player_, m.pos) && used_head_move)
-        {
-          // Use is_on_first_turn_ member variable and initial_dice_
-          if (is_on_first_turn_)
-          {
-            // Check initial_dice_ for special doubles
-            bool is_special_double = false;
-            if (initial_dice_.size() >= 2 && initial_dice_[0] > 0 && initial_dice_[0] == initial_dice_[1])
-            {
-              int dieVal = initial_dice_[0];
-              if (dieVal == 6 || dieVal == 4 || dieVal == 3)
-              {
-                is_special_double = true;
-              }
+        if (m.pos != kPassPos) { // Only apply non-pass moves
+            LongNardeApplyCheckerMove(cur_player_, m);
+            if (IsHeadPos(cur_player_, m.pos)) {
+                local_head_move_occurred_this_phase = true;
             }
-            if (!is_special_double)
-            {
-              // This move is invalid in the sequence, replace with Pass
-              // Note: LegalActions should ideally not generate such sequences.
-              filtered_moves.push_back(kPassMove);
-              continue;
-            }
-          }
-          else
-          {
-            // Normal turns: only one checker can leave the head.
-            // Replace invalid second head move with Pass.
-            filtered_moves.push_back(kPassMove);
-            continue;
-          }
-        }
-        if (IsHeadPos(cur_player_, m.pos))
-        {
-          used_head_move = true;
-          // moved_from_head_ is set within ApplyCheckerMove now
-        }
-        filtered_moves.push_back(m); // Add the original move if it passed checks
-      }
-
-      // Apply all valid moves from the filtered sequence
-      for (const auto &m : filtered_moves)
-      {
-        if (m.pos != kPassPos)
-        {
-          // ApplyCheckerMove internally checks validity again (without head rule)
-          // and sets moved_from_head_
-          LongNardeApplyCheckerMove(cur_player_, m);
         }
       }
+      if (local_head_move_occurred_this_phase) {
+          head_move_occurred_this_full_turn_ = true;
+      }
 
-      // Store the state before applying the move for undo purposes.
       turn_history_info_.push_back(
           TurnHistoryInfo(cur_player_, prev_player_, dice_, move_id,
-                          moved_from_head_));
+                          head_move_occurred_this_full_turn_)); // Use the full turn flag
 
-      // Clear dice *before* advancing to the next player/chance node
-      dice_.assign(4, 0); // NEW WAY - Reset dice slots to 0, maintaining size 4
+      bool was_doubles_roll = (initial_dice_.size() == 4 && 
+                               initial_dice_[0] > 0 && 
+                               initial_dice_[0] == initial_dice_[1] && 
+                               initial_dice_[0] == initial_dice_[2] && 
+                               initial_dice_[0] == initial_dice_[3]);
 
-      // Reset head move flag here as well, before AdvanceToNextPlayer might use it indirectly
-      moved_from_head_ = false;
+      int usable_dice_remaining = 0;
+      for(int i = 0; i < dice_.size(); ++i) {
+          if (DiceValue(i) > 0 && !IsUsed(i)) {
+              usable_dice_remaining++;
+          }
+      }
 
-      // Determine next player state (sets cur_player_ to kChancePlayerId and stores next actual player in prev_player_)
-      LongNardeAdvanceToNextPlayer(filtered_moves, move_id);
-
-      // No need for further updates to cur_player_ or prev_player_ here, AdvanceToNextPlayer handles it.
-      // No need to clear dice_ again, done above.
-      // No need to reset moved_from_head_ again, done above.
+      if (was_doubles_roll && !is_handling_second_phase_of_doubles_ && usable_dice_remaining > 0)
+      {
+        is_handling_second_phase_of_doubles_ = true;
+        first_phase_selected_move1_ = decoded_moves[0];
+        first_phase_selected_move2_ = decoded_moves[1];
+      }
+      else
+      {
+        is_handling_second_phase_of_doubles_ = false;
+        dice_.assign(4, 0); 
+        LongNardeAdvanceToNextPlayer(decoded_moves, move_id);
+      }
     }
 
     /**
@@ -141,64 +104,49 @@ namespace open_spiel
      */
     void LongNardeState::UndoAction(Player player, Action action)
     {
+      SPIEL_CHECK_FALSE(turn_history_info_.empty());
       TurnHistoryInfo info = turn_history_info_.back();
       turn_history_info_.pop_back();
 
-      // Restore state
       moved_from_head_ = info.moved_from_head;
       cur_player_ = info.player;
       prev_player_ = info.prev_player;
-      // dice_ = info.dice; // OLD WAY - Could restore a 2-element vector
-      // NEW WAY: Restore dice values while ensuring dice_ remains size 4
-      dice_.assign(4, 0); // Reset to 4 zeros
-      for (size_t i = 0; i < info.dice.size() && i < 4; ++i)
-      {
-        dice_[i] = info.dice[i]; // Copy values from history (up to 4)
-      }
+      
+      SPIEL_CHECK_EQ(info.dice.size(), 4);
+      dice_ = info.dice; 
 
-      if (player == kChancePlayerId && info.dice.empty())
+      if (player == kChancePlayerId)
       {
-        cur_player_ = kChancePlayerId;
-        prev_player_ = kChancePlayerId;
-        turns_ = -1;
+        if (info.prev_player == kChancePlayerId && turns_ == 0) { 
+            turns_ = -1;
+            initial_dice_.assign(4,0);
+        }
         return;
       }
 
-      if (player != kChancePlayerId)
-      {
-        if (cur_player_ == kTerminalPlayerId)
-        {
-          cur_player_ = player;
-        }
-        std::vector<LongNardeCheckerMove> moves = LongNardeSpielMoveToCheckerMoves(player, action);
-
-        // Undo moves in reverse order
-        for (int i = moves.size() - 1; i >= 0; --i)
-        {
-          LongNardeUndoCheckerMove(player, moves[i]);
-        }
-
-        // Determine if the undone roll was doubles based on restored dice
-        bool was_doubles = (info.dice.size() == 4 && info.dice[0] > 0 &&
-                            info.dice[0] == info.dice[1] &&
-                            info.dice[1] == info.dice[2] &&
-                            info.dice[2] == info.dice[3]);
-
-        // Only decrement turn counters if it wasn't a doubles turn
-        // (since doubles don't increment the turn counter initially)
-        if (!was_doubles)
-        {
-          turns_--;
-          if (player == kXPlayerId)
-          {
-            x_turns_--;
-          }
-          else if (player == kOPlayerId)
-          {
-            o_turns_--;
-          }
-        }
+      if (cur_player_ == kTerminalPlayerId) {
+        cur_player_ = player;
       }
+      std::vector<LongNardeCheckerMove> moves = LongNardeSpielMoveToCheckerMoves(player, action);
+
+      for (int i = moves.size() - 1; i >= 0; --i)
+      {
+        LongNardeUndoCheckerMove(player, moves[i]);
+      }
+
+      bool was_doubles_roll = info.dice[0] > 0 &&
+                              info.dice[0] <= kNumDiceOutcomes && 
+                              info.dice[0] == info.dice[1] &&
+                              info.dice[0] == info.dice[2] &&
+                              info.dice[0] == info.dice[3];
+
+      if (!was_doubles_roll)
+      {
+        if (turns_ > 0) turns_--;
+        if (player == kXPlayerId && x_turns_ > 0) x_turns_--;
+        else if (player == kOPlayerId && o_turns_ > 0) o_turns_--;
+      }
+      initial_dice_ = info.dice; 
     }
 
     /**
@@ -263,9 +211,17 @@ namespace open_spiel
       *value_it++ = (cur_player_ == player) ? 1.0f : 0.0f;   // Player's turn?
       *value_it++ = (cur_player_ == opponent) ? 1.0f : 0.0f; // Opponent's turn? (Should be redundant if not chance/terminal)
 
-      // Dice (normalize? 0-6?) - Keep as raw values for now
-      *value_it++ = (dice_.size() >= 1) ? DiceValue(0) : 0.0f;
-      *value_it++ = (dice_.size() >= 2) ? DiceValue(1) : 0.0f;
+      // Dice values for the current phase
+      if (is_handling_second_phase_of_doubles_) {
+        *value_it++ = (dice_.size() >= 3) ? DiceValue(2) : 0.0f; // Die 3 for current phase
+        *value_it++ = (dice_.size() >= 4) ? DiceValue(3) : 0.0f; // Die 4 for current phase
+      } else {
+        *value_it++ = (dice_.size() >= 1) ? DiceValue(0) : 0.0f; // Die 1 for current phase
+        *value_it++ = (dice_.size() >= 2) ? DiceValue(1) : 0.0f; // Die 2 for current phase
+      }
+
+      // Second phase of doubles indicator
+      *value_it++ = is_handling_second_phase_of_doubles_ ? 1.0f : 0.0f;
 
       // Check if iterator reached the end
       SPIEL_CHECK_EQ(value_it, values.end());
@@ -406,71 +362,59 @@ namespace open_spiel
      *
      * @param move_id The encoded chance action representing the dice roll.
      */
-    void LongNardeState::ProcessChanceRoll(Action move_id)
+    void LongNardeState::ProcessChanceRoll(Action outcome)
     {
-      SPIEL_CHECK_GE(move_id, 0);
-      SPIEL_CHECK_LT(move_id, game_->MaxChanceOutcomes());
+      SPIEL_CHECK_GE(outcome, 0);
+      SPIEL_CHECK_LT(outcome, kNumChanceOutcomes);
 
-      // Record the chance outcome in turn history.
-      turn_history_info_.push_back(
-          TurnHistoryInfo(kChancePlayerId, prev_player_, dice_, move_id,
-                          moved_from_head_));
+      // Determine which player this roll is for.
+      Player player_for_this_roll;
+      // In Long Narde, White (kXPlayerId) always takes the first turn after the initial roll determination phase.
+      // The 'turns_ == -1' condition signifies the game's very first roll (for determining who goes first / their dice).
+      // 'this->prev_player_' stores the player who made the last *actual* (non-chance) move.
+      if (turns_ == -1 || this->prev_player_ == kChancePlayerId) { 
+          player_for_this_roll = kXPlayerId; // White (Player 0) gets the first turn.
+      } else {
+          player_for_this_roll = NextPlayerRoundRobin(this->prev_player_, num_players_);
+      }
+      
+      this->prev_player_ = this->cur_player_; // Current cur_player_ is kChancePlayerId; store that Chance was chronologically previous to the active player's turn.
+      this->cur_player_ = player_for_this_roll; // Set the actual player for this turn.
 
-      // Ensure we have no dice set yet, then apply this new roll.
-      RollDice(move_id); // Sets dice_ based on outcome
-
-      // *** Store the dice roll at the start of the turn ***
-      initial_dice_ = dice_;
-
-      // Decide which player moves next.
-      if (turns_ < 0)
-      {
-        // Initial state: White always starts in this implementation.
+      if (turns_ == -1) { 
         turns_ = 0;
-        cur_player_ = kXPlayerId; // White goes first
-        is_on_first_turn_ = true; // Set flag for X's first turn
       }
-      else
-      {
-        // For subsequent turns, the player who should move was determined by
-        // AdvanceToNextPlayer and stored in prev_player_ by DoApplyAction.
-        cur_player_ = prev_player_;
+      
+      is_on_first_turn_ = (board(cur_player_, (cur_player_ == kXPlayerId ? kWhiteHeadPos : kBlackHeadPos)) == kNumCheckersPerPlayer);
 
-        // Set is_on_first_turn_ correctly for the upcoming player turn
-        is_on_first_turn_ = (turns_ == 0 && cur_player_ == kXPlayerId) || (turns_ == 1 && cur_player_ == kOPlayerId);
+      current_turn_full_legal_sequences_cache_.clear();
+      first_phase_selected_move1_ = {kPassPos, kPassPos, 0};
+      first_phase_selected_move2_ = {kPassPos, kPassPos, 0};
+      is_handling_second_phase_of_doubles_ = false;
+      head_move_occurred_this_full_turn_ = false;
+
+      const std::vector<int>& roll = kChanceOutcomeValues[outcome];
+      SPIEL_CHECK_EQ(roll.size(), 2);
+
+      dice_.assign(4, 0);
+      initial_dice_.assign(4, 0);
+
+      if (roll[0] == roll[1]) {
+        dice_[0] = roll[0];
+        dice_[1] = roll[0];
+        dice_[2] = roll[0];
+        dice_[3] = roll[0];
+        initial_dice_ = dice_;
+      } else {
+        // Non-double roll: use std::max/min for high/low die assignment
+        dice_[0] = std::max(roll[0], roll[1]);
+        dice_[1] = std::min(roll[0], roll[1]);
+        dice_[2] = 0;
+        dice_[3] = 0;
+        initial_dice_ = dice_;
       }
 
-      prev_player_ = kChancePlayerId; // Mark that the previous phase *was* chance
-      moved_from_head_ = false;       // Reset for the start of the new player's turn
-
-      // Check special condition for last-roll tie possibility
-      // If player X just finished (score=15) and player O has 14 or 15 checkers off,
-      // AND player O is the current player (meaning it's their turn to roll for the tie),
-      // set the flag.
-      if (scoring_type_ == ScoringType::kWinLossTieScoring)
-      {
-        if (scores_[kXPlayerId] == kNumCheckersPerPlayer &&
-            scores_[kOPlayerId] >= 14 && scores_[kOPlayerId] < kNumCheckersPerPlayer &&
-            cur_player_ == kOPlayerId)
-        { // Check if O is about to roll for the tie
-          allow_last_roll_tie_ = true;
-        }
-        // Symmetrical check if O finished and X might tie
-        else if (scores_[kOPlayerId] == kNumCheckersPerPlayer &&
-                 scores_[kXPlayerId] >= 14 && scores_[kXPlayerId] < kNumCheckersPerPlayer &&
-                 cur_player_ == kXPlayerId)
-        { // Check if X is about to roll for the tie
-          allow_last_roll_tie_ = true;
-        }
-        else
-        {
-          allow_last_roll_tie_ = false; // Reset if conditions not met
-        }
-      }
-      else
-      {
-        allow_last_roll_tie_ = false; // Rule not active
-      }
+      GenerateAndCacheFullLegalSequences();
     }
 
     void LongNardeState::LongNardeAdvanceToNextPlayer(const std::vector<LongNardeCheckerMove> &applied_moves,
@@ -478,8 +422,6 @@ namespace open_spiel
     {
       Player moving_player = cur_player_; // Player who just finished moving
 
-      // Determine if the roll was doubles based on the initial roll for this turn
-      // Use initial_dice_ as dice_ gets cleared before this is called.
       bool was_doubles_roll = (initial_dice_.size() == 4 && initial_dice_[0] > 0 && initial_dice_[0] == initial_dice_[1] && initial_dice_[1] == initial_dice_[2] && initial_dice_[2] == initial_dice_[3]);
 
       int num_actual_moves = 0;
@@ -494,23 +436,18 @@ namespace open_spiel
 
       Player next_player_id; // Who will play AFTER the next dice roll?
 
-      // ALWAYS advance to the next player
       next_player_id = NextPlayerRoundRobin(moving_player, num_players_);
       is_on_first_turn_ = false; // Can never be the first turn after the first move sequence
-      // Always increment turn counters
       turns_++;
       if (next_player_id == kXPlayerId)
         x_turns_++;
       else
         o_turns_++; // Increment for the player whose turn is STARTING
 
-      // Reset head move flag for the upcoming turn
       moved_from_head_ = false;
 
-      // Store the player who will play *after* the chance node
-      prev_player_ = next_player_id;
+      prev_player_ = moving_player; // Correctly set prev_player_ to the player who just moved
 
-      // Set the current player to Chance to trigger dice roll on next ApplyAction
       cur_player_ = kChancePlayerId;
     }
 
