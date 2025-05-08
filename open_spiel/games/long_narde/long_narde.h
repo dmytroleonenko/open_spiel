@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include <cstdint>
 
 #include "open_spiel/spiel.h"
 
@@ -253,6 +254,7 @@ namespace open_spiel
       Action TranslateAction(int from1, int from2, bool use_high_die_first) const;
 
       bool WouldFormBlockingBridge(int player, int from_pos, int to_pos) const;
+      bool WouldFormBlockingBridgeOptim(int player, int from_pos, int to_pos) const;
       bool IsHeadPos(int player, int pos) const;
       bool IsFirstTurn(int player) const;
       bool IsLegalHeadMove(int player, int from_pos, bool moved_from_head_this_sequence) const;
@@ -308,7 +310,12 @@ namespace open_spiel
       // Helper function: checks if 'player' has any checker in [startPos, endPos] inclusive.
       bool HasAnyChecker(int player, int startPos, int endPos) const;
       // Directly expose board_ for testing/debugging
-      std::vector<std::vector<int>> board_; // Checkers for each player on points.
+      std::vector<std::vector<int>> board_;  // Checkers for each player on points.
+
+      // Add bitboard occupancy and checker count fields
+      uint32_t player_occupancy_[2];       // Bitboard occupancy for each player
+      int checkers_on_board_count_[2];     // Count of checkers on board for each player
+
       std::vector<int> dice_;               // Current dice roll.
       std::vector<int> scores_;             // Number of checkers borne off by each player.
       Player cur_player_;                   // Player whose turn it is.
@@ -476,6 +483,10 @@ namespace open_spiel
     // constexpr int kPassDieValue = 1; // Placeholder die value consumed by pass
     // constexpr int kMaxGameLengthEst = 300; // Estimated max moves for history reservation
     inline constexpr const int kMaxGameLengthEst = 300; // Added missing constant definition
+
+    // Precomputed masks of opponent positions ahead of each point for each player.
+    // opponent_ahead_mask_[player][pos]: bitmask of points ahead of 'pos' in player's movement direction.
+    extern uint32_t opponent_ahead_mask_[kNumPlayers][kNumPoints];
 
   } // namespace long_narde
 } // namespace open_spiel

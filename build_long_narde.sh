@@ -9,12 +9,12 @@ NC='\033[0m' # No Color
 
 # Default build type
 export BUILD_TYPE="Debug"
-export CXX_FLAGS="-g -O0"
+export CXX_FLAGS="-g -O0 -pg"
 
 # Check for release build argument
 if [[ "$1" == "--release" ]]; then
   BUILD_TYPE="Release"
-  CXX_FLAGS="-O3"
+  CXX_FLAGS="-O3 -pg"
   echo -e "${YELLOW}Building in Release mode with -O3 optimization${NC}"
 else
   echo -e "${YELLOW}Building in Debug mode with -g -O0 flags${NC}"

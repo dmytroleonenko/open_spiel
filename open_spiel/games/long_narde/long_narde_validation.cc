@@ -5,6 +5,7 @@
 #include <algorithm> // For std::find
 #include <iostream>  // For kDebugging cout
 #include <memory>    // For unique_ptr in ValidateAction
+#include <cstdint>
 
 #include "open_spiel/spiel_utils.h"
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h" // For debug output
@@ -182,9 +183,50 @@ namespace open_spiel
     // Checks the current board state for an illegal bridge for the given player.
     bool LongNardeState::HasIllegalBridge(int player) const
     {
-      // This just calls WouldFormBlockingBridge without simulating a move.
-      // We pass invalid from/to positions to check the *current* board state.
-      return WouldFormBlockingBridge(player, /*from_pos=*/-1, /*to_pos=*/-1);
+      // Use optimized bridge check only
+      return WouldFormBlockingBridgeOptim(player, /*from_pos=*/-1, /*to_pos=*/-1);
+    }
+
+    // Stub for optimized bridge check to run in parallel with original
+    bool LongNardeState::WouldFormBlockingBridgeOptim(int player, int from_pos, int to_pos) const
+    {
+      // If from/to are both negative, this is a query for the current board state: use original
+      if (from_pos < 0 && to_pos < 0) {
+        return WouldFormBlockingBridge(player, from_pos, to_pos);
+      }
+      // Early exit: moves off-board (bear-off/pass) cannot form a blocking bridge
+      if (to_pos < 0 || to_pos >= kNumPoints) {
+        return false;
+      }
+      // If fewer than 6 checkers remain on board, cannot form a 6-point block
+      if (checkers_on_board_count_[player] < 6) {
+        return false;
+      }
+      int opponent = Opponent(player);
+      // If opponent has no checkers on board, no bridge can trap them
+      if (checkers_on_board_count_[opponent] == 0) {
+        return false;
+      }
+      // Build hypothetical occupancy bitboard for player
+      uint32_t occ = player_occupancy_[player];
+      if (from_pos >= 0 && from_pos < kNumPoints) {
+        occ &= ~(1u << from_pos);
+      }
+      occ |= (1u << to_pos);
+      // Duplicate bitboard to handle wrap-around
+      uint64_t doubled = uint64_t(occ) | (uint64_t(occ) << kNumPoints);
+      // Scan for contiguous 6-point blocks ending at to_pos
+      for (int offset = 0; offset < 6; ++offset) {
+        int start = (to_pos - offset + kNumPoints) % kNumPoints;
+        uint64_t window = (doubled >> start) & 0x3FULL;  // 6 bits mask
+        if (window == 0x3FULL) {
+          // Found a 6-block, check if any opponent checker is ahead of this block
+          if ((player_occupancy_[opponent] & opponent_ahead_mask_[player][start]) == 0) {
+            return true;
+          }
+        }
+      }
+      return false;
     }
 
     /**
@@ -285,8 +327,7 @@ namespace open_spiel
       }
 
       // Check bridge rule
-      if (WouldFormBlockingBridge(player, move.pos, to_pos))
-      {
+      if (WouldFormBlockingBridgeOptim(player, move.pos, to_pos)) {
         return false; // Move would create an illegal bridge
       }
 

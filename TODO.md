@@ -17,32 +17,51 @@ Implementation of Long Narde rules, based on a copy of "games/backgammon".
 
 *   **Core Implementation:** Most rules are implemented.
 *   **Code Structure:** Successfully modularized from monolithic `long_narde.cc` into `_state.cc`, `_moves.cc`, `_encoding.cc`, `_validation.cc`, `_legal_actions.cc`, `_api.cc`, `_utils.cc`, `_game.cc`.
-*   **Move Generation:** Uses iterative generation (`IterativeLegalMoves` -> `GenerateMoveSequences`). Currently clones state for each move branch exploration to ensure correctness, sacrificing apply/undo optimization benefits for now.
-*   **Performance Optimization:** Profile with gprof shows `LongNardeGenerateAllHalfMoves` dominates runtime; optimize half-move generation by reducing dynamic allocations (std::set/std::vector growth), minimizing state cloning, and caching repeated computations.
+
 
 ## Plan
 
-- [x] Locate and isolate the existing iterative DFS implementation
-- [x] Declare a recursive helper method `RecLegalMoveSequences` in `long_narde.h`
-- [x] **Add parallel move-generation harness:** in `LegalActions()`, call both the current iterative DFS and the new recursive helper (initially stubbed) and compare their result sets for equality under debug flag
-- [x] Implement `RecLegalMoveSequences` in `long_narde_legal_actions.cc` with full apply/undo recursion
-- [x] Remove `LongNardeIterativeLegalMoves`, `ExplorationState`, and related cloning code
-- [x] Optimize `LongNardeGenerateAllHalfMoves` to use fixed-size containers and inline deduplication
-- [x] Refactor `LongNardeFilterBestMoveSequences` to eliminate per-sequence `Clone()` calls (profiling shows Clone() accounts for ~18.75% of total runtime), using apply/undo and state caching instead of cloning
-    - [x] Update `RecLegalMoveSequences` signature to use `std::set<std::pair<std::vector<LongNardeCheckerMove>, bool>>* movelist`
-    - [x] In base-case insertion, compute `bool is_term = this->IsTerminal();` and insert `{moveseq, is_term}` into movelist
-    - [x] In initial-pass insertion branch, compute `is_term` and insert `{pass_seq, is_term}` into movelist
-    - [x] In forced-pass insertion branch, compute `is_term` and insert `{pass_seq, is_term}` into movelist
-    - [x] Change callers (`LegalActions`, `LongNardeGenerateMoveSequences`) to declare and use `std::set<std::pair<std::vector<LongNardeCheckerMove>, bool>> movelist_set`
-    - [x] After recursion, convert `movelist_set` into `std::vector<std::pair<std::vector<LongNardeCheckerMove>, bool>> movelist_with_flags`
-    - [x] Update `LongNardeFilterBestMoveSequences` signature to accept `const std::vector<std::pair<std::vector<LongNardeCheckerMove>, bool>>& movelist_with_flags`
-    - [x] Remove the clone-based terminal detection loop in `LongNardeFilterBestMoveSequences`
-    - [x] Iterate over `movelist_with_flags` and collect sequences with `flag == true` into `terminal_sequences`
-    - [x] Adjust filtering loops to unpack `(moveseq, is_term)` from each pair
-    - [x] Preserve existing logic for computing `longest_sequence` and `max_non_pass` using only the `moveseq`
-    - [x] Implement terminal-first override: if any sequence is terminal, set `filtered_movelist = terminal_sequences`
-    - [x] Ensure the pass-only fallback block remains correct without cloning
-    - [x] Update `LegalActions()` to call the updated filter and unpack its returned sequences
-    - [x] In `LongNardeGenerateMoveSequences()`, extract only the `moveseq` component from flagged pairs for return
-- [ ] Profile performance and compare clone overhead (random_sim_test + gperf)
-- [x] Clean up debug logs and update this TODO with completed items
+- [x] 1. Define Bitboard State
+   - Add two `uint32_t player_occupancy_[2]` fields to `LongNardeState`.
+   - Add `int checkers_on_board_count_[2]` field to track on-board counts.
+
+- [x] 2. Initialize Bitboards and Counts
+   - In the constructor and `SetState`, populate `player_occupancy_` and `checkers_on_board_count_` from `board_`.
+   - In `LongNardeApplyCheckerMove` and `LongNardeUndoCheckerMove`, update both bitboards and counts incrementally.
+
+- [x] 3. Precompute Opponent-Ahead Masks
+   - Create a static array `uint32_t opponent_ahead_mask_[2][kNumPoints]`.
+   - Implement a one-time initializer to compute masks for each player and starting point.
+
+- [x] 4. Implement Optimized Bridge Check Stub
+   - Add early exits: bear-off moves, `checkers_on_board_count_[player] < 6`, or opponent has no checkers.
+   - Compute `hypothetical_occ` via bitwise removal of `from_pos` and addition of `to_pos`.
+   - Build `uint64_t doubled = hypothetical_occ | (uint64_t(hypothetical_occ) << kNumPoints)`.
+   - For offsets 0–5: calculate `start = (to_pos - offset + kNumPoints) % kNumPoints`, test 6-bit window mask.
+   - If a 6-block is found and `(player_occupancy_[opponent] & opponent_ahead_mask_[player][start]) == 0`, return `true`.
+   - Return `false` if no illegal block detected.
+
+- [x] 5. Wire Optimized Stub into Validations
+   - Use both original and optimized checks in `LongNardeIsValidCheckerMove` and `HasIllegalBridge`.
+   - Log mismatches with `ToString()` state and move parameters.
+
+- [x] 6. Enable Profiling Instrumentation
+   - Add `-pg` to CXXFLAGS or `CMAKE_CXX_FLAGS` for profiling.
+   - Rebuild the project.
+
+- [x] 7. Run Consistency and Performance Test
+   - Execute `random_sim_test` under profiling; capture any warnings.
+   - Use `gprof` with `gmon.out` to generate original profile.
+
+- [x] 8. Swap Stub to Optimized Logic
+   - Replace stub body of `WouldFormBlockingBridgeOptim` with actual optimized code.
+   - Rebuild and rerun `random_sim_test` under the same profiling setup.
+
+9. Compare Profiles
+   - Generate profile reports for both original and optimized builds.
+   - Compare CPU time spent in bridge checks and related loops.
+
+10. Analyze and Iterate
+    - Resolve any mismatches by inspecting logged states.
+    - Measure speed-ups; explore further optimizations as needed.
+

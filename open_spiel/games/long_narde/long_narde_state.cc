@@ -1,4 +1,5 @@
 #include "open_spiel/games/long_narde/long_narde.h"
+#include <cstdint>
 
 #include <memory>
 #include <string>
@@ -10,6 +11,27 @@ namespace open_spiel
 {
   namespace long_narde
   {
+
+    // Precomputed masks of opponent positions ahead of each point for each player.
+    uint32_t opponent_ahead_mask_[kNumPlayers][kNumPoints];
+    // Static initializer to fill in opponent_ahead_mask_
+    struct OpponentAheadMaskInitializer {
+      OpponentAheadMaskInitializer() {
+        for (int p = 0; p < kNumPlayers; ++p) {
+          for (int pos = 0; pos < kNumPoints; ++pos) {
+            uint32_t mask = 0;
+            if (p == kXPlayerId) {
+              // White moves decreasing indices; ahead are positions < pos
+              for (int q = 0; q < pos; ++q) mask |= (1u << q);
+            } else {
+              // Black moves increasing indices; ahead are positions > pos
+              for (int q = pos + 1; q < kNumPoints; ++q) mask |= (1u << q);
+            }
+            opponent_ahead_mask_[p][pos] = mask;
+          }
+        }
+      }
+    } opponent_ahead_mask_initializer;
 
     /**
      * @brief Constructs a LongNardeState.
@@ -38,6 +60,19 @@ namespace open_spiel
     {
       turn_history_info_.reserve(kMaxGameLengthEst);
       SetupInitialBoard();
+      // Initialize bitboard occupancy and checker counts
+      for (int p = 0; p < kNumPlayers; ++p) {
+        uint32_t occ = 0;
+        int cnt = 0;
+        for (int pos = 0; pos < kNumPoints; ++pos) {
+          if (board_[p][pos] > 0) {
+            occ |= (1u << pos);
+            cnt += board_[p][pos];
+          }
+        }
+        player_occupancy_[p] = occ;
+        checkers_on_board_count_[p] = cnt;
+      }
     }
 
     /**
