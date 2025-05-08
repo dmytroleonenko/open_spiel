@@ -18,49 +18,31 @@ Implementation of Long Narde rules, based on a copy of "games/backgammon".
 *   **Core Implementation:** Most rules are implemented.
 *   **Code Structure:** Successfully modularized from monolithic `long_narde.cc` into `_state.cc`, `_moves.cc`, `_encoding.cc`, `_validation.cc`, `_legal_actions.cc`, `_api.cc`, `_utils.cc`, `_game.cc`.
 *   **Move Generation:** Uses iterative generation (`IterativeLegalMoves` -> `GenerateMoveSequences`). Currently clones state for each move branch exploration to ensure correctness, sacrificing apply/undo optimization benefits for now.
-*   **Doubles Handling:** **Major Issue:** The current `dice_` state (2 elements) cannot correctly handle the 4 moves required on a double roll, causing test failures (`TestDoubleMove`) and instability. **State refactoring is the top priority.**
-*   **Testing:** Includes test utilities (`long_narde_test_utils.h/cc`) and numerous tests. While many pass, some discrepancies with original `long_narde_test.cc` logic might exist, and doubles-related tests are unreliable due to the state issue.
+*   **Performance Optimization:** Profile with gprof shows `LongNardeGenerateAllHalfMoves` dominates runtime; optimize half-move generation by reducing dynamic allocations (std::set/std::vector growth), minimizing state cloning, and caching repeated computations.
 
-## Current Priorities
+## Plan
 
-1.  **[HIGH] Refactor State for Doubles Handling:** Implement the proposed state refactoring to correctly handle 4 moves on doubles.
-    *   **Goal:** Modify state representation (`dice_`) to robustly handle 4 moves, enabling future apply/undo optimization and fixing `TestDoubleMove`.
-    *   **Files Affected:** `long_narde.h`, `_state.cc`, `_api.cc`, `_moves.cc`, `_legal_actions.cc`.
-    *   **Steps:**
-        *   [ ] **Modify State Definition (`.h`, `_state.cc`):**
-            *   Change `dice_` to `std::vector<int>(4)`, initialized with zeros.
-            *   Remove `double_turn_`, `doubles_moves_made_`.
-            *   Update `TurnHistoryInfo` struct (remove related fields).
-        *   [ ] **Update Dice Rolling (`_api.cc`):**
-            *   In `ProcessChanceRoll`: Populate `dice_` as `{d1, d2, 0, 0}` (non-double) or `{d, d, d, d}` (double `d-d`).
-        *   [ ] **Update Dice Accessors/Checkers (`_state.cc`):**
-            *   Verify `DiceValue(i)` and `IsUsed(i)` logic (add 6).
-            *   Update `UsableDiceOutcome(i)` to treat `0` as unusable.
-        *   [ ] **Update Move Application/Undo (`_moves.cc`, `_api.cc`):**
-            *   Modify `ApplyCheckerMove` to find *first* unused `dice_[i]` matching `move.die`, mark used (add 6).
-            *   Modify `UndoCheckerMove` to find *first* used `dice_[i]` matching `move.die`, mark unused (subtract 6).
-            *   Update `UndoAction` to remove logic for removed state fields.
-        *   [ ] **Update Move Generation (`_legal_actions.cc`):**
-            *   Simplify `GenerateAllHalfMoves`: Loop `i` 0-3, check `UsableDiceOutcome(dice_[i])`.
-            *   Remove `max_moves_param` from `IterativeLegalMoves` / `GenerateMoveSequences` calls.
-        *   [ ] **Build and Test:**
-            *   Incremental builds.
-            *   Run all tests, focus on `TestDoubleMove`. Debug failures.
-
-2.  **[MEDIUM] Verify/Fix Test Discrepancies:** After the doubles refactor, ensure tests accurately reflect original logic.
-    *   [ ] **HeadRuleTest:** Verify `long_narde_test_movement.cc` covers original intent (Test Case #2).
-    *   [ ] **FirstTurnDoublesExceptionTest:** Implement missing test (Test Case #3).
-    *   [ ] **BlockingBridgeRuleTest:** Verify `long_narde_test_bridges.cc` covers all 4 original sub-cases (Test Case #4).
-
-3.  **[MEDIUM] Optimize Iterative Move Generation (Reduce Cloning):** Once correctness (especially doubles) is confirmed, implement apply/undo optimization in `IterativeLegalMoves`.
-    *   [ ] Refactor `IterativeLegalMoves` loop: Use `ApplyCheckerMove`, manage context stack, recurse/iterate, then `UndoCheckerMove`. Avoid `Clone()`.
-    *   [ ] Ensure `UndoCheckerMove` correctly restores all state (including sequence state like `moved_from_head_this_sequence`).
-    *   [ ] Build, test correctness, and measure performance.
-
-4.  **[LOW] Simplify `IsFirstTurn` Access:**
-    *   [ ] Remove redundant `is_first_turn()` method, keep only `IsFirstTurn(Player player)`.
-    *   [ ] Update call sites.
-    *   [ ] Verify tests pass.
-
-5.  **[FINAL] Commit Changes:**
-    *   [ ] After addressing priorities and ensuring all tests pass, commit following TDD principles.
+- [x] Locate and isolate the existing iterative DFS implementation
+- [x] Declare a recursive helper method `RecLegalMoveSequences` in `long_narde.h`
+- [x] **Add parallel move-generation harness:** in `LegalActions()`, call both the current iterative DFS and the new recursive helper (initially stubbed) and compare their result sets for equality under debug flag
+- [x] Implement `RecLegalMoveSequences` in `long_narde_legal_actions.cc` with full apply/undo recursion
+- [x] Remove `LongNardeIterativeLegalMoves`, `ExplorationState`, and related cloning code
+- [x] Optimize `LongNardeGenerateAllHalfMoves` to use fixed-size containers and inline deduplication
+- [x] Refactor `LongNardeFilterBestMoveSequences` to eliminate per-sequence `Clone()` calls (profiling shows Clone() accounts for ~18.75% of total runtime), using apply/undo and state caching instead of cloning
+    - [x] Update `RecLegalMoveSequences` signature to use `std::set<std::pair<std::vector<LongNardeCheckerMove>, bool>>* movelist`
+    - [x] In base-case insertion, compute `bool is_term = this->IsTerminal();` and insert `{moveseq, is_term}` into movelist
+    - [x] In initial-pass insertion branch, compute `is_term` and insert `{pass_seq, is_term}` into movelist
+    - [x] In forced-pass insertion branch, compute `is_term` and insert `{pass_seq, is_term}` into movelist
+    - [x] Change callers (`LegalActions`, `LongNardeGenerateMoveSequences`) to declare and use `std::set<std::pair<std::vector<LongNardeCheckerMove>, bool>> movelist_set`
+    - [x] After recursion, convert `movelist_set` into `std::vector<std::pair<std::vector<LongNardeCheckerMove>, bool>> movelist_with_flags`
+    - [x] Update `LongNardeFilterBestMoveSequences` signature to accept `const std::vector<std::pair<std::vector<LongNardeCheckerMove>, bool>>& movelist_with_flags`
+    - [x] Remove the clone-based terminal detection loop in `LongNardeFilterBestMoveSequences`
+    - [x] Iterate over `movelist_with_flags` and collect sequences with `flag == true` into `terminal_sequences`
+    - [x] Adjust filtering loops to unpack `(moveseq, is_term)` from each pair
+    - [x] Preserve existing logic for computing `longest_sequence` and `max_non_pass` using only the `moveseq`
+    - [x] Implement terminal-first override: if any sequence is terminal, set `filtered_movelist = terminal_sequences`
+    - [x] Ensure the pass-only fallback block remains correct without cloning
+    - [x] Update `LegalActions()` to call the updated filter and unpack its returned sequences
+    - [x] In `LongNardeGenerateMoveSequences()`, extract only the `moveseq` component from flagged pairs for return
+- [ ] Profile performance and compare clone overhead (random_sim_test + gperf)
+- [x] Clean up debug logs and update this TODO with completed items

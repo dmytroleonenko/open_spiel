@@ -300,9 +300,10 @@ namespace open_spiel
       // Finds all valid single half-moves from the current state for the player.
       std::set<LongNardeCheckerMove> LongNardeGenerateAllHalfMoves(int player, bool moved_from_head_this_sequence) const;
 
-      // Iterative helper for move sequence generation.
-      int LongNardeIterativeLegalMoves(const std::vector<LongNardeCheckerMove> &current_sequence,
-                              std::vector<std::vector<LongNardeCheckerMove>> *moves_list) const;
+      // Recursive helper for move sequence generation (to be implemented).
+      int RecLegalMoveSequences(std::vector<LongNardeCheckerMove> moveseq,
+                               std::set<std::pair<std::vector<LongNardeCheckerMove>, bool>>* movelist,
+                               bool moved_from_head_this_sequence) const;
 
       // Helper function: checks if 'player' has any checker in [startPos, endPos] inclusive.
       bool HasAnyChecker(int player, int startPos, int endPos) const;
@@ -363,7 +364,7 @@ namespace open_spiel
       // Add back the missing private helper method declarations for LegalActions
       std::vector<std::vector<LongNardeCheckerMove>> LongNardeGenerateMoveSequences(Player player) const;
       std::pair<std::vector<std::vector<LongNardeCheckerMove>>, int> LongNardeFilterBestMoveSequences(
-          const std::vector<std::vector<LongNardeCheckerMove>> &movelist) const;
+          const std::vector<std::pair<std::vector<LongNardeCheckerMove>, bool>> &movelist_with_flags) const;
       std::vector<Action> LongNardeApplyHigherDieRuleIfNeeded(
           const std::vector<Action> &current_legal_moves,
           const std::vector<std::vector<LongNardeCheckerMove>> &original_movelist) const;

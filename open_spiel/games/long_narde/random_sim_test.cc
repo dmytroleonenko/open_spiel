@@ -17,7 +17,7 @@ namespace open_spiel
     namespace
     {
 
-      constexpr int kDefaultNumSimulations = 5;
+      constexpr int kDefaultNumSimulations = 500;
       constexpr int kDefaultSeed = 1224;
 
       // StartFunction: MemoryEfficientRandomSim
@@ -31,6 +31,13 @@ namespace open_spiel
         std::shared_ptr<const Game> game = LoadGame("long_narde");
 
         int total_moves = 0;
+        int legal_actions_calls = 0;
+        int winner_moves = 0;
+        int loser_moves = 0;
+        // Stats for player-only moves (exclude chance nodes)
+        int total_player_moves = 0;
+        int max_player_moves = 0;
+        int min_player_moves = std::numeric_limits<int>::max();
         int max_game_length = 0;
         int min_game_length = std::numeric_limits<int>::max();
         int terminated_games = 0;
@@ -53,6 +60,8 @@ namespace open_spiel
           std::unique_ptr<State> state = game->NewInitialState();
           LongNardeState *lnstate = dynamic_cast<LongNardeState *>(state.get());
 
+          int x_moves = 0;
+          int o_moves = 0;
           int max_moves = 1000;
           int move_count = 0;
           bool invalid_move_found = false;
@@ -61,55 +70,56 @@ namespace open_spiel
           {
             if (state->IsChanceNode())
             {
+              // Chance node: roll dice and apply
               std::vector<std::pair<Action, double>> outcomes = state->ChanceOutcomes();
               Action action = open_spiel::SampleAction(outcomes, rng).first;
               state->ApplyAction(action);
             }
             else
             {
+              // Player decision: count calls and moves
+              ++legal_actions_calls;
+              if (state->CurrentPlayer() == kXPlayerId) ++x_moves;
+              else if (state->CurrentPlayer() == kOPlayerId) ++o_moves;
               std::vector<Action> legal_actions = state->LegalActions();
               if (legal_actions.empty())
               {
                 break;
               }
-
               std::uniform_int_distribution<> dis(0, legal_actions.size() - 1);
               Action action = legal_actions[dis(rng)];
-
-              if (lnstate)
-              {
-                std::vector<LongNardeCheckerMove> moves =
-                    lnstate->LongNardeSpielMoveToCheckerMoves(state->CurrentPlayer(), action);
-
-                std::unique_ptr<State> temp_state = state->Clone();
-                LongNardeState *temp_lnstate = dynamic_cast<LongNardeState *>(temp_state.get());
-
-                for (const auto &move : moves)
-                {
-                  if (move.pos == kPassPos)
-                    continue;
-                  if (!temp_lnstate->LongNardeIsValidCheckerMove(state->CurrentPlayer(), move, false))
-                  {
-                    invalid_move_found = true;
-                    invalid_moves_detected++;
-                    break;
-                  }
-                  temp_lnstate->LongNardeApplyCheckerMove(state->CurrentPlayer(), move);
-                }
-              }
-
+              // Per-move validity check (commented out for profiling):
+              /*  if (lnstate)
+               {
+                 std::vector<LongNardeCheckerMove> moves =
+                     lnstate->LongNardeSpielMoveToCheckerMoves(state->CurrentPlayer(), action);
+                 std::unique_ptr<State> temp_state = state->Clone();
+                 LongNardeState *temp_lnstate = dynamic_cast<LongNardeState *>(temp_state.get());
+                 for (const auto &move : moves)
+                 {
+                   if (move.pos == kPassPos) continue;
+                   if (!temp_lnstate->LongNardeIsValidCheckerMove(state->CurrentPlayer(), move, false))
+                   {
+                     invalid_move_found = true;
+                     invalid_moves_detected++;
+                     break;
+                   }
+                   temp_lnstate->LongNardeApplyCheckerMove(state->CurrentPlayer(), move);
+                 }
+               }  */
               state->ApplyAction(action);
             }
-
             move_count++;
 
             // Periodically clone state to test undo/redo logic and memory safety.
+            /* 
             if (move_count % 20 == 0 && !state->IsTerminal())
             {
               std::unique_ptr<State> new_state = state->Clone();
               state = std::move(new_state);
               lnstate = dynamic_cast<LongNardeState *>(state.get());
-            }
+            }  
+            */
 
             if (invalid_move_found)
             {
@@ -117,23 +127,43 @@ namespace open_spiel
             }
           }
 
+          // After simulation, accumulate totals
           total_moves += move_count;
           max_game_length = std::max(max_game_length, move_count);
           min_game_length = std::min(min_game_length, move_count);
 
+          // Accumulate player-only move stats
+          int player_moves = x_moves + o_moves;
+          total_player_moves += player_moves;
+          max_player_moves = std::max(max_player_moves, player_moves);
+          min_player_moves = std::min(min_player_moves, player_moves);
+
           if (state->IsTerminal())
           {
             terminated_games++;
+            // Categorize moves by game outcome
+            std::vector<double> rets = state->Returns();
+            if (rets[kXPlayerId] > rets[kOPlayerId])
+            {
+              winner_moves += x_moves;
+              loser_moves += o_moves;
+            }
+            else if (rets[kOPlayerId] > rets[kXPlayerId])
+            {
+              winner_moves += o_moves;
+              loser_moves += x_moves;
+            }
           }
         }
 
-        double avg_game_length = static_cast<double>(total_moves) / num_simulations;
         std::cout << "=========================================" << std::endl;
         std::cout << "SIMULATION RESULTS" << std::endl;
         std::cout << "=========================================" << std::endl;
         std::cout << "Random simulation completed: " << num_simulations << " games" << std::endl;
-        std::cout << "Average game length: " << avg_game_length << " moves" << std::endl;
-        std::cout << "Min/Max game length: " << min_game_length << "/" << max_game_length << " moves" << std::endl;
+        // Player-only game length stats (exclude chance nodes)
+        double avg_player_moves = static_cast<double>(total_player_moves) / num_simulations;
+        std::cout << "Average game length (player moves only): " << avg_player_moves << " moves" << std::endl;
+        std::cout << "Min/Max game length (player moves only): " << min_player_moves << "/" << max_player_moves << " moves" << std::endl;
         std::cout << "Terminated games: " << terminated_games << "/" << num_simulations << std::endl;
         std::cout << "Invalid moves detected: " << invalid_moves_detected << std::endl;
 
@@ -146,6 +176,11 @@ namespace open_spiel
         {
           std::cout << "No invalid moves detected - all good!" << std::endl;
         }
+
+        std::cout << "Total moves: " << total_moves << std::endl;
+        std::cout << "Total LegalActions calls: " << legal_actions_calls << std::endl;
+        std::cout << "Moves by winners: " << winner_moves << std::endl;
+        std::cout << "Moves by losers: " << loser_moves << std::endl;
 
         std::cout << "=========================================" << std::endl;
         std::cout << "TEST COMPLETED" << std::endl;
