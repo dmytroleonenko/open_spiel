@@ -39,8 +39,8 @@ namespace open_spiel
           SetupDice(lnstate, {5, 3, 0, 0});
           for (int pos = 0; pos < kNumPoints; ++pos)
           {
-            modified_board[kXPlayerId][pos] = lnstate->board_[kXPlayerId][pos];
-            modified_board[kOPlayerId][pos] = lnstate->board_[kOPlayerId][pos];
+            modified_board[kXPlayerId][pos] = lnstate->GetCount(kXPlayerId, pos);
+            modified_board[kOPlayerId][pos] = lnstate->GetCount(kOPlayerId, pos);
           }
           modified_board[kXPlayerId][kWhiteHeadPos] -= 2;
           modified_board[kXPlayerId][14] += 1;
@@ -415,7 +415,7 @@ namespace open_spiel
             std::vector<int> player_board;
             for (int i = 0; i < kNumPoints; ++i)
             {
-              player_board.push_back(lnstate->board(p, i));
+              player_board.push_back(lnstate->GetCount(p, i));
             }
             board_before.push_back(player_board);
           }
@@ -428,7 +428,7 @@ namespace open_spiel
           {
             for (int i = 0; i < kNumPoints; ++i)
             {
-              if (lnstate->board(p, i) != board_before[p][i])
+              if (lnstate->GetCount(p, i) != board_before[p][i])
               {
                 board_changed = true;
                 break;
@@ -444,7 +444,7 @@ namespace open_spiel
           {
             for (int i = 0; i < kNumPoints; ++i)
             {
-              if (lnstate->board(p, i) != board_before[p][i])
+              if (lnstate->GetCount(p, i) != board_before[p][i])
               {
                 board_restored = false;
                 break;

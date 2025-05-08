@@ -27,7 +27,7 @@ namespace open_spiel
     {
       // The first turn is characterized by having all 15 checkers on the head point.
       int head_pos = (player == kXPlayerId) ? kWhiteHeadPos : kBlackHeadPos;
-      return board_[player][head_pos] == kNumCheckersPerPlayer;
+      return GetCount(player, head_pos) == kNumCheckersPerPlayer;
       // NOTE: This function checks the *current* state. The *member variable* `is_first_turn_`
       // holds the status determined at the *beginning* of the player's turn.
     }
@@ -92,7 +92,12 @@ namespace open_spiel
     bool LongNardeState::WouldFormBlockingBridge(int player, int from_pos, int to_pos) const
     {
       // Create a temporary board reflecting the potential move
-      std::vector<std::vector<int>> temp_board = board_;
+      std::vector<std::vector<int>> temp_board(2, std::vector<int>(kNumPoints, 0));
+      for (int p = 0; p < kNumPlayers; ++p) {
+        for (int pos = 0; pos < kNumPoints; ++pos) {
+          temp_board[p][pos] = GetCount(p, pos);
+        }
+      }
       if (from_pos >= 0 && from_pos < kNumPoints)
       {
         if (temp_board[player][from_pos] <= 0)
@@ -199,12 +204,12 @@ namespace open_spiel
         return false;
       }
       // If fewer than 6 checkers remain on board, cannot form a 6-point block
-      if (checkers_on_board_count_[player] < 6) {
+      if ((kNumCheckersPerPlayer - scores_[player]) < 6) {
         return false;
       }
       int opponent = Opponent(player);
       // If opponent has no checkers on board, no bridge can trap them
-      if (checkers_on_board_count_[opponent] == 0) {
+      if ((kNumCheckersPerPlayer - scores_[opponent]) == 0) {
         return false;
       }
       // Build hypothetical occupancy bitboard for player
@@ -259,7 +264,7 @@ namespace open_spiel
       // Validate inputs
       SPIEL_CHECK_GE(move.pos, 0);
       SPIEL_CHECK_LT(move.pos, kNumPoints);
-      SPIEL_CHECK_GT(board_[player][move.pos], 0); // Must have a checker to move
+      SPIEL_CHECK_GT(GetCount(player, move.pos), 0); // Must have a checker to move
       SPIEL_CHECK_GE(move.die, 1);
       SPIEL_CHECK_LE(move.die, 6);
 
@@ -305,7 +310,7 @@ namespace open_spiel
       }
 
       // Check opponent occupancy at the calculated on-board destination.
-      if (board(Opponent(player), to_pos) > 0)
+      if (GetCount(Opponent(player), to_pos) > 0)
       {
         return false;
       }
@@ -433,7 +438,7 @@ namespace open_spiel
         // White's home is points 1-6 (indices 0-5)
         for (int i = kWhiteHomeEnd + 1; i < kNumPoints; ++i)
         {
-          if (board(player, i) > 0)
+          if (GetCount(player, i) > 0)
           {
             return false; // Found checker outside home
           }
@@ -441,7 +446,7 @@ namespace open_spiel
         }
         for (int i = kWhiteHomeStart; i <= kWhiteHomeEnd; ++i)
         {
-          checkers_on_board += board(player, i);
+          checkers_on_board += GetCount(player, i);
         }
       }
       else
@@ -449,7 +454,7 @@ namespace open_spiel
         // Black's home is points 13-18 (indices 12-17)
         for (int i = 0; i < kBlackHomeStart; ++i)
         {
-          if (board(player, i) > 0)
+          if (GetCount(player, i) > 0)
           {
             return false; // Found checker outside home
           }
@@ -457,7 +462,7 @@ namespace open_spiel
         }
         for (int i = kBlackHomeEnd + 1; i < kNumPoints; ++i)
         {
-          if (board(player, i) > 0)
+          if (GetCount(player, i) > 0)
           {
             return false; // Found checker outside home
           }
@@ -465,7 +470,7 @@ namespace open_spiel
         }
         for (int i = kBlackHomeStart; i <= kBlackHomeEnd; ++i)
         {
-          checkers_on_board += board(player, i);
+          checkers_on_board += GetCount(player, i);
         }
       }
 
@@ -481,7 +486,7 @@ namespace open_spiel
       { // White home: 0-5. Furthest is highest index.
         for (int pos = kWhiteHomeEnd; pos >= kWhiteHomeStart; --pos)
         {
-          if (board_[player][pos] > 0)
+          if (GetCount(player, pos) > 0)
           {
             return pos;
           }
@@ -491,7 +496,7 @@ namespace open_spiel
       { // Black home: 12-17. Furthest is lowest index.
         for (int pos = kBlackHomeStart; pos <= kBlackHomeEnd; ++pos)
         {
-          if (board_[player][pos] > 0)
+          if (GetCount(player, pos) > 0)
           {
             return pos;
           }

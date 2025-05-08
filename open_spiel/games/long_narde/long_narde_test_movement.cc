@@ -49,9 +49,9 @@ namespace open_spiel
 
         lnstate->ApplyAction(action);
 
-        SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos), 13);    // 15 - 2 = 13 left on head
-        SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos - 4), 0); // 0 left on point 19
-        SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos - 8), 2); // 2 ended up on point 15
+        SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, kWhiteHeadPos), 13);    // 15 - 2 = 13 left on head
+        SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, kWhiteHeadPos - 4), 0); // 0 left on point 19
+        SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, kWhiteHeadPos - 8), 2); // 2 ended up on point 15
 
         std::cout << "✓ Basic movement test passed\n";
       }
@@ -108,8 +108,8 @@ namespace open_spiel
         auto lnstate = static_cast<LongNardeState *>(state.get());
 
         // Initial: White's 15 at pos 24, Black's 15 at pos 12
-        SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos), kNumCheckersPerPlayer);
-        SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, kBlackHeadPos), kNumCheckersPerPlayer);
+        SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, kWhiteHeadPos), kNumCheckersPerPlayer);
+        SPIEL_CHECK_EQ(lnstate->GetCount(kOPlayerId, kBlackHeadPos), kNumCheckersPerPlayer);
 
         lnstate->ApplyAction(20); // Apply dice outcome 6,6
 
@@ -119,8 +119,8 @@ namespace open_spiel
         Action action = lnstate->LongNardeCheckerMovesToSpielMove(moves);
         lnstate->ApplyAction(action);
 
-        SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos), 13);
-        SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos - 6), 2);
+        SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, kWhiteHeadPos), 13);
+        SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, kWhiteHeadPos - 6), 2);
 
         std::cout << "✓ Checker distribution verified\n";
       }
@@ -149,9 +149,9 @@ namespace open_spiel
         {
           std::unique_ptr<State> c = lnA->Clone();
           auto cst = static_cast<LongNardeState *>(c.get());
-          int init_head_count = cst->board(kXPlayerId, kWhiteHeadPos);
+          int init_head_count = cst->GetCount(kXPlayerId, kWhiteHeadPos);
           cst->ApplyAction(a);
-          int new_head_count = cst->board(kXPlayerId, kWhiteHeadPos);
+          int new_head_count = cst->GetCount(kXPlayerId, kWhiteHeadPos);
           int diff = init_head_count - new_head_count;
           if (diff >= 2)
           {
@@ -197,9 +197,9 @@ namespace open_spiel
         {
           std::unique_ptr<State> c = lnB->Clone();
           auto cst = static_cast<LongNardeState *>(c.get());
-          int init_head_count = cst->board(kXPlayerId, kWhiteHeadPos);
+          int init_head_count = cst->GetCount(kXPlayerId, kWhiteHeadPos);
           cst->ApplyAction(move);
-          int new_head_count = cst->board(kXPlayerId, kWhiteHeadPos);
+          int new_head_count = cst->GetCount(kXPlayerId, kWhiteHeadPos);
           int diff = init_head_count - new_head_count;
           if (diff > 1)
           { // Check if more than one checker moved from head
@@ -507,9 +507,9 @@ namespace open_spiel
           {
             std::unique_ptr<State> c = lnA->Clone();
             auto cst = static_cast<LongNardeState *>(c.get());
-            int init_head_count = cst->board(kOPlayerId, kBlackHeadPos);
+            int init_head_count = cst->GetCount(kOPlayerId, kBlackHeadPos);
             cst->ApplyAction(a);
-            int new_head_count = cst->board(kOPlayerId, kBlackHeadPos);
+            int new_head_count = cst->GetCount(kOPlayerId, kBlackHeadPos);
             int diff = init_head_count - new_head_count;
             if (diff >= 2)
             {
@@ -555,9 +555,9 @@ namespace open_spiel
           {
             std::unique_ptr<State> c = lnB->Clone();
             auto cst = static_cast<LongNardeState *>(c.get());
-            int init_head_count = cst->board(kOPlayerId, kBlackHeadPos);
+            int init_head_count = cst->GetCount(kOPlayerId, kBlackHeadPos);
             cst->ApplyAction(move);
-            int new_head_count = cst->board(kOPlayerId, kBlackHeadPos);
+            int new_head_count = cst->GetCount(kOPlayerId, kBlackHeadPos);
             int diff = init_head_count - new_head_count;
             if (diff > 1)
             {

@@ -106,7 +106,7 @@ namespace open_spiel
 
         for (int pos_idx = 0; pos_idx < kNumPoints; ++pos_idx)
         {
-          int count = board(player, pos_idx);
+          uint8_t count = GetCount(player, pos_idx);
           if (count > 0)
           {
             int row;
@@ -232,7 +232,7 @@ namespace open_spiel
 
         for (int pos_idx = 0; pos_idx < kNumPoints; ++pos_idx)
         {
-          int count = board(player, pos_idx);
+          uint8_t count = GetCount(player, pos_idx);
           if (count > 0)
           {
             int row;

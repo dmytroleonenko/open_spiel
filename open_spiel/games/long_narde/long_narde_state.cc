@@ -51,7 +51,7 @@ namespace open_spiel
           dice_({0, 0, 0, 0}),         // Initialize dice_ with 4 elements
           initial_dice_({0, 0, 0, 0}), // Initialize with 4 zeros
           scores_({0, 0}),
-          board_({std::vector<int>(kNumPoints, 0), std::vector<int>(kNumPoints, 0)}),
+          // board_({std::vector<int>(kNumPoints, 0), std::vector<int>(kNumPoints, 0)}),
           turn_history_info_({}),
           allow_last_roll_tie_(false),
           // Initialize scoring_type_ based on game parameters
@@ -59,19 +59,18 @@ namespace open_spiel
               game->GetParameters().count("scoring_type") > 0 ? game->GetParameters().at("scoring_type").string_value() : kDefaultScoringType))
     {
       turn_history_info_.reserve(kMaxGameLengthEst);
+      std::fill_n(board_data_, kNumPlayers * kNumPoints, 0); // Initialize board_data_
       SetupInitialBoard();
-      // Initialize bitboard occupancy and checker counts
+      // Initialize bitboard occupancy and checker counts from board_data_
       for (int p = 0; p < kNumPlayers; ++p) {
         uint32_t occ = 0;
-        int cnt = 0;
         for (int pos = 0; pos < kNumPoints; ++pos) {
-          if (board_[p][pos] > 0) {
+          uint8_t point_count = board_data_[p * kNumPoints + pos];
+          if (point_count > 0) {
             occ |= (1u << pos);
-            cnt += board_[p][pos];
           }
         }
         player_occupancy_[p] = occ;
-        checkers_on_board_count_[p] = cnt;
       }
     }
 
@@ -84,21 +83,11 @@ namespace open_spiel
      */
     void LongNardeState::SetupInitialBoard()
     {
-      board_[kXPlayerId][kWhiteHeadPos] = kNumCheckersPerPlayer;
-      board_[kOPlayerId][kBlackHeadPos] = kNumCheckersPerPlayer;
+      board_data_[kXPlayerId * kNumPoints + kWhiteHeadPos] = kNumCheckersPerPlayer;
+      board_data_[kOPlayerId * kNumPoints + kBlackHeadPos] = kNumCheckersPerPlayer;
     }
 
     // ===== Basic State Accessors =====
-
-    int LongNardeState::board(int player, int pos) const
-    {
-      // Bounds check for safety, returning 0 for invalid positions
-      if (pos < 0 || pos >= kNumPoints)
-      {
-        return 0;
-      }
-      return board_[player][pos];
-    }
 
     int LongNardeState::Opponent(int player) const { return 1 - player; }
 
@@ -143,11 +132,11 @@ namespace open_spiel
       }
 
       // Decrement checker count at the 'from' position
-      if (board_[player][move.pos] <= 0)
+      if (GetCount(player, move.pos) <= 0)
       {
         SpielFatalError(absl::StrCat("ApplyCheckerMove: No checker to move from pos ", move.pos, " for player ", player));
       }
-      board_[player][move.pos]--;
+      DecrementPoint(player, move.pos);
 
       // Check if bearing off
       if (move.to_pos == kBearOffPos)
@@ -161,7 +150,7 @@ namespace open_spiel
         {
           SpielFatalError(absl::StrCat("ApplyCheckerMove: Invalid to_pos ", move.to_pos, " for player ", player));
         }
-        board_[player][move.to_pos]++;
+        IncrementPoint(player, move.to_pos);
       }
 
       // Mark the die used for this move as inactive
@@ -284,7 +273,7 @@ namespace open_spiel
       {
         SpielFatalError(absl::StrCat("UndoCheckerMove: Invalid from_pos ", move.pos, " for player ", player));
       }
-      board_[player][move.pos]++;
+      IncrementPoint(player, move.pos);
 
       // Check if bearing off was undone
       if (move.to_pos == kBearOffPos)
@@ -298,11 +287,11 @@ namespace open_spiel
         {
           SpielFatalError(absl::StrCat("UndoCheckerMove: Invalid to_pos ", move.to_pos, " for player ", player));
         }
-        if (board_[player][move.to_pos] <= 0)
+        if (GetCount(player, move.to_pos) <= 0)
         {
           SpielFatalError(absl::StrCat("UndoCheckerMove: No checker to remove from to_pos ", move.to_pos, " for player ", player));
         }
-        board_[player][move.to_pos]--;
+        DecrementPoint(player, move.to_pos);
       }
 
       // Note: Undoing moved_from_head_ requires history tracking, which is handled
@@ -323,9 +312,48 @@ namespace open_spiel
       SPIEL_CHECK_TRUE(player == kXPlayerId || player == kOPlayerId);
       int count = scores_[player]; // Start with borne-off checkers
       for (int pos = 0; pos < kNumPoints; ++pos) {
-        count += board_[player][pos];
+        count += GetCount(player, pos);
       }
       return count;
+    }
+
+    void LongNardeState::SetPointCount(int player, int pos, uint8_t count) {
+      if (pos < 0 || pos >= kNumPoints) {
+        SpielFatalError("SetPointCount: Invalid position");
+      }
+      uint8_t prev = board_data_[player * kNumPoints + pos];
+      board_data_[player * kNumPoints + pos] = count;
+      // Update occupancy
+      if (count > 0) {
+        player_occupancy_[player] |= (1u << pos);
+      } else {
+        player_occupancy_[player] &= ~(1u << pos);
+      }
+    }
+
+    void LongNardeState::IncrementPoint(int player, int pos) {
+      if (pos < 0 || pos >= kNumPoints) {
+        SpielFatalError("IncrementPoint: Invalid position");
+      }
+      uint8_t prev = board_data_[player * kNumPoints + pos];
+      board_data_[player * kNumPoints + pos]++;
+      if (prev == 0) {
+        player_occupancy_[player] |= (1u << pos);
+      }
+    }
+
+    void LongNardeState::DecrementPoint(int player, int pos) {
+      if (pos < 0 || pos >= kNumPoints) {
+        SpielFatalError("DecrementPoint: Invalid position");
+      }
+      uint8_t prev = board_data_[player * kNumPoints + pos];
+      if (prev == 0) {
+        SpielFatalError("DecrementPoint: No checker to decrement");
+      }
+      board_data_[player * kNumPoints + pos]--;
+      if (prev == 1) {
+        player_occupancy_[player] &= ~(1u << pos);
+      }
     }
 
   } // namespace long_narde

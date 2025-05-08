@@ -14,7 +14,7 @@ export CXX_FLAGS="-g -O0 -pg"
 # Check for release build argument
 if [[ "$1" == "--release" ]]; then
   BUILD_TYPE="Release"
-  CXX_FLAGS="-O3 -pg"
+  CXX_FLAGS="-O3"
   echo -e "${YELLOW}Building in Release mode with -O3 optimization${NC}"
 else
   echo -e "${YELLOW}Building in Debug mode with -g -O0 flags${NC}"

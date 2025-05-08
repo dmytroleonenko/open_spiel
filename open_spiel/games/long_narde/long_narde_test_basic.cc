@@ -29,20 +29,20 @@ namespace open_spiel
         LongNardeState *lnstate = static_cast<LongNardeState *>(state.get());
 
         // Verify initial board: White's 15 checkers on point 24, Black's 15 on point 12.
-        SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, kWhiteHeadPos), kNumCheckersPerPlayer);
+        SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, kWhiteHeadPos), kNumCheckersPerPlayer);
         for (int i = 0; i < kNumPoints; ++i)
         {
           if (i != kWhiteHeadPos)
           {
-            SPIEL_CHECK_EQ(lnstate->board(kXPlayerId, i), 0);
+            SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, i), 0);
           }
         }
-        SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, kBlackHeadPos), kNumCheckersPerPlayer);
+        SPIEL_CHECK_EQ(lnstate->GetCount(kOPlayerId, kBlackHeadPos), kNumCheckersPerPlayer);
         for (int i = 0; i < kNumPoints; ++i)
         {
           if (i != kBlackHeadPos)
           {
-            SPIEL_CHECK_EQ(lnstate->board(kOPlayerId, i), 0);
+            SPIEL_CHECK_EQ(lnstate->GetCount(kOPlayerId, i), 0);
           }
         }
       }

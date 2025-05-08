@@ -61,11 +61,20 @@ namespace open_spiel
       SPIEL_CHECK_EQ(board_config[0].size(), kNumPoints); // kNumPoints is 24
       SPIEL_CHECK_EQ(board_config[1].size(), kNumPoints); // kNumPoints is 24
 
-      // Direct manipulation (allowed via friend declaration in LongNardeState)
-      state->board_ = board_config;
-      // Calculate scores internally
-      state->scores_[0] = kNumCheckersPerPlayer - std::accumulate(state->board_[0].begin(), state->board_[0].end(), 0);
-      state->scores_[1] = kNumCheckersPerPlayer - std::accumulate(state->board_[1].begin(), state->board_[1].end(), 0);
+      // Copy board_config into board_data_
+      for (int p = 0; p < kNumPlayers; ++p) {
+        for (int pos = 0; pos < kNumPoints; ++pos) {
+          state->board_data_[p * kNumPoints + pos] = static_cast<uint8_t>(board_config[p][pos]);
+        }
+      }
+      // Calculate scores internally from board_data_
+      int sum0 = 0, sum1 = 0;
+      for (int pos = 0; pos < kNumPoints; ++pos) {
+        sum0 += state->board_data_[0 * kNumPoints + pos];
+        sum1 += state->board_data_[1 * kNumPoints + pos];
+      }
+      state->scores_[0] = kNumCheckersPerPlayer - sum0;
+      state->scores_[1] = kNumCheckersPerPlayer - sum1;
       state->cur_player_ = player;
       // Reset turn-specific flags that SetState would normally handle
       state->moved_from_head_ = false; // Default assumption

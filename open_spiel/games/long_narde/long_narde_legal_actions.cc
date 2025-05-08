@@ -151,7 +151,7 @@ namespace open_spiel
             buf.reserve(kNumPoints * static_cast<int>(dice_.size()));
             // Generate candidates with inline deduplication
             for (int pos = 0; pos < kNumPoints; ++pos) {
-              if (board(player, pos) <= 0) continue;
+              if (GetCount(player, pos) <= 0) continue;
               for (int die_idx = 0; die_idx < dice_.size(); ++die_idx) {
                 if (!IsDieUsable(die_idx)) continue;
                 int die_value = DiceValue(die_idx);

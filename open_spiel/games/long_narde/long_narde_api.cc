@@ -245,7 +245,7 @@ namespace open_spiel
       {
         // Map board index i to the player's path index (0=farthest, 23=closest to home)
         int path_idx = GetPathIndex(player, i);
-        *(values.begin() + path_idx) = board(player, i);
+        *(values.begin() + path_idx) = GetCount(player, i);
       }
       value_it += kNumPoints; // Move iterator past player's board section
 
@@ -253,7 +253,7 @@ namespace open_spiel
       {
         // Map board index i to the opponent's path index (0=farthest, 23=closest to home)
         int path_idx = GetPathIndex(opponent, i);
-        *(values.begin() + kNumPoints + path_idx) = board(opponent, i);
+        *(values.begin() + kNumPoints + path_idx) = GetCount(opponent, i);
       }
       value_it += kNumPoints; // Move iterator past opponent's board section
 

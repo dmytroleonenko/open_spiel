@@ -244,7 +244,10 @@ namespace open_spiel
       // Get the number of checkers on the board in the specified position belonging
       // to the specified player. The position can be kScorePos, but use score() to get the number
       // of checkers born off.
-      int board(int player, int pos) const;
+      inline uint8_t GetCount(int player, int pos) const {
+        if (pos < 0 || pos >= kNumPoints) { return 0; }
+        return board_data_[player * kNumPoints + pos];
+      }
 
       // Action encoding / decoding functions. Note, the converted checker moves
       // do not contain the hit information; use the AddHitInfo function to get the
@@ -310,11 +313,11 @@ namespace open_spiel
       // Helper function: checks if 'player' has any checker in [startPos, endPos] inclusive.
       bool HasAnyChecker(int player, int startPos, int endPos) const;
       // Directly expose board_ for testing/debugging
-      std::vector<std::vector<int>> board_;  // Checkers for each player on points.
+      // std::vector<std::vector<int>> board_;  // Checkers for each player on points.
+      uint8_t board_data_[2 * 24];  // Flat array for checkers for each player on points.
 
       // Add bitboard occupancy and checker count fields
       uint32_t player_occupancy_[2];       // Bitboard occupancy for each player
-      int checkers_on_board_count_[2];     // Count of checkers on board for each player
 
       std::vector<int> dice_;               // Current dice roll.
       std::vector<int> scores_;             // Number of checkers borne off by each player.
@@ -364,6 +367,11 @@ namespace open_spiel
       const std::vector<int> &LongNardeInitialDice() const { return initial_dice_; }
       std::vector<int> &LongNardeMutableInitialDice() { return initial_dice_; }
 
+      inline bool IsOccupied(int player, int pos) const {
+        if (pos < 0 || pos >= kNumPoints) { return false; }
+        return (player_occupancy_[player] & (1u << pos)) != 0;
+      }
+
     protected:
       void DoApplyAction(Action move_id) override;
 
@@ -398,6 +406,11 @@ namespace open_spiel
                                   const std::vector<int> &scores);
       friend void SetupDice(LongNardeState *state, const std::vector<int> &dice,
                             bool double_turn);
+
+      // Board mutator helpers
+      void SetPointCount(int player, int pos, uint8_t count);
+      void IncrementPoint(int player, int pos);
+      void DecrementPoint(int player, int pos);
     };
 
     // Add an overload for the << operator for ScoringType to fix compilation errors
