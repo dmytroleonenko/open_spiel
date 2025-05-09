@@ -4,14 +4,25 @@
 This implementation creates a new game "Long Narde" based on Backgammon but with distinct rules. Long Narde is a tables game where both players move their checkers counter-clockwise with the goal of bearing them off first.
 
 ## Key Rule Differences
-1. **Initial Setup**: All 15 white checkers start on point 24; all 15 black checkers start on point 12
-2. **Movement Direction**: Both players move counter-clockwise (unlike Backgammon's opposing directions)
-3. **No Hitting**: Players cannot land on opponent's checkers
-4. **Head Rule**: Only 1 checker can leave the head per turn (with exceptions for specific doubles on first turn)
-5. **Blocking Restriction**: Cannot form a continuous 6-point prime that would fully trap opponent
-6. **Bearing Off**: Requires exact or higher rolls once all checkers are in home
-7. **Scoring**: 2 points for mars (opponent has no checkers borne off), 1 point for oin (normal win)
-8. **Last Roll Tie Rule**: If one player has borne off all checkers but the opponent has at least 14 checkers borne off, the opponent gets one last roll to try to achieve a tie
+1. **Setup**: White's 15 checkers on point 24; Black's 15 checkers on point 12.
+2. **Movement**: Both players move counter-clockwise (CCW) into their home boards (White: points 1–6, Black: points 13–18), and then bear off.
+3. **Turns & Dice Usage**:
+    * Players roll two dice. Moves must correspond exactly to the die values.
+    * No landing on points occupied by an opponent's checker.
+    * If no moves are possible, the turn is skipped.
+    * If only one die's value can be played, the higher value must be used.
+    * Doubles grant four moves of the die's value.
+4. **Head Rule**: Only one checker may be moved from a player's head (starting point: White 24, Black 12) per turn.
+    * First Turn Exception: If a player's first roll of the game is a double 3-3, 4-4, or 6-6, they may move two checkers from their head. For that first turn, after these two checkers are moved, no further checkers can be moved from the head.
+5. **Bearing Off**: Once all 15 of a player's checkers are in their home board:
+    * A die roll of 'n' allows a checker to be borne off from point 'n', even if higher points are occupied.
+    * If point 'n' is empty, a checker must be moved from a higher-numbered point using the die value 'n', if possible.
+    * If no such move is possible, a checker must be borne off from the highest-numbered point currently occupied by the player.
+6. **Blocking (Bridge) Restriction**: A player cannot form a contiguous block of six checkers (a 6-prime) unless at least one of the opponent's checkers is ahead of (further along in their path than) the potential block. Fully trapping all 15 opponent checkers is disallowed.
+7. **Ending & Scoring**: The game ends when one player successfully bears off all their checkers.
+    * If the loser has borne off no checkers, the winner scores 2 points (a "mars").
+    * Otherwise, the winner scores 1 point (an "oin").
+8. **Last Roll Tie Rule**: Specific game situations (e.g., if the opponent has 14 checkers borne off when the winner finishes) may grant the opponent one last roll to attempt a tie.
 
 ## Implementation Details
 The implementation follows a test-driven development approach with comprehensive tests for each rule modification. Key changes include:
@@ -33,8 +44,3 @@ The implementation supports multiple scoring types:
 
 ## Build Integration
 The Long Narde game has been added to the CMakeLists.txt with appropriate build rules. Tests are available for verifying the implementation.
-
-## Future Improvements
-1. Fix build environment issues to successfully run all tests
-2. Consider adding a specific Long Narde GUI or visualization
-3. Implement AI strategies specific to Long Narde's unique rules 

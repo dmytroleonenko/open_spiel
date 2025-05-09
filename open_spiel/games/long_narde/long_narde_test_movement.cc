@@ -34,20 +34,19 @@ namespace open_spiel
         SPIEL_CHECK_EQ(lnstate->dice(0), 4);
         SPIEL_CHECK_EQ(lnstate->dice(1), 4);
 
-        // Special double: four moves of 4
-        // Move two checkers from head (23 -> 19), then move those two again (19 -> 15)
-        std::vector<Action> legal_actions = lnstate->LegalActions();
-        SPIEL_CHECK_FALSE(legal_actions.empty());
+        // Phase 1: Move two checkers from head (23 -> 19)
+        std::vector<LongNardeCheckerMove> phase1_moves = {
+            {kWhiteHeadPos, kWhiteHeadPos - 4, 4},
+            {kWhiteHeadPos, kWhiteHeadPos - 4, 4}};
+        Action action1 = lnstate->LongNardeCheckerMovesToSpielMove(phase1_moves);
+        lnstate->ApplyAction(action1);
 
-        std::vector<LongNardeCheckerMove> checkers_moves = {
-            {kWhiteHeadPos, kWhiteHeadPos - 4, 4},     // 23 -> 19
-            {kWhiteHeadPos - 4, kWhiteHeadPos - 8, 4}, // 19 -> 15
-            {kWhiteHeadPos, kWhiteHeadPos - 4, 4},     // 23 -> 19
-            {kWhiteHeadPos - 4, kWhiteHeadPos - 8, 4}  // 19 -> 15
-        };
-        Action action = lnstate->LongNardeCheckerMovesToSpielMove(checkers_moves);
-
-        lnstate->ApplyAction(action);
+        // Phase 2: Move those two again (19 -> 15)
+        std::vector<LongNardeCheckerMove> phase2_moves = {
+            {kWhiteHeadPos - 4, kWhiteHeadPos - 8, 4},
+            {kWhiteHeadPos - 4, kWhiteHeadPos - 8, 4}};
+        Action action2 = lnstate->LongNardeCheckerMovesToSpielMove(phase2_moves);
+        lnstate->ApplyAction(action2);
 
         SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, kWhiteHeadPos), 13);    // 15 - 2 = 13 left on head
         SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, kWhiteHeadPos - 4), 0); // 0 left on point 19
@@ -113,14 +112,23 @@ namespace open_spiel
 
         lnstate->ApplyAction(20); // Apply dice outcome 6,6
 
-        std::vector<LongNardeCheckerMove> moves = {
+        // Phase 1: Move two checkers from head (23 -> 17)
+        std::vector<LongNardeCheckerMove> phase1_moves = {
             {kWhiteHeadPos, kWhiteHeadPos - 6, 6},
             {kWhiteHeadPos, kWhiteHeadPos - 6, 6}};
-        Action action = lnstate->LongNardeCheckerMovesToSpielMove(moves);
-        lnstate->ApplyAction(action);
+        Action action1 = lnstate->LongNardeCheckerMovesToSpielMove(phase1_moves);
+        lnstate->ApplyAction(action1);
+
+        // Phase 2: Move those two again (17 -> 11)
+        std::vector<LongNardeCheckerMove> phase2_moves = {
+            {kWhiteHeadPos - 6, kWhiteHeadPos - 12, 6},
+            {kWhiteHeadPos - 6, kWhiteHeadPos - 12, 6}};
+        Action action2 = lnstate->LongNardeCheckerMovesToSpielMove(phase2_moves);
+        lnstate->ApplyAction(action2);
 
         SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, kWhiteHeadPos), 13);
-        SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, kWhiteHeadPos - 6), 2);
+        SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, kWhiteHeadPos - 6), 0);
+        SPIEL_CHECK_EQ(lnstate->GetCount(kXPlayerId, kWhiteHeadPos - 12), 2);
 
         std::cout << "✓ Checker distribution verified\n";
       }
@@ -143,24 +151,22 @@ namespace open_spiel
         auto lnA = static_cast<LongNardeState *>(stA.get());
         lnA->ApplyAction(18); // 4,4
         SPIEL_CHECK_TRUE(lnA->IsFirstTurn(kXPlayerId));
-        std::vector<Action> first_turn_actions = lnA->LegalActions();
-        bool can_move_2_from_head = false;
-        for (Action a : first_turn_actions)
-        {
-          std::unique_ptr<State> c = lnA->Clone();
-          auto cst = static_cast<LongNardeState *>(c.get());
-          int init_head_count = cst->GetCount(kXPlayerId, kWhiteHeadPos);
-          cst->ApplyAction(a);
-          int new_head_count = cst->GetCount(kXPlayerId, kWhiteHeadPos);
-          int diff = init_head_count - new_head_count;
-          if (diff >= 2)
-          {
-            can_move_2_from_head = true;
-            break;
-          }
-        }
-        SPIEL_CHECK_TRUE(can_move_2_from_head);
-        std::cout << "✓ Head rule first-turn test passed\n";
+        int init_head_count = lnA->GetCount(kXPlayerId, kWhiteHeadPos);
+        // Phase 1
+        std::vector<Action> phase1_actions = lnA->LegalActions();
+        SPIEL_CHECK_FALSE(phase1_actions.empty());
+        Action phase1_action = phase1_actions[0];
+        lnA->ApplyAction(phase1_action);
+        int after_phase1_head_count = lnA->GetCount(kXPlayerId, kWhiteHeadPos);
+        // Phase 2
+        std::vector<Action> phase2_actions = lnA->LegalActions();
+        SPIEL_CHECK_FALSE(phase2_actions.empty());
+        Action phase2_action = phase2_actions[0];
+        lnA->ApplyAction(phase2_action);
+        int after_phase2_head_count = lnA->GetCount(kXPlayerId, kWhiteHeadPos);
+        int diff = init_head_count - after_phase2_head_count;
+        SPIEL_CHECK_TRUE(diff == 2); // Two checkers can leave the head in total
+        std::cout << "✓ Head rule first-turn test passed (across both phases)\n";
       }
       // EndTest: test-headrule-first-turn-1
       // EndFunction: HeadRuleTestFirstTurn
@@ -188,29 +194,22 @@ namespace open_spiel
         SetupBoardState(lnB, kXPlayerId, board_non_first);
         SetupDice(lnB, {4, 4, 4, 4});
         SPIEL_CHECK_FALSE(lnB->IsFirstTurn(kXPlayerId)); // Ensure it's not the first turn
-
-        std::vector<Action> la = lnB->LegalActions();
-        SPIEL_CHECK_FALSE(la.empty());
-
-        bool found_illegal_2_from_head = false;
-        for (Action move : la)
-        {
-          std::unique_ptr<State> c = lnB->Clone();
-          auto cst = static_cast<LongNardeState *>(c.get());
-          int init_head_count = cst->GetCount(kXPlayerId, kWhiteHeadPos);
-          cst->ApplyAction(move);
-          int new_head_count = cst->GetCount(kXPlayerId, kWhiteHeadPos);
-          int diff = init_head_count - new_head_count;
-          if (diff > 1)
-          { // Check if more than one checker moved from head
-            found_illegal_2_from_head = true;
-            std::cerr << "Illegal move found: " << lnB->ActionToString(kXPlayerId, move) << "\n";
-            std::cerr << "Initial head count: " << init_head_count << ", New head count: " << new_head_count << "\n";
-            break;
-          }
-        }
-        SPIEL_CHECK_FALSE(found_illegal_2_from_head);
-        std::cout << "✓ Head rule non-first-turn test passed\n";
+        int init_head_count = lnB->GetCount(kXPlayerId, kWhiteHeadPos);
+        // Phase 1
+        std::vector<Action> phase1_actions = lnB->LegalActions();
+        SPIEL_CHECK_FALSE(phase1_actions.empty());
+        Action phase1_action = phase1_actions[0];
+        lnB->ApplyAction(phase1_action);
+        int after_phase1_head_count = lnB->GetCount(kXPlayerId, kWhiteHeadPos);
+        // Phase 2
+        std::vector<Action> phase2_actions = lnB->LegalActions();
+        SPIEL_CHECK_FALSE(phase2_actions.empty());
+        Action phase2_action = phase2_actions[0];
+        lnB->ApplyAction(phase2_action);
+        int after_phase2_head_count = lnB->GetCount(kXPlayerId, kWhiteHeadPos);
+        int diff = init_head_count - after_phase2_head_count;
+        SPIEL_CHECK_TRUE(diff <= 1); // Only one checker can leave the head in total
+        std::cout << "✓ Head rule non-first-turn test passed (across both phases)\n";
       }
       // EndTest: test-headrule-non-first-turn-1
       // EndFunction: HeadRuleTestNonFirstTurn

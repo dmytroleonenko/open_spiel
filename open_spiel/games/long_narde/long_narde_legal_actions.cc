@@ -27,9 +27,25 @@ namespace open_spiel
             if (IsChanceNode())
                 return LegalChanceOutcomes();
 
+            // --- Two-Phase Dice Override: use only two active dice for this phase ---
+            LongNardeState* mutable_this = const_cast<LongNardeState*>(this);
+            std::vector<int> saved_dice = mutable_this->dice_;
+            bool is_doubles = (initial_dice_[0] == initial_dice_[1] && initial_dice_[0] > 0);
+            bool is_phase1 = is_doubles && is_first_phase_of_doubles_;
+            mutable_this->dice_.assign(4, 0);
+            if (is_phase1 || !is_doubles) {
+                mutable_this->dice_[0] = initial_dice_[0];
+                mutable_this->dice_[1] = initial_dice_[1];
+            } else {
+                // Phase 2 of doubles
+                mutable_this->dice_[0] = initial_dice_[2];
+                mutable_this->dice_[1] = initial_dice_[3];
+            }
             // Generate all possible move sequences via recursive generator
             std::set<std::pair<std::vector<LongNardeCheckerMove>, bool>> movelist_set;
             RecLegalMoveSequences({}, &movelist_set, false);
+            // Restore original dice after generation
+            mutable_this->dice_ = saved_dice;
             std::vector<std::pair<std::vector<LongNardeCheckerMove>, bool>> movelist_with_flags(
                 movelist_set.begin(), movelist_set.end());
 
@@ -43,8 +59,13 @@ namespace open_spiel
             {
                 SPIEL_CHECK_GE(dice_.size(), 2);
                 std::vector<LongNardeCheckerMove> actual_pass_sequence;
-                actual_pass_sequence.push_back({kPassPos, kPassPos, DiceValue(0)});
-                actual_pass_sequence.push_back({kPassPos, kPassPos, DiceValue(1)});
+                if (is_doubles && !is_first_phase_of_doubles_) {
+                  actual_pass_sequence.push_back({kPassPos, kPassPos, initial_dice_[2]});
+                  actual_pass_sequence.push_back({kPassPos, kPassPos, initial_dice_[3]});
+                } else {
+                  actual_pass_sequence.push_back({kPassPos, kPassPos, DiceValue(0)});
+                  actual_pass_sequence.push_back({kPassPos, kPassPos, DiceValue(1)});
+                }
                 return {LongNardeCheckerMovesToSpielMove(actual_pass_sequence)};
             }
 
@@ -63,7 +84,6 @@ namespace open_spiel
             std::vector<Action> legal_moves;
             legal_moves.assign(unique_actions.begin(), unique_actions.end());
 
-            // **** Apply Higher Die Rule ****
             std::vector<Action> final_actions = LongNardeApplyHigherDieRuleIfNeeded(legal_moves, filtered_movelist);
             return final_actions;
         }
@@ -185,8 +205,14 @@ namespace open_spiel
           for (int i = 0; i < dice_.size(); ++i) {
             if (IsDieUsable(i)) ++usable_dice;
           }
+          // Always use max_moves = 2 for two-phase system
+          int max_moves = 2;
+          const auto& initial = this->LongNardeInitialDice();
+          bool is_doubles = (initial.size() >= 2 && initial[0] == initial[1] && initial[0] > 0);
+          bool is_phase1 = is_doubles && is_first_phase_of_doubles_;
+          bool is_phase2 = is_doubles && !is_first_phase_of_doubles_;
           // Base case: no dice left or max moves reached
-          if (usable_dice == 0 || moveseq.size() >= 4) {
+          if (usable_dice == 0 || moveseq.size() >= max_moves) {
             bool is_term = this->IsTerminal();
             movelist->insert({moveseq, is_term});
             int non_pass = 0;
@@ -198,18 +224,17 @@ namespace open_spiel
           std::set<LongNardeCheckerMove> half_moves =
               LongNardeGenerateAllHalfMoves(cur_player_, moved_from_head_this_sequence);
 
-          // Pass-only case
+          // Pass-only case: use correct dice for phase 2 of doubles
           if (half_moves.size() == 1 && half_moves.begin()->pos == kPassPos) {
+            std::vector<LongNardeCheckerMove> pass_seq = moveseq;
             if (moveseq.empty()) {
-              // Initial pass: use initial dice values
-              std::vector<LongNardeCheckerMove> pass_seq = moveseq;
-              const auto& initial = this->LongNardeInitialDice();
-              if (initial.size() >= 2 && initial[0] == initial[1]) {
-                // Doubles: two pass moves
+              if (is_doubles && is_phase2) {
+                pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, initial[2]));
+                pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, initial[3]));
+              } else if (is_doubles) {
                 pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, initial[0]));
-                pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, initial[0]));
+                pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, initial[1]));
               } else {
-                // Non-doubles: one pass per initial die
                 pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, initial[0]));
                 pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, initial[1]));
               }
@@ -219,7 +244,6 @@ namespace open_spiel
               return non_pass;
             } else {
               // Forced pass after some moves: one pass for first usable die
-              std::vector<LongNardeCheckerMove> pass_seq = moveseq;
               for (int i = 0; i < dice_.size(); ++i) {
                 if (IsDieUsable(i)) {
                   pass_seq.push_back(LongNardeCheckerMove(kPassPos, kPassPos, DiceValue(i)));

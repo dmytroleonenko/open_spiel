@@ -21,110 +21,133 @@ Implementation of Long Narde rules, based on a copy of "games/backgammon".
 
 ## Plan
 
-### Phase 1: Modify `LongNardeState` Member Variables and Basic Accessors (`long_narde.h`, `long_narde_state.cc`)
+**Project: Migrate Long Narde to Two-Phase, Two-Slot Action Encoding**
 
-1.  **Modify `board_` Member Variable (`long_narde.h`):** ✅
-    *   Comment out or remove: `std::vector<std::vector<int>> board_;`
-    *   Add new member: `uint8_t board_data_[kNumPlayers * kNumPoints];`
-    *   Keep existing members `uint32_t player_occupancy_[kNumPlayers];` and `int checkers_on_board_count_[kNumPlayers];`. Their updates will be ensured.
+**Goal:** Refactor the Long Narde game in OpenSpiel to use a two-phase action system for doubles, similar to `open_spiel/games/backgammon/backgammon.cc`. This involves changing action encoding, dice handling, state management for doubles, legal action generation, and updating test cases.
 
-2.  **Update Constructor (`LongNardeState::LongNardeState` in `long_narde_state.cc`):** ✅
-    *   Initialize `board_data_` as a flat array (e.g., `std::fill_n(board_data_, kNumPlayers * kNumPoints, 0);` in the constructor body).
-    *   The loop that initializes `player_occupancy_` and `checkers_on_board_count_` (currently lines 48-57) will now read from `board_data_` after `SetupInitialBoard` populates it.
-        ```cpp
-        // Example: After SetupInitialBoard() has populated board_data_
-        // for (int p = 0; p < kNumPlayers; ++p) {
-        //   uint32_t occ = 0;
-        //   int cnt = 0;
-        //   for (int pos = 0; pos < kNumPoints; ++pos) {
-        //     uint8_t point_count = board_data_[p * kNumPoints + pos];
-        //     if (point_count > 0) {
-        //       occ |= (1u << pos);
-        //       cnt += point_count;
-        //     }
-        //   }
-        //   player_occupancy_[p] = occ;
-        //   checkers_on_board_count_[p] = cnt;
-        // }
-        ```
+**I. Core Game Logic & State Modifications (`long_narde.h`, `long_narde_state.cc`, `long_narde_game.cc`)**
 
-3.  **Update `SetupInitialBoard()` (`long_narde_state.cc` lines 67-71):** ✅
-    *   Change assignments to `board_` to use `board_data_` with 1D indexing:
-        *   `board_data_[kXPlayerId * kNumPoints + kWhiteHeadPos] = kNumCheckersPerPlayer;`
-        *   `board_data_[kOPlayerId * kNumPoints + kBlackHeadPos] = kNumCheckersPerPlayer;`
-    *   **Important**: Ensure `player_occupancy_` and `checkers_on_board_count_` are correctly initialized after `board_data_` is set (either by calling the update logic here or by structuring constructor calls appropriately).
+1. [DONE]  **State Flags for Doubles Handling (in `LongNardeState` class - `long_narde.h`):**
+    *   Add `bool is_first_phase_of_doubles_ = false;`
+        *   Initialize to `false` in constructor.
+        *   Set to `true` in `ProcessChanceRoll` if a doubles roll occurs.
+        *   Set to `false` in `DoApplyAction` after the first phase of a doubles turn is processed.
+        *   Used by `LegalActions()` and `DoApplyAction()` to determine current phase.
+    *   Ensure `UndoAction` correctly restores this flag from `TurnHistoryInfo`.
+    *   [BUG FIXED] The two-phase turn mechanism for doubles is now implemented in `LongNardeAdvanceToNextPlayer` (`long_narde_api.cc`, lines 496-519): after phase 1, the player remains for phase 2, and only after both phases does the player advance. [DONE]
 
-4.  **Refactor `board()` accessor to `GetCount()` (`long_narde.h`, `long_narde_state.cc` line 94):** ✅
-    *   Rename `int board(int player, int pos) const` to `uint8_t GetCount(int player, int pos) const`.
-    *   Make it `inline` in `long_narde.h`.
-    *   Implement to access `board_data_` with 1D indexing and appropriate bounds checking (return 0 or error for invalid `pos`).
-        ```cpp
-        // // In long_narde.h
-        // inline uint8_t GetCount(int player, int pos) const {
-        //   if (pos < 0 || pos >= kNumPoints) { /* Handle error or return 0 */ }
-        //   return board_data_[player * kNumPoints + pos];
-        // }
-        ```
-    *   Remove old implementation from `long_narde_state.cc`.
+2. [DONE]  **Dice Representation and Handling:**
+    *   **Keep `dice_` and `initial_dice_` as `std::vector<int>(4)`:** (No change to declaration)
+        *   This simplifies managing the four pips of a doubles roll across two phases.
+        *   Non-doubles: `dice_[0]`, `dice_[1]` used; `dice_[2]`, `dice_[3]` are 0.
+        *   Doubles Phase 1: `dice_[0]`, `dice_[1]` used.
+        *   Doubles Phase 2: `dice_[2]`, `dice_[3]` used.
+    *   **Marking Dice Used:** Change from `-1` to `+6`.
+        *   Modify `LongNardeState::DiceValue(int idx) const` (`long_narde_api.cc`):
+            *   If `dice_[idx] > 6`, return `dice_[idx] - 6`.
+            *   Else return `dice_[idx]`.
+            *   Handle `idx` for all 4 dice slots.
+        *   Modify `LongNardeState::IsDieUsable(int idx) const` (`long_narde_api.cc`):
+            *   Return `dice_[idx] >= 1 && dice_[idx] <= 6`.
+            *   Handle `idx` for all 4 dice slots.
+        *   Update `LongNardeApplyCheckerMove` (`long_narde_state.cc`):
+            *   When a die is used, find `d` in `dice_` (relevant to current phase) and change to `d + 6`.
+            *   [BUG FIXED] All dice used (including for pass moves) are now marked with `+6` in `LongNardeApplyCheckerMove` (`long_narde_state.cc`, line 101+).
+        *   Update `LongNardeUndoCheckerMove` (`long_narde_state.cc`):
+            *   When undoing, find `d+6` in `dice_` and change back to `d`.
+            *   [BUG FIXED] Undo logic for both regular and pass moves now correctly reverts `+6` marking in `LongNardeUndoCheckerMove` (`long_narde_state.cc`, line 153+).
 
-5.  **Create `IsOccupied()` accessor (`long_narde.h`):** ✅
-    *   Add new `inline` method using `player_occupancy_`:
-        ```cpp
-        // // In long_narde.h
-        // inline bool IsOccupied(int player, int pos) const {
-        //   if (pos < 0 || pos >= kNumPoints) { return false; }
-        //   return (player_occupancy_[player] & (1u << pos)) != 0;
-        // }
-        ```
+3. [DONE]  **Turn History (`TurnHistoryInfo` struct and usage - `long_narde.h`, `long_narde_api.cc`):**
+    *   Add `is_first_phase_of_doubles_` to `TurnHistoryInfo` to allow correct restoration during `UndoAction`.
+    *   [NO BUG] Implementation matches plan.
 
-### Phase 2: Implement Board Modification Logic with Consistent Updates (`long_narde_state.cc`)
+4.  **Maximum Distinct Actions (`LongNardeGame::MaxGameLength` and related constants):**
+    *   This is not `NumDistinctActions`. `MaxGameLength` is an estimate of total moves in a game. The change in how "moves" are counted (doubles are two player "moves") might slightly affect this estimate if it was tightly tuned, but likely no change needed unless it causes issues.
+    *   `kNumDistinctActions` is handled in Encoding section.
+    *   [DONE] Value and rationale reviewed/clarified in code; no change to value needed.
 
-1.  **Create Private Helper Mutator Methods (Recommended) (`long_narde.h` private section, `long_narde_state.cc`):** ✅
-    *   `void SetPointCount(int player, int pos, uint8_t count)`: Updates `board_data_`, `player_occupancy_`, and `checkers_on_board_count_`.
-    *   `void IncrementPoint(int player, int pos)`: Updates `board_data_`, `player_occupancy_` (if count was 0), and `checkers_on_board_count_`.
-    *   `void DecrementPoint(int player, int pos)`: Updates `board_data_`, `player_occupancy_` (if count becomes 0), and `checkers_on_board_count_`.
+**II. Action Encoding/Decoding Modifications (`long_narde_encoding.cc`, `long_narde.h`)**
 
-2.  **Refactor `LongNardeApplyCheckerMove` (`long_narde_state.cc` lines 104-196):** ✅
-    *   Replace `board_[player][move.pos]--;` with `DecrementPoint(player, move.pos);` (or inlined logic).
-    *   Replace `board_[player][move.to_pos]++;` with `IncrementPoint(player, move.to_pos);` (or inlined logic).
-    *   For bearing off (`scores_[player]++;`): also decrement `checkers_on_board_count_[player]`.
+1. [DONE]  **Update Constants:**
+    *   [DONE] All old encoding constants and helpers are removed from `long_narde_encoding.cc`. Only the new two-slot, two-phase encoding system remains documented and implemented.
+2. [DONE]  **`LongNardeState::NumDistinctActions() const`:**
+    *   Change to return `2 * kEncodingBase * kEncodingBase;` (e.g., 1250).
+3. [DONE]  **`LongNardeState::LongNardeCheckerMovesToSpielMove(const std::vector<LongNardeCheckerMove>& moves) const`:**
+    *   This function will now always encode **two** `LongNardeCheckerMove` objects (slots).
+    *   The `moves` vector input should represent the 1 or 2 pips for the *current phase*.
+    *   Pad `moves` with `kPassMove` (using the correct die for the pass) if only one actual move is made in the phase, to ensure two slots are always encoded.
+    *   Determine `bool high_pip_first_for_phase`:
+        *   For non-doubles: based on `dice_[0]` vs `dice_[1]`.
+        *   For doubles phase 1: `dice_[0]` vs `dice_[1]` (pips are same, so this is conventional, e.g., always true).
+        *   For doubles phase 2: `dice_[2]` vs `dice_[3]` (pips are same, so conventional).
+    *   `slot0_pos = (moves[0].pos == kPassPos) ? (kEncodingBase - 1) : moves[0].pos;`
+    *   `slot1_pos = (moves[1].pos == kPassPos) ? (kEncodingBase - 1) : moves[1].pos;`
+    *   `action = slot0_pos + kEncodingBase * slot1_pos;`
+    *   If `!high_pip_first_for_phase`, then `action += kEncodingBase * kEncodingBase;`
+    *   Remove old encoding logic for >2 moves (doubles offset path).
+4. [DONE]  **`LongNardeState::LongNardeSpielMoveToCheckerMoves(Player player, Action spiel_move) const`:**
+    *   Decode `spiel_move` into `slot0_pos`, `slot1_pos`, and `high_pip_first_for_phase`.
+    *   Determine active dice for the current phase:
+        *   If `this->is_first_phase_of_doubles_` (or if not a doubles turn initially): use `this->dice_[0]` and `this->dice_[1]`.
+        *   Else (second phase of doubles): use `this->dice_[2]` and `this->dice_[3]`.
+    *   Use `DiceValue(idx)` to get original die values.
+    *   Construct two `LongNardeCheckerMove` objects using the decoded positions and the determined dice for the phase, ordered by `high_pip_first_for_phase`.
+    *   Calculate `to_pos` using `GetToPos()` for each reconstructed `LongNardeCheckerMove`.
+    *   Return a vector of these (up to two) `LongNardeCheckerMove`s. Filter out pure pass moves if only one actual move was encoded, or return two passes if action was double pass.
 
-3.  **Refactor `LongNardeUndoCheckerMove` (`long_narde_state.cc` line 198 onwards):** ✅
-    *   Replace direct `board_` modifications with `IncrementPoint` / `DecrementPoint` (or inlined logic) to reverse the move.
-    *   When undoing a bear-off (decrementing `scores_[player]`): also increment `checkers_on_board_count_[player]`.
+**III. Core API Implementation Updates (`long_narde_api.cc`)**
 
-### Phase 3: Update All Other Code to Use New Accessors/Mutators: ✅
+- [x] `LongNardeState::DoApplyAction(Action move_id)`: (encoding/phase logic complete; legal move gen not yet)
+    *   NOTE: Marked complete, but relies on phase logic (I.1) which has bugs (two-phase doubles not implemented).
+- [x] `LongNardeState::UndoAction(Player player, Action action)`: (encoding/phase logic complete; legal move gen not yet)
+    *   NOTE: Flag restoration is fine, but overall dice undo (I.2) has bugs.
+- [x] `LongNardeState::ProcessChanceRoll(Action move_id)`: (encoding/phase logic complete)
+    *   NOTE: Marked complete, but `is_first_phase_of_doubles_` flag (I.1) is not set.
+- [x] `LongNardeState::DiceValue(int idx) const` and `IsDieUsable(int idx) const`: (complete)
 
-1.  **Global Search and Replace:**
-    *   Replace `board_[player][pos]` reads with `GetCount(player, pos)`. Analyze writes (should be in Apply/Undo).
-    *   Replace `board(player, pos)` calls with `GetCount(player, pos)` or `IsOccupied(player, pos)` as appropriate.
+**IV. [DONE] Legal Action Generation Modifications (`long_narde_legal_actions.cc`)**
 
-2.  **Specific Function Refactoring (`long_narde_validation.cc` and others):**
-    *   **`LongNardeState::IsFirstTurn`**: Use `GetCount()`.
-    *   **`LongNardeState::WouldFormBlockingBridge`**: Adapt `temp_board` logic for 1D array or ensure reliance on `WouldFormBlockingBridgeOptim`.
-    *   **`LongNardeState::LongNardeIsValidCheckerMove`**: Use `IsOccupied()` or `GetCount()` for checks.
-    *   **`LongNardeState::AllInHome`**: Refactor to use `player_occupancy_` and a precomputed `non_home_mask_[player]`.
-    *   **`LongNardeState::FurthestCheckerInHome`**: Refactor to use `player_occupancy_` and bit manipulation.
-    *   **`LongNardeState::WouldFormBlockingBridgeOptim`**: Ensure it uses the dynamically updated `player_occupancy_`. Consider 5-point block pre-check.
+*   This is the most complex change. The current file generates full sequences.
+*   **New `LongNardeState::LegalActions() const` logic:**
+  1. Determine current phase:
+     - `is_doubles_turn_phase1 = (initial_dice_[0] == initial_dice_[1] && initial_dice_[0] > 0 && is_first_phase_of_doubles_)`.
+     - `is_doubles_turn_phase2 = (initial_dice_[0] == initial_dice_[1] && initial_dice_[0] > 0 && !is_first_phase_of_doubles_)`.
+     - `is_non_doubles_turn = !(initial_dice_[0] == initial_dice_[1] && initial_dice_[0] > 0)`.
+  2. Identify active dice for this phase:
+     - Phase 1 (doubles or non-doubles): Use `initial_dice_[0]` and `initial_dice_[1]`.
+     - Phase 2 (doubles only): Use `initial_dice_[2]` and `initial_dice_[3]`.
+  3. Adapt full sequence generation to only two pips:
+     - Input: current board state, active dice for phase, `cur_player_`, `moved_from_head_`, `is_on_first_turn_`.
+     - Output: valid 1–2 move sequences for this phase.
+  4. Encode each sequence via `LongNardeCheckerMovesToSpielMove`, collect unique actions.
+  5. Return unique encoded actions.
+    *   [DONE] All phase/dice selection bugs in legal action generation are fixed (see RecLegalMoveSequences and pass dice selection logic).
+    *   [DONE] The two-phase system and correct dice usage for pass moves are now enforced for both phases of doubles.
 
-3.  **Test Code (`long_narde_test_*.cc` files):**
-    *   Update board setup and checks to use new accessors (`GetCount`, `IsOccupied`).
+**V. Test Case Modifications**
 
-### Phase 4: Unit Tests for Bitboard Logic
+*   **`long_narde_test_actions.cc`:**
+    - [DONE] Restructure multi-pip doubles tests (`test-actionencodingtest-4`, `test-actionencodingtest-5`) into two-phase applications.
+    - [DONE] Adapt encoding/decoding tests to new `NumDistinctActions()` and verify decoded moves match.
+*   **`long_narde_test_movement.cc`:**
+    - [DONE] Split 4-pip doubles tests (`TestBasicMovement`, `CheckerDistributionTest`) into two actions (phase 1 and phase 2).
+    - [DONE] Update head-rule tests (`HeadRuleTestFirstTurn`, `HeadRuleTestNonFirstTurn`) to validate across both phases.
+*   **`long_narde_test_endgame.cc`:**
+    - [DONE] For any >2 pip action tests, split into two-phase applications.
+    - Non-doubles bear-off tests remain unchanged.
+*   **`long_narde_test_bridges.cc`:**
+    - [DONE] Adjust double-roll bridge tests (e.g., `test-bridgetest-6`) to account for two-phase structure where appropriate.
+*   **`long_narde_test_basic.cc` & `random_sim_test.cc`:** Minimal updates; confirm simulations and basic tests work with new phases.
 
-1.  **Run All Unit Tests.** Add new tests for bitboard logic in `AllInHome`, `FurthestCheckerInHome`. ✅
-2.  **Profile:** Re-run profiler on random simulation to measure impact. ✅
+**VI. Documentation & Cleanup**
 
-### Note on Redundant State: Remove checkers_on_board_count_
+1. Update code comments in `long_narde.h` and `.cc` files to describe two-phase encoding and state flags.
+2. Remove old multi-pip encoding code and constants from `long_narde_encoding.cc`.
+3. Update project README or game documentation to explain new action scheme and doubles phases.
 
-- The member `checkers_on_board_count_[player]` is redundant because:
-  - `scores_[player]` tracks the number of checkers a player has borne off.
-  - The total number of checkers per player is always 15 (`kNumCheckersPerPlayer`).
-  - Therefore, `checkers_on_board_count_[player] + scores_[player] == kNumCheckersPerPlayer` always holds.
-- **Action:** ✅
-  - Remove `checkers_on_board_count_` from the state.
-  - Wherever the count of checkers on the board is needed, use `kNumCheckersPerPlayer - scores_[player]`.
-  - Update all logic and helper methods to reflect this simplification.
-  - Only update `scores_[player]` on bear-off and undo; do not maintain a separate on-board count.
+**VII. Iterative Refinement and Debugging**
 
-
+1. Implement changes incrementally: state flags & dice → encoding → API → legal actions → tests.
+2. Run full test suite after each major change.
+3. Use debug prints/logs to trace dice values, phase transitions, and action encode/decode.
+4. Validate edge cases: pass moves, head-rule interactions, endgame scoring, bridge formation across phases.

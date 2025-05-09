@@ -54,6 +54,7 @@ namespace open_spiel
           // board_({std::vector<int>(kNumPoints, 0), std::vector<int>(kNumPoints, 0)}),
           turn_history_info_({}),
           allow_last_roll_tie_(false),
+          is_first_phase_of_doubles_(false), // NEW: Initialize to false
           // Initialize scoring_type_ based on game parameters
           scoring_type_(ParseScoringType(
               game->GetParameters().count("scoring_type") > 0 ? game->GetParameters().at("scoring_type").string_value() : kDefaultScoringType))
@@ -96,27 +97,24 @@ namespace open_spiel
       // Handle pass move
       if (move.pos == kPassPos)
       {
-        // Mark a die as used (placeholder logic, assumes pass uses die 1)
-        // Need robust logic to mark the *correct* die used if pass is forced.
-        // Mark a die corresponding to kPassDieValue (which is 1) if available
         bool found_die = false;
         for (int i = 0; i < dice_.size(); ++i)
         {
           if (dice_[i] == kPassDieValue)
-          {                // Find a '1'
-            dice_[i] = -1; // Mark as used
+          {
+            dice_[i] += 6; // Mark as used by adding 6
             found_die = true;
             break;
           }
         }
-        // If die 1 wasn't available, mark the lowest available die (if any)
+        // If die 1 wasn't available, mark the lowest available die
         if (!found_die)
         {
           for (int i = 0; i < dice_.size(); ++i)
           {
             if (dice_[i] > 0)
             {
-              dice_[i] = -1; // Mark as used
+              dice_[i] += 6; // Mark as used by adding 6
               break;
             }
           }
@@ -153,13 +151,13 @@ namespace open_spiel
         IncrementPoint(player, move.to_pos);
       }
 
-      // Mark the die used for this move as inactive
+      // Mark the die used for this move as inactive (NEW: use +6 marking)
       bool found_die = false;
       for (int i = 0; i < dice_.size(); ++i)
       {
         if (dice_[i] == move.die)
         {
-          dice_[i] = -1; // Mark as used
+          dice_[i] = move.die + 6; // Mark as used by adding 6
           found_die = true;
           break;
         }
@@ -177,9 +175,9 @@ namespace open_spiel
           { // Was this move bearing off the furthest checker?
             for (int i = 0; i < dice_.size(); ++i)
             {
-              if (dice_[i] > 0 && dice_[i] >= move.die)
+              if (dice_[i] > 0 && dice_[i] >= move.die && dice_[i] <= 6)
               { // Found a usable die >= the die value needed
-                dice_[i] = -1;
+                dice_[i] = dice_[i] + 6;
                 found_alternative = true;
                 break;
               }
@@ -205,58 +203,29 @@ namespace open_spiel
       // Handle pass move undo
       if (move.pos == kPassPos)
       {
-        // Restore the die used for the pass (placeholder logic)
-        // Need robust way to know *which* die was marked by ApplyCheckerMove for pass.
-        // For now, try restoring the placeholder kPassDieValue (1) if it's marked used.
+        // Restore the die used for the pass by reverting +6 marking
         bool found_used_die = false;
         for (int i = 0; i < dice_.size(); ++i)
         {
-          if (dice_[i] == -1)
-          { // Find a used die
-            // Was this the pass die?
-            // Heuristic: If initial dice had kPassDieValue, restore that.
-            // Otherwise restore the lowest value die? This is fragile.
-            // Assume for now the pass used kPassDieValue (1) if possible.
-            bool had_pass_die_initially = false;
-            for (int initial_d : initial_dice_)
-            {
-              if (initial_d == kPassDieValue)
-              {
-                had_pass_die_initially = true;
-                break;
-              }
-            }
-            if (had_pass_die_initially)
-            {
-              dice_[i] = kPassDieValue; // Restore '1'
-              found_used_die = true;
-              break;
-            } // Else: Need better logic to know which die the pass *actually* consumed.
-              // As a fallback, restore the lowest initial die value? Assume 1 for now.
-            else
-            {
-              dice_[i] = kPassDieValue; // Fallback restore '1'
-              found_used_die = true;
-              break;
-            }
+          if (dice_[i] == move.die + 6)
+          {
+            dice_[i] = move.die;
+            found_used_die = true;
+            break;
           }
         }
         if (!found_used_die)
         {
-          // This implies pass was undone but no die was marked - shouldn't happen
-          SpielFatalError("UndoCheckerMove: Attempted to undo pass, but no die was marked as used.");
+          SpielFatalError(absl::StrCat("UndoCheckerMove: Could not find used die slot (", move.die + 6, ") to restore die ", move.die));
         }
-        return; // No board changes needed
+        return;
       }
 
-      // Restore the die used for the move
-      // This needs to handle the case where a higher die was used for bear-off.
-      // Find the first occurrence of -1 in dice_ and restore move.die.
-      // This assumes moves are undone in reverse order and dice are consumed deterministically.
+      // Restore the die used for the move (NEW: use -6 to restore)
       bool found_used_die_slot = false;
       for (int i = 0; i < dice_.size(); ++i)
       {
-        if (dice_[i] == -1)
+        if (dice_[i] == move.die + 6)
         {
           dice_[i] = move.die;
           found_used_die_slot = true;
@@ -265,7 +234,7 @@ namespace open_spiel
       }
       if (!found_used_die_slot)
       {
-        SpielFatalError(absl::StrCat("UndoCheckerMove: Could not find used die slot (-1) to restore die ", move.die));
+        SpielFatalError(absl::StrCat("UndoCheckerMove: Could not find used die slot (", move.die + 6, ") to restore die ", move.die));
       }
 
       // Increment checker count at the 'from' position

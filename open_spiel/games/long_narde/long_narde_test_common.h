@@ -99,8 +99,15 @@ namespace open_spiel
       }
       // *** END ADDED DEBUG LOG ***
 
-      // Direct manipulation (allowed via friend declaration)
-      state->dice_ = dice; // Assign the 4-element input vector
+      // Directly set dice_ slots (allows two-phase encoding for doubles)
+      state->dice_ = dice; // Assign the full 4-element input vector
+
+      // Initialize initial_dice_ for two-phase handling
+      state->initial_dice_ = dice; // Preserve all four dice for doubles
+      // For non-doubles, initial_dice_[2] and [3] may be 0
+
+      // Set doubles phase flag
+      state->is_first_phase_of_doubles_ = (dice[2] != 0);
 
       // *** ADDED DEBUG LOG ***
       if (kDebugging)
@@ -113,26 +120,7 @@ namespace open_spiel
       }
       // *** END ADDED DEBUG LOG ***
 
-      // Also set initial_dice_ based on the first two elements (the roll)
-      state->initial_dice_.clear();
-      if (dice.size() >= 1)
-        state->initial_dice_.push_back(dice[0]);
-      if (dice.size() >= 2)
-        state->initial_dice_.push_back(dice[1]);
-      // Ensure initial_dice_ has exactly 2 elements, padding with 0 if needed (though input dice should have >= 2 valid rolls)
-      while (state->initial_dice_.size() < 2)
-      {
-        state->initial_dice_.push_back(0); // Should ideally not happen with valid inputs
-      }
-
-      // *** ADDED DEBUG LOG ***
-      if (kDebugging)
-      {
-        std::cout << "[DEBUG SetupDice] Assigned state->initial_dice_: {"
-                  << (state->initial_dice_.size() > 0 ? std::to_string(state->initial_dice_[0]) : "?") << ", "
-                  << (state->initial_dice_.size() > 1 ? std::to_string(state->initial_dice_[1]) : "?") << "}\n";
-      }
-      // *** END ADDED DEBUG LOG ***
+      // Note: We no longer truncate to two elements; tests rely on full 4-element initial_dice_
     }
 
     // Test functions from long_narde_test_pass.cc (or similar)

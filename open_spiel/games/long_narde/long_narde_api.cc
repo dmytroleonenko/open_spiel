@@ -112,10 +112,7 @@ namespace open_spiel
       // Store the state before applying the move for undo purposes.
       turn_history_info_.push_back(
           TurnHistoryInfo(cur_player_, prev_player_, dice_, move_id,
-                          moved_from_head_));
-
-      // Clear dice *before* advancing to the next player/chance node
-      dice_.assign(4, 0); // NEW WAY - Reset dice slots to 0, maintaining size 4
+                          moved_from_head_, is_first_phase_of_doubles_));
 
       // Reset head move flag here as well, before AdvanceToNextPlayer might use it indirectly
       moved_from_head_ = false;
@@ -124,8 +121,8 @@ namespace open_spiel
       LongNardeAdvanceToNextPlayer(filtered_moves, move_id);
 
       // No need for further updates to cur_player_ or prev_player_ here, AdvanceToNextPlayer handles it.
-      // No need to clear dice_ again, done above.
-      // No need to reset moved_from_head_ again, done above.
+      // No need to clear dice_ again, AdvanceToNextPlayer handles it if turn ends.
+      // No need to reset moved_from_head_ again, done above or by AdvanceToNextPlayer.
     }
 
     /**
@@ -148,6 +145,7 @@ namespace open_spiel
       moved_from_head_ = info.moved_from_head;
       cur_player_ = info.player;
       prev_player_ = info.prev_player;
+      is_first_phase_of_doubles_ = info.is_first_phase_of_doubles_; // Restore phase flag
       // dice_ = info.dice; // OLD WAY - Could restore a 2-element vector
       // NEW WAY: Restore dice values while ensuring dice_ remains size 4
       dice_.assign(4, 0); // Reset to 4 zeros
@@ -414,13 +412,15 @@ namespace open_spiel
       // Record the chance outcome in turn history.
       turn_history_info_.push_back(
           TurnHistoryInfo(kChancePlayerId, prev_player_, dice_, move_id,
-                          moved_from_head_));
+                          moved_from_head_, is_first_phase_of_doubles_));
 
       // Ensure we have no dice set yet, then apply this new roll.
       RollDice(move_id); // Sets dice_ based on outcome
 
       // *** Store the dice roll at the start of the turn ***
       initial_dice_ = dice_;
+      // Set first-phase-of-doubles flag if a doubles roll occurred (dice_[2] > 0 indicates doubles)
+      is_first_phase_of_doubles_ = (initial_dice_[2] != 0);
 
       // Decide which player moves next.
       if (turns_ < 0)
@@ -473,8 +473,7 @@ namespace open_spiel
       }
     }
 
-    void LongNardeState::LongNardeAdvanceToNextPlayer(const std::vector<LongNardeCheckerMove> &applied_moves,
-                                             Action spiel_action)
+    void LongNardeState::LongNardeAdvanceToNextPlayer(const std::vector<LongNardeCheckerMove> &applied_moves, Action spiel_action)
     {
       Player moving_player = cur_player_; // Player who just finished moving
 
@@ -494,7 +493,18 @@ namespace open_spiel
 
       Player next_player_id; // Who will play AFTER the next dice roll?
 
-      // ALWAYS advance to the next player
+      // Two-phase doubles logic:
+      if (was_doubles_roll && is_first_phase_of_doubles_) {
+        // Phase 1 just completed, stay on same player for phase 2
+        is_first_phase_of_doubles_ = false;
+        // Do not advance player or turn counters, just reset dice for phase 2
+        // The next DoApplyAction will use dice_[2] and dice_[3] via LegalActions/initial_dice_
+        // No need to change cur_player_ or prev_player_
+        // Reset head move flag for the upcoming phase
+        moved_from_head_ = false;
+        return;
+      }
+      // Otherwise, advance to next player as usual (end of non-doubles turn or end of phase 2 of doubles)
       next_player_id = NextPlayerRoundRobin(moving_player, num_players_);
       is_on_first_turn_ = false; // Can never be the first turn after the first move sequence
       // Always increment turn counters
@@ -512,6 +522,8 @@ namespace open_spiel
 
       // Set the current player to Chance to trigger dice roll on next ApplyAction
       cur_player_ = kChancePlayerId;
+      // Reset dice_ only when the player's turn is fully over.
+      dice_.assign(4, 0); 
     }
 
     /**
@@ -578,6 +590,17 @@ namespace open_spiel
         }
         // dice_[2] and dice_[3] remain 0
       }
+    }
+
+    int LongNardeState::DiceValue(int idx) const {
+      if (idx < 0 || idx >= dice_.size()) return 0;
+      if (dice_[idx] > 6) return dice_[idx] - 6;
+      return dice_[idx];
+    }
+
+    bool LongNardeState::IsDieUsable(int idx) const {
+      if (idx < 0 || idx >= dice_.size()) return false;
+      return dice_[idx] >= 1 && dice_[idx] <= 6;
     }
 
   } // namespace long_narde

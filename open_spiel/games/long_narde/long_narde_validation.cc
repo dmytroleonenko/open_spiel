@@ -505,31 +505,6 @@ namespace open_spiel
       return -1; // No checkers in home
     }
 
-    // ===== Bridge Rule Checks =====
-
-    // Returns the actual die value (1-6) for a given index in dice_.
-    // Handles used dice markers.
-    int LongNardeState::DiceValue(int i) const
-    {
-      SPIEL_CHECK_GE(i, 0);
-      SPIEL_CHECK_LT(i, dice_.size()); // dice_.size() is now 4
-      int val = dice_[i];
-      if (val == 0)
-        return 0; // 0 represents an invalid/unused slot
-      return (val > kNumDiceOutcomes) ? (val - kNumDiceOutcomes) : val;
-    }
-
-    // Checks if the die at the specified index in dice_ is usable.
-    bool LongNardeState::IsDieUsable(int index) const
-    {
-      SPIEL_CHECK_GE(index, 0);
-      SPIEL_CHECK_LT(index, dice_.size()); // dice_.size() is now 4
-      int val = dice_[index];
-      // A die is usable if its value is > 0 (not an empty slot)
-      // and <= kNumDiceOutcomes (not marked as used).
-      return val > 0 && val <= kNumDiceOutcomes;
-    }
-
     // Checks if a given die *outcome* value (potentially marked as used) is usable.
     // This function might be less relevant now with 4 slots, but keep for compatibility/potential use.
     bool LongNardeState::UsableDiceOutcome(int outcome) const

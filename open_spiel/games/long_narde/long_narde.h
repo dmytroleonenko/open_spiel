@@ -178,14 +178,17 @@ namespace open_spiel
       std::vector<int> dice;
       Action action;
       bool moved_from_head;
+      bool is_first_phase_of_doubles_; // NEW: Track doubles phase for undo
       TurnHistoryInfo(int _player, int _prev_player, std::vector<int> _dice,
                       int _action,
-                      bool _moved_from_head)
+                      bool _moved_from_head,
+                      bool _is_first_phase_of_doubles)
           : player(_player),
             prev_player(_prev_player),
             dice(_dice),
             action(_action),
-            moved_from_head(_moved_from_head) {}
+            moved_from_head(_moved_from_head),
+            is_first_phase_of_doubles_(_is_first_phase_of_doubles) {}
     };
 
     class LongNardeGame;
@@ -372,6 +375,11 @@ namespace open_spiel
         return (player_occupancy_[player] & (1u << pos)) != 0;
       }
 
+      bool is_first_phase_of_doubles_ = false; // NEW: Track doubles phase
+
+      // Setter for test code to simulate phase switch
+      void set_is_first_phase_of_doubles(bool value) { is_first_phase_of_doubles_ = value; }
+
     protected:
       void DoApplyAction(Action move_id) override;
 
@@ -479,6 +487,19 @@ namespace open_spiel
       {
         return {kStateEncodingSize};
       }
+      /**
+       * @brief Returns an upper bound on the maximum number of player moves in a game.
+       *
+       * This value is used to preallocate history and ensure the game is finite.
+       * The value 1000 is inherited from backgammon (see backgammon.h), and is
+       * intended to be a safe upper bound for all practical games, even with the
+       * new two-phase, two-slot action encoding for doubles. If empirical evidence
+       * (e.g., from random simulations) shows this is insufficient, it can be
+       * increased. The actual number of moves in a typical game is much lower.
+       *
+       * Note: This is not the number of distinct actions, but the maximum number
+       * of player turns (excluding chance nodes) in a single game.
+       */
       int MaxGameLength() const override { return 1000; }
       int MaxChanceNodesInHistory() const override { return MaxGameLength() + 1; }
 
