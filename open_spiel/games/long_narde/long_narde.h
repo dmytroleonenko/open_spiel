@@ -151,12 +151,14 @@ namespace open_spiel
     inline constexpr const int kBoardEncodingSize = kNumPoints * kNumPlayers;
 
     // The state encoding size includes:
-    // - Board encoding: kBoardEncodingSize
+    // - Board encoding: kBoardEncodingSize (player's view)
+    // - Board encoding: kBoardEncodingSize (opponent's view)
     // - Scores for each player: 2 (1 per player)
-    // - Current player indicator: 2 (1 per player)
-    // - Dice values: 2
+    // - Current player indicator: 2 (1 for current player, 1 for opponent)
+    // - Dice values: 2 (first two active dice, 0 if not rolled/applicable)
+    // - Is first phase of doubles: 1 (1.0f if true, 0.0f if false)
     inline constexpr const int kStateEncodingSize =
-        2 * kNumPlayers + kBoardEncodingSize + 2;
+        2 * kNumPlayers + kBoardEncodingSize + 2 + 1; // +1 for is_first_phase_of_doubles_
     inline constexpr const char *kDefaultScoringType = "winloss_scoring";
 
     // Game scoring type, whether to allow final black move for potential tie

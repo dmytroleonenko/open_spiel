@@ -265,6 +265,11 @@ namespace open_spiel
       *value_it++ = (dice_.size() >= 1) ? DiceValue(0) : 0.0f;
       *value_it++ = (dice_.size() >= 2) ? DiceValue(1) : 0.0f;
 
+      // NEW: Add is_first_phase_of_doubles_ flag
+      // This flag indicates if the current player has rolled doubles and is in the
+      // first phase. If true, they will have a second phase (an "extra move").
+      *value_it++ = is_first_phase_of_doubles_ ? 1.0f : 0.0f;
+
       // Check if iterator reached the end
       SPIEL_CHECK_EQ(value_it, values.end());
     }
