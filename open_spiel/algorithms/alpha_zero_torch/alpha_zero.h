@@ -61,6 +61,7 @@ struct AlphaZeroConfig {
   int evaluators;
   int eval_levels;
   int max_steps;
+  bool verbose;
 
   json::Object ToJson() const {
     return json::Object({
@@ -94,6 +95,7 @@ struct AlphaZeroConfig {
         {"evaluators", evaluators},
         {"eval_levels", eval_levels},
         {"max_steps", max_steps},
+        {"verbose", verbose},
     });
   }
 
@@ -128,6 +130,11 @@ struct AlphaZeroConfig {
     evaluators = config_json.at("evaluators").GetInt();
     eval_levels = config_json.at("eval_levels").GetInt();
     max_steps = config_json.at("max_steps").GetInt();
+    if (config_json.count("verbose")) {
+      verbose = config_json.at("verbose").GetBool();
+    } else {
+      verbose = false;
+    }
   }
 };
 

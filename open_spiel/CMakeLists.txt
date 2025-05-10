@@ -71,9 +71,9 @@ if(BUILD_SHARED_LIBS)
 endif()
 
 # Shim for CUDA::nvToolsExt -> CUDA::nvtx3 alias (requires CMake >=3.25)
-if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.25")
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.25" AND NOT (USE_CUDA STREQUAL "OFF"))
   find_package(CUDAToolkit REQUIRED)
-  if(NOT TARGET CUDA::nvToolsExt)
+  if(NOT TARGET CUDA::nvToolsExt AND TARGET CUDA::nvtx3) # Ensure nvtx3 target exists before creating alias
     add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
     target_link_libraries(CUDA::nvToolsExt INTERFACE CUDA::nvtx3)
   endif()
@@ -239,6 +239,17 @@ endif()
 if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
   list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libtorch/libtorch")
   find_package(Torch REQUIRED)
+  message(STATUS "TORCH_INCLUDE_DIRS: ${TORCH_INCLUDE_DIRS}")
+  message(STATUS "Original TORCH_LIBRARIES: ${TORCH_LIBRARIES}")
+
+  # Remove 'torch_library' if it exists as a simple name
+  list(FILTER TORCH_LIBRARIES EXCLUDE REGEX "^torch_library$")
+  # Also remove 'torch' if we want to be absolutely sure only full paths are used for direct linking,
+  # but usually -ltorch with a correct RPATH is fine. Let's keep 'torch' for now.
+  # Ensure core libraries like libc10 are explicitly pathed if find_package doesn't do it.
+  # TORCH_LIBRARIES already contains the full path to libc10.dylib, which is good.
+
+  message(STATUS "Modified TORCH_LIBRARIES: ${TORCH_LIBRARIES}")
   include_directories(${TORCH_INCLUDE_DIRS})
 endif()
 if (OPEN_SPIEL_BUILD_WITH_GAMUT)

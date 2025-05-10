@@ -334,6 +334,13 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
   // Actor threads have likely been contributing for a while, so put `last` in
   // the past to avoid a giant spike on the first step.
   absl::Time last = absl::Now() - absl::Seconds(60);
+
+  // Variables for periodic stdout reporting
+  absl::Time last_periodic_report_time = absl::Now();
+  int64_t trajectories_this_minute = 0;
+  int64_t moves_this_minute = 0;
+  int64_t mcts_simulations_this_minute = 0;
+
   for (int step = start_info.start_step;
        !stop->StopRequested() &&
            (config.max_steps == 0 || step <= config.max_steps);
@@ -379,10 +386,43 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
               (s.value >= 0) == (trajectory->returns[s.current_player] >= 0));
           value_predictions[stage].Add(abs(s.value));
         }
+
+        // Update stats for periodic reporting
+        trajectories_this_minute++;
+        moves_this_minute += trajectory->states.size();
+        mcts_simulations_this_minute += static_cast<int64_t>(trajectory->states.size()) * config.max_simulations;
       }
     }
     absl::Time now = absl::Now();
     double seconds = absl::ToDoubleSeconds(now - last);
+
+    // Periodic stdout reporting
+    if (config.verbose && (now - last_periodic_report_time >= absl::Minutes(1))) {
+      double reporting_period_seconds = absl::ToDoubleSeconds(now - last_periodic_report_time);
+      if (reporting_period_seconds < 1.0) {
+        // Avoid division by zero or excessively large numbers if the interval is too short.
+        // This might happen if the loop is very fast or the timer resolution is coarse.
+        reporting_period_seconds = 1.0;
+      }
+
+      double games_per_min_val = trajectories_this_minute / (reporting_period_seconds / 60.0);
+      double mcts_sims_per_sec_val = mcts_simulations_this_minute / reporting_period_seconds;
+      double moves_per_min_val = moves_this_minute / (reporting_period_seconds / 60.0);
+
+      // num_states here is the count being accumulated for the current learning batch.
+      // learn_rate is the target number of states for one learning batch.
+      std::cout << absl::StrFormat(
+          "[AlphaZero Minutely Stats | Step: %d] Games/min: %.1f, "
+          "MCTS_Sims/sec: %.1f, Moves/min: %.1f, Learn Batch: %d/%d states",
+          step, games_per_min_val, mcts_sims_per_sec_val, moves_per_min_val,
+          num_states, learn_rate)
+                << std::endl;
+
+      last_periodic_report_time = now;
+      trajectories_this_minute = 0;
+      moves_this_minute = 0;
+      mcts_simulations_this_minute = 0;
+    }
 
     logger.Print("Step: %d", step);
     logger.Print(
@@ -540,10 +580,6 @@ bool AlphaZero(AlphaZeroConfig config, StopToken* stop, bool resuming) {
   }
 
   std::cout << "Playing game: " << config.game << std::endl;
-
-  config.inference_batch_size = std::max(
-      1,
-      std::min(config.inference_batch_size, config.actors + config.evaluators));
 
   config.inference_threads =
       std::max(1, std::min(config.inference_threads,
