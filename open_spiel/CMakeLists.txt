@@ -27,8 +27,31 @@ if(NOT WIN32)
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CUDA_STANDARD 14)
-set(CMAKE_CUDA_STANDARD_REQUIRED TRUE)
+
+# Conditionally set CUDA variables
+if(NOT DEFINED USE_CUDA OR NOT USE_CUDA STREQUAL "OFF")
+  # Try to find CUDA toolkit and nvcc
+  find_package(CUDAToolkit QUIET)
+  if(CUDAToolkit_FOUND)
+    set(CMAKE_CUDA_STANDARD 14)
+    # Only set native if a GPU is detected, otherwise let it be empty or OFF
+    # This part might need a more robust way to check for actual GPU presence for 'native'
+    set(CMAKE_CUDA_ARCHITECTURES native CACHE STRING "CUDA architectures, e.g., 70;75;80 or native or OFF")
+    if(NOT CMAKE_CUDA_COMPILER)
+      set(CMAKE_CUDA_COMPILER ${CUDAToolkit_NVCC_EXECUTABLE})
+    endif()
+    set(CMAKE_CUDA_STANDARD_REQUIRED TRUE)
+    message(STATUS "CUDA Toolkit found. Version: ${CUDAToolkit_VERSION}. Compiler: ${CMAKE_CUDA_COMPILER}")
+  else()
+    message(STATUS "CUDA Toolkit not found. Forcing USE_CUDA to OFF.")
+    set(USE_CUDA OFF CACHE BOOL "Disable CUDA due to missing toolkit" FORCE)
+    set(CMAKE_CUDA_ARCHITECTURES OFF CACHE STRING "CUDA architectures disabled" FORCE)
+  endif()
+else()
+  message(STATUS "USE_CUDA is explicitly set to OFF. Skipping CUDA configuration and disabling architectures.")
+  set(CMAKE_CUDA_ARCHITECTURES OFF CACHE STRING "CUDA architectures explicitly disabled" FORCE)
+endif()
+
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 
 # Enable building shared libraries by default
@@ -47,6 +70,15 @@ if(BUILD_SHARED_LIBS)
   endif()
 endif()
 
+# Shim for CUDA::nvToolsExt -> CUDA::nvtx3 alias (requires CMake >=3.25)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.25")
+  find_package(CUDAToolkit REQUIRED)
+  if(NOT TARGET CUDA::nvToolsExt)
+    add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
+    target_link_libraries(CUDA::nvToolsExt INTERFACE CUDA::nvtx3)
+  endif()
+endif()
+
 # Set default build type.
 set (BUILD_TYPE $ENV{BUILD_TYPE})
 if(NOT BUILD_TYPE)
@@ -58,22 +90,10 @@ message("${BoldYellow}Current build type is: ${BUILD_TYPE}${ColourReset}")
 
 # Global optimization flags (can be overridden for specific targets)
 if(${BUILD_TYPE} STREQUAL "Debug")
-  # Basic build for debugging (default).
-  # -Og enables optimizations that do not interfere with debugging.
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -Og")
-endif()
-
-if(${BUILD_TYPE} STREQUAL "Testing")
-  # A build used for running tests: keep all runtime checks (assert,
-  # SPIEL_CHECK_*, SPIEL_DCHECK_*), but turn on some speed optimizations,
-  # otherwise tests run for too long.
+elseif(${BUILD_TYPE} STREQUAL "Testing")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2")
-endif()
-
-if(${BUILD_TYPE} STREQUAL "Release")
-  # Optimized release build: turn off debug runtime checks (assert,
-  # SPIEL_DCHECK_*) and turn on highest speed optimizations.
-  # The difference in perfomance can be up to 10x higher.
+elseif(${BUILD_TYPE} STREQUAL "Release")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DNDEBUG -O3")
 endif()
 
@@ -82,16 +102,10 @@ set(DEBUG_FLAGS_LONG_NARDE "-O3 -s")
 message("${BoldYellow}Debug flags for long_narde: ${DEBUG_FLAGS_LONG_NARDE}${ColourReset}")
 
 if(APPLE)
-  # On MacOS:
-  #   -undefined dynamic_lookup is necessary for pybind11 linking
   set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-everything -w -undefined dynamic_lookup")
-
-  # On MacOS, we need this so that CMake will use the right Python if the user
-  # has a virtual environment active
   set (CMAKE_FIND_FRAMEWORK LAST)
 elseif(WIN32)
-  # Setup for MSVC 2022.
-  # No changes needed. In particular: do not use -Wno-everything.
+  # No changes for MSVC
 else()
   set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-everything")
 endif()
@@ -99,17 +113,7 @@ endif()
 # Position-independent code is needed for Python extension modules.
 set (CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-
 ## Optional dependencies
-# One can optionally build and link against specific external dependencies.
-# We expect these arguments to be always defined, when building using any script
-# in `open_spiel/scripts/`, thus, we emit a warning when it's not, with a
-# conservative default.
-# See the documentation in install.md.
-
-# Use this macro to define optional dependencies.
-# You can then use your chosen DEP_NAME as a variable to check if that
-# dependency is enabled -- see code below.
 macro(openspiel_optional_dependency DEP_NAME DEP_DEFAULT DEP_DESCRIPTION)
   set (${DEP_NAME} ${DEP_DEFAULT} CACHE BOOL ${DEP_DESCRIPTION})
   if(NOT DEFINED ENV{${DEP_NAME}})
@@ -118,61 +122,39 @@ macro(openspiel_optional_dependency DEP_NAME DEP_DEFAULT DEP_DESCRIPTION)
   endif()
   set (${DEP_NAME} $ENV{${DEP_NAME}})
   message("${BoldYellow}${DEP_NAME}: ${${DEP_NAME}} ${ColourReset}")
-  # If the dependency is on, pass in compiler flags to enable conditional code,
-  # e.g. #if OPEN_SPIEL_BUILD_WITH_...
   if (${DEP_NAME})
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D${DEP_NAME}")
   endif()
 endmacro()
 
 # List of all optional dependencies:
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_ACPC           OFF
-  "Build against the Universal Poker library.")
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_HANABI         OFF
-  "Build against the Hanabi game.")
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_JULIA          OFF
-  "Build binary for Julia.")
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_LIBNOP         OFF
-  "Build with support for libnop.")
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_LIBTORCH       OFF
-  "Build with support for libtorch.")
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_PYTHON         ON
-  "Build binary for Python.")
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_XINXIN         OFF
-  "Build against xinxin Hearts program.")
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_ROSHAMBO       OFF
-  "Build against RoShamBo bots.")
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_GAMUT          OFF
-  "Build with GAMUT generator integration.")
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_ORTOOLS        OFF
-  "Build with C++ optimization library OR-Tools.")
+openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_ACPC           OFF "Build against the Universal Poker library.")
+openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_HANABI         OFF "Build against the Hanabi game.")
+openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_JULIA          OFF "Build binary for Julia.")
+openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_LIBNOP         OFF "Build with support for libnop.")
+openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_LIBTORCH       OFF "Build with support for libtorch.")
+openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_PYTHON         ON  "Build binary for Python.")
+openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_XINXIN         OFF "Build against xinxin Hearts program.")
+openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_ROSHAMBO       OFF "Build against RoShamBo bots.")
+openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_GAMUT          OFF "Build with GAMUT generator integration.")
+openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_ORTOOLS        OFF "Build with C++ optimization library OR-Tools.")
 
 if (WIN32)
-  openspiel_optional_dependency(OPEN_SPIEL_ENABLE_JAX              OFF
-    "Enable JAX.")
-  openspiel_optional_dependency(OPEN_SPIEL_ENABLE_PYTORCH          OFF
-    "Enable PyTorch.")
-  openspiel_optional_dependency(OPEN_SPIEL_ENABLE_TENSORFLOW       OFF
-    "Enable Tensorflow.")
+  openspiel_optional_dependency(OPEN_SPIEL_ENABLE_JAX              OFF "Enable JAX.")
+  openspiel_optional_dependency(OPEN_SPIEL_ENABLE_PYTORCH          OFF "Enable PyTorch.")
+  openspiel_optional_dependency(OPEN_SPIEL_ENABLE_TENSORFLOW       OFF "Enable Tensorflow.")
 else()
-  openspiel_optional_dependency(OPEN_SPIEL_ENABLE_JAX             AUTO
-    "Enable JAX.")
-  openspiel_optional_dependency(OPEN_SPIEL_ENABLE_PYTORCH         AUTO
-    "Enable PyTorch.")
-  openspiel_optional_dependency(OPEN_SPIEL_ENABLE_TENSORFLOW      AUTO
-    "Enable Tensorflow.")
+  openspiel_optional_dependency(OPEN_SPIEL_ENABLE_JAX             AUTO "Enable JAX.")
+  openspiel_optional_dependency(OPEN_SPIEL_ENABLE_PYTORCH         AUTO "Enable PyTorch.")
+  openspiel_optional_dependency(OPEN_SPIEL_ENABLE_TENSORFLOW      AUTO "Enable Tensorflow.")
 endif()
 
-openspiel_optional_dependency(OPEN_SPIEL_ENABLE_PYTHON_MISC       OFF
-  "Enable miscellaneous Python dependencies.")
+openspiel_optional_dependency(OPEN_SPIEL_ENABLE_PYTHON_MISC       OFF "Enable miscellaneous Python dependencies.")
+openspiel_optional_dependency(OPEN_SPIEL_BUILDING_WHEEL           OFF "Building a Python wheel?")
 
-openspiel_optional_dependency(OPEN_SPIEL_BUILDING_WHEEL           OFF
-  "Building a Python wheel?")
-
-# Needed to disable Abseil tests.
+# Disable Abseil tests.
 set (BUILD_TESTING OFF)
 
-# For now, let's enable all the tests.
 enable_testing()
 
 set (OPEN_SPIEL_CORE_FILES
@@ -204,15 +186,12 @@ set (OPEN_SPIEL_CORE_FILES
   utils/usage_logging.cc
 )
 
-# We add the subdirectory here so open_spiel_core can #include absl.
 set(ABSL_PROPAGATE_CXX_STD ON)
 add_subdirectory (abseil-cpp)
 include_directories (abseil-cpp)
 
-# Just the core without any of the games
 add_library(open_spiel_core OBJECT ${OPEN_SPIEL_CORE_FILES})
-target_include_directories (
-  open_spiel_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} abseil-cpp)
+target_include_directories (open_spiel_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} abseil-cpp)
 link_libraries(open_spiel_core
   absl::algorithm
   absl::flags
@@ -225,7 +204,6 @@ link_libraries(open_spiel_core
   absl::time
 )
 
-# Just the minimal base library: no games.
 set (OPEN_SPIEL_CORE_OBJECTS $<TARGET_OBJECTS:open_spiel_core>)
 
 set (OPEN_SPIEL_OBJECTS
@@ -239,20 +217,20 @@ set (OPEN_SPIEL_OBJECTS
   $<TARGET_OBJECTS:utils>
   $<TARGET_OBJECTS:tests>
 )
+
 if (OPEN_SPIEL_BUILD_WITH_HANABI)
-  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS}
-      $<TARGET_OBJECTS:hanabi_learning_environment>)
+  list(APPEND OPEN_SPIEL_OBJECTS $<TARGET_OBJECTS:hanabi_learning_environment>)
 endif()
 if (OPEN_SPIEL_BUILD_WITH_ACPC)
-  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS}
+  list(APPEND OPEN_SPIEL_OBJECTS
       $<TARGET_OBJECTS:universal_poker_clib>
       $<TARGET_OBJECTS:universal_poker_lib>)
 endif()
 if (OPEN_SPIEL_BUILD_WITH_XINXIN)
-  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:xinxin>)
+  list(APPEND OPEN_SPIEL_OBJECTS $<TARGET_OBJECTS:xinxin>)
 endif()
 if (OPEN_SPIEL_BUILD_WITH_ROSHAMBO)
-  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:roshambo>)
+  list(APPEND OPEN_SPIEL_OBJECTS $<TARGET_OBJECTS:roshambo>)
 endif()
 if (OPEN_SPIEL_BUILD_WITH_LIBNOP)
   include_directories(libnop/libnop/include)
@@ -261,35 +239,21 @@ endif()
 if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
   list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libtorch/libtorch")
   find_package(Torch REQUIRED)
-  add_subdirectory(libtorch)
   include_directories(${TORCH_INCLUDE_DIRS})
-  # Use following to link your_target_executable with torch libraries:
-  # target_link_libraries(your_target_executable ${TORCH_LIBRARIES})
 endif()
 if (OPEN_SPIEL_BUILD_WITH_GAMUT)
-  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:gamut>)
+  list(APPEND OPEN_SPIEL_OBJECTS $<TARGET_OBJECTS:gamut>)
 endif()
 if (OPEN_SPIEL_BUILD_WITH_ORTOOLS)
-  # Compile with OR-Tools headers and link against binary distribution,
-  # downloaded from https://developers.google.com/optimization/install/cpp/linux
-  # and assumed to be in $HOME/or-tools.
-  # The flags were taken from the compilation of linear_programming.cc after
-  # running make test_cc.
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DUSE_BOP -DUSE_GLOP -DUSE_CBC -DUSE_CLP -DUSE_SCIP -pthread")
   set(ORTOOLS_HOME "${CMAKE_CURRENT_SOURCE_DIR}/ortools")
   set(ORTOOLS_INC_DIRS ${ORTOOLS_HOME} ${ORTOOLS_HOME}/include)
   set(ORTOOLS_LIB_DIRS ${ORTOOLS_HOME}/lib ${ORTOOLS_HOME}/lib64)
   set(ORTOOLS_LIBS z rt pthread ortools)
-  set_target_properties(open_spiel_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
   include_directories(${ORTOOLS_INC_DIRS})
   link_directories(${ORTOOLS_LIB_DIRS})
-  # Use following to link your_target_executable with OrTools libraries:
-  # target_link_libraries(your_target_executable ${ORTOOLS_LIBS})
 endif()
 
-# We have the parent of this directory in the include path, so that we can
-# include for example "open_spiel/spiel.h" (assuming this directory is named
-# open_spiel).
 include_directories(..)
 
 add_subdirectory (algorithms)
@@ -309,11 +273,6 @@ if (OPEN_SPIEL_BUILD_WITH_JULIA)
   add_subdirectory (julia)
 endif()
 
-# Build a shared library, i.e. libopen_spiel.so. We generally only enable this
-# for binary releases.
-# Note that there are known problems when trying to use absl::flags within a
-# shared library, hence is intentionally left out. To use ABSL flags, link with
-# absl::flags and absl::flags_parse separately.
 set (BUILD_SHARED_LIB OFF CACHE BOOL "Build a shared library?")
 if(NOT DEFINED ENV{BUILD_SHARED_LIB})
   set (ENV{BUILD_SHARED_LIB} OFF)
@@ -321,16 +280,11 @@ endif()
 set (BUILD_SHARED_LIB $ENV{BUILD_SHARED_LIB})
 if (BUILD_SHARED_LIB)
   if (OPEN_SPIEL_BUILD_WITH_ORTOOLS)
-    add_library(open_spiel SHARED ${OPEN_SPIEL_OBJECTS}
-      # Optionally include files that use external dependencies, for example
-      # linear program specification for finding Nash equilibria.
-      $<TARGET_OBJECTS:open_spiel_ortools>
-    )
+    add_library(open_spiel SHARED ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:open_spiel_ortools>)
   else()
     add_library(open_spiel SHARED ${OPEN_SPIEL_OBJECTS})
   endif()
-  target_include_directories(open_spiel PUBLIC
-      ${CMAKE_CURRENT_SOURCE_DIR} abseil-cpp)
+  target_include_directories(open_spiel PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} abseil-cpp)
   target_link_libraries(open_spiel PUBLIC
     absl::algorithm
     absl::flat_hash_map
@@ -339,8 +293,6 @@ if (BUILD_SHARED_LIB)
     absl::str_format
     absl::strings
     absl::time
-    # Optionally link external dependencies, for example OrTools for solving
-    # linear programs.
     ${ORTOOLS_LIBS}
   )
 endif()

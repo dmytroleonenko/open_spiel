@@ -33,7 +33,7 @@ ABSL_FLAG(std::string, graph_def, "",
            "from a checkpoint. If this is empty it'll create one."));
 ABSL_FLAG(std::string, nn_model, "resnet",
           "Model torso type, can be resnet or mlp.");
-ABSL_FLAG(int, nn_width, 128, "Width of the model, passed to export_model.py.");
+ABSL_FLAG(int, nn_width, 256, "Width of the model, passed to export_model.py.");
 ABSL_FLAG(int, nn_depth, 10, "Depth of the model, passed to export_model.py.");
 ABSL_FLAG(double, uct_c, 2, "UCT exploration constant.");
 ABSL_FLAG(double, temperature, 1,
@@ -73,14 +73,14 @@ ABSL_FLAG(bool, explicit_learning, false,
           "not take on inference requests) which can only be used when "
           "multiple devices are available).");
 ABSL_FLAG(bool, verbose, false, "Show the MCTS stats of possible moves.");
-ABSL_FLAG(int, actors, 4, "How many actors to run.");
-ABSL_FLAG(int, evaluators, 2, "How many evaluators to run.");
+ABSL_FLAG(int, actors, 12, "How many actors to run.");
+ABSL_FLAG(int, evaluators, 4, "How many evaluators to run.");
 ABSL_FLAG(int, eval_levels, 7,
           ("Play evaluation games vs MCTS+Solver, with max_simulations*10^(n/2)"
            " simulations for n in range(eval_levels). Default of 7 means "
            "running mcts with up to 1000 times more simulations."));
 ABSL_FLAG(int, max_steps, 0, "How many learn steps to run.");
-ABSL_FLAG(int, evaluation_window, 100,
+ABSL_FLAG(int, evaluation_window, 500,
           "Number of games to average results over.");
 
 open_spiel::StopToken stop_token;
@@ -160,6 +160,7 @@ int main(int argc, char** argv) {
     config.evaluators = absl::GetFlag(FLAGS_evaluators);
     config.eval_levels = absl::GetFlag(FLAGS_eval_levels);
     config.max_steps = absl::GetFlag(FLAGS_max_steps);
+    config.verbose = absl::GetFlag(FLAGS_verbose);
   }
 
   return !AlphaZero(config, &stop_token, resuming);

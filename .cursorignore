@@ -1,0 +1,7 @@
+# Add directories or file patterns to ignore during indexing (e.g. foo/ or *.csv)
+open_spiel/libtorch
+open_spiel/build
+open_spiel/cmake-build-release
+open_spiel/cmake-build-debug
+open_spiel/cmake-build-release-coverage
+open_spiel/cmake-build-debug-coverage

@@ -17,6 +17,7 @@
 #include "open_spiel/games/long_narde/long_narde.h"
 #include "open_spiel/python/pybind11/pybind11.h"
 #include "open_spiel/spiel.h"
+#include <stdexcept> // Required for std::runtime_error, std::bad_cast
 
 namespace py = ::pybind11;
 using open_spiel::Game;
@@ -36,8 +37,7 @@ void init_pyspiel_games_long_narde(py::module& m) {
       .def_readwrite("die", &LongNardeCheckerMove::die);
 
   py::classh<LongNardeState, State> state_class(m, "LongNardeState");
-  state_class.def("board", &LongNardeState::board)
-      .def("opponent", &LongNardeState::Opponent)
+  state_class.def("opponent", &LongNardeState::Opponent)
       .def("is_off", &LongNardeState::IsOff)
       .def("get_to_pos", &LongNardeState::GetToPos)
       .def("count_total_checkers", &LongNardeState::CountTotalCheckers)
@@ -57,13 +57,24 @@ void init_pyspiel_games_long_narde(py::module& m) {
       .def("all_in_home", &LongNardeState::AllInHome)
       .def("dice_to_string", &LongNardeState::DiceToString)
       .def(py::pickle(
-          [](const LongNardeState& state) {  // __getstate__
+          [](const LongNardeState& state) -> std::string {  // __getstate__
             return SerializeGameAndState(*state.GetGame(), state);
           },
-          [](const std::string& data) {  // __setstate__
+          [](const std::string& data) -> LongNardeState* {  // __setstate__
             std::pair<std::shared_ptr<const Game>, std::unique_ptr<State>>
                 game_and_state = DeserializeGameAndState(data);
-            return dynamic_cast<LongNardeState*>(game_and_state.second.release());
+            if (game_and_state.second) {
+                LongNardeState* state_ptr = dynamic_cast<LongNardeState*>(game_and_state.second.get());
+                if (state_ptr) {
+                    game_and_state.second.release(); // Release only if cast is successful and pointer is to be owned by Python
+                    return state_ptr;
+                } else {
+                    // Handle failed dynamic_cast
+                    throw std::runtime_error("Deserialized state is not a LongNardeState (bad_cast)");
+                }
+            }
+            // Handle case where deserialization itself might have failed to produce a state
+            throw std::runtime_error("Failed to deserialize state or game_and_state.second is null");
           }));
 }
 

@@ -73,7 +73,7 @@ if [ "$ARG_num_threads" -eq -1 ]; then
   fi
 
   MAKE_NUM_PROCS=$(${NPROC})
-  let TEST_NUM_PROCS=4*${MAKE_NUM_PROCS}
+  let TEST_NUM_PROCS=${MAKE_NUM_PROCS}
 else
   MAKE_NUM_PROCS=$ARG_num_threads
   TEST_NUM_PROCS=$ARG_num_threads
@@ -193,7 +193,7 @@ else
   export PYTHONPATH=$PYTHONPATH:$pwd/python  # For pyspiel bindings
 
   # Build in testing, so that we can run tests fast.
-  cmake -DPython3_EXECUTABLE=${PYBIN} \
+  USE_CUDA=0 cmake -DPython3_EXECUTABLE=${PYBIN} \
         -DCMAKE_CXX_COMPILER=${CXX}                  \
         -DCMAKE_PREFIX_PATH=${LIBCXXWRAP_JULIA_DIR}  \
         -DBUILD_TYPE=Testing                         \
