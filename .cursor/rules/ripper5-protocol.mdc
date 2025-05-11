@@ -1,7 +1,7 @@
 ---
 description: 
 globs: 
-alwaysApply: true
+alwaysApply: false
 ---
 PROTOCOL RIPPER5AIGPT4.1
 DEFINE MODES = [RESEARCH, INNOVATE, PLAN, EXECUTE, REVIEW]

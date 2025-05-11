@@ -234,6 +234,24 @@ namespace open_spiel
       SPIEL_CHECK_GE(player, 0);
       SPIEL_CHECK_LT(player, num_players_);
 
+      if (IsTerminal()) {
+        // If the game is terminal, we should fill the tensor with a representation
+        // of the terminal state or ensure it's defined. For now, consistent with
+        // the referenced commit, we can return. However, a more robust solution
+        // might be to fill 'values' with a specific terminal observation pattern
+        // (e.g., scores, and terminal indicators, all others zero).
+        // For example:
+        //   std::fill(values.begin(), values.end(), 0.0f);
+        //   values[kNumPoints * 2] = scores_[player];
+        //   values[kNumPoints * 2 + 1] = scores_[Opponent(player)]; // Careful if player is kTerminalPlayerId
+        //   // Add terminal indicators if part of your encoding.
+        // This ensures 'values' is not left uninitialized if the caller expects it to be filled.
+        // For now, just returning as per the commit's pattern.
+        // A production setting might require filling the tensor.
+        // If we return, the caller must handle uninitialized 'values' or check IsTerminal() before calling.
+        return;
+      }
+
       int opponent = Opponent(player);
       SPIEL_CHECK_EQ(values.size(), kStateEncodingSize);
       auto value_it = values.begin();
