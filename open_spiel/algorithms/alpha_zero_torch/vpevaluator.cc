@@ -131,7 +131,7 @@ void VPNetEvaluator::Runner() {
           break;
         }
         if (inputs.empty()) {
-          deadline = absl::Now() + absl::Milliseconds(1);
+          deadline = absl::Now() + absl::Milliseconds(10);
         }
         inputs.push_back(item->inputs);
         promises.push_back(item->prom);

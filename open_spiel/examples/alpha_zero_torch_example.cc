@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <thread>
 
 #include "open_spiel/abseil-cpp/absl/flags/flag.h"
 #include "open_spiel/abseil-cpp/absl/flags/parse.h"
@@ -25,6 +26,7 @@
 #include "open_spiel/utils/init.h"
 #include "open_spiel/utils/json.h"
 #include "open_spiel/utils/thread.h"
+#include <torch/torch.h>
 
 ABSL_FLAG(std::string, game, "tic_tac_toe", "The name of the game to play.");
 ABSL_FLAG(std::string, path, "/tmp/az", "Where to output the logs.");
@@ -102,6 +104,10 @@ void signal_installer() {
 }
 
 int main(int argc, char** argv) {
+  unsigned int nc = std::thread::hardware_concurrency();
+  torch::set_num_threads(nc);
+  torch::set_num_interop_threads(nc);
+
   open_spiel::Init("", &argc, &argv, true);
 
   std::vector<char*> positional_args = absl::ParseCommandLine(argc, argv);

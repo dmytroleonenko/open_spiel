@@ -171,6 +171,7 @@ std::vector<VPNetModel::InferenceOutputs> VPNetModel::Inference(
   }
 
   // Run the inference.
+  torch::NoGradGuard no_grad;  // disable autograd for inference
   model_->eval();
   std::vector<torch::Tensor> torch_outputs =
       model_(torch_inf_inputs, torch_inf_legal_mask);

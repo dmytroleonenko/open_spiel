@@ -24,6 +24,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <cstdio>  // Added for fflush
 
 #include "open_spiel/abseil-cpp/absl/algorithm/container.h"
 #include "open_spiel/abseil-cpp/absl/random/uniform_real_distribution.h"
@@ -417,6 +418,7 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
           step, games_per_min_val, mcts_sims_per_sec_val, moves_per_min_val,
           num_states, learn_rate)
                 << std::endl;
+      fflush(stdout);  // Changed to fflush(stdout)
 
       last_periodic_report_time = now;
       trajectories_this_minute = 0;
