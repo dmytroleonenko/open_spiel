@@ -629,6 +629,132 @@ namespace open_spiel
       // EndTest: test-halfmoveblack-1
       // EndFunction: TestHalfMoveGenerationBlack
 
+      //------------------------------------------------------------------------------
+      // StartFunction: HeadRuleTestFirstTurnNonSpecialDoublesWhite
+      // Test: HeadRuleTestFirstTurnNonSpecialDoublesWhite
+      // Checks that on the first turn for White with non-special doubles (e.g., 2,2),
+      // only one checker can leave the head, and after the first head move,
+      // only that checker can move further, not a second head move.
+      //------------------------------------------------------------------------------
+      // StartTest: test-headrule-first-turn-nonspecial-doubles-white-1
+      void HeadRuleTestFirstTurnNonSpecialDoublesWhite()
+      {
+        std::cout << "\n=== Running HeadRuleTestFirstTurnNonSpecialDoublesWhite ===\n";
+
+        std::shared_ptr<const Game> game = LoadGame("long_narde");
+        std::unique_ptr<State> st = game->NewInitialState();
+        auto ln = static_cast<LongNardeState *>(st.get());
+        ln->ApplyAction(16); // 2,2 (not a special double) - Action 16 corresponds to {2,2}
+        SPIEL_CHECK_TRUE(ln->IsFirstTurn(kXPlayerId));
+        int init_head_count = ln->GetCount(kXPlayerId, kWhiteHeadPos);
+        // Phase 1: get all legal actions
+        std::vector<Action> phase1_actions = ln->LegalActions();
+        SPIEL_CHECK_FALSE(phase1_actions.empty());
+        // Find an action that moves a checker from the head
+        bool found_head_move = false;
+        Action head_move_action = -1;
+        for (Action a : phase1_actions) {
+          auto moves = ln->LongNardeSpielMoveToCheckerMoves(kXPlayerId, a);
+          for (const auto &m : moves) {
+            if (m.pos == kWhiteHeadPos) {
+              found_head_move = true;
+              head_move_action = a;
+              break;
+            }
+          }
+          if (found_head_move) break;
+        }
+        SPIEL_CHECK_TRUE(found_head_move);
+        ln->ApplyAction(head_move_action);
+        int after_phase1_head_count = ln->GetCount(kXPlayerId, kWhiteHeadPos);
+        SPIEL_CHECK_EQ(init_head_count - after_phase1_head_count, 1); // Only one checker left head
+        // Phase 2: get all legal actions
+        std::vector<Action> phase2_actions = ln->LegalActions();
+        SPIEL_CHECK_FALSE(phase2_actions.empty());
+        // No legal action should move a second checker from the head
+        bool found_second_head_move = false;
+        for (Action a : phase2_actions) {
+          auto moves = ln->LongNardeSpielMoveToCheckerMoves(kXPlayerId, a);
+          for (const auto &m : moves) {
+            if (m.pos == kWhiteHeadPos) {
+              found_second_head_move = true;
+              break;
+            }
+          }
+          if (found_second_head_move) break;
+        }
+        SPIEL_CHECK_FALSE(found_second_head_move);
+        std::cout << "✓ Head rule first-turn non-special-doubles (White) test passed\n";
+      }
+      // EndTest: test-headrule-first-turn-nonspecial-doubles-white-1
+      // EndFunction: HeadRuleTestFirstTurnNonSpecialDoublesWhite
+
+      //------------------------------------------------------------------------------
+      // StartFunction: HeadRuleTestFirstTurnNonSpecialDoublesBlack
+      // Test: HeadRuleTestFirstTurnNonSpecialDoublesBlack
+      // Checks that on the first turn for Black with non-special doubles (e.g., 2,2),
+      // only one checker can leave the head, and after the first head move,
+      // only that checker can move further, not a second head move.
+      //------------------------------------------------------------------------------
+      // StartTest: test-headrule-first-turn-nonspecial-doubles-black-1
+      void HeadRuleTestFirstTurnNonSpecialDoublesBlack()
+      {
+        std::cout << "\n=== Running HeadRuleTestFirstTurnNonSpecialDoublesBlack ===\n";
+
+        std::shared_ptr<const Game> game = LoadGame("long_narde");
+        std::unique_ptr<State> st = game->NewInitialState();
+        auto ln = static_cast<LongNardeState *>(st.get());
+        // White's first move: apply any legal action to advance to Black's first turn
+        ln->ApplyAction(0); // White's dice roll (e.g., 1-2)
+        auto white_actions = ln->LegalActions();
+        SPIEL_CHECK_FALSE(white_actions.empty());
+        ln->ApplyAction(white_actions[0]);
+        SPIEL_CHECK_TRUE(ln->IsChanceNode());
+        ln->ApplyAction(16); // Black's dice roll: 2,2 (not a special double) - Action 16 for {2,2}
+        SPIEL_CHECK_TRUE(ln->IsFirstTurn(kOPlayerId));
+        int init_head_count = ln->GetCount(kOPlayerId, kBlackHeadPos);
+        // Phase 1: get all legal actions
+        std::vector<Action> phase1_actions = ln->LegalActions();
+        SPIEL_CHECK_FALSE(phase1_actions.empty());
+        // Find an action that moves a checker from the head
+        bool found_head_move = false;
+        Action head_move_action = -1;
+        for (Action a : phase1_actions) {
+          auto moves = ln->LongNardeSpielMoveToCheckerMoves(kOPlayerId, a);
+          for (const auto &m : moves) {
+            if (m.pos == kBlackHeadPos) {
+              found_head_move = true;
+              head_move_action = a;
+              break;
+            }
+          }
+          if (found_head_move) break;
+        }
+        SPIEL_CHECK_TRUE(found_head_move);
+        ln->ApplyAction(head_move_action);
+        int after_phase1_head_count = ln->GetCount(kOPlayerId, kBlackHeadPos);
+        SPIEL_CHECK_EQ(init_head_count - after_phase1_head_count, 1); // Only one checker left head
+        // Phase 2: get all legal actions
+        std::vector<Action> phase2_actions = ln->LegalActions();
+        SPIEL_CHECK_FALSE(phase2_actions.empty());
+        // No legal action should move a second checker from the head
+        bool found_second_head_move = false;
+        for (Action a : phase2_actions) {
+          auto moves = ln->LongNardeSpielMoveToCheckerMoves(kOPlayerId, a);
+          for (const auto &m : moves) {
+            if (m.pos == kBlackHeadPos) {
+              found_second_head_move = true;
+              break;
+            }
+          }
+          if (found_second_head_move) break;
+        }
+        SPIEL_CHECK_FALSE(found_second_head_move);
+        std::cout << "✓ Head rule first-turn non-special-doubles (Black) test passed\n";
+      }
+      // EndTest: test-headrule-first-turn-nonspecial-doubles-black-1
+      // EndFunction: HeadRuleTestFirstTurnNonSpecialDoublesBlack
+
     } // namespace testing_internal
 
     //------------------------------------------------------------------------------
@@ -650,6 +776,8 @@ namespace open_spiel
       testing_internal::TestIllegalLandingInLegalActions();
       testing_internal::TestHalfMoveGeneration();
       testing_internal::TestHalfMoveGenerationBlack();
+      testing_internal::HeadRuleTestFirstTurnNonSpecialDoublesWhite();
+      testing_internal::HeadRuleTestFirstTurnNonSpecialDoublesBlack();
       std::cout << "\n✓ All movement rules tests passed\n";
     }
     // EndTest: test-movementrules-1

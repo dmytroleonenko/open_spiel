@@ -123,9 +123,10 @@ namespace open_spiel
         return;
       }
 
-      // Check if this is a head move BEFORE modifying the board
-      if (IsHeadPos(player, move.pos))
-      {
+      // Set moved_from_head_ if a checker moves from the player's head position.
+      // This flag is used by LegalActions to enforce head movement rules.
+      if ((player == kXPlayerId && move.pos == kWhiteHeadPos) || 
+          (player == kOPlayerId && move.pos == kBlackHeadPos)) {
         moved_from_head_ = true;
       }
 

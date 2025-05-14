@@ -43,7 +43,7 @@ namespace open_spiel
             }
             // Generate all possible move sequences via recursive generator
             std::set<std::pair<std::vector<LongNardeCheckerMove>, bool>> movelist_set;
-            RecLegalMoveSequences({}, &movelist_set, false);
+            RecLegalMoveSequences({}, &movelist_set, this->moved_from_head_);
             // Restore original dice after generation
             mutable_this->dice_ = saved_dice;
             std::vector<std::pair<std::vector<LongNardeCheckerMove>, bool>> movelist_with_flags(
@@ -200,6 +200,7 @@ namespace open_spiel
         int LongNardeState::RecLegalMoveSequences(std::vector<LongNardeCheckerMove> moveseq,
                                                   std::set<std::pair<std::vector<LongNardeCheckerMove>, bool>>* movelist,
                                                   bool moved_from_head_this_sequence) const {
+
           // Count usable dice
           int usable_dice = 0;
           for (int i = 0; i < dice_.size(); ++i) {
@@ -211,6 +212,7 @@ namespace open_spiel
           bool is_doubles = (initial.size() >= 2 && initial[0] == initial[1] && initial[0] > 0);
           bool is_phase1 = is_doubles && is_first_phase_of_doubles_;
           bool is_phase2 = is_doubles && !is_first_phase_of_doubles_;
+
           // Base case: no dice left or max moves reached
           if (usable_dice == 0 || moveseq.size() >= max_moves) {
             bool is_term = this->IsTerminal();
@@ -260,18 +262,26 @@ namespace open_spiel
           // Recursive case: apply each half-move
           int max_non_pass = -1;
           for (const auto& move : half_moves) {
-            // Apply move
-            LongNardeState* mutable_this = const_cast<LongNardeState*>(this);
-            mutable_this->LongNardeApplyCheckerMove(cur_player_, move);
+            bool is_head_move = IsHeadPos(cur_player_, move.pos);
+            bool already_moved_from_head = moved_from_head_this_sequence;
+            bool allow_second_head_move = false;
+            if (is_on_first_turn_ && (initial.size() >= 2 && initial[0] == initial[1] && (initial[0] == 3 || initial[0] == 4 || initial[0] == 6))) {
+              allow_second_head_move = true;
+            }
+
+            if (is_head_move && already_moved_from_head && !allow_second_head_move) {
+              continue; // Skip this move
+            }
+
+            LongNardeState next_state = *this; // Create a copy to simulate the move
+            next_state.LongNardeApplyCheckerMove(cur_player_, move);
             moveseq.push_back(move);
-            bool next_moved_from_head = moved_from_head_this_sequence ||
-                IsHeadPos(cur_player_, move.pos);
-            int child_max = mutable_this->RecLegalMoveSequences(
+            bool next_moved_from_head = moved_from_head_this_sequence || is_head_move;
+            int child_max = next_state.RecLegalMoveSequences(
                 moveseq, movelist, next_moved_from_head);
             max_non_pass = std::max(child_max, max_non_pass);
             // Undo move
             moveseq.pop_back();
-            mutable_this->LongNardeUndoCheckerMove(cur_player_, move);
           }
           return max_non_pass;
         }
