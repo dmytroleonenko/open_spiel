@@ -15,3 +15,7 @@ absl-py >= 0.10.0
 numpy >= 1.21.5
 scipy >= 1.10.1
 ml-collections >= 0.1.1
+jax
+flax
+optax
+# Add other dependencies below
