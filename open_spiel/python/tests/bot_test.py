@@ -63,7 +63,8 @@ class BotTest(absltest.TestCase):
     ])
     # Do a search directly, and inspect the values.
     state = game.new_initial_state()
-    search_node = bots[0].mcts_search(state)
+    bots[0].mcts_search(state)
+    search_node = bots[0].get_root_node()
     for child in search_node.children:
       print(f"Child action {child.action}, total reward: {child.total_reward}" +
             f", explore count: {child.explore_count}")

@@ -124,22 +124,25 @@ Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
       state->ApplyAction(action);
     } else {
       open_spiel::Player player = state->CurrentPlayer();
-      std::unique_ptr<SearchNode> root = (*bots)[player]->MCTSearch(*state);
+      (*bots)[player]->MCTSearch(*state);
+      SearchNode* root_node = (*bots)[player]->GetRootNode();
+      SPIEL_CHECK_TRUE(root_node != nullptr);
+
       open_spiel::ActionsAndProbs policy;
-      policy.reserve(root->children.size());
-      for (const SearchNode& c : root->children) {
+      policy.reserve(root_node->children.size());
+      for (const SearchNode& c : root_node->children) {
         policy.emplace_back(c.action,
                             std::pow(c.explore_count, 1.0 / temperature));
       }
       NormalizePolicy(&policy);
       open_spiel::Action action;
       if (history.size() >= temperature_drop) {
-        action = root->BestChild().action;
+        action = root_node->BestChild().action;
       } else {
         action = open_spiel::SampleAction(policy, *rng).first;
       }
 
-      double root_value = root->total_reward / root->explore_count;
+      double root_value = (root_node->explore_count > 0) ? (root_node->total_reward / root_node->explore_count) : 0.0;
       trajectory.states.push_back(Trajectory::State{
           state->ObservationTensor(), player, state->LegalActions(), action,
           std::move(policy), root_value});

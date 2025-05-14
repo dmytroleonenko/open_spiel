@@ -143,7 +143,8 @@ void init_pyspiel_bots(py::module& m) {
           py::arg("child_selection_policy") =
               algorithms::ChildSelectionPolicy::UCT)
       .def("step", &algorithms::MCTSBot::Step)
-      .def("mcts_search", &algorithms::MCTSBot::MCTSearch);
+      .def("mcts_search", &algorithms::MCTSBot::MCTSearch)
+      .def("get_root_node", &algorithms::MCTSBot::GetRootNode, py::return_value_policy::reference_internal);
 
   py::enum_<algorithms::ISMCTSFinalPolicyType>(m, "ISMCTSFinalPolicyType")
       .value("NORMALIZED_VISIT_COUNT",

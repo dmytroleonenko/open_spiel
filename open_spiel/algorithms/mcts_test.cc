@@ -167,6 +167,113 @@ void MCTSTest_GarbageCollect() {
                    root->explore_count == 1000000);
 }
 
+void MCTSTest_TreeReuse() {
+  auto game = LoadGame("tic_tac_toe");
+  const int max_simulations = 100;
+  const int seed = 42;
+  auto evaluator = std::make_shared<RandomRolloutEvaluator>(1, seed); // 1 rollout for determinism with seed
+
+  // Initial state: x(0,0)
+  std::unique_ptr<State> state_template = game->NewInitialState();
+  Action initial_action = GetAction(*state_template, "x(0,0)");
+
+
+  // Scenario 1: No Tree Reuse
+  Action action1_move1, action1_move2;
+  std::map<Action, std::pair<int, double>> stats1_move2;
+
+  { // Scope for first bot no-reuse
+    std::unique_ptr<State> state1_move1 = state_template->Clone();
+    state1_move1->ApplyAction(initial_action);
+
+    algorithms::MCTSBot bot1_move1(*game, evaluator, UCT_C, max_simulations,
+                                   /*max_memory_mb=*/5, /*solve=*/true,
+                                   seed, /*verbose=*/false);
+    bot1_move1.MCTSearch(*state1_move1);
+    SearchNode* root1_move1 = bot1_move1.GetRootNode();
+    SPIEL_CHECK_TRUE(root1_move1 != nullptr);
+    action1_move1 = root1_move1->BestChild().action;
+
+    std::unique_ptr<State> state1_move2 = state1_move1->Clone();
+    state1_move2->ApplyAction(action1_move1);
+
+    algorithms::MCTSBot bot1_move2(*game, evaluator, UCT_C, max_simulations,
+                                   /*max_memory_mb=*/5, /*solve=*/true,
+                                   seed, /*verbose=*/false);
+    bot1_move2.MCTSearch(*state1_move2);
+    SearchNode* root1_move2 = bot1_move2.GetRootNode();
+    SPIEL_CHECK_TRUE(root1_move2 != nullptr);
+    if (!root1_move2->children.empty()) {
+      action1_move2 = root1_move2->BestChild().action;
+      for (const auto& child : root1_move2->children) {
+        stats1_move2[child.action] = {child.explore_count, child.total_reward};
+      }
+    } else if (!state1_move2->IsTerminal()){
+      // If state is not terminal but no children, it implies no valid moves or an issue.
+      // For this test, we expect valid moves.
+      SpielFatalError("Scenario 1, Move 2: Expected children in search node but found none for non-terminal state.");
+    }
+  }
+
+  // Scenario 2: Tree Reuse
+  Action action2_move1, action2_move2;
+  std::map<Action, std::pair<int, double>> stats2_move2;
+
+  { // Scope for reused bot
+    std::unique_ptr<State> state2_move1_orig = state_template->Clone();
+    state2_move1_orig->ApplyAction(initial_action);
+    
+    std::unique_ptr<State> state2_move1 = state2_move1_orig->Clone();
+
+
+    algorithms::MCTSBot bot2_reused(*game, evaluator, UCT_C, max_simulations,
+                                   /*max_memory_mb=*/5, /*solve=*/true,
+                                   seed, /*verbose=*/false);
+    // First step/search
+    action2_move1 = bot2_reused.Step(*state2_move1);
+    
+    std::unique_ptr<State> state2_move2 = state2_move1->Clone(); // State is advanced by Step
+    // state2_move2->ApplyAction(action2_move1); // Step already advances the state passed to it for MCTSearch's internal root_state_
+
+    // Second step/search (reuses tree)
+    action2_move2 = bot2_reused.Step(*state2_move2); // This will use the current state of bot2_reused which should be state2_move2
+    
+    SearchNode* root2_move2 = bot2_reused.GetRootNode();
+    SPIEL_CHECK_TRUE(root2_move2 != nullptr);
+
+    // Check if the root_state of the bot matches state2_move2 after applying action2_move2
+    // This requires MCTSBot to expose its root_state_ or a way to check its current state.
+    // For now, we assume Step correctly updates its internal state to state2_move2 for the search.
+
+
+    if (!root2_move2->children.empty()) {
+      // BestChild might not be meaningful if action2_move2 was from prior and not in children
+      // However, for comparison, we rely on the tree structure itself.
+      for (const auto& child : root2_move2->children) {
+        stats2_move2[child.action] = {child.explore_count, child.total_reward};
+      }
+    } else if (!state2_move2->IsTerminal()){
+       SpielFatalError("Scenario 2, Move 2: Expected children in search node but found none for non-terminal state.");
+    }
+  }
+
+  // Assertions
+  SPIEL_CHECK_EQ(action1_move1, action2_move1);
+  
+  // If states are not terminal and children were expected.
+  if (!stats1_move2.empty() || !stats2_move2.empty()) {
+    SPIEL_CHECK_EQ(action1_move2, action2_move2);
+    SPIEL_CHECK_EQ(stats1_move2.size(), stats2_move2.size());
+
+    for (const auto& [action, stat1_pair] : stats1_move2) {
+      SPIEL_CHECK_TRUE(stats2_move2.count(action));
+      const auto& stat2_pair = stats2_move2.at(action);
+      SPIEL_CHECK_EQ(stat1_pair.first, stat2_pair.first); // explore_count
+      SPIEL_CHECK_FLOAT_EQ(stat1_pair.second, stat2_pair.second, 1e-6); // total_reward
+    }
+  }
+}
+
 }  // namespace
 }  // namespace open_spiel
 
@@ -180,4 +287,5 @@ int main(int argc, char** argv) {
   open_spiel::MCTSTest_SolveLoss();
   open_spiel::MCTSTest_SolveWin();
   open_spiel::MCTSTest_GarbageCollect();
+  open_spiel::MCTSTest_TreeReuse();
 }

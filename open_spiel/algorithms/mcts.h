@@ -169,8 +169,8 @@ class MCTSBot : public Bot {
       bool dont_return_chance_node = false);
   ~MCTSBot() = default;
 
-  void Restart() override {}
-  void RestartAt(const State& state) override {}
+  void Restart() override { this->ResetTree(); }
+  void RestartAt(const State& state) override { this->ResetTree(); }
   // Run MCTS for one step, choosing the action, and printing some information.
   Action Step(const State& state) override;
 
@@ -181,7 +181,14 @@ class MCTSBot : public Bot {
       const State& state) override;
 
   // Run MCTS on a given state, and return the resulting search tree.
-  std::unique_ptr<SearchNode> MCTSearch(const State& state);
+  // std::unique_ptr<SearchNode> MCTSearch(const State& state);
+  void MCTSearch(const State& current_real_state);
+
+  // FIRST_EDIT: Declare ResetTree to clear the persistent search tree and state
+  void ResetTree();
+
+  // Add a getter for the root node to be used by calling code (e.g. AlphaZero)
+  SearchNode* GetRootNode() const { return root_.get(); }
 
  private:
   // Applies the UCT policy to play the game until reaching a leaf node.
@@ -216,6 +223,11 @@ class MCTSBot : public Bot {
   std::mt19937 rng_;
   const ChildSelectionPolicy child_selection_policy_;
   std::shared_ptr<Evaluator> evaluator_;
+
+  // SECOND_EDIT: Store the persistent root of the search tree
+  std::unique_ptr<SearchNode> root_;
+  // THIRD_EDIT: Store the persistent root state corresponding to the tree
+  std::unique_ptr<State> root_state_;
 };
 
 // Returns a vector of noise sampled from a dirichlet distribution. See:
