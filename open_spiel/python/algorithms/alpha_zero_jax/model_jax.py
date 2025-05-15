@@ -1,3 +1,44 @@
+"""JAX/Flax models for AlphaZero.
+
+This module provides JAX/Flax implementations of neural network models commonly
+used with AlphaZero, including Multi-Layer Perceptrons (MLP), Convolutional
+Neural Networks (Conv2D), and various ResNet architectures.
+
+The ResNet implementations (`ResNet_JAX` and its variants) are based on or
+utilize code from the `n2cholas/jax-resnet` repository
+(https://github.com/n2cholas/jax-resnet).
+
+Available Model Types (`config.nn_model`):
+  - "mlp": A simple Multi-Layer Perceptron.
+  - "conv2d": A Convolutional Neural Network with a series of ConvBlocks.
+  - "resnet": A generic ResNet that can be configured via `config.resnet_*` fields.
+      This allows for flexible ResNet architectures. By default, if these specific
+      fields are not populated, it attempts to create a ResNet similar to the
+      AlphaGo Zero architecture (e.g., 20 residual blocks with 256 filters,
+      configurable via `config.nn_width` and `config.nn_depth`).
+  - Specific ResNet Variants:
+    - "resnet18", "resnet34", "resnet50", "resnet101", "resnet152", "resnet200":
+      Standard ResNet architectures.
+    - "resnet_d18", "resnet_d34", "resnet_d50", "resnet_d101", "resnet_d152", "resnet_d200":
+      ResNet-D variants with modified stem and downsampling blocks.
+    - "resnext50", "resnext101": ResNeXt architectures with grouped convolutions.
+    - "wide_resnet50", "wide_resnet101": Wide ResNet variants.
+    - "resnest50fast", "resnest50", "resnest101": ResNeSt variants with Split-Attention networks.
+
+Configuration for Generic "resnet" (`config.nn_model="resnet"`):
+  - `config.nn_width`: Number of filters (e.g., 256).
+  - `config.nn_depth`: Number of residual blocks (e.g., 20).
+  - `config.resnet_depth_config`: List of ints, e.g., `[3, 4, 6, 3]` for ResNet34-like stage sizes.
+  - `config.resnet_stem_callable_name`: String name of the stem module constructor (e.g., "ResNetStem").
+  - `config.resnet_stem_kwargs`: Dictionary of kwargs for the stem constructor.
+  - `config.resnet_block_callable_name`: String name of the block module constructor (e.g., "ResNetBlock").
+  - `config.resnet_block_kwargs`: Dictionary of kwargs for the block constructor.
+
+All models output policy logits and a value prediction. They support optional
+`legals_mask` to mask policy logits for illegal actions.
+Batch Normalization layers use `training=True` during training steps and
+`training=False` (i.e., `use_running_average=True`) during inference/evaluation.
+"""
 import collections
 import numpy as np
 import jax

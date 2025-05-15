@@ -339,3 +339,31 @@ Implementation of Long Narde rules, based on a copy of "games/backgammon".
 [DONE] [CHECKED] 21. **Document and Review ResNet Torso Output Discrepancy (`model_jax.py`).**
     * The JAX `ResNet_JAX` uses global average pooling (`jnp.mean`) after the convolutional torso.
     * The TensorFlow reference `Model`
+
+
+[DONE] 22. **Add Missing `add` Method to `Trajectory` Class in JAX Implementation.**
+    * Implement the `add` method in `Trajectory` class to match TensorFlow's convenience method for adding states to trajectories.
+    * Assessment: Recommended for code readability and consistency. This omission could lead to less readable code in the actor function where trajectories are built.
+    * Citation: open_spiel/python/examples/alpha_zero_jax.py lines 94-99; open_spiel/python/algorithms/alpha_zero/alpha_zero.py lines 79-81
+
+[DONE] 23. **Simplify ResNet Variants to Essential Set or Document Extensively.**
+    * Reduce the number of ResNet variants in `model_jax.py` to a core set (e.g., ResNet18, ResNet50) that aligns with typical AlphaZero needs, or provide extensive documentation for each variant's use case and performance impact.
+    * Assessment: Recommended for maintainability. The extensive array of ResNet variants adds complexity that may be challenging for maintenance, especially for junior developers. Simplification or detailed documentation would improve usability.
+    * Citation: open_spiel/python/algorithms/alpha_zero_jax/model_jax.py lines 1-200
+
+[DONE] 24. **Harden `config.path` Requirement in `watcher` Decorator.**
+    * Update the `watcher` decorator to raise a `ValueError` if `config.path` is not set, ensuring file logging is always possible or explicitly handled.
+    * Assessment: Recommended for robustness. The current JAX implementation attempts to handle missing `config.path` with error messages but doesn't enforce a solution, which could lead to logging failures.
+    * Citation: open_spiel/python/examples/alpha_zero_jax.py lines 122-167
+
+[DONE] 25. **Relocate JAX Main Script to Align with TensorFlow Structure.**
+    * Move `alpha_zero_jax.py` from `open_spiel/python/examples/` to `open_spiel/python/algorithms/alpha_zero_jax/` to match the TensorFlow implementation's placement under `algorithms/`.
+    * Assessment: Recommended for consistency. This organizational deviation affects discoverability and perceived status of the JAX implementation within the OpenSpiel project structure. Since the file is in a git repo we need to move it in a compatible way using terminal commands
+    * Citation: open_spiel/python/examples/alpha_zero_jax.py; open_spiel/python/algorithms/alpha_zero/alpha_zero.py
+
+[DONE] 26. **Refactor JAX AlphaZero for Separate Example Entrypoint.**
+    *   Separate the main executable logic (ABSL flags, `main` function) from `open_spiel/python/algorithms/alpha_zero_jax/alpha_zero_jax.py` into a new example script, e.g., `open_spiel/python/examples/alpha_zero_jax.py`.
+    *   The `open_spiel/python/algorithms/alpha_zero_jax/alpha_zero_jax.py` file should then primarily contain the core algorithm functions (`alpha_zero_jax`, `learner`, `actor`, `evaluator`, helper classes/functions like `ConfigJAX`, `Trajectory`, etc.), making it a library module.
+    *   The new example script will import and use the functions from the algorithm module, similar to how `open_spiel/python/examples/alpha_zero.py` uses `open_spiel/python/algorithms/alpha_zero/alpha_zero.py`.
+    *   Assessment: Recommended for structural consistency with the TensorFlow AlphaZero implementation and to promote better separation of concerns (library vs. example).
+    *   Citation: Current structure of `open_spiel/python/algorithms/alpha_zero_jax/alpha_zero_jax.py` vs. `open_spiel/python/algorithms/alpha_zero/alpha_zero.py` and `open_spiel/python/examples/alpha_zero.py`
