@@ -277,12 +277,11 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
   # For OpenSpiel's FileLogger, it's usually passed or accessible via a global setup.
   # For this edit, we'll assume a print statement will go to the correct log
   # as the FileLogger in alpha_zero_jax.py captures stdout of processes.
-  print(f"[DEBUG model_jax] init_flax_model_and_variables called with key={key}, model_type={config.nn_model}")
+
 
   observation_shape = game.observation_tensor_shape() # This is (H, W, C) or (Features,)
   output_size = game.num_distinct_actions()
   model_type = config.nn_model.lower() # Ensure lowercase for matching
-  print(f"[DEBUG model_jax] observation_shape: {observation_shape}, output_size: {output_size}")
 
 
   # For MLP, expected_input_shape isn't strictly needed as it flattens anyway,
@@ -291,18 +290,14 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
   # So, we only pass expected_input_shape to Conv and ResNet models.
 
   if model_type == "mlp":
-    print("[DEBUG model_jax] Initializing MLP_JAX model...")
     model = MLP_JAX(nn_width=config.nn_width,
                     nn_depth=config.nn_depth,
                     output_size=output_size)
-    print("[DEBUG model_jax] MLP_JAX model initialized.")
   elif model_type == "conv2d":
-    print("[DEBUG model_jax] Initializing Conv2D_JAX model...")
     model = Conv2D_JAX(nn_width=config.nn_width,
                        nn_depth=config.nn_depth,
                          output_size=output_size,
                        expected_input_shape=observation_shape)
-    print(f"[DEBUG model_jax] Conv2D_JAX model initialized: {model}")
   elif model_type.startswith("resnet") or model_type.startswith("resnext") or model_type.startswith("wide_resnet") or model_type.startswith("resnest"):
     # All ResNet-family models will use ResNet_JAX and need expected_input_shape
     if model_type == "resnet": # Generic ResNet
@@ -607,12 +602,6 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
   # model.init expects (Batch, ...features...)
   dummy_input_shape = (1,) + tuple(observation_shape)
   dummy_input = jnp.zeros(dummy_input_shape, dtype=jnp.float32)
-  print(f"[DEBUG model_jax] Created dummy_input with shape: {dummy_input.shape}")
-
-  # If model is MLP and it flattens internally, dummy_input can be (1, *observation_shape)
-  # If model is Conv/ResNet, dummy_input is (1, H, W, C)
-  # The reshape logic inside Conv/ResNet __call__ is for inference when input *might* be flat.
-  # For init, we provide the shape the conv layers fundamentally expect.
 
   # Pass legals_mask only if the model's __call__ accepts it.
   # For init, a dummy legals_mask is needed if the model's __call__ signature requires it,
@@ -628,9 +617,7 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
   # Check if model has batch_stats (i.e., uses BatchNorm)
   # This is a bit indirect. A better way would be for models to declare if they use batch_stats.
   # For now, assume MLP, Conv2D, ResNet *can* have BatchNorm.
-  print(f"[DEBUG model_jax] About to call model.init with key={key}, dummy_input_shape={dummy_input.shape}, training=True")
   variables = model.init(key, dummy_input, training=True) # Use training=True for init if BN is present
-  print(f"[DEBUG model_jax] model.init completed. Variables keys: {list(variables.keys()) if variables else 'None'}")
 
   return model, variables 
 
