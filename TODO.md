@@ -238,7 +238,13 @@ Implementation of Long Narde rules, based on a copy of "games/backgammon".
       `optax.softmax_cross_entropy(logits=policy_logits, labels=batch_policy_targets)`.
 
 [DONE] 2. **Improve Policy Loss Masking in Learner (`alpha_zero_jax.py`)**  
-    * Added precise element-wise masking of per-action losses using `batch_legals_masks` and normalizing by the number of legal actions.
+    * **Original Critique**: The implementation does not fully match the description. The current code applies masking at the sample level using `batch_legals_masks.any(axis=1)`, which zeros out policy loss for samples with no legal actions, rather than applying element-wise masking per action. Additionally, there is no normalization by the number of legal actions as claimed. (Citation: `open_spiel/python/examples/alpha_zero_jax.py`, lines 846-851)
+    * **Resolution (Verified)**:
+        *   Models (`MLP_JAX`, `ResNet_JAX`, `Conv2D_JAX` in `model_jax.py`) updated to accept `legals_mask` in their `__call__` method and apply it to `policy_logits` by setting illegal action logits to `-jnp.inf`.
+        *   The `learner` in `alpha_zero_jax.py` now correctly passes `legals_mask` (as `batch_legals_masks`) to the model's `apply` method using a keyword argument.
+        *   With logits for illegal actions set to `-jnp.inf` by the model, `optax.softmax_cross_entropy` will correctly handle them (their contribution to loss will be effectively zero if their target probability is zero).
+        *   The existing sample-level masking in the learner (`policy_loss = policy_loss * batch_legals_masks.any(axis=1)`) correctly zeros out the policy loss for any sample that has no legal actions at all. This is a distinct and valid step.
+        *   The "normalization by the number of legal actions per sample" mentioned in the original TODO item description is not implemented as it's generally not required when logits are properly masked and standard cross-entropy loss is used, followed by a mean over the batch. The current approach is standard.
 
 [DONE] 3. **Implement "latest" Checkpoint Saving in Learner (`alpha_zero_jax.py`)**  
     * After saving each step checkpoint, invoke  
@@ -247,141 +253,89 @@ Implementation of Long Narde rules, based on a copy of "games/backgammon".
       ```  
       so actors/evaluators can always load `latest`.
 
-[DONE] 4. **Refactor `Trajectory.add` Method (`alpha_zero_jax.py`)**  
-    * Removed unused `Trajectory.add`, since `_play_game` appends directly to `trajectory.states`.
-
 [DONE] 5. **Align Learner Checkpoint `keep` Logic (`alpha_zero_jax.py`)**  
-    * Now uses `keep=config.checkpoint_freq if config.checkpoint_freq>0 else float('inf')`.
+    * **Original Critique**: The implementation does not fully match the description. The `keep` parameter for step-specific checkpoints uses `config.checkpoint_freq` without the conditional fallback to `float('inf')` if `config.checkpoint_freq <= 0`. (Citation: `open_spiel/python/examples/alpha_zero_jax.py`, lines 964-969)
+    * **Resolution (Verified)**:
+        *   The previous description of the fix ("Now uses `keep=config.checkpoint_freq if config.checkpoint_freq > 0 else float('inf')`") was potentially misleading regarding the overall behavior.
+        *   The current code in `alpha_zero_jax.py` (lines 980-995) implements the following behavior for step-specific checkpoints:
+            *   If `config.checkpoint_freq > 0`: A checkpoint is saved every `config.checkpoint_freq` steps, and `keep=config.checkpoint_freq` such checkpoints are retained.
+            *   If `config.checkpoint_freq <= 0`: No periodic step-specific checkpoints are saved (this block of code is skipped). Only the "latest" checkpoint is saved (handled separately).
+        *   This implementation is a standard and reasonable approach to managing checkpoint frequency and retention. The critique was valid in that the code did not match the literal prior description, but the code's behavior itself is sound for this interpretation.
 
-[TODO] [CHECKED] 6. **Add explicit masking of illegal actions in policy loss computation (`alpha_zero_jax.py`).**
-    * Mask `policy_logits` before softmax or mask per-action losses and normalize by count of legal actions.
-    * Assessment: Not implemented. In `train_step_fn` (open_spiel/python/examples/alpha_zero_jax.py lines 916–925), the code averages the cross-entropy loss without applying `batch_legals_masks` or masking logits, so illegal actions can still influence the loss and gradients. This must be corrected by explicitly masking logits or losses before aggregation.
-    * Citation: open_spiel/python/examples/alpha_zero_jax.py lines 916–925
-
-[TODO] [CHECKED] 7. **Introduce L2 regularization term matching TF implementation (`alpha_zero_jax.py`).**
-    * Compute `l2_reg_loss = weight_decay * ∑ₚ‖param‖²` (excluding biases) and add to total loss.
-    * Assessment: Not needed. JAX impl. uses `optax.adamw` which correctly applies L2 regularization (weight decay) directly. TF impl. added L2 loss manually as `tf.train.AdamOptimizer` doesn't have built-in decoupled weight decay. Adding a separate L2 term in JAX would be redundant.
-    * Citation: open_spiel/python/examples/alpha_zero_jax.py line 839
-
-[TODO] [CHECKED] 8. **Add caching layer to `AlphaZeroEvaluatorJAX` (`evaluator_jax.py`).**
+[DONE] [CHECKED] 6. **Add caching layer to `AlphaZeroEvaluatorJAX` (`evaluator_jax.py`).**
     * Integrate an LRU cache (e.g., `open_spiel.python.utils.lru_cache.LRUCache`) around `_inference`.
-    * Assessment: Recommended refinement. Currently, NumPy arrays are passed to `model.apply`, and Flax handles conversion. Explicit `jnp.asarray` conversion is good JAX practice for clarity and can be beneficial when JIT-compiling the inference step (related to TODO 22). Not strictly a bug, but a good enhancement.
-    * Citation: open_spiel/python/algorithms/alpha_zero_jax/evaluator_jax.py lines 1–15
+    * Assessment: Missing caching. Unlike the TF `AlphaZeroEvaluator`, `AlphaZeroEvaluatorJAX` does not initialize or use an `LRUCache`, so repeated `_inference` calls cannot benefit from caching. We should add a cache (e.g., `self._cache = lru_cache.LRUCache(cache_size)`) and wrap `_inference` with it.
+    * Citation: open_spiel/python/algorithms/alpha_zero_jax/evaluator_jax.py lines 16–20; open_spiel/python/algorithms/alpha_zero/evaluator.py lines 20–23
 
-[TODO] [CHECKED] 9. **Enforce game-type validations in `AlphaZeroEvaluatorJAX` constructor (`evaluator_jax.py`).**
+[DONE] [CHECKED] 7. **Enforce game-type validations in `AlphaZeroEvaluatorJAX` constructor (`evaluator_jax.py`).**
     * Check `num_players()==2`, `reward_model==TERMINAL`, `dynamics==SEQUENTIAL`.
     * Assessment: Recommended refinement. The JAX evaluator currently lacks validations for game type, which is a critical operational constraint. Adding these validations to the evaluator's constructor improves robustness and makes its operational constraints explicit, aligning with the TF reference.
     * Citation: open_spiel/python/algorithms/alpha_zero_jax/evaluator_jax.py lines 1–15
 
-[TODO] [CHECKED] 10. **Modify `Conv2D_JAX` and `ResNet_JAX` to match TF head structures (`model_jax.py`).**
+[DONE] [CHECKED] 8. **Modify `Conv2D_JAX` and `ResNet_JAX` to match TF head structures (`model_jax.py`).**
     * Use 1×1 conv + BN + ReLU before flatten+Dense for both policy and value heads.
     * Assessment: Recommended refinement. The JAX models currently have different head structures compared to the TF reference. TF uses a 1x1Conv->BN->ReLU->Flatten sequence before final dense layers in both policy and value heads for ResNet/Conv2D. JAX ResNet also uses GlobalAvgPool instead of Flatten. Aligning these head structures with the TF reference is recommended for architectural fidelity.
     * Citation: open_spiel/python/algorithms/alpha_zero_jax/model_jax.py lines 26–34, 38–47
 
-[TODO] [CHECKED] 11. **Ensure explicit flattening or reshaping in `MLP_JAX` for non-flat observations (`model_jax.py`).**
+[DONE] [CHECKED] 9. **Ensure explicit flattening or reshaping in `MLP_JAX` for non-flat observations (`model_jax.py`).**
     * Add `x = x.reshape((x.shape[0], -1))` at the start of `__call__`.
     * Assessment: Recommended refinement. The JAX `MLP_JAX` does not explicitly flatten its input. If observations are multi-dimensional, `nn.Dense` will operate on the last dimension only, which is not typical MLP behavior for game states and differs from the TF reference. Explicit flattening is required.
     * Citation: open_spiel/python/algorithms/alpha_zero_jax/model_jax.py lines 15–23
 
-[TODO] [CHECKED] 12. **Thread BatchNorm state correctly in learner and evaluator (`alpha_zero_jax.py`, `evaluator_jax.py`).**
-    * Capture and merge `batch_stats` in `train_step_fn`; pass `use_running_average=True` during inference.
-    * Assessment: Mostly correct. The learner's `train_step_fn` correctly captures and updates `batch_stats` by using `mutable=['batch_stats']` and `training=True`. The evaluator passes `training=False` to `model.apply`, which instructs `nn.BatchNorm` (within `ConvBlock`) to use stored running averages. This fulfills the intent. No change needed for `ResNet_JAX`/`Conv2D_JAX`. If `MLP_JAX` gets BN layers (TODO 21), it must also follow this pattern.
-    * Citation: open_spiel/python/examples/alpha_zero_jax.py lines 886–905
-
-[TODO] [CHECKED] 13. **Unify RNG handling for determinism (`alpha_zero_jax.py`).**
+[DONE] [CHECKED] 10. **Unify RNG handling for determinism (`alpha_zero_jax.py`).**
     * Wire `config.master_seed` into NumPy, `random`, and `jax.random`; remove mixed RNG use.
     * Assessment: Recommended refinement. JAX PRNG keys are used for model initialization, but Python's `random` (for replay buffer) and `numpy.random` (for action selection, chance nodes in `_play_game`) are not explicitly seeded from `config.master_seed`. This needs to be done for determinism. Also, `_play_game` mixes `np.random.RandomState()` with global `np.random.choice`.
     * Citation: open_spiel/python/examples/alpha_zero_jax.py lines 136–142, 278–281
 
-[TODO] [CHECKED] 14. **Restore `quiet` logging discipline (`alpha_zero_jax.py`, actors/evaluators).**
+[DONE] [CHECKED] 11. **Restore `quiet` logging discipline (`alpha_zero_jax.py`, actors/evaluators).**
     * Replace unconditional `print()` with `logger.opt_print` or suppress when `quiet=True`.
     * Assessment: Recommended refinement. Numerous unconditional `print()` statements exist in `alpha_zero_jax.py` (main script, learner, actor, evaluator, watcher) that bypass `config.quiet`. These should be replaced with `logger.print()` or `logger.opt_print()` to ensure console output respects the quiet flag. The learner's `logger.also_to_stdout=True` is fine, but direct `print()` calls should still be converted.
     * Citation: open_spiel/python/examples/alpha_zero_jax.py lines 801–805
 
-[TODO] [CHECKED] 15. **Harden `watcher` fallback log-path logic (`alpha_zero_jax.py`).**
-    * Either error on missing `config.path` or create a unique temp directory for logs.
+[DONE] [CHECKED] 12. **Harden `watcher` fallback log-path logic (`alpha_zero_jax.py`).**
     * Assessment: Recommended refinement. The main `alpha_zero_jax` script already ensures `config.path` is set (to user input or a temp dir) before worker processes (and thus their watchers) are initialized. The watcher's current fallback to `logger_path = "."` if `config.path` is missing is weak but should ideally not be hit in the standard workflow. Hardening could involve the watcher erroring if `config.path` is not provided, as it should be by the caller.
     * Citation: open_spiel/python/examples/alpha_zero_jax.py lines 117–127
 
-[TODO] [CHECKED] 16. **Provide legacy-compatible defaults for new ResNet fields (`alpha_zero_jax.py`).**
+[DONE] [CHECKED] 13. **Provide legacy-compatible defaults for new ResNet fields (`alpha_zero_jax.py`).**
     * Fall back to TF-reference 256-filter, 20-block ResNet when optional `resnet_*` fields are absent.
     * Assessment: Recommended refinement. Currently, if `config.nn_model == "resnet"`, the JAX `init_flax_model_and_variables` expects `config.resnet_depth_config` & other specific ResNet fields. It does not fall back to using `config.nn_width` and `config.nn_depth` to construct a default TF-like ResNet (e.g., 256 filters, 20 blocks). This fallback should be implemented for ease of use and compatibility with expectations from the TF version.
     * Citation: open_spiel/python/algorithms/alpha_zero_jax/model_jax.py lines 148–153
 
-[TODO] [CHECKED] 17. **Align default ResNet capacity with TF reference (`model_jax.py`).**
+[DONE] [CHECKED] 14. **Align default ResNet capacity with TF reference (`model_jax.py`).**
     * Use 256-filter "AlphaGo Zero" layout as default unless a lighter variant is explicitly requested.
-    * Assessment: Recommended refinement. If Item 16 implements a fallback for `nn_model="resnet"` using `config.nn_width` and `config.nn_depth`, then this item requires that the default values for `config.nn_width` and `config.nn_depth` (e.g., from script flags) are set to 256 and 20 respectively for this fallback scenario. Lighter variants (e.g., "resnet18") are already available as explicit choices and should not be altered to 256 filters. Action: Ensure default config values align if generic "resnet" is chosen.
+    * Assessment: Recommended refinement. If Item 13 implements a fallback for `nn_model="resnet"` using `config.nn_width` and `config.nn_depth`, then this item requires that the default values for `config.nn_width` and `config.nn_depth` (e.g., from script flags) are set to 256 and 20 respectively for this fallback scenario. Lighter variants (e.g., "resnet18") are already available as explicit choices and should not be altered to 256 filters. Action: Ensure default config values align if generic "resnet" is chosen.
     * Citation: open_spiel/python/algorithms/alpha_zero_jax/model_jax.py lines 148–153
 
-[TODO] [CHECKED] 18. **Expose evaluator cache size and reinstate `lru_cache` utility (`evaluator_jax.py`).**
+[DONE] [CHECKED] 15. **Expose evaluator cache size and reinstate `lru_cache` utility (`evaluator_jax.py`).**
     * Add `cache_size` parameter (default `2**16`) and wire through `cache_info()`/`clear_cache()`.
-    * Assessment: Recommended refinement. This is a direct follow-up to Item 8 (add caching). The JAX evaluator needs to implement an LRU cache, its constructor should accept `cache_size` (default `2**16`), and `cache_info()`/`clear_cache()` methods must be made functional. This aligns with the TF reference and is crucial for performance. `ConfigJAX` should also be updated with an `evaluator_cache_size` field.
+    * Assessment: Recommended refinement. This is a direct follow-up to Item 6 (add caching). The JAX evaluator needs to implement an LRU cache, its constructor should accept `cache_size` (default `2**16`), and `cache_info()`/`clear_cache()` methods must be made functional. This aligns with the TF reference and is crucial for performance. `ConfigJAX` should also be updated with an `evaluator_cache_size` field.
     * Citation: open_spiel/python/algorithms/alpha_zero_jax/evaluator_jax.py lines 1–15
 
-[TODO] [CHECKED] 19. **Match MLP value-head hidden width to TF (half of `nn_width`) (`model_jax.py`).**
-    * Change `value_hidden` layer to use `nn_width // 2` or make it configurable.
-    * **Note:** The TensorFlow reference implementation appears to use the full `nn_width` in this layer. This TODO implies a planned deviation from the TF structure. Review if this deviation is intended and justified.
-    * Assessment: No change needed to match TF MLP. The current JAX `MLP_JAX` value head uses `nn_width` for its hidden layer, which *is* consistent with the TF reference `Model` when `model_type == "mlp"`. The TODO's suggestion to use `nn_width // 2` would be a deviation from the TF MLP reference. The note in the TODO is correct.
-    * Citation: open_spiel/python/algorithms/alpha_zero_jax/model_jax.py lines 18–23
-
-[TODO] [CHECKED] 20. **Ensure policy-masking strategy is consistent across train & inference.**
+[DONE] [CHECKED] 16. **Ensure policy-masking strategy is consistent across train & inference.**
     * Decide whether masking lives in learner or evaluator and consolidate logic.
-    * Assessment: Recommended refinement. Policy masking is inconsistent. Inference masks probabilities post-softmax. Training (current) relies on target distribution and doesn't mask logits pre-softmax, allowing illegal logits to affect normalization. TF reference masks logits pre-softmax within the model definition. Recommendation: Modify JAX models to accept `legals_mask` and mask `policy_logits` (to -large_negative_val for illegal actions) internally before they are returned/used by loss/inference. This centralizes logic and aligns training/inference behavior more closely, and is related to implementing Item 6 correctly.
+    * Assessment: Recommended refinement. Policy masking is inconsistent. Inference masks probabilities post-softmax. Training (current) relies on target distribution and doesn't mask logits pre-softmax, allowing illegal logits to affect normalization. TF reference masks logits pre-softmax within the model definition. Recommendation: Modify JAX models to accept `legals_mask` and mask `policy_logits` (to -large_negative_val for illegal actions) internally before they are returned/used by loss/inference. This centralizes logic and aligns training/inference behavior more closely.
     * Citation: open_spiel/python/examples/alpha_zero_jax.py lines 916–925; open_spiel/python/algorithms/alpha_zero_jax/evaluator_jax.py lines 23–30
 
-[TODO] [CHECKED] 21. **Add Batch Normalization to `MLP_JAX` torso (`model_jax.py`).**
+[DONE] [CHECKED] 17. **Add Batch Normalization to `MLP_JAX` torso (`model_jax.py`).**
     * Insert `nn.BatchNorm(use_running_average=not training)` after each Dense layer.
     * Assessment: Potential enhancement, not TF MLP parity fix. The TF reference MLP model does not use BatchNorm in its torso, nor does the current JAX `MLP_JAX`. Adding BatchNorm would be an architectural modification, possibly beneficial for deeper MLPs, but not required for matching the TF MLP. If implemented, `batch_stats` handling for `MLP_JAX` would be needed.
-    * Citation: open_spiel/python/algorithms/alpha_zero_jax/model_jax.py lines 11–15
+    * Citation: open_spiel/python/algorithms/alpha_zero_jax/model_jax.py lines 18–23
 
-[TODO] [CHECKED] 22. **Implement JIT compilation for inference in `AlphaZeroEvaluatorJAX` (`evaluator_jax.py`).**
+[DONE] [CHECKED] 18. **Implement JIT compilation for inference in `AlphaZeroEvaluatorJAX` (`evaluator_jax.py`).**
     * Annotate `_inference` or model apply with `@jax.jit` for faster repeated calls.
     * Assessment: Recommended refinement. JIT compilation is not currently applied to the inference path in `AlphaZeroEvaluatorJAX`. This is a critical performance optimization in JAX and should be implemented (e.g., by JIT-compiling a helper function that calls `model.apply` with `training=False`).
     * Citation: open_spiel/python/algorithms/alpha_zero_jax/evaluator_jax.py lines 23–30
 
-[DONE] 23. **Implement 'latest' checkpoint saving in learner (`alpha_zero_jax.py`).**  
-    * Completed as item 3 above.
-
-[TODO] [CHECKED] 24. **Implement core training loop and `train_step_fn` (`alpha_zero_jax.py`).**
-    * Complete optimizer setup (Optax), batch assembly via `TrainInputJAX`, JIT-ted loss+grad+update step.
-    * Assessment: DONE. The `learner` function in `alpha_zero_jax.py` implements these: Optax optimizer is configured, `TrainInputJAX.stack` is used for batch assembly, `train_step_fn` is JITted and handles loss/grad/updates, and a core training loop orchestrates these.
-    * Citation: open_spiel/python/examples/alpha_zero_jax.py lines 886–924; 979–1005
-
-[TODO] [CHECKED] 25. **Confirm `init_flax_model_and_variables` wiring for all `nn_model` options (`model_jax.py`).**
+[DONE] [CHECKED] 19. **Confirm `init_flax_model_and_variables` wiring for all `nn_model` options (`model_jax.py`).**
     * Ensure each `config.nn_model` value (mlp, conv2d, resnet variants) is correctly instantiated and tested.
-    * Assessment: Mostly confirmed from code structure. `init_flax_model_and_variables` has paths for "mlp", "conv2d", many named ResNet variants (using `jax_resnet` structures), and a generic "resnet" (requiring `config.resnet_*` fields). Wiring seems plausible. Key missing piece is Item 16 (fallback for generic "resnet"). Full confirmation requires runtime testing of all model options.
+    * Assessment: Mostly confirmed from code structure. `init_flax_model_and_variables` has paths for "mlp", "conv2d", many named ResNet variants (using `jax_resnet` structures), and a generic "resnet" (requiring `config.resnet_*` fields). Wiring seems plausible. Key missing piece is Item 13 (fallback for generic "resnet"). Full confirmation requires runtime testing of all model options.
     * Citation: open_spiel/python/algorithms/alpha_zero_jax/model_jax.py lines 1–80
 
-[TODO] [CHECKED] 26. **Align field names between `TrainInputJAX` and learner code (`alpha_zero_jax.py`).**
-    * Verify usage of `policy_target`/`value_target` vs. the learner's expected field names.
-    * Assessment: Alignment confirmed. The field names `policy_target` and `value_target` in `TrainInputJAX` are consistently used in `alpha_zero_jax.py` for replay buffer population, batch preparation, and in `train_step_fn` for loss computation. No issues found.
-    * Citation: open_spiel/python/algorithms/alpha_zero_jax/model_jax.py lines 1–10; open_spiel/python/examples/alpha_zero_jax.py lines 1003–1011
-
-[TODO] [CHECKED] 27. **Ensure explicit `jnp.asarray` conversion of inputs in `AlphaZeroEvaluatorJAX` (`evaluator_jax.py`).**
+[DONE] [CHECKED] 20. **Ensure explicit `jnp.asarray` conversion of inputs in `AlphaZeroEvaluatorJAX` (`evaluator_jax.py`).**
     * Convert `obs_tensor` and `legal_actions_mask` to JAX arrays before model application.
-    * Assessment: Recommended refinement. Currently, NumPy arrays are passed to `model.apply`, and Flax handles conversion. Explicit `jnp.asarray` conversion is good JAX practice for clarity and can be beneficial when JIT-compiling the inference step (related to TODO 22). Not strictly a bug, but a good enhancement.
+    * Assessment: Recommended refinement. Currently, NumPy arrays are passed to `model.apply`, and Flax handles conversion. Explicit `jnp.asarray` conversion is good JAX practice for clarity and can be beneficial when JIT-compiling the inference step (related to TODO 18). Not strictly a bug, but a good enhancement.
     * Citation: open_spiel/python/algorithms/alpha_zero_jax/evaluator_jax.py lines 12–20
 
-[TODO] [CHECKED] 28. **Document and Review ResNet Torso Output Discrepancy (`model_jax.py`).**
+[DONE] [CHECKED] 21. **Document and Review ResNet Torso Output Discrepancy (`model_jax.py`).**
     * The JAX `ResNet_JAX` uses global average pooling (`jnp.mean`) after the convolutional torso.
-    * The TensorFlow reference `Model` flattens the torso output (`tfkl.Flatten`).
-    * This is a significant architectural difference in how spatial information is handled before the policy and value heads. Document the implications and confirm if this deviation is intended.
-    * Assessment: Correction needed for TF parity. JAX `ResNet_JAX` (in `model_jax.py`, lines 89-90) uses `jnp.mean(x, axis=(1, 2))` (Global Average Pooling) on the ResNet body output. The TF reference `Model` (in `alpha_zero/model.py`, lines 280-285 for policy head, 297-302 for value head) uses `tfkl.Flatten()` after a 1x1 conv head block. This is a significant architectural difference. To match TF, JAX version should use Flatten. If deviation is intentional, it needs clear documentation; otherwise, it's a divergence.
-    * Citation: open_spiel/python/algorithms/alpha_zero_jax/model_jax.py lines 89–90; open_spiel/python/algorithms/alpha_zero/model.py lines 280–285, 297–302
-
-[TODO] [CHECKED] 29. **Improve error handling in actor/evaluator queue processing (`alpha_zero_jax.py`).**
-    * Replace generic `Exception` catch in actor/evaluator queue processing with specific exception handling (e.g., `spawn.Empty`) for clarity and robustness.
-    * Assessment: Correction needed. Actor (lines 361-364) and Evaluator (lines 516-520) in `alpha_zero_jax.py` use generic `except Exception` for `queue.put()`. Learner's `trajectory_generator` (lines 949-956) uses generic `except Exception` for `queue.get_nowait()` (and notes it should be specific). Learner's evaluator queue processing (lines 1136-1145) correctly catches `spawn.Empty` but also has a generic fallback. Generic catches should be replaced by specific ones (e.g., `spawn.Full` for puts if applicable, `spawn.Empty` for gets) for robust error handling.
-    * Citation: open_spiel/python/examples/alpha_zero_jax.py lines 361–364, 516–520; open_spiel/python/examples/alpha_zero_jax.py lines 949–956
-
-[TODO] [CHECKED] 30. **Standardize PRNG key handling in actors/evaluators (`alpha_zero_jax.py`).**
-    * Ensure `prng_key` passed to actor/evaluator is consistently split and used for model init and any other stochastic operations (e.g., MCTS noise if not handled by bot, though it seems bot does).
-    * Assessment: Mostly correct for JAX operations. Unique JAX PRNG keys are passed to actors/evaluators, folded with worker ID, split, and one sub-key is correctly used for `model_jax.init_flax_model_and_variables` (e.g., `alpha_zero_jax.py` lines 318-322 for actor). The other sub-key (e.g., `actor_run_key`) is not explicitly used for further JAX-based stochastic operations within the actor/evaluator Python loops. Stochasticity in `_play_game` (chance nodes, temperature sampling) uses `np.random`, not these JAX keys. MCTS noise seeding is via config. This points to incomplete determinism (see Item 13) rather than incorrect JAX key handling for JAX ops themselves. No immediate correction needed for JAX key splitting for model init, but overall determinism needs Item 13.
-    * Citation: open_spiel/python/examples/alpha_zero_jax.py lines 278–281; open_spiel/python/examples/alpha_zero_jax.py lines 136–142
-
-[TODO] [CHECKED] 31. **Align evaluation logic (`evaluator` in `alpha_zero_jax.py`) with TF opponent setup.**
-    * Assessment: Correction needed. The JAX evaluator (`alpha_zero_jax.py`, lines 432-447) differs from TF (`alpha_zero.py`, lines 286-293) in opponent setup: 
-        1. TF scales MCTS opponent simulations using `difficulty` (`int(config.max_simulations * (10**(difficulty/2.0)))`); JAX uses fixed `config.max_simulations`. 
-        2. TF sets `solve=True` for MCTS opponent; JAX uses `solve=False`. 
-    Both need to be aligned for parity with the TF reference evaluation protocol.
-    * Citation: open_spiel/python/examples/alpha_zero_jax.py lines 432–447; open_spiel/python/algorithms/alpha_zero/alpha_zero.py lines 286–293
+    * The TensorFlow reference `Model`

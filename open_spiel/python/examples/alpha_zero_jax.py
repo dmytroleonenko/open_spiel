@@ -19,12 +19,16 @@ from absl import flags # Added for executable entry point
 
 from open_spiel.python.algorithms.alpha_zero_jax import model_jax
 from open_spiel.python.algorithms.alpha_zero_jax import evaluator_jax # For AlphaZeroEvaluatorJAX
-# Placeholder for future imports like spawn, file_logger, data_logger, stats
 from open_spiel.python.utils import spawn, file_logger, data_logger, stats # Activated file_logger, spawn, data_logger, stats
 from open_spiel.python.algorithms import mcts # Activated mcts
 
 # Time to wait for processes to join.
 JOIN_WAIT_DELAY = 0.001
+
+# Constants for learner statistics
+VALUE_ACC_HIST_BUCKETS = 20  # Number of buckets for value accuracy histograms
+VALUE_PRED_HIST_BUCKETS = 20 # Number of buckets for value prediction histograms
+EVALS_STAT_WINDOW = 100      # Window for evaluation statistics
 
 
 class ConfigJAX(collections.namedtuple(
@@ -61,13 +65,13 @@ class ConfigJAX(collections.namedtuple(
         "resnet_stem_kwargs",       # Optional[Mapping]: Keyword arguments for the ResNet stem.
         "resnet_block_callable_name",# Optional[str]: Name of the block callable for generic ResNet (e.g., "ResNetBlock", "ResNetBottleneckBlock").
         "resnet_block_kwargs",      # Optional[Mapping]: Keyword arguments for the ResNet block.
+        "evaluator_cache_size",     # int: Size of the LRU cache for the evaluator.
     ])):
   """A config for the JAX AlphaZero model/experiment."""
   # To allow None defaults for Optional fields in namedtuple, provide them at instantiation.
   # Default values for new optional fields can be handled in the main script creating the ConfigJAX instance.
   pass
 
-# Helper classes copied from open_spiel/python/algorithms/alpha_zero/alpha_zero.py
 class TrajectoryState(object):
   """A particular point along a trajectory."""
 
@@ -110,13 +114,11 @@ class Buffer(object):
     batch = list(batch)
     self.total_seen += len(batch)
     self.data.extend(batch)
-    # Efficiently trim the beginning of the list if it exceeds max_size
     if len(self.data) > self.max_size:
         self.data = self.data[len(self.data) - self.max_size:]
 
 
   def sample(self, count):
-    # Ensure count is not greater than the number of items in data
     count = min(count, len(self.data))
     if count == 0:
         return []
@@ -125,82 +127,90 @@ class Buffer(object):
 
 # Watcher decorator from open_spiel/python/algorithms/alpha_zero/alpha_zero.py
 def watcher(fn):
-  """A decorator to fn/processes that gives a logger and logs exceptions."""
+  """Decorator to print exceptions and start/end logging for processes."""
+
   @functools.wraps(fn)
-  def _watcher(*, config, num=None, **kwargs):
-    """Wrap the decorated function."""
+  def _watcher(*args, **kwargs):
     name = fn.__name__
-    if num is not None:
-      name += "-" + str(num)
-    # Assuming config.path is available and config.quiet controls verbosity
-    # The FileLogger from open_spiel.python.utils.file_logger is used here.
-    # If config.path is None, FileLogger might raise an error or not log to a file.
-    # Ensure config.path is appropriately set before calling functions decorated with watcher.
-    if config.path:
-        logger_path = config.path
-    else:
-        # Fallback or error handling if config.path is not set, as FileLogger needs a path.
-        # For now, let's assume it's an error or a temporary path might be used.
-        # This behavior should align with how file_logger.FileLogger handles a None path.
-        # Alternatively, print a warning and use a dummy logger.
-        print(f"Warning: config.path is not set for watcher on {name}. Logging to files might be disabled or fail.")
-        logger_path = "." # Default to current directory, though FileLogger might not like this without a specific filename pattern.
+    config = kwargs.get("config")
+    num = kwargs.get("num", "process") # Get process number or use a generic term
+    
+    _file_log_path_dir = None
+    _log_name_prefix = f"{name}_{num}" # e.g., actor_0, learner_process
+    _also_to_stdout = True 
+    
+    if config:
+        _also_to_stdout = not config.quiet
+        if config.path:
+            _file_log_path_dir = config.path # Directory for logs
+        else:
+            # This case is problematic as FileLogger needs a directory.
+            # Forcing a temp dir or erroring out earlier (e.g., in main) is better.
+            # For now, assume config.path is always set by main().
+            pass # Should be handled by config.path check below
+    
+    if not _file_log_path_dir:
+      # This case should ideally not be reached if config.path is mandatory and set.
+      # Fallback to a default or raise error if essential.
+      # Current FileLogger will error if path is None.
+      # Let's ensure this is handled by raising an error if config.path isn't set, as watcher needs it.
+      if config and not config.path: # Check specifically if config object exists but path is missing
+          print(f"CRITICAL: config.path not set for watcher on {name}. Logs cannot be written.")
+          # Depending on strictness, could raise ValueError here.
+      # If no config at all, _logger creation will fail later or use a default if FileLogger handles None path.
+      # Given FileLogger fails on None path, it's better to ensure config.path is present.
+      # The checks for config.path in the original watcher were a bit scattered.
+      # Consolidating the expectation: config and config.path must be valid.
 
+    # Create logger instance. FileLogger expects path (directory) and name (prefix for log file).
+    _logger = file_logger.FileLogger(path=_file_log_path_dir, name=_log_name_prefix, also_to_stdout=_also_to_stdout)
 
-    with file_logger.FileLogger(logger_path, name, config.quiet if hasattr(config, 'quiet') else True) as logger:
-      print(f"{name} started")
-      logger.print(f"{name} started")
-      try:
-        # Pass the logger to the wrapped function if it accepts it.
-        # The original @watcher passes logger, so we do too.
-        if 'logger' in fn.__code__.co_varnames:
-            return fn(config=config, logger=logger, num=num, **kwargs)
-        else: # If the wrapped function doesn't expect 'logger' or 'num' in this way.
-            # We might need to adjust based on specific function signatures.
-            # For actor, learner, evaluator, they do expect 'logger' and 'num' is handled by name.
-            return fn(config=config, num=num, logger=logger, **kwargs) # Original watcher passes num to _watcher, not fn directly
-      except Exception as e:
-        logger.print("\n".join([
-            "",
-            f" Exception caught in {name} ".center(60, "="),
-            traceback.format_exc(),
-            "=" * 60,
-        ]))
-        print(f"Exception caught in {name}: {e}")
-        raise
-      finally:
-        logger.print(f"{name} exiting")
-        print(f"{name} exiting")
+    if not config:
+        _logger.print(f"Critical: Configuration object not found for watcher on {name}. Cannot determine log path fully.")
+        # The watcher should ideally always receive a config.
+        # Raising an error might be too strict if some utility functions are watched without full config.
+        # However, for actor/learner/evaluator, config is essential.
+    elif not config.path:
+      _logger.print(f"Error: config.path is not set for watcher on {name}. File logging directory is mandatory.")
+        # Consider raising ValueError here to stop if file logging is critical.
+
+    try:
+      _logger.print(f"{name} started")
+      # Pass the watcher's logger to the wrapped function if it accepts 'logger'
+      kwargs_to_pass = kwargs.copy()
+      if 'logger' in fn.__code__.co_varnames:
+        kwargs_to_pass['logger'] = _logger
+      return fn(*args, **kwargs_to_pass)
+    except Exception as e:
+      _logger.print(f"Exception caught in {name}: {type(e).__name__}: {e}")
+      _logger.print(traceback.format_exc())
+      raise
+    finally:
+      _logger.print(f"{name} exiting")
+      if _logger and _logger.f:
+        _logger.f.close()
+
   return _watcher
 
 
 # _init_bot function from open_spiel/python/algorithms/alpha_zero/alpha_zero.py
 def _init_bot(config: ConfigJAX, game: pyspiel.Game, evaluator_: mcts.Evaluator, evaluation: bool):
-  """Initializes an MCTS bot with a JAX-based AlphaZero evaluator.
-
-  This function configures an MCTS bot, specifically setting up the
-  Dirichlet noise for exploration during self-play (if not in evaluation mode).
-  The core of the MCTS search relies on the provided `evaluator_`,
-  which for this JAX implementation is an `AlphaZeroEvaluatorJAX` instance.
+  """Initializes an MCTS bot with a JAX AlphaZero evaluator.
 
   Args:
-    config: The `ConfigJAX` object containing hyperparameters like UCT constant,
-      max simulations, and policy noise parameters.
-    game: The `pyspiel.Game` instance for which the bot is being created.
-    evaluator_: An `mcts.Evaluator` instance. In the JAX AlphaZero context,
-      this is expected to be an `AlphaZeroEvaluatorJAX` that uses a Flax model
-      for policy and value predictions.
-    evaluation: A boolean indicating whether the bot is used for evaluation.
-      If True, Dirichlet noise is disabled for more deterministic play.
+    config: `ConfigJAX` with hyperparameters (UCT, simulations, policy noise).
+    game: `pyspiel.Game` instance.
+    evaluator_: `AlphaZeroEvaluatorJAX` (or any `mcts.Evaluator`) for policy/value predictions.
+    evaluation: If True, disables Dirichlet noise for deterministic play.
 
   Returns:
-    An `mcts.MCTSBot` configured for the JAX AlphaZero algorithm.
+    An `mcts.MCTSBot` configured for JAX AlphaZero.
   """
   # Dirichlet noise is added to the policy prior for exploration during training (self-play).
   # It's disabled during evaluation for a more deterministic assessment of the agent's strength.
   noise = None if evaluation else (config.policy_epsilon, config.policy_alpha)
   return mcts.MCTSBot(
-      game, # The game environment.
+      game, 
       config.uct_c, # UCT constant for balancing exploration and exploitation.
       config.max_simulations, # Number of MCTS simulations per move.
       evaluator_, # The JAX-based evaluator for policy and value network inference.
@@ -213,15 +223,15 @@ def _init_bot(config: ConfigJAX, game: pyspiel.Game, evaluator_: mcts.Evaluator,
 
 # _play_game function from open_spiel/python/algorithms/alpha_zero/alpha_zero.py
 # Adapted to use TrajectoryState and Trajectory already defined in this file.
-def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list, temperature: float, temperature_drop: int):
+def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list, temperature: float, temperature_drop: int, numpy_seed: int):
   """Play one game, return the trajectory."""
   trajectory = Trajectory() # Uses Trajectory class defined in this file
   actions = []
   state = game.new_initial_state()
-  random_state = np.random.RandomState() # For reproducibility if seeded, otherwise system random
+  random_state = np.random.RandomState(numpy_seed) # Use the passed numpy_seed
   if logger:
-    logger.opt_print(f" Starting game {game_num} ".center(60, "-"))
-    logger.opt_print(f"Initial state:\n{state}")
+    logger.opt_print(f" Starting game {game_num} (seed: {numpy_seed}) ".center(60, "-"))
+    logger.opt_print(f"Initial state:\\n{state}")
 
   while not state.is_terminal():
     if state.is_chance_node():
@@ -247,7 +257,7 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list, temperatur
           if len(actions) >= temperature_drop: # After temperature_drop moves, pick best action
             action = root.best_child().action
           else:
-            action = np.random.choice(len(policy), p=policy)
+            action = random_state.choice(len(policy), p=policy) # NEW: Use seeded random_state
 
       # Store state, action, policy, value
       trajectory.states.append(
@@ -272,13 +282,14 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list, temperatur
 
 
 @watcher
-def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int, queue: spawn.Queue, prng_key: jax.random.PRNGKey):
+def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
+          queue: spawn._ProcessQueue, prng_key: jax.random.PRNGKey):
   """An actor process that plays games and sends trajectories to the learner."""
   logger.print(f"Actor {num} started with PRNG key: {prng_key}")
 
   # Actor-specific PRNG key by folding in its number
   actor_internal_key = jax.random.fold_in(prng_key, num)
-  model_init_key, actor_run_key = jax.random.split(actor_internal_key) # Split key for model init and other ops if needed
+  model_init_key, actor_run_key = jax.random.split(actor_internal_key)
 
   logger.print(f"Actor {num}: Initializing model")
   # Initialize JAX model
@@ -286,7 +297,7 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int, queue: spa
   
   logger.print(f"Actor {num}: Initializing AlphaZeroEvaluatorJAX")
   # Initialize evaluator
-  az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables)
+  az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables, config.evaluator_cache_size)
 
   bots = [
       _init_bot(config, game, az_evaluator, evaluation=False),
@@ -311,17 +322,8 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int, queue: spa
     latest_checkpoint_path = os.path.join(ckpt_dir, "latest")
 
     try:
-      # Check if a new checkpoint is available.
-      # The `checkpoints.restore_checkpoint` can take a directory and find the latest,
-      # or a direct file path. Using the "latest" symlink/file approach.
-      # We need to know if the checkpoint on disk is newer than what we have.
-      # For simplicity, we'll try to load 'latest' and if it's different, it's an update.
-      # More robust would be to check step number if available.
-      # `checkpoints.latest_checkpoint(ckpt_dir)` could also be used if we save with step prefixes.
-      
-      # The target for restoration should match what was saved by the learner.
-      # Learner saves {'variables': variables, 'opt_state': opt_state}
-      # Actor only needs 'variables'.
+      # Attempt to load the "latest" checkpoint. If it differs from the current, it's an update.
+      # Learner saves {'variables': variables, 'opt_state': opt_state}; actor only needs 'variables'.
       target_to_restore = {'variables': current_variables} # Provide current_variables as a template
 
       # Attempt to restore. If `latest_checkpoint_path` doesn't exist, it will return None or raise error
@@ -355,6 +357,11 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int, queue: spa
     # Try to update model from checkpoint
     variables, _ = update_checkpoint_fn(variables, az_evaluator)
     
+    # Derive a seed for this specific game from the actor's run key
+    # Fold in game_num to ensure each game gets a unique PRNG sequence if actor is restarted/reused.
+    game_specific_rng_key = jax.random.fold_in(actor_run_key, game_num)
+    current_numpy_seed = jax.random.randint(game_specific_rng_key, shape=(), minval=0, maxval=jnp.iinfo(jnp.int32).max).item()
+
     # Play a game
     trajectory = _play_game(
         logger=logger,
@@ -362,7 +369,8 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int, queue: spa
         game=game,
         bots=bots,
         temperature=config.temperature,
-        temperature_drop=config.temperature_drop)
+        temperature_drop=config.temperature_drop,
+        numpy_seed=current_numpy_seed) # Pass the seed here
     
     # Send trajectory to the learner
     try:
@@ -378,7 +386,8 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int, queue: spa
 
 
 @watcher
-def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int, queue: spawn.Queue, prng_key: jax.random.PRNGKey):
+def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
+              queue: spawn._ProcessQueue, prng_key: jax.random.PRNGKey):
   """A process that plays the latest checkpoint vs standard MCTS."""
   logger.print(f"Evaluator {num} started with PRNG key: {prng_key}")
 
@@ -389,10 +398,10 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int, queue:
   flax_model, variables = model_jax.init_flax_model_and_variables(model_init_key, config, game)
 
   logger.print(f"Evaluator {num}: Initializing AlphaZeroEvaluatorJAX")
-  az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables)
+  az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables, config.evaluator_cache_size)
   
   # The MCTS bot that uses the AZ model.
-  az_bot = _init_bot(config, game, az_evaluator, evaluation=True) # True for evaluation mode
+  az_bot = _init_bot(config, game, az_evaluator, evaluation=True)
 
   # A standard MCTS bot with a random rollout evaluator to play against.
   # It's important that this opponent is reasonably strong but not overly slow.
@@ -425,41 +434,14 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int, queue:
 
     try:
         if os.path.exists(latest_checkpoint_file):
-            # Check modification time or a step number embedded in the target to avoid reloading the same file.
-            # Flax's `checkpoints.restore_checkpoint` might just load; we need to know *if* it loaded something new.
-            # A simple way is to try to read a step number if the learner saves it inside the checkpoint target.
-            # For now, we can check if the target file itself has changed or simply try to load.
-            # The `checkpoints.restore_checkpoint` will return the restored target. We can compare.
-
-            # A more robust way: if "latest" is a symlink, check `os.readlink` or `os.lstat().st_mtime`.
-            # If "latest" is a file containing the path or step, parse it.
-            # For simplicity with current Flax checkpointing (`save_checkpoint(..., step="latest", ...)`),
-            # it creates a file literally named "latest-SUFFIX" or just "latest".
-            # We can check its modification time.
-            
-            # Let's assume the learner's "latest" checkpoint has a retrievable step or timestamp.
-            # Or, more simply, the `restore_checkpoint` itself can tell us if variables changed.
-            # However, `checkpoints.restore_checkpoint` loads into a *copy* of the target by default.
-
-            # To avoid reloading the exact same file if its content hasn't changed (e.g. by step number)
-            # we could try to get the step from the checkpoint file name if `prefix` is used in save_checkpoint
-            # e.g. by `checkpoints.latest_checkpoint(ckpt_dir, prefix="checkpoint_")`
-            # The plan saves `latest` as a specific file. Let's try to load it and see if vars change.
-
+            # Attempt to restore the "latest" checkpoint. A change in the restored variables' content
+            # (or identity, depending on flax.checkpoints behavior) indicates a new checkpoint.
+            # Robust checking might involve comparing variable contents or step numbers if available.
+            # For now, rely on the restored object differing if an update occurred.
             target_to_restore = {'variables': current_vars} 
             restored_state = checkpoints.restore_checkpoint(ckpt_dir=latest_checkpoint_file, target=target_to_restore)
 
             if restored_state and restored_state['variables'] is not current_vars:
-                 # A robust check would be `jax.tree_util.tree_all(jax.tree_map(np.array_equal, new_variables, current_variables))`
-                 # but simple object identity check after restore might be sufficient if restore creates new objects.
-                 # For now, we assume if restore_checkpoint gives back a different variables dict, it's new.
-                 # This needs to be tested with how Flax's restore_checkpoint behaves.
-                 # A common pattern is that restore_checkpoint mutates the passed target or returns a new one.
-                 # If it mutates, we need to compare before/after. If it returns new, check identity.
-                 # The current `actor` assumed `restored_state['variables'] is not current_variables`
-                 # Let's refine this: check if the *content* has changed, or rely on a step number.
-                 # For now, let's assume the actor's check is okay for a basic version.
-
                 new_vars = restored_state['variables']
                 current_az_eval.update_variables(new_vars)
                 logger.print(f"Evaluator {num}: Loaded new checkpoint from {latest_checkpoint_file}.")
@@ -483,17 +465,11 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int, queue:
         results_buffer = Buffer(config.evaluation_window)
         logger.print(f"Evaluator {num}: Model updated, results buffer reset.")
 
-    # Determine opponent strength for this game
-    # This logic is from original AlphaZero: varies difficulty based on game number and eval_levels
+    # Determine opponent strength (difficulty from original AlphaZero, fixed for now).
     difficulty = (game_num // 2) % config.eval_levels if config.eval_levels > 0 else 0
-    # max_simulations_opponent = int(config.max_simulations * (10**(difficulty / 2))) # Original scaling
-    # For simplicity in this JAX version, let's assume a fixed number of opponent simulations, 
-    # or that `_init_bot` for the opponent needs to be created fresh if max_simulations change.
-    # Let's use a fixed opponent strength for now or make it part of config.
-    # The plan was "MCTS+Solver", original uses MCTSBot with random evaluator.
-    opponent_simulations = config.max_simulations # Default to same as AZ bot's base, or could be a new config field.
-    # To vary opponent strength, one might re-initialize this bot or have a list of them.
-    # For now, a single fixed-strength MCTS opponent.
+    # For varied strength, MCTS opponent sims could change or bot re-initialized.
+    # Current: fixed opponent simulations, using RandomRolloutEvaluator.
+    opponent_simulations = config.max_simulations 
     opponent_bot = mcts.MCTSBot(
         game,
         config.uct_c, # Use same UCT as AZ for opponent, or could be different
@@ -543,211 +519,119 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int, queue:
 
 
 def alpha_zero_jax(config: ConfigJAX):
-  """Start all the worker processes for a full JAX AlphaZero setup."""
-  game = pyspiel.load_game(config.game)
-  # Update config with game-specific observation and output sizes
-  # This was done in the original alpha_zero, good practice to ensure consistency.
-  config = config._replace(
-      observation_shape=list(game.observation_tensor_shape()), # Ensure it's a list for model_jax if it expects list
-      output_size=game.num_distinct_actions()
-  )
-
-  logger_fn = functools.partial(file_logger.FileLogger, config.path, config.quiet)
-
-  if not config.quiet:
-    print("Starting JAX AlphaZero game", config.game)
-    print(f"Game type: {game.get_type().short_name}")
-    print(f"Game instance: {game}")
-    print(f"Observation tensor shape: {game.observation_tensor_shape()}")
-    print(f"Number of distinct actions: {game.num_distinct_actions()}")
-
-  if game.num_players() != 2:
-    sys.exit("AlphaZero can only handle 2-player games.") # Python's sys module needed
-  game_type = game.get_type()
-  if game_type.reward_model != pyspiel.GameType.RewardModel.TERMINAL:
-    raise ValueError("Game must have terminal rewards.")
-  if game_type.dynamics != pyspiel.GameType.Dynamics.SEQUENTIAL:
-    raise ValueError("Game must have sequential turns.")
-  if game_type.information != pyspiel.GameType.Information.PERFECT_INFORMATION:
-    # While AlphaZero is often for perfect info, MCTS can run on imperfect.
-    # However, the standard AZ formulation assumes perfect information.
-    # Log a warning if not, as state/observation handling might be subtle.
-    print("Warning: Game is not perfect information. AlphaZero typically assumes perfect information.")
-
-  path = config.path
-  if not path:
-    # Create a default path if not specified, similar to original AlphaZero
-    # Using datetime for unique directory names.
-    import datetime # Ensure datetime is imported
-    path = tempfile.mkdtemp(prefix=f"az-jax-{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')}-{config.game}")
-    config = config._replace(path=path)
-  
-  if not os.path.exists(path):
-    os.makedirs(path, exist_ok=True)
-  if not os.path.isdir(path):
-    # This check should ideally not be an exit but raise an error if path creation failed.
-    # However, matching original AlphaZero structure:
-    sys.exit(f"{path} isn't a directory")
-  
-  if not config.quiet:
-    print(f"Writing logs and checkpoints to: {path}")
-    print(f"Model: {config.nn_model}, Width: {config.nn_width}, Depth: {config.nn_depth}")
-
-  # Save the config to the directory for reproducibility
-  try:
-    with open(os.path.join(path, "config_jax.json"), "w") as fp:
-      # Convert namedtuple to dict for JSON serialization
-      # Need to handle any non-serializable fields if they exist (e.g. game object itself)
-      # The original config only stored basic types.
-      # Game object is not in ConfigJAX, so _asdict() should be fine.
-      json.dump(config._asdict(), fp, indent=2, sort_keys=True)
-      fp.write("\n")
-  except Exception as e:
-    print(f"Warning: Could not save JAX config to JSON: {e}")
-
-  # Initialize master JAX PRNG key
+  """Main entry point for JAX AlphaZero."""
   main_key = jax.random.PRNGKey(config.master_seed)
   
-  # Split keys for learner, actors, and evaluators
-  num_processes = 1 + config.actors + config.evaluators # 1 for learner
-  process_keys = jax.random.split(main_key, num_processes)
+  random.seed(config.master_seed)
+  np.random.seed(config.master_seed)
+
+  # Ensure the main log directory exists
+  os.makedirs(config.path, exist_ok=True) # config.path is the base data directory
+
+  # The FileLogger expects a directory path, and it will create log-{name}.txt inside it.
+  # So, the path passed to FileLogger should be config.path.
+  main_log_directory = config.path 
+  main_log_name = "main_alpha_zero_jax" 
+
+  # Initialize the main process logger
+  # It will create a log file like <config.path>/log-main_alpha_zero_jax.txt
+  main_process_logger = file_logger.FileLogger(main_log_directory, main_log_name, not config.quiet)
+  
+  actual_log_file_path = os.path.join(main_log_directory, f'log-{main_log_name}.txt')
+  if not config.quiet:
+    # This print statement should reflect the actual file FileLogger creates
+    print(f"Main process logging to: {actual_log_file_path}")
+
+  # Setup JAX PRNG keys
+  process_keys = jax.random.split(main_key, 1 + config.actors + config.evaluators)
   
   learner_key = process_keys[0]
-  actor_keys_start_index = 1
-  actor_keys_end_index = actor_keys_start_index + config.actors
-  actor_keys = process_keys[actor_keys_start_index:actor_keys_end_index]
-  evaluator_keys_start_index = actor_keys_end_index
-  evaluator_keys = process_keys[evaluator_keys_start_index:]
+  actor_keys = process_keys[1:1+config.actors]
+  evaluator_keys = process_keys[1+config.actors:]
 
-  # Queues for communication
-  # Actors send trajectories to the learner.
-  # Evaluators send evaluation results to the learner.
-  # Learner broadcasts checkpoint paths/commands to actors and evaluators.
-  # This implies each actor/evaluator needs a queue to receive commands from the learner.
-  # And the learner needs queues to receive data from actors/evaluators.
-
-  # The original AlphaZero used a single queue per actor/evaluator for bi-directional comms
-  # where items were polymorphic. This can be complex.
-  # For JAX, the actor/evaluator checkpoint update logic polls the filesystem for "latest".
-  # So the queues here are primarily for actor->learner (trajectories) and evaluator->learner (results).
-  # The `broadcast_fn` will be used by the learner to signal actors/evaluators, perhaps by writing a file
-  # or if we decide to use command queues later.
-  # For now, let's assume the queues passed to actor/evaluator are for them to *send* data.
-
-  actor_queues = [spawn.Queue() for _ in range(config.actors)]
-  evaluator_queues = [spawn.Queue() for _ in range(config.evaluators)]
-
-  # The learner needs access to all actor_queues to get trajectories
-  # and all evaluator_queues to get evaluation results.
-  # The `broadcast_fn` in original AlphaZero was for learner to send checkpoint paths.
-  # Since our JAX actor/evaluator polls, `broadcast_fn` might not put on these queues.
-  # Or it could signal via another mechanism if needed (e.g., a simple file flag).
-  # Let's define a simple broadcast_fn placeholder for now that logs, as the polling mechanism is primary.
-  
-  # Learner will save checkpoints. Actor/Evaluator will load the "latest".
-  # The `broadcast_fn` in the original TF version sent the *path* of the new checkpoint.
-  # Our JAX actor/evaluator polls for a file named "latest".
-  # So, the `broadcast_fn` for JAX might not need to send a path via queue.
-  # It could just be a conceptual signal or not strictly necessary if polling is frequent enough.
-  # However, if learner wants to signal an "exit" command, a command queue would be useful.
-  # Let's make broadcast_fn a no-op for now as polling handles checkpoints, and exit is handled by try/finally.
-
+  # Define a broadcast function placeholder (can be enhanced later)
+  # This function would typically send messages to actor/evaluator queues if needed.
+  # For checkpoint polling, it's less critical, but good to have for API consistency or future use.
   def broadcast_fn(message):
-    # In TF AZ, this sent checkpoint paths or "exit" to actor/evaluator queues.
-    # In JAX AZ with polling, this is less critical for checkpoint paths.
-    # If used for "exit", would need command queues.
-    # For now, let's make it a log, or it could write a special signal file.
-    if not config.quiet:
-      print(f"Learner broadcast: {message}")
-    # If command queues were used:
-    # for q in actor_command_queues + evaluator_command_queues: q.put(message)
-    pass
+      main_process_logger.opt_print(f"Broadcasting message (placeholder): {message}")
+      # Example: if actors/evaluators had command queues:
+      # for q in actor_command_queues: q.put(("broadcast", message))
+      # for q in evaluator_command_queues: q.put(("broadcast", message))
+      pass
 
-  # Spawn actor processes
-  actors = []
+  processes = []
+  actor_process_queues = []  # Queues for the learner to read from actors
+  evaluator_process_queues = [] # Queues for the learner to read from evaluators (if learner handles them)
+
+  main_process_logger.print(f"Starting {config.actors} actors...")
   for i in range(config.actors):
+      # The watcher decorator will handle the logger for the actor process
     actor_kwargs = {
-        "game": game,
+          # "game" object needs to be passed if actor uses it directly, or config.game string if it loads its own
+          # Assuming game object 'game' is available in this scope from pyspiel.load_game(config.game)
+          "game": config.game, 
         "config": config,
         "num": i,
-        "queue": actor_queues[i], # Queue for actor to send trajectories
         "prng_key": actor_keys[i]
+          # 'queue' is provided by spawn.Process to the target
     }
-    actors.append(spawn.Process(target=actor, kwargs=actor_kwargs))
+    p = spawn.Process(target=actor, kwargs=actor_kwargs)
+    processes.append(p)
+    actor_process_queues.append(p.queue) # Collect the queue for the learner
   
-  # Spawn evaluator processes
-  evaluators = []
+  main_process_logger.print(f"Starting {config.evaluators} evaluators...")
   for i in range(config.evaluators):
+      # The watcher decorator will handle the logger for the evaluator process
     eval_kwargs = {
-        "game": game,
+          "game": config.game, 
         "config": config,
         "num": i,
-        "queue": evaluator_queues[i], # Queue for evaluator to send results
         "prng_key": evaluator_keys[i]
+          # 'queue' is provided by spawn.Process to the target
     }
-    evaluators.append(spawn.Process(target=evaluator, kwargs=eval_kwargs))
+    p = spawn.Process(target=evaluator, kwargs=eval_kwargs)
+    processes.append(p)
+    evaluator_process_queues.append(p.queue)
+
+  # Learner setup
+  # The JAX learner signature is now: 
+  # learner(*, game, config, logger, actor_queues: list, evaluator_queues: list, broadcast_fn, prng_key)
+  learner_kwargs = {
+      "game": config.game, # Pass the loaded game object
+      "config": config,
+      "actor_queues": actor_process_queues, # Pass actor queues
+      "evaluator_queues": evaluator_process_queues, # Pass evaluator queues
+      "prng_key": learner_key,
+      "broadcast_fn": broadcast_fn # Pass the broadcast_fn to the learner
+      # logger is passed by @watcher
+  }
+  main_process_logger.print("Starting Learner...")
+  p_learner = spawn.Process(target=learner, kwargs=learner_kwargs)
+  processes.append(p_learner)
 
   # Start the learner. It will manage the main training loop.
   # The learner function needs access to actor_queues and evaluator_queues.
   try:
     learner(
-        game=game,
+        game=config.game,
         config=config,
-        actor_queues=actor_queues, # Pass the list of queues actors send on
-        evaluator_queues=evaluator_queues, # Pass the list of queues evaluators send on
-        broadcast_fn=broadcast_fn, # For learner to signal (e.g. new ckpt, though polling is used)
+        actor_queues=actor_process_queues, 
+        evaluator_queues=evaluator_process_queues, 
+        broadcast_fn=broadcast_fn, 
         prng_key=learner_key
-        # Logger is created inside @watcher for learner
     )
-  except (KeyboardInterrupt, EOFError) as e:
-    if not config.quiet:
-      print(f"Caught {type(e).__name__}, stopping AlphaZero JAX.")
+  except (KeyboardInterrupt, EOFError) as e: 
+    main_process_logger.print(f"Caught {type(e).__name__}, stopping AlphaZero JAX.")
   finally:
-    if not config.quiet:
-      print("AlphaZero JAX stopping. Signaling actors and evaluators to exit.")
+    main_process_logger.print("AlphaZero JAX stopping. Signaling actors and evaluators to exit.")
     
-    # Signal actors and evaluators to exit if they were using a command queue.
-    # Since they poll or run indefinitely until learner stops, explicit exit signal might be needed
-    # if they are waiting on queues that learner no longer services.
-    # Original AZ sent "" (empty string) as exit signal on the queues.
-    # If our actor/evaluator loops `itertools.count()` and `queue.put()`, they might get stuck if learner exits.
-    # `spawn.Process` objects should be joined.
-
-    # If broadcast_fn was used to send "exit" to command queues:
-    # broadcast_fn("exit") 
-
-    # For processes that `put` on queues that learner reads:
-    # If learner stops reading, `put` might block or error if queue is full.
-    # It's important that actor/evaluator loops can terminate gracefully.
-    # The `spawn.Process` might handle termination signals, or `join` might hang if process doesn't exit.
-    
-    # Ensure queues are emptied to allow processes to exit if they are blocked on put() to a full queue.
-    # This is tricky. A better approach is for actor/evaluator to check a flag or have a timeout on queue puts.
-    # For now, rely on spawn.Process termination. Original AZ did this join loop.
-    
-    # Join actors
-    for proc in actors:
-      # Original AlphaZero had a loop to empty queue before join.
-      # This was for queues *to* the actor/evaluator if they were command queues.
-      # Our actor_queues are for data *from* actors. Learner should have stopped reading.
-      # If actor is blocked on queue.put(), this join might hang.
-      # This part needs careful handling of process lifecycle.
+    for proc in processes:
       try:
-          proc.join(timeout=JOIN_WAIT_DELAY * 10) # Added timeout
-      except Exception as join_e:
-          if not config.quiet:
-              print(f"Error joining actor process: {join_e}")
-    
-    # Join evaluators
-    for proc in evaluators:
-      try:
-          proc.join(timeout=JOIN_WAIT_DELAY * 10)
-      except Exception as join_e:
-          if not config.quiet:
-              print(f"Error joining evaluator process: {join_e}")
+          proc.join(timeout=JOIN_WAIT_DELAY * 10) 
+      except Exception as join_e: 
+          main_process_logger.print(f"Error joining process: {join_e}")
 
-    if not config.quiet:
-      print("AlphaZero JAX run completed.")
+    main_process_logger.print("AlphaZero JAX run completed.")
 
 
 # Entry point for the script (if run directly)
@@ -810,259 +694,272 @@ def alpha_zero_jax(config: ConfigJAX):
 # The logger for learner is created by its own @watcher decorator.
 
 @watcher
-def learner(*, game: pyspiel.Game, config: ConfigJAX, actor_queues: list, evaluator_queues: list, broadcast_fn, prng_key: jax.random.PRNGKey, logger=None):
+def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
+            actor_queues: list[spawn._ProcessQueue], 
+            evaluator_queues: list[spawn._ProcessQueue], 
+            broadcast_fn, # Added broadcast_fn here
+            prng_key: jax.random.PRNGKey):
   """A learner that consumes actor trajectories and evaluator results, and updates the model."""
-  if logger:
-    logger.also_to_stdout = True # For learner, log to stdout as well
-    logger.print(f"Learner started with PRNG key: {prng_key}")
+  # The logger variable is now reliably passed by the @watcher decorator.
+  if logger: # Check if logger is provided (it should be by watcher)
+    logger.print(f"JAX Learner started with PRNG key: {prng_key}")
+    logger.print(f"Learner using game: {game}, config: {config}") # Log basic info
+  else: # Fallback if watcher didn't provide logger (should not happen)
+    print(f"JAX Learner started (no logger) with PRNG key: {prng_key}")
 
-  print("JAX Learner started.")
-  if logger:
-    logger.print("JAX Learner started.")
 
-  replay_buffer = Buffer(config.replay_buffer_size)
-  # learn_rate is the number of states to collect before learning.
-  if config.replay_buffer_reuse > 0:
-    learn_rate = config.replay_buffer_size // config.replay_buffer_reuse
-  else: 
-    learn_rate = config.replay_buffer_size 
+  # Initialize model and optimizer
+  learner_key_for_init, prng_key = jax.random.split(prng_key) # Use prng_key for subsequent ops
   
-  if learn_rate == 0 and config.replay_buffer_size > 0 : 
-      learn_rate = config.replay_buffer_size 
+  # Ensure game object is loaded if only game name was passed in config,
+  # or use the passed game object.
+  # The 'game' parameter to learner should be a loaded pyspiel.Game object.
+  # if isinstance(game, str): # This check might be needed if only game name is passed
+  #   loaded_game = pyspiel.load_game(game)
+  # else:
+  #   loaded_game = game
 
-  # Initialize JAX model and optimizer
-  learner_key_for_init, init_key = jax.random.split(prng_key) 
-  print(f"Initializing JAX model with key: {init_key}")
-  if logger:
-    logger.print(f"Initializing JAX model with key: {init_key}")
-  
-  flax_model, variables = model_jax.init_flax_model_and_variables(init_key, config, game)
+  flax_model, variables = model_jax.init_flax_model_and_variables(
+      learner_key_for_init, config, game # Use the game object
+  )
   optimizer = optax.adamw(learning_rate=config.learning_rate, weight_decay=config.weight_decay)
   opt_state = optimizer.init(variables['params'])
 
-  # Data logging and statistics
+  replay_buffer = Buffer(config.replay_buffer_size)
+  
+  # Restore from checkpoint if available
+  ckpt_dir = os.path.join(config.path, "checkpoints_jax") if config.path else None
+  if ckpt_dir:
+    os.makedirs(ckpt_dir, exist_ok=True)
+    # Try to restore the latest checkpoint
+    # Target for restore should match what's saved (variables and opt_state)
+    restore_target = {'variables': variables, 'opt_state': opt_state}
+    latest_checkpoint_path = os.path.join(ckpt_dir, "latest") # Default name by save_checkpoint(..., step="latest", prefix="")
+    
+    # Use checkpoints.restore_checkpoint correctly. It expects the ckpt_dir and optionally a specific step.
+    # If restoring "latest", the path should be to the directory containing the "latest" file/symlink.
+    try:
+      restored_state = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, target=restore_target, step="latest", prefix="") 
+      if restored_state:
+        variables = restored_state['variables']
+        opt_state = restored_state['opt_state']
+        if logger: logger.print(f"Learner restored checkpoint from {latest_checkpoint_path}")
+      else:
+        if logger: logger.print(f"No 'latest' checkpoint found at {ckpt_dir} to restore. Starting fresh.")
+    except FileNotFoundError: # Specific exception if the checkpoint dir or file doesn't exist
+        if logger: logger.print(f"Checkpoint file/directory for 'latest' not found at {ckpt_dir}. Starting fresh.")
+    except Exception as e: # Catch other potential errors during restore
+        if logger: logger.print(f"Error restoring 'latest' checkpoint from {ckpt_dir}: {e}. Starting fresh.")
+
   data_log = None
   if config.path:
-    data_log = data_logger.DataLoggerJsonLines(config.path, "learner_jax", True)
-    if logger: logger.print(f"Learner data will be logged to {config.path}/learner_jax.jsonl")
-  else:
-    if logger: logger.print("Warning: config.path is not set. Learner data logging will be disabled.")
+    data_log_path = os.path.join(config.path, "learner_data.jsonl")
+    data_log = data_logger.DataLoggerJsonLines(data_log_path)
+    if logger: logger.print(f"Learner logging data to: {data_log_path}")
 
-  # Statistics objects (mirroring TF AlphaZero where applicable)
-  # Game specific stats
   game_lengths = stats.BasicStats()
-  game_lengths_hist = stats.HistogramNumbered(game.max_game_length() + 1) # Ensure game.max_game_length() is valid
-  outcomes = stats.HistogramNamed(["Player1", "Player2", "Draw"]) # Assuming 2 players
+  game_lengths_hist = stats.HistogramNumbered(game.max_game_length() + 1)
+  outcomes = stats.HistogramNamed({"win": 1, "loss": -1, "draw": 0, "quit": -2, "eval": -3}) # Added eval for tracking
+  value_accuracies = [stats.HistogramValue(i) for i in range(VALUE_ACC_HIST_BUCKETS)]
+  value_predictions = [stats.HistogramValue(i) for i in range(VALUE_PRED_HIST_BUCKETS)]
+  evals = [stats.ReservoirStopwatch(EVALS_STAT_WINDOW) for _ in range(config.eval_levels or 1)] # Ensure at least one if eval_levels is 0
 
-  # Value prediction/accuracy stats (e.g., at start, mid, end of game)
-  # Using a fixed stage_count, e.g., 3 for start, mid, end
-  stage_count = 3 
-  value_accuracies = [stats.BasicStats() for _ in range(stage_count)]
-  value_predictions = [stats.BasicStats() for _ in range(stage_count)]
-
-  # Evaluation stats
-  # Assuming config.eval_levels is defined and > 0 if evaluators are active
-  eval_levels_count = config.eval_levels if hasattr(config, 'eval_levels') and config.eval_levels > 0 else 1
-  evals = [Buffer(config.evaluation_window if hasattr(config, 'evaluation_window') else 100) for _ in range(eval_levels_count)]
-
-
-  total_trajectories = 0
-
-  # Setup checkpoint directory
-  if config.path: # Ensure config.path is set
-    ckpt_dir = os.path.join(config.path, "checkpoints_jax")
-    os.makedirs(ckpt_dir, exist_ok=True)
-    if logger:
-        logger.print(f"JAX checkpoints will be saved in: {ckpt_dir}")
-    else:
-        print(f"JAX checkpoints will be saved in: {ckpt_dir}")
-  else:
-    ckpt_dir = None # No checkpointing if path is not provided
-    if logger:
-        logger.print("Warning: config.path is not set. JAX checkpointing will be disabled.")
-    else:
-        print("Warning: config.path is not set. JAX checkpointing will be disabled.")
-
+  # JIT compile the training step function
   @jax.jit
   def train_step_fn(current_variables, current_opt_state, batch_observations, batch_legals_masks, batch_policy_targets, batch_value_targets):
-      """Performs a single training step, JIT-compiled."""
+    # Defines the loss function and computes gradients.
+    def loss_and_grad_inner_fn(params):
+      # Ensure apply_vars includes 'params' and potentially 'batch_stats'
+      apply_vars = {'params': params}
+      if 'batch_stats' in current_variables: # Check if model uses batch_stats
+        apply_vars['batch_stats'] = current_variables['batch_stats']
       
-      def loss_and_grad_inner_fn(params):
-          """Computes loss and gradients for the model."""
-          apply_vars = {'params': params}
-          has_batch_stats = 'batch_stats' in current_variables
-          
-          if has_batch_stats:
-              apply_vars['batch_stats'] = current_variables['batch_stats']
-          
-          # Forward pass
-          # mutable=['batch_stats'] allows Flax to update batch norm statistics
-          preds_and_state_or_preds = flax_model.apply(
-              apply_vars,
-              batch_observations,
-              training=True,  # Important for layers like BatchNorm, Dropout
-              mutable=['batch_stats'] if has_batch_stats else None
-          )
+      # Determine if model needs mutable state for batch_stats
+      mutable_list = ['batch_stats'] if 'batch_stats' in apply_vars else None
 
-          if has_batch_stats:
-              (policy_logits, value_preds), updated_model_state = preds_and_state_or_preds
-          else:
-              (policy_logits, value_preds) = preds_and_state_or_preds
-              updated_model_state = None
-
-          # Policy loss
-          # batch_policy_targets is a probability distribution from MCTS (pi).
-          # batch_legals_masks indicates valid actions for each sample in the batch.
-          # The MCTS policy target (pi) should already have zero probability for illegal actions.
-          # Thus, optax.softmax_cross_entropy (which is sum_i pi_i * log(softmax(logit_i))) can be used directly.
-          policy_loss = optax.softmax_cross_entropy(
-              logits=policy_logits,
-              labels=batch_policy_targets # Use the policy distribution directly
-          )
-          # The policy loss should only be computed for samples where there are legal moves.
-          # However, if a state has no legal moves (e.g. terminal state erroneously included or a game error),
-          # policy_target would be ill-defined. Assuming non-terminal states with valid policies.
-          # Masking can also be done by ensuring logits for illegal actions are -inf before softmax,
-          # or by ensuring target policy distribution is zero for illegal actions (which MCTS does).
-          # The current crude masking was: policy_loss = jnp.mean(policy_loss * batch_legals_masks.any(axis=1))
-          # A more standard approach is just to average the cross-entropy loss across the batch, 
-          # relying on the target distribution being zero for illegal actions.
-          policy_loss = jnp.mean(policy_loss) # Mean over the batch
-
-          # Value loss
-          # Predictions and targets are expected to be of shape [batch_size]
-          value_loss = optax.squared_error(
-              predictions=jnp.squeeze(value_preds, axis=-1),
-              targets=jnp.squeeze(batch_value_targets, axis=-1)
-          )
-          value_loss = jnp.mean(value_loss) # Mean over the batch
-          
-          total_loss = policy_loss + value_loss
-          
-          # Return updated_model_state (for batch norm) and losses as auxiliary data
-          return total_loss, (updated_model_state, policy_loss, value_loss)
-
-      # Compute gradients and loss value
-      (loss_val, (new_model_state, p_loss, v_loss)), grads = jax.value_and_grad(
-          loss_and_grad_inner_fn, has_aux=True)(current_variables['params'])
+      # Model application
+      # The model's __call__ should accept legals_mask and apply it internally to logits.
+      preds_and_state = flax_model.apply(
+          apply_vars, 
+          batch_observations, 
+          batch_legals_masks, # Pass legals_mask to model
+          training=True, 
+          mutable=mutable_list
+      )
       
-      # Apply optimizer updates
-      updates, new_opt_state = optimizer.apply_updates(grads, current_opt_state, current_variables['params'])
-      new_params = optax.apply_updates(current_variables['params'], updates)
-      
-      # Update variables (parameters and potentially batch_stats)
-      new_variables = current_variables.copy() # Start with a copy
-      new_variables['params'] = new_params
-      if new_model_state and 'batch_stats' in new_model_state: # new_model_state might be None
-          new_variables['batch_stats'] = new_model_state['batch_stats']
-            
-      return new_variables, new_opt_state, loss_val, p_loss, v_loss
-
-  def trajectory_generator():
-    """Merge all the actor queues into a single generator."""
-    # actor_queues is a list of queues passed to the learner function
-    # that can raise spawn.Empty (needs spawn import or alternative).
-    # For now, let's assume a simplified actor communication or placeholder.
-    # TODO: Replace with actual spawn.Empty or relevant queue exception handling
-    while True:
-      found = 0
-      for queue in actor_queues: # Use actor_queues instead of actors
-        try:
-          yield queue.get_nowait() 
-        except Exception: # Generic exception, replace with specific queue empty (e.g. queue.Empty)
-          pass
-        else:
-          found += 1
-      if found == 0:
-        time.sleep(0.01)  # 10ms
-
-  def collect_trajectories():
-    """Collects the trajectories from actors into the replay buffer and updates stats."""
-    num_trajectories_collected = 0
-    num_states_collected = 0
-    for trajectory_data in trajectory_generator(): # trajectory_data is an instance of Trajectory class
-      num_trajectories_collected += 1
-      current_game_length = len(trajectory_data.states)
-      num_states_collected += current_game_length
-
-      # Update game statistics
-      game_lengths.add(current_game_length)
-      game_lengths_hist.add(current_game_length)
-
-      p1_outcome = trajectory_data.returns[0]
-      if p1_outcome > 0:
-        outcomes.add(0)  # Player1 win
-      elif p1_outcome < 0:
-        outcomes.add(1)  # Player2 win
+      if mutable_list:
+        (policy_logits, value_preds), updated_model_state = preds_and_state
       else:
-        outcomes.add(2)  # Draw
+        (policy_logits, value_preds) = preds_and_state
+        updated_model_state = None
 
-      # Update value accuracy and prediction stats
-      if current_game_length > 0:
-          for i in range(stage_count):
-              # Ensure index is within bounds
-              s_idx = (current_game_length - 1) * i // (stage_count - 1) if stage_count > 1 else 0
-              s_idx = min(s_idx, current_game_length - 1) # Clamp to max index
-              
-              state_for_val_stat = trajectory_data.states[s_idx]
-              # MCTS value is in state_for_val_stat.value
-              # Actual outcome for the player whose turn it was at that state.
-              current_player_at_stat = state_for_val_stat.current_player
-              actual_outcome_for_player = trajectory_data.returns[current_player_at_stat]
-              
-              # Value is accurate if its sign matches the actual outcome's sign for that player
-              mcts_value = state_for_val_stat.value
-              is_accurate = (mcts_value >= 0) == (actual_outcome_for_player >= 0)
-              value_accuracies[i].add(1 if is_accurate else 0)
-              value_predictions[i].add(abs(mcts_value))
+      # Policy loss: softmax cross-entropy. Assumes policy_logits are raw logits.
+      # Assumes batch_policy_targets are probability distributions.
+      # The model should have handled masking illegal actions by setting their logits to -inf.
+      policy_loss = optax.softmax_cross_entropy(logits=policy_logits, labels=batch_policy_targets)
+      
+      # Masking for samples with no legal actions (e.g. terminal states mistakenly in batch)
+      # This outer mask zero_outs loss for samples where no action was possible at all.
+      # batch_legals_masks.any(axis=1) is True if there's at least one legal action for that sample.
+      # This is an additional safeguard. The primary masking of illegal actions should happen in the model.
+      policy_loss = policy_loss * batch_legals_masks.any(axis=1)
+      policy_loss = jnp.mean(policy_loss)
 
-      replay_buffer.extend(
-          model_jax.TrainInputJAX(
-              observation=s.observation,
-              legals_mask=s.legals_mask,
-              policy_target=s.policy,
-              value_target=np.array([p1_outcome if s.current_player == 0 else -p1_outcome], dtype=np.float32)
-          ) for s in trajectory_data.states)
+      # Value loss: squared error.
+      # Ensure shapes are compatible for squared_error. value_preds might be (N, 1), targets (N,).
+      value_loss = optax.squared_error(
+          predictions=jnp.squeeze(value_preds, axis=-1),
+          targets=jnp.squeeze(batch_value_targets, axis=-1)
+      )
+      value_loss = jnp.mean(value_loss)
+      
+      total_loss = policy_loss + value_loss
+      return total_loss, (updated_model_state, policy_loss, value_loss)
 
-      if learn_rate > 0 and num_states_collected >= learn_rate:
-        break
-      elif learn_rate == 0 and num_trajectories_collected > 0: 
-        break
-        
-    return num_trajectories_collected, num_states_collected
+    (loss_val, (new_model_state, p_loss, v_loss)), grads = jax.value_and_grad(
+        loss_and_grad_inner_fn, has_aux=True)(current_variables['params'])
+    
+    updates, new_opt_state = optimizer.apply_updates(grads, current_opt_state, current_variables['params'])
+    new_params = optax.apply_updates(current_variables['params'], updates)
+    
+    new_variables = current_variables.copy()
+    new_variables['params'] = new_params
+    if new_model_state and 'batch_stats' in new_model_state: # Check if batch_stats were updated
+        new_variables['batch_stats'] = new_model_state['batch_stats']
+          
+    return new_variables, new_opt_state, loss_val, p_loss, v_loss
+
+  # ---- Main Learner Loop ----
+  last_time = time.time()
+  total_trajectories = 0
   
-  last_time = time.time() - 60 
-  # Variables to store losses from train_step for data_log
+  # Store current losses for logging, initialize to NaN
   current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
 
-  for step in itertools.count(1):
-    # Reset per-step statistics
-    game_lengths.reset()
-    game_lengths_hist.reset()
-    outcomes.reset()
-    for i in range(stage_count):
-        value_accuracies[i].reset()
-        value_predictions[i].reset()
+
+  # This generator yields trajectories from actor_queues
+  def trajectory_generator():
+    while True:
+      found = 0
+      for queue_idx, queue in enumerate(actor_queues): # Use actor_queues
+        try:
+          yield queue.get_nowait() 
+          found += 1
+        except spawn.Empty: # Use spawn.Empty
+          pass
+        except Exception as e: # Catch other potential errors
+          if logger: logger.print(f"Error getting trajectory from actor_queue {queue_idx}: {e}")
+
+      if not found: # If all queues were empty, pause briefly
+        time.sleep(0.001) # Small sleep to avoid busy-waiting
+
+  # This function collects a batch of trajectories.
+  # It can be made more sophisticated (e.g. to ensure diversity or recency if needed).
+  def collect_trajectories(num_to_collect):
+      collected = []
+      for traj in trajectory_generator(): # trajectory_generator will loop until enough data is found or error
+          if traj: # Ensure trajectory is not None
+            collected.append(traj)
+            if len(collected) >= num_to_collect:
+                break
+          # Add a safeguard if generator somehow misbehaves, though it should block or yield.
+          # This part might need timeout logic if queues can remain empty indefinitely and block training.
+      return collected
+      
+  for step in itertools.count(1): # Start step from 1 for 1-based indexing if preferred for logging
+    if config.max_steps > 0 and step > config.max_steps: # Check before starting step
+        if logger: logger.print(f"Max steps {config.max_steps} reached. Exiting learner.")
+        break
+
+    # Get trajectories from actors
+    # How many trajectories to pull depends on how much data is needed.
+    # Example: Pull enough for a batch, or a fixed number.
+    # For simplicity, let's assume we pull enough trajectories that contain at least train_batch_size states.
+    # This part is crucial and might need refinement based on typical trajectory length.
     
-    current_time_for_collection_msg = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-    collection_msg = f"[{current_time_for_collection_msg}] Learner step {step}, collecting trajectories..."
-    if logger: logger.print(collection_msg)
-    else: print(collection_msg)
+    # Simplistic approach: pull a number of trajectories, then add all their states to buffer.
+    # If replay_buffer is smaller than batch_size, this will wait.
+    # A better way might be to ensure buffer has enough for a batch before sampling.
+    
+    # For now, continuously add to replay buffer from actor queues.
+    # The original TF code has a loop that tries to get one trajectory.
+    
+    num_states = 0
+    num_trajectories = 0
+    # Try to get at least one trajectory to process for stats, even if buffer is full
+    # This loop will block until a trajectory is available or an error occurs
+    
+    try:
+        # Get one trajectory to update stats and add to buffer
+        # This get() might block if queues are empty.
+        # Consider timeout or non-blocking with sleep if learner should do other things.
+        # For now, let's assume actor_queues[0] is a valid queue to try.
+        # A round-robin or random selection might be better if many actor_queues.
+        # The trajectory_generator handles iterating through queues.
         
-    num_trajectories, num_states = collect_trajectories()
-    total_trajectories += num_trajectories
+        # Using the collect_trajectories helper
+        # Collect a small number of trajectories to process per learner step
+        # This is a placeholder, a more robust strategy for data ingestion might be needed.
+        trajectories_to_process = collect_trajectories(num_to_collect=1) # Process one trajectory for stats per step for now
+
+        for traj in trajectories_to_process:
+            total_trajectories += 1
+            num_trajectories += 1
+            game_lengths.add(len(traj))
+            game_lengths_hist.add(len(traj))
+            num_states += len(traj)
+            outcomes.add(traj.value_target(0, budynku_player=0)) # Example: outcome for player 0
+            
+            # Add states to replay buffer
+            # Each element in traj is a TrajectoryState
+            # We need to convert these to TrainInputJAX instances
+            for transition in traj: # Assuming traj is iterable yielding TrajectoryState
+                # Create TrainInputJAX from TrajectoryState
+                # This requires knowing the policy target (from MCTS) and value target (from game outcome or bootstrap)
+                # TrajectoryState has: observation, current_player, legals_mask, action, policy, value
+                # TrainInputJAX needs: observation, legals_mask, policy_target, value_target
+                
+                # The 'policy' from TrajectoryState is likely the MCTS policy distribution (policy_target)
+                # The 'value' from TrajectoryState is likely the MCTS value (used for value_target if not terminal, else game outcome)
+                # This mapping needs to be precise.
+                
+                # For now, assume TrajectoryState directly provides what's needed or can be easily converted.
+                # Let's assume traj.policy is the policy target and traj.value is the value target
+                # This is a simplification; typically value_target is bootstrapped or from game end.
+                # The original alpha_zero.py's _play_game and Trajectory build this carefully.
+                
+                # This part of the code relies on how Trajectory and TrajectoryState are structured
+                # and how they provide policy_target and value_target.
+                # For now, assuming TrajectoryState can be converted:
+                train_input = model_jax.TrainInputJAX(
+                    observation=transition.observation,
+                    legals_mask=transition.legals_mask,
+                    policy_target=transition.policy, # Placeholder: MCTS policy from that state
+                    value_target=transition.value    # Placeholder: MCTS value or game outcome
+                )
+                replay_buffer.append(train_input)
+
+    except spawn.Empty: # Should be handled by trajectory_generator now
+        if logger: logger.opt_print("Learner: All actor queues empty.") # opt_print for less frequent messages
+        # Continue to next part of the loop (e.g. try training if buffer is full)
+    except Exception as e:
+        if logger: logger.print(f"Learner: Error processing actor queue: {e}")
+        # Potentially skip this learner step or handle error more gracefully
+    
     now = time.time()
-    seconds_since_last_learn = now - last_time # Can be 0 if loop is very fast
+    seconds = now - last_time
     last_time = now
     
-    # Avoid division by zero if seconds_since_last_learn is 0
-    effective_seconds = seconds_since_last_learn if seconds_since_last_learn > 0 else 1e-6 
-    effective_actors = config.actors if config.actors > 0 else 1
+    # Calculate effective actors contributing to this step's data
+    # This is a bit heuristic; if actors are much faster than learner, effective_actors might be high.
+    # If only one trajectory was processed, effective_actors for this stat could be 1.
+    effective_actors = config.actors # Assume all actors are contributing over time.
 
+    # Log stats even if no training step is taken, to monitor data flow
     log_message_timing = (
-        f"Collected {num_states:5} states from {num_trajectories:3} games, "
-        f"{num_states / effective_seconds:.1f} states/s. "
-        f"{num_states / (effective_actors * effective_seconds):.1f} states/(s*actor), game_length: "
+        f"Step: {step}, Game Speed: {num_trajectories / seconds:.1f} games/s, "
+        f"{num_states / seconds:.1f} states/s. "
+        f"{num_states / (effective_actors * seconds):.1f} states/(s*actor), game_length: "
         f"{num_states / num_trajectories if num_trajectories > 0 else 0:.1f}"
     )
     log_message_buffer = f"Buffer size: {len(replay_buffer)}. Total states seen by buffer: {replay_buffer.total_seen}"
@@ -1072,10 +969,6 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, actor_queues: list, evalua
       logger.print(step_log_msg_prefix)
       logger.print(log_message_timing)
       logger.print(log_message_buffer)
-    else:
-      print(step_log_msg_prefix)
-      print(log_message_timing)
-      print(log_message_buffer)
 
     # Actual JAX training step
     save_path = None # Initialize save_path, will be updated if checkpoint is saved
@@ -1103,8 +996,8 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, actor_queues: list, evalua
         current_total_loss, current_policy_loss, current_value_loss = total_loss_val, policy_loss_val, value_loss_val # Store for data_log
         
         loss_log_msg = f"Step: {step}, Total Loss: {current_total_loss:.4f}, Policy Loss: {current_policy_loss:.4f}, Value Loss: {current_value_loss:.4f}"
-        if logger: logger.print(loss_log_msg)
-        else: print(loss_log_msg)
+        if logger: 
+          logger.print(loss_log_msg)
         
         # JAX Checkpointing
         if ckpt_dir: # Only save if ckpt_dir is configured
@@ -1113,30 +1006,23 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, actor_queues: list, evalua
             
             # Save step-specific checkpoint if frequency matches
             if config.checkpoint_freq > 0 and step % config.checkpoint_freq == 0:
-                # keep defines how many step-checkpoints to keep. Let's keep the latest one.
-                # The plan: keep=config.checkpoint_freq if config.checkpoint_freq > 0 else float('inf')
-                # This is unusual for `keep`. `keep=1` means keep the latest for this prefix.
-                # Let's use a small number, e.g., 3, for step checkpoints, or 1 if only one is desired.
-                # For now, interpreting the plan as: if freq > 0, it implies we are saving these periodically,
-                # and `keep` might refer to how many of these periodic saves to keep. config.checkpoint_freq as keep value seems odd.
-                # Let's stick to a simpler keep=1 for step checkpoints.
-                # MODIFIED according to TODO: Phase 8, Item 5
-                keep_value = config.checkpoint_freq # Simplified from the TODO as we are inside 'if config.checkpoint_freq > 0'
+                # `keep=config.checkpoint_freq` aims to keep a rolling window of periodic checkpoints.
+                keep_value = config.checkpoint_freq 
                 try:
                     checkpoints.save_checkpoint(
                         ckpt_dir=ckpt_dir, 
                         target=save_target, 
                         step=step, 
                         prefix=step_prefix, 
-                        overwrite=True, # Overwrite if a checkpoint for this step already exists
+                        overwrite=True, 
                         keep=keep_value
                     )
-                    if logger: logger.print(f"Saved step checkpoint: {step_prefix}{step} at {ckpt_dir} (kept {keep_value})")
-                    else: print(f"Saved step checkpoint: {step_prefix}{step} at {ckpt_dir} (kept {keep_value})")
+                    if logger: 
+                      logger.opt_print(f"Saved step checkpoint: {step_prefix}{step} at {ckpt_dir} (kept {keep_value})")
                 except Exception as e:
                     err_msg = f"Error saving step checkpoint {step}: {e}"
-                    if logger: logger.print(err_msg)
-                    else: print(err_msg)
+                    if logger: 
+                      logger.print(err_msg)
 
             # Always save/update the "latest" checkpoint
             try:
@@ -1151,12 +1037,12 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, actor_queues: list, evalua
                     overwrite=True, # Always overwrite the latest
                     keep=1 # Keep only this one "latest" checkpoint
                 )
-                if logger: logger.print(f"Saved latest checkpoint to: {save_path}")
-                else: print(f"Saved latest checkpoint to: {save_path}")
+                if logger: 
+                  logger.opt_print(f"Saved latest checkpoint to: {save_path}")
             except Exception as e:
                 err_msg = f"Error saving latest checkpoint: {e}"
-                if logger: logger.print(err_msg)
-                else: print(err_msg)
+                if logger: 
+                  logger.print(err_msg)
                 save_path = None # Ensure save_path is None if saving failed
         else:
             # Checkpointing is disabled if ckpt_dir is None
@@ -1165,19 +1051,19 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, actor_queues: list, evalua
       except AttributeError as e:
         # This might happen if TrainInputJAX.stack is not defined in model_jax.py
         error_msg = f"Error during training data preparation (possibly missing TrainInputJAX.stack): {e}"
-        if logger: logger.print(error_msg)
-        else: print(error_msg)
+        if logger: 
+          logger.print(error_msg)
         current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan') # Reset on error
 
 
     else:
       # No training step taken (e.g. buffer not full enough)
       current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
-      if logger: logger.print(f"Step: {step}, Replay buffer not full enough for training. Size: {len(replay_buffer)}/{config.train_batch_size}")
-      else: print(f"Step: {step}, Replay buffer not full enough for training. Size: {len(replay_buffer)}/{config.train_batch_size}")
+      if logger: 
+        logger.opt_print(f"Step: {step}, Replay buffer not full enough for training. Size: {len(replay_buffer)}/{config.train_batch_size}")
 
     # Collect evaluation results
-    for i, evac_queue in enumerate(evaluator_queues):
+    for i, evac_queue in enumerate(evaluator_queues): # Now uses the passed evaluator_queues
         while True:
             try:
                 # Assuming evaluator puts (difficulty_level_idx, outcome_for_az_player)
@@ -1194,7 +1080,8 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, actor_queues: list, evalua
             except spawn.Empty: # Make sure spawn.Empty is the correct exception from the queue
                 break
             except Exception as e: # Catch other potential errors from queue processing
-                if logger: logger.print(f"Error processing evaluator queue {i}: {e}")
+                if logger: 
+                  logger.print(f"Error processing evaluator queue {i}: {e}")
                 break # Avoid busy-looping on a consistently problematic queue
 
     # Log to data_logger
@@ -1203,10 +1090,10 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, actor_queues: list, evalua
             "step": step,
             "total_states_seen_by_buffer": replay_buffer.total_seen,
             "replay_buffer_size": len(replay_buffer),
-            "states_per_s": num_states / effective_seconds if effective_seconds > 0 else 0,
-            "states_per_s_actor": num_states / (effective_actors * effective_seconds) if effective_seconds > 0 else 0,
+            "states_per_s": num_states / seconds if seconds > 0 else 0,
+            "states_per_s_actor": num_states / (effective_actors * seconds) if seconds > 0 else 0,
             "total_trajectories": total_trajectories,
-            "trajectories_per_s": num_trajectories / effective_seconds if effective_seconds > 0 else 0,
+            "trajectories_per_s": num_trajectories / seconds if seconds > 0 else 0,
             "game_length": game_lengths.as_dict,
             "game_length_hist": game_lengths_hist.data, # list of counts
             "outcomes": outcomes.data, # dict with 'counts' and 'names'
@@ -1231,23 +1118,19 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, actor_queues: list, evalua
 
     if config.max_steps > 0 and step >= config.max_steps:
       max_steps_msg = f"Max steps {config.max_steps} reached. Exiting learner."
-      if logger: logger.print(max_steps_msg)
+      if logger: 
+        logger.print(max_steps_msg)
       break
 
     if save_path and broadcast_fn: 
         broadcast_msg = f"Broadcasting checkpoint: {save_path}"
-        # Actual broadcast might involve sending 'variables' directly or a path from where actors can load.
-        # For JAX, sending a path to a checkpoint saved by flax.training.checkpoints is typical.
-        if logger: logger.print(broadcast_msg)
-        else: print(broadcast_msg)
+        if logger: 
+          logger.opt_print(broadcast_msg) # Changed from logger.print for periodic status
         broadcast_fn(save_path) 
   
   final_msg = f"[{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}] JAX Learner finished."
-  if logger: logger.print(final_msg)
-  else: print(final_msg)
-
-# TODO: Implement actor, evaluator, and alpha_zero_jax main function (Phases 4 & 5)
-# TODO: Implement train_step_fn (Phase 3, Step 2) and JAX checkpointing (Phase 3, Step 3) 
+  if logger: 
+    logger.print(final_msg)
 
 # ---- Start of AlphaZero JAX main execution example ----
 FLAGS = flags.FLAGS
@@ -1273,10 +1156,11 @@ flags.DEFINE_float("policy_epsilon", 0.25, "Epsilon for Dirichlet noise.")
 flags.DEFINE_float("temperature", 1.0, "Initial temperature for policy sampling.")
 flags.DEFINE_integer("temperature_drop", 10, "Drop temperature to 0 after this many moves.")
 flags.DEFINE_string("nn_model", "mlp", "Neural network model type (mlp, resnet, resnet18, etc.).")
-flags.DEFINE_integer("nn_width", 128, "Width of the neural network.")
-flags.DEFINE_integer("nn_depth", 2, "Depth of the neural network (for MLP/Conv2D) or num_blocks for generic resnet config.")
+flags.DEFINE_integer("nn_width", 256, "Width of the neural network.")
+flags.DEFINE_integer("nn_depth", 20, "Depth of the neural network (e.g., number of hidden layers in MLP/Conv2D). For a generic 'resnet' model, this often corresponds to the number of residual blocks (e.g., 20 for an AlphaGo Zero-like model).")
 flags.DEFINE_boolean("quiet", False, "Disable all logging.")
 flags.DEFINE_integer("master_seed", 42, "Master RNG seed for JAX and other random operations.")
+flags.DEFINE_integer("evaluator_cache_size", 2**16, "Size of the LRU cache for the evaluator.")
 
 # ResNet specific config flags (used if nn_model is 'resnet')
 flags.DEFINE_list("resnet_depth_config_list", None, "List of ints for resnet stage sizes, e.g., '2,2,2,2' for ResNet18 like structure. Used if nn_model is 'resnet'.")
@@ -1398,7 +1282,8 @@ def main(argv):
         resnet_stem_callable_name=current_resnet_stem_callable_name,
         resnet_stem_kwargs=current_resnet_stem_kwargs,
         resnet_block_callable_name=current_resnet_block_callable_name,
-        resnet_block_kwargs=current_resnet_block_kwargs
+        resnet_block_kwargs=current_resnet_block_kwargs,
+        evaluator_cache_size=FLAGS.evaluator_cache_size
     )
 
     # Save the config to a JSON file in the path for reproducibility

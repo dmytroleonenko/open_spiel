@@ -4,17 +4,19 @@ import jax.numpy as jnp # For jax.nn.softmax, though jax.nn.softmax is also fine
 import flax.linen as nn # For type hinting model
 from open_spiel.python.algorithms import mcts
 import pyspiel
+from open_spiel.python.utils import lru_cache # Added for LRUCache
 
 class AlphaZeroEvaluatorJAX(mcts.Evaluator):
   """A JAX-based AlphaZero MCTS Evaluator."""
 
-  def __init__(self, game: pyspiel.Game, model: nn.Module, variables: dict):
+  def __init__(self, game: pyspiel.Game, model: nn.Module, variables: dict, cache_size: int = 2**16):
     """Initializes the JAX AlphaZero evaluator.
 
     Args:
       game: The game to evaluate.
       model: The JAX/Flax model to use for inference.
       variables: The model parameters and other variables (like batch stats).
+      cache_size: The size of the LRU cache for inferences.
     """
     if game is None:
       raise ValueError("Game cannot be None.")
@@ -23,12 +25,31 @@ class AlphaZeroEvaluatorJAX(mcts.Evaluator):
     if variables is None:
       raise ValueError("Variables cannot be None.")
 
+    # Game-type validations
+    if game.num_players() != 2:
+      raise ValueError(
+          f"Game must be a 2-player game, got {game.num_players()}")
+    game_type = game.get_type()
+    if game_type.reward_model != pyspiel.GameType.RewardModel.TERMINAL:
+      raise ValueError(
+          f"Game must have terminal rewards, got {game_type.reward_model}")
+    if game_type.dynamics != pyspiel.GameType.Dynamics.SEQUENTIAL:
+      raise ValueError(
+          f"Game must have sequential dynamics, got {game_type.dynamics}")
+
     super().__init__()
     self._game = game
     self._model = model
     self.variables = variables # Allow variables to be updated from outside
-    # No explicit cache implemented in this JAX version yet.
-    # If a cache is added later (e.g., LRU cache), it should be initialized here.
+    self._cache = lru_cache.LRUCache(cache_size)
+
+    # Define and JIT-compile the model application function
+    # We capture self._model.apply by passing it as an argument to the static function
+    @jax.jit
+    def _jit_apply_model(model_apply_fn, current_variables, current_obs_tensor, current_legals_mask):
+        return model_apply_fn(current_variables, current_obs_tensor, current_legals_mask, training=False)
+    
+    self._jit_apply_model_fn = lambda v, o, l: _jit_apply_model(self._model.apply, v, o, l)
 
   def update_variables(self, new_variables: dict):
     """Updates the model variables for the evaluator."""
@@ -37,66 +58,75 @@ class AlphaZeroEvaluatorJAX(mcts.Evaluator):
     self.clear_cache() 
 
   def clear_cache(self):
-    """Clears any internal cache. Placeholder for now."""
-    # Currently, no explicit Python-level caching is implemented in this evaluator.
-    # JAX's JIT compilation might have its own caching, but that's not controlled here.
-    # If an LRU cache or similar is added, this method would clear it.
-    pass # No cache to clear yet
+    """Clears any internal cache."""
+    if hasattr(self, '_cache') and self._cache:
+        self._cache.clear()
 
   def cache_info(self) -> str:
-    """Returns information about the cache. Placeholder for now."""
-    # Returns a string describing the cache state (e.g., size, hits, misses).
-    return "Cache: Not implemented in JAX evaluator yet."
+    """Returns information about the cache."""
+    if hasattr(self, '_cache') and self._cache:
+        return self._cache.info()
+    return "Cache: Not initialized."
 
-  def _inference(self, state: pyspiel.State) -> tuple[np.ndarray, np.ndarray]:
-    """Performs a single model inference on the state."""
+  def _perform_actual_inference(self, obs_tensor_list: list[float], legal_actions_mask_list: list[int]) -> tuple[np.ndarray, np.ndarray]:
+    """Performs a single model inference on the state, without caching."""
     # Ensure observation_tensor and legal_actions_mask are numpy arrays
-    obs_tensor_list = state.observation_tensor()
-    obs_tensor = np.array(obs_tensor_list, dtype=np.float32)
-    obs_tensor = np.expand_dims(obs_tensor, 0) # Add batch dimension
+    obs_tensor_np = np.array(obs_tensor_list, dtype=np.float32)
+    obs_tensor_np = np.expand_dims(obs_tensor_np, 0) # Add batch dimension
+    obs_tensor = jnp.asarray(obs_tensor_np) # Explicit conversion to JAX array
 
-    legal_actions_mask_list = state.legal_actions_mask()
-    legal_actions_mask = np.array(legal_actions_mask_list, dtype=bool)
-    legal_actions_mask = np.expand_dims(legal_actions_mask, 0) # Add batch dimension
+    legals_mask_np = np.array(legal_actions_mask_list, dtype=bool)
+    legals_mask_np = np.expand_dims(legals_mask_np, 0) # Add batch dimension
+    legals_mask_jax = jnp.asarray(legals_mask_np) # Explicit conversion to JAX array
 
-    # apply expects JAX arrays if inputs are to be traced for JIT, etc.
-    # However, for pure inference, numpy arrays are often fine and auto-converted.
-    # For consistency and to avoid potential issues, explicit conversion is safer.
-    # obs_tensor_jax = jnp.asarray(obs_tensor)
-    # Note: self.model.apply can take JAX or NumPy arrays as input for `obs_tensor`.
-    # Flax modules handle this conversion internally. Sending NumPy arrays is fine here.
-
-    policy_logits_batch, value_output_batch = self._model.apply(
-        self.variables, obs_tensor, training=False)
+    # The model internally masks logits using legals_mask_jax
+    policy_logits_batch, value_output_batch = self._jit_apply_model_fn(
+        self.variables, obs_tensor, legals_mask_jax)
 
     # Convert JAX arrays to NumPy arrays for further processing with NumPy/OpenSpiel
     value_scalar = np.array(value_output_batch[0, 0])
-    policy_logits = np.array(policy_logits_batch[0])
+    policy_logits_np = np.array(policy_logits_batch[0]) # Logits are already masked
 
-    # Softmax and masking
-    policy_probs = jax.nn.softmax(policy_logits) # policy_logits is now a np array, jax.nn.softmax handles it
-    policy_probs = np.array(policy_probs) # Ensure it's a numpy array after softmax
+    # Apply softmax to the (already masked) logits
+    policy_probs = jax.nn.softmax(policy_logits_np)
+    policy_probs_np = np.array(policy_probs) # Ensure it's a numpy array
 
-    # Ensure legal_actions_mask[0] is boolean for multiplication, though it should be
-    masked_policy = policy_probs * legal_actions_mask[0].astype(np.float32)
-    
-    # Normalize the masked policy
-    policy_sum = np.sum(masked_policy)
-    if policy_sum > 0:
-      masked_policy /= policy_sum
-    else:
-      # This case should ideally not happen if there's at least one legal action
-      # and the policy gives non-zero probability to it after softmax.
-      # If it does, it might indicate an issue (e.g. all legal actions have zero logits -> uniform small probs,
-      # or numerical instability).
-      # Fallback: use a uniform distribution over legal actions.
-      # print("Warning: sum of masked policy is zero. Falling back to uniform.", flush=True)
-      num_legal_actions = np.sum(legal_actions_mask[0])
-      if num_legal_actions > 0:
-        masked_policy = legal_actions_mask[0].astype(np.float32) / num_legal_actions
-      # If num_legal_actions is 0 (shouldn't happen in a non-terminal state), masked_policy remains all zeros.
+    # The masked_policy is now directly the output of softmax on masked logits.
+    # Normalization should be correct due to -inf for illegal actions.
+    # However, ensure it sums to 1, and handle cases where all logits might be -inf
+    # (e.g., if a state has no legal actions, though this should be rare if game logic is sound).
+    policy_sum = np.sum(policy_probs_np)
+    if not np.isclose(policy_sum, 1.0) and np.any(legal_actions_mask_list):
+        # This case implies something went wrong, either all logits became -inf or other numerical issue.
+        # Fallback to uniform distribution over legal actions if sum is not close to 1 and there are legal actions.
+        # print(f"Warning: Policy sum is {policy_sum}, not 1.0. Legal mask: {legal_actions_mask_list}. Logits: {policy_logits_np}")
+        num_legal_actions = np.sum(legal_actions_mask_list)
+        if num_legal_actions > 0:
+            policy_probs_np = np.array(legal_actions_mask_list, dtype=np.float32) / num_legal_actions
+        else:
+            # If no legal actions, policy should ideally be empty or handled upstream.
+            # For safety, create a zero policy of the correct shape.
+            policy_probs_np = np.zeros_like(legal_actions_mask_list, dtype=np.float32)
+    elif not np.any(legal_actions_mask_list):
+        # No legal actions, make policy zeros. This state should ideally not be evaluated for policy.
+        policy_probs_np = np.zeros_like(legal_actions_mask_list, dtype=np.float32)
 
-    return value_scalar, masked_policy
+    return value_scalar, policy_probs_np
+
+  def _inference(self, state: pyspiel.State) -> tuple[np.ndarray, np.ndarray]:
+    """Performs a single model inference on the state, using the cache."""
+    # Get observation and legal_actions_mask for cache key generation
+    obs_tensor_list = state.observation_tensor()
+    legal_actions_mask_list = state.legal_actions_mask()
+
+    # Convert to NumPy arrays for .tobytes()
+    obs_tensor_np_for_key = np.array(obs_tensor_list, dtype=np.float32)
+    legal_actions_mask_np_for_key = np.array(legal_actions_mask_list, dtype=bool)
+
+    cache_key = obs_tensor_np_for_key.tobytes() + legal_actions_mask_np_for_key.tobytes()
+    value, policy = self._cache.make(
+        cache_key, lambda: self._perform_actual_inference(obs_tensor_list, legal_actions_mask_list))
+    return value, policy
 
   def evaluate(self, state: pyspiel.State) -> np.ndarray:
     """Returns a value for the given state.

@@ -41,10 +41,14 @@ class MLP_JAX(nn.Module):
   output_size: int
 
   @nn.compact
-  def __call__(self, x: jax.Array, training: bool):
+  def __call__(self, x: jax.Array, training: bool, legals_mask: Optional[jax.Array] = None):
+    # Ensure input is flattened for MLP
+    if x.ndim > 2: # (batch_size, features) is expected, so > 2 means needs flattening
+        x = x.reshape((x.shape[0], -1))
     # Torso
     for _ in range(self.nn_depth):
       x = nn.Dense(features=self.nn_width)(x)
+      x = nn.BatchNorm(use_running_average=not training, name=f"torso_bn_{_}")(x)
       x = nn.relu(x)
 
     # Policy head
@@ -56,6 +60,9 @@ class MLP_JAX(nn.Module):
     value_output = nn.Dense(features=1, name="value_output")(value_hidden)
     value_output = jnp.tanh(value_output) # Use jnp.tanh for JAX 
 
+    if legals_mask is not None:
+      policy_logits = jnp.where(legals_mask, policy_logits, -jnp.inf)
+
     return (policy_logits, value_output)
 
 class ResNet_JAX(nn.Module):
@@ -65,9 +72,37 @@ class ResNet_JAX(nn.Module):
   nn_depth_config: list[int]  # Stage sizes, e.g., [2, 2, 2, 2] for ResNet18 layer count per stage.
   output_size: int # Number of actions for policy head
   block_kwargs: Optional[Mapping] = None # For expansion, groups, base_width
+  norm_cls: Callable[..., nn.Module] = functools.partial(nn.BatchNorm, use_running_average=None, momentum=0.9)
+
+  """A JAX-based ResNet model for AlphaZero.
+
+  Attributes:
+    stem_constructor: A callable that returns a Flax nn.Module for the ResNet stem.
+    block_constructor: A callable that returns a Flax nn.Module for a ResNet block.
+    nn_width: Base filter count for the first stage and for the value head's hidden layer.
+    nn_depth_config: A list defining the number of blocks in each ResNet stage.
+    output_size: The number of output units for the policy head.
+    block_kwargs: Optional dictionary of arguments for the block_constructor (e.g., expansion factor).
+    norm_cls: The normalization layer to use (e.g., BatchNorm).
+
+  Note on Torso Output and Head Structure:
+    This ResNet_JAX implementation uses global average pooling (jnp.mean) on the output
+    of the final ResNet stage before passing it to the policy and value heads.
+    This is a common pattern for ResNets in classification tasks.
+
+    The original OpenSpiel TensorFlow AlphaZero reference `Model` (when using ResNet)
+    employs a different structure after the main convolutional blocks: it uses a
+    1x1 Convolution -> BatchNorm -> ReLU -> Flatten sequence before the final dense
+    layers for both policy and value heads, instead of global average pooling.
+
+    This JAX version deviates by using global average pooling, which is a standard
+    ResNet design choice. If strict alignment with the TensorFlow reference's specific
+    head structure is required, the `__call__` method of this ResNet_JAX module
+    would need to be modified to replicate that 1x1 Conv + BN + ReLU + Flatten structure.
+  """
 
   @nn.compact
-  def __call__(self, x: jax.Array, training: bool):
+  def __call__(self, x: jax.Array, training: bool, legals_mask: Optional[jax.Array] = None):
     # The `training` argument to this __call__ method is implicitly used by BatchNorm layers
     # when the model is invoked via `model.apply(..., training=training_status)`.
 
@@ -94,50 +129,66 @@ class ResNet_JAX(nn.Module):
         block = self.block_constructor(**current_block_params)
         x = block(x) 
 
-    x = jnp.mean(x, axis=(1, 2))
-    policy_logits = nn.Dense(features=self.output_size, name="policy_head")(x)
-    value_hidden = nn.Dense(features=self.nn_width, name="value_hidden")(x)
-    value_hidden = nn.relu(value_hidden)
-    value_output = nn.Dense(features=1, name="value_output")(value_hidden)
+    # TF-style Policy Head for ResNet
+    ph = nn.Conv(features=2, kernel_size=(1,1), padding='SAME', name="policy_head_conv1x1")(x)
+    ph = nn.BatchNorm(use_running_average=not training, name="policy_head_bn")(ph)
+    ph = nn.relu(ph)
+    ph = nn.Flatten()(ph)
+    policy_logits = nn.Dense(features=self.output_size, name="policy_head_dense")(ph)
+
+    # TF-style Value Head for ResNet
+    vh = nn.Conv(features=1, kernel_size=(1,1), padding='SAME', name="value_head_conv1x1")(x)
+    vh = nn.BatchNorm(use_running_average=not training, name="value_head_bn")(vh)
+    vh = nn.relu(vh)
+    vh = nn.Flatten()(vh)
+    vh = nn.Dense(features=self.nn_width, name="value_head_dense1")(vh) # Using self.nn_width as per prior TF models (e.g. 256)
+    vh = nn.relu(vh)
+    value_output = nn.Dense(features=1, name="value_head_dense2")(vh)
     value_output = jnp.tanh(value_output)
+    
+    if legals_mask is not None:
+      policy_logits = jnp.where(legals_mask, policy_logits, -jnp.inf)
+
     return (policy_logits, value_output)
 
 class Conv2D_JAX(nn.Module):
-  nn_width: int  # Number of filters for convolutional layers
+  nn_width: int  # Number of filters for convolutional layers, also for value head's hidden dense layer
   nn_depth: int  # Number of convolutional layers in the torso
   output_size: int # Number of actions for policy head
 
   @nn.compact
-  def __call__(self, x: jax.Array, training: bool):
+  def __call__(self, x: jax.Array, training: bool, legals_mask: Optional[jax.Array] = None):
     # Torso
     # The `training` flag will be used by ConvBlock for its BatchNorm layers.
     current_filters = self.nn_width
+    # Save the output of the torso before heads are applied
+    torso_output = x 
     for i in range(self.nn_depth):
-      # Optionally, increase filters or use different kernel sizes/strides for deeper layers.
-      # For simplicity, using same kernel size, padding, and filter count (self.nn_width) for all conv layers here.
-      # Stride is 1 to maintain dimensions before flatten, unless downsampling is desired.
-      # If input features change (e.g. image channels), first layer might be different.
-      # We assume x has appropriate shape (e.g. HxWxC)
-      x = ConvBlock(features=current_filters, 
-                    kernel_size=(3, 3), 
-                    strides=(1, 1), 
-                    padding='SAME', 
-                    name=f'conv_block_{i}')(x, training=training)
-      # Example: Double filters at some point if desired
-      # if i == self.nn_depth // 2: current_filters *= 2
+      torso_output = ConvBlock(features=current_filters, 
+                               kernel_size=(3, 3), 
+                               strides=(1, 1), 
+                               padding='SAME', 
+                               name=f'conv_block_{i}')(torso_output, training=training)
       
-    # Flatten the output of conv layers before passing to Dense layers for heads
-    x = nn.Flatten()(x)
+    # TF-style Policy Head for Conv2D
+    ph = nn.Conv(features=2, kernel_size=(1,1), padding='SAME', name="policy_head_conv1x1")(torso_output)
+    ph = nn.BatchNorm(use_running_average=not training, name="policy_head_bn")(ph)
+    ph = nn.relu(ph)
+    ph = nn.Flatten()(ph)
+    policy_logits = nn.Dense(features=self.output_size, name="policy_head_dense")(ph)
 
-    # Policy head
-    policy_logits = nn.Dense(features=self.output_size, name="policy_head")(x)
-
-    # Value head
-    # Using self.nn_width for hidden layer size, similar to MLP and ResNet value head (as per plan)
-    value_hidden = nn.Dense(features=self.nn_width, name="value_hidden")(x)
-    value_hidden = nn.relu(value_hidden)
-    value_output = nn.Dense(features=1, name="value_output")(value_hidden)
+    # TF-style Value Head for Conv2D
+    vh = nn.Conv(features=1, kernel_size=(1,1), padding='SAME', name="value_head_conv1x1")(torso_output)
+    vh = nn.BatchNorm(use_running_average=not training, name="value_head_bn")(vh)
+    vh = nn.relu(vh)
+    vh = nn.Flatten()(vh)
+    vh = nn.Dense(features=self.nn_width, name="value_head_dense1")(vh) # Using self.nn_width
+    vh = nn.relu(vh)
+    value_output = nn.Dense(features=1, name="value_head_dense2")(vh)
     value_output = jnp.tanh(value_output)
+
+    if legals_mask is not None:
+      policy_logits = jnp.where(legals_mask, policy_logits, -jnp.inf)
 
     return (policy_logits, value_output)
 
@@ -158,20 +209,11 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
     A tuple of (model, variables).
   """
   observation_shape = game.observation_tensor_shape()
-  # Ensure observation_shape is a tuple of integers
-  # For games like Tic-Tac-Toe, observation_tensor_shape() might return [9]
-  # but Flax expects a shape like (9,)
+  # Ensure observation_shape is suitable for dummy_input later.
+  # pyspiel might return a list (e.g., [9] or [3,3,1]).
+  # MLP_JAX handles flattening internally if needed. ConvNets expect image-like shapes.
   if isinstance(observation_shape, list):
-      if len(observation_shape) == 1: # e.g. [9] for tic-tac-toe
-          # For a flat observation vector, Flax Dense layers expect (batch_size, features)
-          # The dummy input later will be (1, *observation_shape), e.g., (1, 9)
-          # So, the feature size is just observation_shape[0]
-          # No specific shape adjustment needed here for MLP if it flattens anyway or expects flat input.
-          pass # Keep as is, dummy_input will handle it.
-      elif len(observation_shape) > 1: # e.g. [3, 3, 1] for an image-like observation
-          # This is fine for ConvNets. For MLPs, it would typically be flattened.
-          # The MLP model defined above takes x and passes it to Dense, which flattens if needed.
-          pass 
+      pass # Current logic relies on dummy_input creation and model internal handling.
 
   output_size = game.num_distinct_actions()
 
@@ -195,35 +237,69 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
                     nn_depth=config.nn_depth,
                     output_size=output_size)
   elif config.nn_model == "resnet":
-    # Use new ConfigJAX fields for generic ResNet
-    depth_config = getattr(config, 'resnet_depth_config', None)
-    stem_name = getattr(config, 'resnet_stem_callable_name', None)
-    stem_kwargs = getattr(config, 'resnet_stem_kwargs', None) or {}
-    block_name = getattr(config, 'resnet_block_callable_name', None)
+    # Try to get specific resnet config fields first
+    user_depth_config = getattr(config, 'resnet_depth_config', None)
+    user_stem_name = getattr(config, 'resnet_stem_callable_name', None)
+    user_block_name = getattr(config, 'resnet_block_callable_name', None)
+    
+    # Common kwargs, can be used by both user-specified and fallback
+    # These should be pulled from config regardless of main path
+    stem_kwargs_from_config = getattr(config, 'resnet_stem_kwargs', None) or {}
     block_kwargs_from_config = getattr(config, 'resnet_block_kwargs', None) or {}
 
-    if not depth_config or not stem_name or not block_name or not hasattr(config, 'nn_width'):
-        raise ValueError(
-            "For nn_model='resnet', config must provide: nn_width, resnet_depth_config, "
-            "resnet_stem_callable_name, resnet_block_callable_name.")
+    # nn_width is always required for any ResNet variant
+    if not hasattr(config, 'nn_width'):
+        raise ValueError("ResNet model (nn_model='resnet' or specific) requires 'nn_width' in config.")
+    nn_width_to_use = config.nn_width
 
-    if stem_name not in known_stem_constructors:
-        raise ValueError(f"Unknown resnet_stem_callable_name: {stem_name}. Known: {list(known_stem_constructors.keys())}")
-    if block_name not in known_block_constructors:
-        raise ValueError(f"Unknown resnet_block_callable_name: {block_name}. Known: {list(known_block_constructors.keys())}")
+    if user_depth_config and user_stem_name and user_block_name:
+        # Path 1: User has provided all specific ResNet configurations
+        depth_config_final = user_depth_config
+        stem_name_final = user_stem_name
+        block_name_final = user_block_name
+        # stem_kwargs_from_config and block_kwargs_from_config are already fetched and will be used.
+    else:
+        # Path 2: Fallback to using nn_width and nn_depth for a TF-like ResNet
+        if not hasattr(config, 'nn_depth'): # nn_width already checked
+            raise ValueError(
+                "For nn_model='resnet' fallback (if resnet_depth_config, resnet_stem_callable_name, "
+                "and resnet_block_callable_name are not all set), config must provide nn_depth. "
+                "nn_width is always required."
+            )
+        
+        num_blocks = config.nn_depth 
+        
+        depth_config_final = [num_blocks] 
+        stem_name_final = "ResNetStem"    
+        block_name_final = "ResNetBlock"  
+        
+        # stem_kwargs_from_config and block_kwargs_from_config (already fetched) will apply to these defaults.
+        # Optional: Log this fallback.
+        # print(f"AlphaZero JAX: Using nn_model='resnet' fallback with nn_width={nn_width_to_use}, nn_depth={num_blocks}. "
+        #       f"Effective config: depth_config={depth_config_final}, stem={stem_name_final}, block={block_name_final}. "
+        #       f"Applying stem_kwargs={stem_kwargs_from_config}, block_kwargs={block_kwargs_from_config}")
 
-    stem_constructor_base = known_stem_constructors[stem_name]
-    block_constructor_base = known_block_constructors[block_name]
+    # Now, use depth_config_final, stem_name_final, block_name_final, nn_width_to_use,
+    # stem_kwargs_from_config, block_kwargs_from_config for instantiation.
 
-    # Apply kwargs using functools.partial
-    stem_constructor = functools.partial(stem_constructor_base, **stem_kwargs) if stem_kwargs else stem_constructor_base
+    if stem_name_final not in known_stem_constructors:
+        raise ValueError(f"Unknown ResNet stem name: {stem_name_final}. Known: {list(known_stem_constructors.keys())}")
+    if block_name_final not in known_block_constructors:
+        raise ValueError(f"Unknown ResNet block name: {block_name_final}. Known: {list(known_block_constructors.keys())}")
+
+    stem_constructor_base = known_stem_constructors[stem_name_final]
+    block_constructor_base = known_block_constructors[block_name_final]
+
+    # Apply stem_kwargs using functools.partial
+    stem_constructor_to_use = functools.partial(stem_constructor_base, **stem_kwargs_from_config) if stem_kwargs_from_config else stem_constructor_base
+    
     # For block_constructor, ResNet_JAX expects it to be a callable that it will then call with n_hidden, strides, etc.
     # So, the block_kwargs_from_config should be passed to ResNet_JAX's block_kwargs parameter.
 
-    model = ResNet_JAX(stem_constructor=stem_constructor,
-                         block_constructor=block_constructor_base, # Pass the base, ResNet_JAX will apply its own n_hidden, strides
-                         nn_width=config.nn_width,
-                         nn_depth_config=depth_config,
+    model = ResNet_JAX(stem_constructor=stem_constructor_to_use,
+                         block_constructor=block_constructor_base, 
+                         nn_width=nn_width_to_use,
+                         nn_depth_config=depth_config_final,
                          output_size=output_size,
                          block_kwargs=block_kwargs_from_config) # These are expansion, groups, base_width etc.
   elif config.nn_model == "resnet18":
@@ -499,14 +575,13 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
     default_stem_constructor_base = ResNetStem
     model_specific_stem_kwargs = {}
     default_block_constructor_base = ResNetBottleneckBlock
-    # ResNeXt50 (32x4d) specifics:
-    model_specific_block_kwargs = {'groups': 32, 'base_width': 4} 
+    model_specific_block_kwargs = {'groups': 32, 'base_width': 4}
 
     config_stem_kwargs = getattr(config, 'resnet_stem_kwargs', None) or {}
     config_block_kwargs = getattr(config, 'resnet_block_kwargs', None) or {}
 
     final_stem_kwargs = {**model_specific_stem_kwargs, **config_stem_kwargs}
-    final_block_kwargs = {**model_specific_block_kwargs, **config_block_kwargs} # Config can override groups/base_width
+    final_block_kwargs = {**model_specific_block_kwargs, **config_block_kwargs}
 
     stem_constructor_to_use = default_stem_constructor_base
     if final_stem_kwargs:
@@ -525,10 +600,7 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
     default_stem_constructor_base = ResNetStem
     model_specific_stem_kwargs = {}
     default_block_constructor_base = ResNetBottleneckBlock
-    # ResNeXt101 (32x8d) specifics used here, from previous hardcoding.
-    # Other common is 64x4d. The `base_width` param in `ResNetBottleneckBlock` is `bottleneck_width_per_group`.
-    # So `base_width=8` with `groups=32` implies total bottleneck width of 256.
-    model_specific_block_kwargs = {'groups': 32, 'base_width': 8} 
+    model_specific_block_kwargs = {'groups': 32, 'base_width': 8}
 
     config_stem_kwargs = getattr(config, 'resnet_stem_kwargs', None) or {}
     config_block_kwargs = getattr(config, 'resnet_block_kwargs', None) or {}
@@ -547,7 +619,6 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
                          output_size=output_size,
                          block_kwargs=final_block_kwargs)
   elif config.nn_model == "conv2d":
-    # nn_depth and nn_width from config are used for Conv2D_JAX
     if not hasattr(config, 'nn_width') or not hasattr(config, 'nn_depth'):
         raise ValueError("Conv2D model requires 'nn_width' and 'nn_depth' in config.")
     model = Conv2D_JAX(nn_width=config.nn_width,
@@ -737,12 +808,7 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
   else:
     raise ValueError(f"Unsupported model type: {config.nn_model}")
 
-  # Create a dummy input matching the expected batch size and observation shape.
-  # For MLP, if observation_shape is [9], this becomes (1, 9).
-  # If observation_shape is [3,3,1], this becomes (1, 3, 3, 1).
-  # Flax Dense layers automatically handle flattening if the input is multi-dimensional
-  # beyond the batch dimension, but it's common to explicitly flatten for MLPs if input is image-like.
-  # The current MLP_JAX does not explicitly flatten, but Dense will work.
+  # Create dummy input (e.g., (1, *obs_shape)). MLP_JAX handles internal flattening if needed.
   dummy_input_shape = (1,) + tuple(observation_shape)
   dummy_input = jnp.zeros(dummy_input_shape, dtype=jnp.float32)
 
