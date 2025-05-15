@@ -367,3 +367,18 @@ Implementation of Long Narde rules, based on a copy of "games/backgammon".
     *   The new example script will import and use the functions from the algorithm module, similar to how `open_spiel/python/examples/alpha_zero.py` uses `open_spiel/python/algorithms/alpha_zero/alpha_zero.py`.
     *   Assessment: Recommended for structural consistency with the TensorFlow AlphaZero implementation and to promote better separation of concerns (library vs. example).
     *   Citation: Current structure of `open_spiel/python/algorithms/alpha_zero_jax/alpha_zero_jax.py` vs. `open_spiel/python/algorithms/alpha_zero/alpha_zero.py` and `open_spiel/python/examples/alpha_zero.py`
+
+[DONE] 28. **Ensure JAX ConvNets Reshape Flat Inference Input (`model_jax.py`)**
+    *   **Why**: JAX convolutional models (`Conv2D_JAX`, `ResNet_JAX`) are initialized using a dummy input with the correct 3D spatial shape (e.g., `(Batch, H, W, C)`). However, during inference (e.g., in `_play_game`), the observation tensor provided by `state.observation_tensor()` is often flat (e.g., `(Batch, Features)`). Passing this flat tensor directly to the convolutional layers (which expect 3D spatial input) causes a `flax.errors.ScopeParamShapeError` because the existing initialized parameters are for a 3D input, but Flax re-evaluates based on the flat input, leading to a shape mismatch.
+    *   **What**: The `__call__` methods of `Conv2D_JAX` and `ResNet_JAX` must check if their input tensor `x` is flat (e.g., `x.ndim == 2`). If so, `x` must be reshaped to its expected 3D spatial format (e.g., `(Batch, H, W, C)`) before being processed by any convolutional layers.
+    *   **Where**:
+        *   The `Conv2D_JAX` and `ResNet_JAX` classes in `open_spiel/python/algorithms/alpha_zero_jax/model_jax.py`.
+        *   The `init_flax_model_and_variables` function in the same file needs to pass the `processed_observation_shape` to the model constructors.
+    *   **How**:
+        1.  Modify `Conv2D_JAX` and `ResNet_JAX` constructors to accept an `expected_input_shape` parameter (e.g., `(H, W, C)` for the game's observations) and store it as an instance attribute (e.g., `self.expected_input_shape`).
+        2.  In `init_flax_model_and_variables`, when instantiating these models, pass the `observation_shape` (which is the processed HxWxC shape, e.g., `(8,8,5)` for checkers) as this `expected_input_shape` argument.
+        3.  At the beginning of the `__call__` method in `Conv2D_JAX` and `ResNet_JAX`:
+            *   Check `if x.ndim == 2:`.
+            *   If true, reshape `x`: `x = x.reshape((x.shape[0],) + self.expected_input_shape)`.
+            *   This reshaped `x` is then used by the subsequent convolutional layers.
+    *   **Citation**: Debug logs from checkers run showing `model.init()` with `(1,8,8,5)` and `model.apply()` (via `_play_game`) receiving `(1,320)` leading to `ScopeParamShapeError`. Specifically, `[DEBUG Conv2D_JAX __call__] Initial x.shape: (1, 8, 8, 5)` during init vs. `[DEBUG Conv2D_JAX __call__] Initial x.shape: (1, 320)` during inference.

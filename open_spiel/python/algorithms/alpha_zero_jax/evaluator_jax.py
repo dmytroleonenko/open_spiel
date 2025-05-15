@@ -49,7 +49,9 @@ class AlphaZeroEvaluatorJAX(mcts.Evaluator):
     def _jit_apply_model(model_apply_fn, current_variables, current_obs_tensor, current_legals_mask):
         return model_apply_fn(current_variables, current_obs_tensor, current_legals_mask, training=False)
     
-    self._jit_apply_model_fn = lambda v, o, l: _jit_apply_model(self._model.apply, v, o, l)
+    self._jit_apply_model_fn = jax.jit(
+        lambda variables, obs, legals: self._model.apply(variables, obs, training=False, legals_mask=legals)
+    )
 
   def update_variables(self, new_variables: dict):
     """Updates the model variables for the evaluator."""
@@ -138,7 +140,7 @@ class AlphaZeroEvaluatorJAX(mcts.Evaluator):
     # Assuming a two-player zero-sum game
     return np.array([value, -value])
 
-  def prior(self, state: pyspiel.State) -> list[tuple[pyspiel.Action, float]]:
+  def prior(self, state: pyspiel.State) -> list[tuple[int, float]]:
     """Returns a probability distribution over legal actions.
 
     The distribution is represented as a list of (action, probability) pairs.

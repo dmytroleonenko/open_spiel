@@ -87,6 +87,9 @@ class Trajectory(object):
     self.states = []
     self.returns = None
 
+  def __len__(self):
+    return len(self.states)
+
   def add(self, trajectory_state: TrajectoryState):
     self.states.append(trajectory_state)
 
@@ -143,17 +146,15 @@ def watcher(fn):
 
     _file_log_path_dir = config.path
     _log_name_prefix = f"{name}_{num}"
-    # hasattr check for quiet, default to True if not present for robustness
     _also_to_stdout = not config.quiet if hasattr(config, 'quiet') else True
 
-    # Create logger instance. FileLogger expects path (directory) and name (prefix for log file).
-    # FileLogger itself might raise errors if path is invalid/unwritable, which is fine.
     _logger = file_logger.FileLogger(path=_file_log_path_dir, name=_log_name_prefix, also_to_stdout=_also_to_stdout)
 
     try:
       _logger.print(f"{name} started")
-      # Pass the watcher's logger to the wrapped function if it accepts 'logger'
       kwargs_to_pass = kwargs.copy()
+      if fn.__name__ == 'learner':
+        kwargs_to_pass.pop('queue', None)  # Remove queue if it exists for learner
       if 'logger' in fn.__code__.co_varnames:
         kwargs_to_pass['logger'] = _logger
       return fn(*args, **kwargs_to_pass)
@@ -163,38 +164,120 @@ def watcher(fn):
       raise
     finally:
       _logger.print(f"{name} exiting")
-      if _logger and _logger.f:
-        _logger.f.close()
+      if _logger: # Check if logger was successfully created
+        _logger.close() # Use the close() method of FileLogger
 
   return _watcher
 
 
+# NEW CLASS DEFINITION STARTS HERE
+class AlphaZeroBot(mcts.MCTSBot):
+  """A MCTSBot for AlphaZero with added debug logging and assertions."""
+  # player_id is declared by mcts.MCTSBot, pylint: disable=no-member
+
+  def __init__(self,
+               player_id: int, # This is the player_id for this bot instance
+               game: pyspiel.Game, 
+               evaluator: mcts.Evaluator,
+               uct_c: float,
+               max_simulations: int,
+               # AlphaZero specific params that MCTSBot's dirichlet_noise tuple expects
+               policy_alpha: float, 
+               policy_epsilon: float,
+               # MCTSBot's add_dirichlet_noise flag, determined by _play_game logic
+               add_dirichlet_noise_for_bot: bool, # This boolean flag indicates if noise should be applied
+               temperature: float, 
+               temperature_drop: int,
+               # Standard MCTSBot args
+               solve: bool = True, 
+               verbose: bool = False,
+               child_selection_fn=mcts.SearchNode.uct_value,
+               dont_return_chance_node: bool = False):
+    
+    # mcts.MCTSBot's dirichlet_noise parameter expects a tuple (epsilon, alpha) or None.
+    # Construct this tuple based on add_dirichlet_noise_for_bot.
+    dirichlet_noise_tuple = (policy_epsilon, policy_alpha) if add_dirichlet_noise_for_bot else None
+
+    super().__init__(
+        game=game,
+        # player_id=player_id, # REMOVED: MCTSBot.__init__ does not take player_id
+        evaluator=evaluator,
+        uct_c=uct_c,
+        max_simulations=max_simulations,
+        solve=solve,
+        verbose=verbose,
+        child_selection_fn=child_selection_fn,
+        dirichlet_noise=dirichlet_noise_tuple, # Pass the (epsilon, alpha) tuple or None
+        dont_return_chance_node=dont_return_chance_node,
+    )
+    # Explicitly set player_id for this bot instance.
+    # pyspiel.Bot (superclass of MCTSBot) has a player_id attribute.
+    # It is typically set by the system managing the bot or can be set here.
+    # For OpenSpiel, player_id is usually 0 or 1 for two-player games.
+    # The MCTSBot might use this internally for some logic if available.
+    self.player_id = player_id # ADDED: Set player_id attribute directly
+
+    # Store AZ-specific params on the instance if they are needed by AlphaZeroBot's methods
+    # (e.g. if it were to override _dirichlet_noise, though it doesn't currently)
+    self.az_policy_alpha = policy_alpha 
+    self.az_policy_epsilon = policy_epsilon
+    self.az_temperature = temperature
+    self.az_temperature_drop = temperature_drop
+    
+    # self.dirichlet_noise is an attribute set by the MCTSBot superclass constructor.
+    # It will be None if no noise, or the (epsilon, alpha) tuple if noise is active.
+    # The actual attribute in MCTSBot is _dirichlet_noise.
+    is_noise_active_on_bot_instance = self._dirichlet_noise is not None
+
+    # Debug logging (os is imported at the top of the file)
+    print(f"[DEBUG AlphaZeroBot pid={os.getpid()}] init: "
+          f"player_id={self.player_id}, "
+          f"policy_alpha_arg={policy_alpha}, "
+          f"policy_epsilon_arg={policy_epsilon}, "
+          f"add_dirichlet_noise_for_bot_arg(bool)={add_dirichlet_noise_for_bot}, "
+          f"self._dirichlet_noise (tuple on MCTSBot)={self._dirichlet_noise}, "
+          f"self.az_policy_alpha (stored on AZBot)={self.az_policy_alpha}")
+
+    # Assertion: If noise is active on the bot (meaning dirichlet_noise_tuple was not None),
+    # then the alpha component of that noise (self.az_policy_alpha) must be positive.
+    if is_noise_active_on_bot_instance and not (self.az_policy_alpha > 0):
+        raise ValueError(
+            f"AlphaZeroBot Consistency Check: If Dirichlet noise is active (inferred from self._dirichlet_noise being {self._dirichlet_noise}), "
+            f"then az_policy_alpha (which is '{self.az_policy_alpha}') must be > 0. "
+            f"This check is for player {self.player_id}.")
+
+# NEW CLASS DEFINITION ENDS HERE
+
+
 # _init_bot function from open_spiel/python/algorithms/alpha_zero/alpha_zero.py
-def _init_bot(config: ConfigJAX, game: pyspiel.Game, evaluator_: mcts.Evaluator, evaluation: bool):
-  """Initializes an MCTS bot with a JAX AlphaZero evaluator.
-
-  Args:
-    config: `ConfigJAX` with hyperparameters (UCT, simulations, policy noise).
-    game: `pyspiel.Game` instance.
-    evaluator_: `AlphaZeroEvaluatorJAX` (or any `mcts.Evaluator`) for policy/value predictions.
-    evaluation: If True, disables Dirichlet noise for deterministic play.
-
-  Returns:
-    An `mcts.MCTSBot` configured for JAX AlphaZero.
-  """
-  # Dirichlet noise is added to the policy prior for exploration during training (self-play).
-  # It's disabled during evaluation for a more deterministic assessment of the agent's strength.
-  noise = None if evaluation else (config.policy_epsilon, config.policy_alpha)
-  return mcts.MCTSBot(
-      game, 
-      config.uct_c, # UCT constant for balancing exploration and exploitation.
-      config.max_simulations, # Number of MCTS simulations per move.
-      evaluator_, # The JAX-based evaluator for policy and value network inference.
-      solve=False, # AlphaZero does not solve the game tree in the traditional sense.
-      dirichlet_noise=noise, # Apply noise to root policy in MCTS if not in evaluation.
-      child_selection_fn=mcts.SearchNode.puct_value, # PUCT formula for child selection.
-      verbose=False, # Keep MCTS bot non-verbose by default.
-      dont_return_chance_node=True) # MCTS should not return chance nodes as root.
+def _init_bot(config: ConfigJAX, game: pyspiel.Game, evaluator_: mcts.Evaluator, evaluation: bool, player_id_for_bot: int):
+  """Initializes an AlphaZeroBot (JAX specific)."""
+  
+  # Determine if noise should be added for this specific bot instance.
+  # - `evaluation` is True: No noise (deterministic play for evaluation).
+  # - `evaluation` is False (e.g. actor self-play): Noise is active if policy_alpha and policy_epsilon are > 0.
+  #   This matches the logic in the original _play_game for AlphaZeroBot instantiation.
+  should_add_noise_flag = False
+  if not evaluation: # Only consider noise if not in evaluation mode
+    if config.policy_alpha > 0 and config.policy_epsilon > 0:
+      should_add_noise_flag = True
+      
+  return AlphaZeroBot(
+      player_id=player_id_for_bot,
+      game=game,
+      evaluator=evaluator_,
+      uct_c=config.uct_c,
+      max_simulations=config.max_simulations,
+      policy_alpha=config.policy_alpha, 
+      policy_epsilon=config.policy_epsilon,
+      add_dirichlet_noise_for_bot=should_add_noise_flag, # Pass the boolean flag
+      temperature=config.temperature, # Temperature for policy sampling (though MCTSBot doesn't use it directly for search)
+      temperature_drop=config.temperature_drop, # (Same as above)
+      solve=False, # AlphaZero does not solve in the traditional sense
+      verbose=False,
+      child_selection_fn=mcts.SearchNode.puct_value, # PUCT for AlphaZero
+      dont_return_chance_node=True
+  )
 
 
 # _play_game function from open_spiel/python/algorithms/alpha_zero/alpha_zero.py
@@ -268,18 +351,24 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
   actor_internal_key = jax.random.fold_in(prng_key, num)
   model_init_key, actor_run_key = jax.random.split(actor_internal_key)
 
-  logger.print(f"Actor {num}: Initializing model")
-  # Initialize JAX model
-  flax_model, variables = model_jax.init_flax_model_and_variables(model_init_key, config, game)
+  logger.print(f"Actor {num}: Initializing model (about to call init_flax_model_and_variables)")
+  try:
+    flax_model, variables = model_jax.init_flax_model_and_variables(model_init_key, config, game)
+    logger.print(f"Actor {num}: Model initialized successfully. Model: {flax_model}")
+  except Exception as e:
+    logger.print(f"Actor {num}: Model initialization FAILED: {e}")
+    import traceback as tb; logger.print(tb.format_exc())
+    raise
   
   logger.print(f"Actor {num}: Initializing AlphaZeroEvaluatorJAX")
   # Initialize evaluator
   az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables, config.evaluator_cache_size)
 
-  bots = [
-      _init_bot(config, game, az_evaluator, evaluation=False),
-      _init_bot(config, game, az_evaluator, evaluation=False),
-  ]
+  # Create a bot for each player in the game.
+  # These bots will be used by _play_game.
+  bots = []
+  for i in range(game.num_players()): # Corrected loop range
+      bots.append(_init_bot(config, game, az_evaluator, evaluation=False, player_id_for_bot=i))
 
   # Checkpoint directory - ensure it's defined based on config.path
   # The learner creates this, actor just reads from it.
@@ -340,26 +429,37 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
     current_numpy_seed = jax.random.randint(game_specific_rng_key, shape=(), minval=0, maxval=jnp.iinfo(jnp.int32).max).item()
 
     # Play a game
-    trajectory = _play_game(
+    full_trajectory = _play_game(
         logger=logger,
         game_num=game_num,
         game=game,
         bots=bots,
         temperature=config.temperature,
         temperature_drop=config.temperature_drop,
-        numpy_seed=current_numpy_seed) # Pass the seed here
+        numpy_seed=current_numpy_seed
+    )
     
-    # Send trajectory to the learner
-    try:
-      queue.put(trajectory)
-      logger.opt_print(f"Actor {num}: Sent trajectory {game_num} to learner. Queue size: {queue.qsize()}")
-    except Exception as e: # Handle potential queue errors (e.g., if queue is full or closed)
-      logger.print(f"Actor {num}: Error sending trajectory to queue: {e}")
-      # Decide if to break or continue based on error. For now, continue.
-      pass # Or break, or re-raise
+    # For each player, create a player-specific trajectory and send it.
+    list_of_returns_from_game = full_trajectory.returns
+    if list_of_returns_from_game is None:
+        logger.print(f"Actor {num}, Game {game_num}: full_trajectory.returns is None. Skipping sending.")
+    elif not isinstance(list_of_returns_from_game, list) or len(list_of_returns_from_game) != game.num_players():
+        logger.print(f"Actor {num}, Game {game_num}: full_trajectory.returns is not a list of correct length. Got: {list_of_returns_from_game}. Skipping.")
+    else:
+        for p_id in range(game.num_players()):
+            player_specific_trajectory = Trajectory()
+            player_specific_trajectory.states = full_trajectory.states
+            player_specific_trajectory.returns = list_of_returns_from_game[p_id]
+
+            try:
+                queue.put(player_specific_trajectory)
+                logger.opt_print(f"Actor {num}: Sent trajectory for player {p_id} from game {game_num} to learner. Return: {player_specific_trajectory.returns}")
+            except Exception as e:
+                logger.print(f"Actor {num}: Error sending player-specific trajectory (p_id {p_id}, game {game_num}) to queue: {e}")
+                pass
 
     # Short delay to prevent actor from hogging CPU if queue is slow
-    # time.sleep(0.001) # Optional: 1ms sleep
+    time.sleep(0.001) # Small sleep to avoid busy-waiting
 
 
 @watcher
@@ -371,14 +471,21 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
   evaluator_internal_key = jax.random.fold_in(prng_key, num)
   model_init_key, evaluator_run_key = jax.random.split(evaluator_internal_key)
 
-  logger.print(f"Evaluator {num}: Initializing model")
-  flax_model, variables = model_jax.init_flax_model_and_variables(model_init_key, config, game)
+  logger.print(f"Evaluator {num}: Initializing model (about to call init_flax_model_and_variables)")
+  try:
+    flax_model, variables = model_jax.init_flax_model_and_variables(model_init_key, config, game)
+    logger.print(f"Evaluator {num}: Model initialized successfully. Model: {flax_model}")
+  except Exception as e:
+    logger.print(f"Evaluator {num}: Model initialization FAILED: {e}")
+    import traceback as tb; logger.print(tb.format_exc())
+    raise
 
   logger.print(f"Evaluator {num}: Initializing AlphaZeroEvaluatorJAX")
   az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables, config.evaluator_cache_size)
   
-  # The MCTS bot that uses the AZ model.
-  az_bot = _init_bot(config, game, az_evaluator, evaluation=True)
+  # The MCTS bot that uses the AZ model. Initialize for player 0, for example.
+  # The actual player assignment happens in the game loop via current_bots.
+  az_bot = _init_bot(config, game, az_evaluator, evaluation=True, player_id_for_bot=0)
 
   # A standard MCTS bot with a random rollout evaluator to play against.
   # It's important that this opponent is reasonably strong but not overly slow.
@@ -444,8 +551,6 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
 
     # Determine opponent strength (difficulty from original AlphaZero, fixed for now).
     difficulty = (game_num // 2) % config.eval_levels if config.eval_levels > 0 else 0
-    # For varied strength, MCTS opponent sims could change or bot re-initialized.
-    # Current: fixed opponent simulations, using RandomRolloutEvaluator.
     opponent_simulations = config.max_simulations 
     opponent_bot = mcts.MCTSBot(
         game,
@@ -453,8 +558,6 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
         opponent_simulations, # Number of simulations for the opponent
         random_rollout_evaluator, # Opponent uses random rollouts
         solve=False, # Original was solve=True for MCTS+Solver. Let's match that if possible.
-                     # `solve=True` requires game to have a perfect solver, might be slow.
-                     # Let's use solve=False for broader compatibility like original actor's _init_bot.
         verbose=False,
         dont_return_chance_node=True
     )
@@ -465,13 +568,18 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
     
     logger.opt_print(f"Evaluator {num}, Game {game_num}: AZ player {az_player}, Opponent difficulty {difficulty}")
 
+    # Generate a numpy_seed for this game, as in actor
+    game_specific_rng_key = jax.random.fold_in(evaluator_run_key, game_num)
+    numpy_seed = jax.random.randint(game_specific_rng_key, shape=(), minval=0, maxval=jnp.iinfo(jnp.int32).max).item()
+
     trajectory = _play_game(
         logger=logger, 
         game_num=game_num, 
         game=game, 
         bots=current_bots, 
         temperature=1,        # For evaluation, use deterministic policy (temp=1, best_child in _play_game if temp_drop=0)
-        temperature_drop=0    # No randomness in action selection after initial phase for evaluation
+        temperature_drop=0,   # No randomness in action selection after initial phase for evaluation
+        numpy_seed=numpy_seed
     )
 
     # Log result and send to learner (or a central stats collector)
@@ -495,120 +603,88 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
     # time.sleep(config.evaluator_sleep_seconds if hasattr(config, 'evaluator_sleep_seconds') else 1)
 
 
+def broadcast_fn(message):
+    # This is a placeholder for broadcasting messages to actors/evaluators if needed.
+    # In the current implementation, it just prints/logs the message.
+    # If a logger is needed, use a global or pass as argument (not required for pickling).
+    print(f"Broadcasting message (placeholder): {message}")
+    # If you want to use a logger, you can set a global logger variable here.
+    # Or, you can make this a no-op if not needed.
+    pass
+
 def alpha_zero_jax(config: ConfigJAX):
-  """Main entry point for JAX AlphaZero."""
-  main_key = jax.random.PRNGKey(config.master_seed)
-  
-  random.seed(config.master_seed)
-  np.random.seed(config.master_seed)
-
-  # Ensure the main log directory exists
-  os.makedirs(config.path, exist_ok=True) # config.path is the base data directory
-
-  # The FileLogger expects a directory path, and it will create log-{name}.txt inside it.
-  # So, the path passed to FileLogger should be config.path.
-  main_log_directory = config.path 
-  main_log_name = "main_alpha_zero_jax" 
-
-  # Initialize the main process logger
-  # It will create a log file like <config.path>/log-main_alpha_zero_jax.txt
-  main_process_logger = file_logger.FileLogger(main_log_directory, main_log_name, not config.quiet)
-  
-  actual_log_file_path = os.path.join(main_log_directory, f'log-{main_log_name}.txt')
-  if not config.quiet:
-    # This print statement should reflect the actual file FileLogger creates
-    print(f"Main process logging to: {actual_log_file_path}")
-
-  # Setup JAX PRNG keys
-  process_keys = jax.random.split(main_key, 1 + config.actors + config.evaluators)
-  
-  learner_key = process_keys[0]
-  actor_keys = process_keys[1:1+config.actors]
-  evaluator_keys = process_keys[1+config.actors:]
-
-  # Define a broadcast function placeholder (can be enhanced later)
-  # This function would typically send messages to actor/evaluator queues if needed.
-  # For checkpoint polling, it's less critical, but good to have for API consistency or future use.
-  def broadcast_fn(message):
-      main_process_logger.opt_print(f"Broadcasting message (placeholder): {message}")
-      # Example: if actors/evaluators had command queues:
-      # for q in actor_command_queues: q.put(("broadcast", message))
-      # for q in evaluator_command_queues: q.put(("broadcast", message))
-      pass
-
-  processes = []
-  actor_process_queues = []  # Queues for the learner to read from actors
-  evaluator_process_queues = [] # Queues for the learner to read from evaluators (if learner handles them)
-
-  main_process_logger.print(f"Starting {config.actors} actors...")
-  for i in range(config.actors):
-      # The watcher decorator will handle the logger for the actor process
-    actor_kwargs = {
-          # "game" object needs to be passed if actor uses it directly, or config.game string if it loads its own
-          # Assuming game object 'game' is available in this scope from pyspiel.load_game(config.game)
-          "game": config.game, 
+    """Main entry point for JAX AlphaZero."""
+    import pyspiel  # Ensure pyspiel is imported in this scope
+    main_key = jax.random.PRNGKey(config.master_seed)
+    random.seed(config.master_seed)
+    np.random.seed(config.master_seed)
+    os.makedirs(config.path, exist_ok=True)
+    main_log_directory = config.path 
+    main_log_name = "main_alpha_zero_jax" 
+    main_process_logger = file_logger.FileLogger(main_log_directory, main_log_name, not config.quiet)
+    actual_log_file_path = os.path.join(main_log_directory, f'log-{main_log_name}.txt')
+    if not config.quiet:
+        print(f"Main process logging to: {actual_log_file_path}")
+    process_keys = jax.random.split(main_key, 1 + config.actors + config.evaluators)
+    learner_key = process_keys[0]
+    actor_keys = process_keys[1:1+config.actors]
+    evaluator_keys = process_keys[1+config.actors:]
+    game = pyspiel.load_game(config.game)
+    processes = []
+    actor_process_queues = []
+    evaluator_process_queues = []
+    main_process_logger.print(f"Starting {config.actors} actors...")
+    for i in range(config.actors):
+        actor_kwargs = {
+            "game": game,
+            "config": config,
+            "num": i,
+            "prng_key": actor_keys[i]
+        }
+        p = spawn.Process(target=actor, kwargs=actor_kwargs)
+        processes.append(p)
+        actor_process_queues.append(p.queue)
+    main_process_logger.print(f"Starting {config.evaluators} evaluators...")
+    for i in range(config.evaluators):
+        eval_kwargs = {
+            "game": game,
+            "config": config,
+            "num": i,
+            "prng_key": evaluator_keys[i]
+        }
+        p = spawn.Process(target=evaluator, kwargs=eval_kwargs)
+        processes.append(p)
+        evaluator_process_queues.append(p.queue)
+    learner_kwargs = {
+        "game": game,
         "config": config,
-        "num": i,
-        "prng_key": actor_keys[i]
-          # 'queue' is provided by spawn.Process to the target
+        "actor_queues": actor_process_queues,
+        "evaluator_queues": evaluator_process_queues,
+        "prng_key": learner_key,
+        "broadcast_fn": broadcast_fn  # Pass the top-level function
     }
-    p = spawn.Process(target=actor, kwargs=actor_kwargs)
-    processes.append(p)
-    actor_process_queues.append(p.queue) # Collect the queue for the learner
-  
-  main_process_logger.print(f"Starting {config.evaluators} evaluators...")
-  for i in range(config.evaluators):
-      # The watcher decorator will handle the logger for the evaluator process
-    eval_kwargs = {
-          "game": config.game, 
-        "config": config,
-        "num": i,
-        "prng_key": evaluator_keys[i]
-          # 'queue' is provided by spawn.Process to the target
-    }
-    p = spawn.Process(target=evaluator, kwargs=eval_kwargs)
-    processes.append(p)
-    evaluator_process_queues.append(p.queue)
-
-  # Learner setup
-  # The JAX learner signature is now: 
-  # learner(*, game, config, logger, actor_queues: list, evaluator_queues: list, broadcast_fn, prng_key)
-  learner_kwargs = {
-      "game": config.game, # Pass the loaded game object
-      "config": config,
-      "actor_queues": actor_process_queues, # Pass actor queues
-      "evaluator_queues": evaluator_process_queues, # Pass evaluator queues
-      "prng_key": learner_key,
-      "broadcast_fn": broadcast_fn # Pass the broadcast_fn to the learner
-      # logger is passed by @watcher
-  }
-  main_process_logger.print("Starting Learner...")
-  p_learner = spawn.Process(target=learner, kwargs=learner_kwargs)
-  processes.append(p_learner)
-
-  # Start the learner. It will manage the main training loop.
-  # The learner function needs access to actor_queues and evaluator_queues.
-  try:
-    learner(
-        game=config.game,
-        config=config,
-        actor_queues=actor_process_queues, 
-        evaluator_queues=evaluator_process_queues, 
-        broadcast_fn=broadcast_fn, 
-        prng_key=learner_key
-    )
-  except (KeyboardInterrupt, EOFError) as e: 
-    main_process_logger.print(f"Caught {type(e).__name__}, stopping AlphaZero JAX.")
-  finally:
-    main_process_logger.print("AlphaZero JAX stopping. Signaling actors and evaluators to exit.")
-    
-    for proc in processes:
-      try:
-          proc.join(timeout=JOIN_WAIT_DELAY * 10) 
-      except Exception as join_e: 
-          main_process_logger.print(f"Error joining process: {join_e}")
-
-    main_process_logger.print("AlphaZero JAX run completed.")
+    main_process_logger.print("Starting Learner...")
+    p_learner = spawn.Process(target=learner, kwargs=learner_kwargs)
+    processes.append(p_learner)
+    try:
+        learner(
+            game=game,
+            config=config,
+            actor_queues=actor_process_queues, 
+            evaluator_queues=evaluator_process_queues, 
+            broadcast_fn=broadcast_fn, 
+            prng_key=learner_key
+        )
+    except (KeyboardInterrupt, EOFError) as e: 
+        main_process_logger.print(f"Caught {type(e).__name__}, stopping AlphaZero JAX.")
+    finally:
+        main_process_logger.print("AlphaZero JAX stopping. Signaling actors and evaluators to exit.")
+        for proc in processes:
+            try:
+                proc.join(timeout=JOIN_WAIT_DELAY * 10) 
+            except Exception as join_e: 
+                main_process_logger.print(f"Error joining process: {join_e}")
+        main_process_logger.print("AlphaZero JAX run completed.")
 
 
 # Entry point for the script (if run directly)
@@ -730,16 +806,21 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
 
   data_log = None
   if config.path:
-    data_log_path = os.path.join(config.path, "learner_data.jsonl")
-    data_log = data_logger.DataLoggerJsonLines(data_log_path)
-    if logger: logger.print(f"Learner logging data to: {data_log_path}")
+    data_log = data_logger.DataLoggerJsonLines(config.path, "learner")
+    if logger: logger.print(f"Learner logging data to: {os.path.join(config.path, 'learner.jsonl')}")
 
   game_lengths = stats.BasicStats()
   game_lengths_hist = stats.HistogramNumbered(game.max_game_length() + 1)
-  outcomes = stats.HistogramNamed({"win": 1, "loss": -1, "draw": 0, "quit": -2, "eval": -3}) # Added eval for tracking
-  value_accuracies = [stats.HistogramValue(i) for i in range(VALUE_ACC_HIST_BUCKETS)]
-  value_predictions = [stats.HistogramValue(i) for i in range(VALUE_PRED_HIST_BUCKETS)]
-  evals = [stats.ReservoirStopwatch(EVALS_STAT_WINDOW) for _ in range(config.eval_levels or 1)] # Ensure at least one if eval_levels is 0
+  
+  # Define outcome names for the histogram
+  # Ensure this list covers all expected string outcomes.
+  # The order determines the bucket ID (0 for "win", 1 for "loss", etc.)
+  outcome_names_for_histogram = ["win", "loss", "draw", "quit", "eval"] 
+  outcomes = stats.HistogramNamed(outcome_names_for_histogram)
+
+  value_accuracies = [stats.BasicStats() for _ in range(VALUE_ACC_HIST_BUCKETS)]
+  value_predictions = [stats.BasicStats() for _ in range(VALUE_PRED_HIST_BUCKETS)]
+  evals = [Buffer(config.evaluation_window) for _ in range(config.eval_levels or 1)]
 
   # JIT compile the training step function
   @jax.jit
@@ -885,29 +966,47 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             game_lengths.add(len(traj))
             game_lengths_hist.add(len(traj))
             num_states += len(traj)
-            outcomes.add(traj.value_target(0, budynku_player=0)) # Example: outcome for player 0
+            # outcomes.add(traj.returns) # Old incorrect way
+
+            # Map scalar return to outcome string for HistogramNamed
+            current_player_return = traj.returns # This is now a scalar
+            outcome_str = None # Initialize to None
+            if current_player_return is not None: # Check if return value is not None
+                if current_player_return > 0: # Win for this player
+                    outcome_str = "win"
+                elif current_player_return < 0: # Loss for this player
+                    outcome_str = "loss"
+                elif current_player_return == 0: # Draw
+                    outcome_str = "draw"
+                # Add other mappings if quit/eval states are possible and have distinct scalar returns.
+                # Example: if quit is -2 and eval is -3, map them to "quit" and "eval" strings.
+                # elif current_player_return == -2: # Example for quit
+                #     outcome_str = "quit"
+                # elif current_player_return == -3: # Example for eval
+                #     outcome_str = "eval"
+                else:
+                    # Log an unexpected return value but don't add to histogram or default to something.
+                    # This case should ideally not be hit if actors correctly set scalar returns.
+                    if logger:
+                        logger.print(f"Learner: Received trajectory with unexpected (but non-None) return value: {current_player_return}. Not mapping to known outcome string.")
+            else: # current_player_return is None
+                 if logger:
+                    logger.print(f"Learner: Received trajectory with None return value. Not adding to outcomes histogram.")
+
+
+            if outcome_str:
+                try:
+                    bucket_id = outcome_names_for_histogram.index(outcome_str)
+                    outcomes.add(bucket_id)
+                except ValueError:
+                    # This should not happen if outcome_str is one of the defined names.
+                    if logger:
+                        logger.print(f"Learner: Outcome string '{outcome_str}' is not in outcome_names_for_histogram. This is unexpected. Not adding to histogram.")
             
             # Add states to replay buffer
-            # Each element in traj is a TrajectoryState
-            # We need to convert these to TrainInputJAX instances
-            for transition in traj: # Assuming traj is iterable yielding TrajectoryState
+            # Each element in traj.states is a TrajectoryState
+            for transition in traj.states: # CORRECTED: Iterate over traj.states
                 # Create TrainInputJAX from TrajectoryState
-                # This requires knowing the policy target (from MCTS) and value target (from game outcome or bootstrap)
-                # TrajectoryState has: observation, current_player, legals_mask, action, policy, value
-                # TrainInputJAX needs: observation, legals_mask, policy_target, value_target
-                
-                # The 'policy' from TrajectoryState is likely the MCTS policy distribution (policy_target)
-                # The 'value' from TrajectoryState is likely the MCTS value (used for value_target if not terminal, else game outcome)
-                # This mapping needs to be precise.
-                
-                # For now, assume TrajectoryState directly provides what's needed or can be easily converted.
-                # Let's assume traj.policy is the policy target and traj.value is the value target
-                # This is a simplification; typically value_target is bootstrapped or from game end.
-                # The original alpha_zero.py's _play_game and Trajectory build this carefully.
-                
-                # This part of the code relies on how Trajectory and TrajectoryState are structured
-                # and how they provide policy_target and value_target.
-                # For now, assuming TrajectoryState can be converted:
                 train_input = model_jax.TrainInputJAX(
                     observation=transition.observation,
                     legals_mask=transition.legals_mask,

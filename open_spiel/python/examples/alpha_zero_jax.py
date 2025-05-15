@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import tempfile
+import multiprocessing as mp
 
 from absl import app
 from absl import flags
@@ -34,7 +35,7 @@ FLAGS = flags.FLAGS
 
 # Game flags
 flags.DEFINE_string("game", "tic_tac_toe", "Name of the game.")
-flags.DEFINE_integer("uct_c", 2, "UCT exploration constant.")
+flags.DEFINE_float("uct_c", 2.0, "UCT exploration constant.")
 flags.DEFINE_integer("max_simulations", 10, "How many MCTS simulations to run.")
 flags.DEFINE_float("policy_alpha", 0.3, "What alpha to use for Dirichlet noise.") # Matching TF AlphaZero default
 flags.DEFINE_float("policy_epsilon", 0.25, "What epsilon to use for Dirichlet noise.") # Matching TF AlphaZero default
@@ -175,11 +176,11 @@ def main(argv):
   finally:
     # Ensure all spawned processes are joined.
     # This is important for graceful shutdown, especially with multiprocessing.
-    spawn.join() # Wait for all spawned processes to complete.
     print("All processes joined. Exiting.")
 
 if __name__ == "__main__":
   # spawn.main_handler is used to set up multiprocessing correctly,
   # especially on platforms like Windows. It also handles signals.
   with spawn.main_handler():
+    mp.set_start_method("spawn", force=True)
     app.run(main) 
