@@ -1158,7 +1158,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
 
     # Use initial_step for the first log, then the loop's step variable
     current_log_step = step # step starts from 1 in the loop, initial_step is 0-based from manager
-    step_log_msg_prefix = f"[{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}] Step: {current_log_step}"
+    step_log_msg_prefix = f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] Step: {current_log_step}"
     if logger and config.log_level >= DEBUG:
       logger.print(step_log_msg_prefix)
       logger.print(log_message_timing)
@@ -1306,7 +1306,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
           logger.opt_print(broadcast_msg) 
         broadcast_fn(save_path_for_broadcast) 
   
-  final_msg = f"[{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}] JAX Learner finished."
+  final_msg = f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] JAX Learner finished."
   if logger and config.log_level >= INFO:
     logger.print(final_msg)
 
