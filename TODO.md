@@ -382,3 +382,31 @@ Implementation of Long Narde rules, based on a copy of "games/backgammon".
             *   If true, reshape `x`: `x = x.reshape((x.shape[0],) + self.expected_input_shape)`.
             *   This reshaped `x` is then used by the subsequent convolutional layers.
     *   **Citation**: Debug logs from checkers run showing `model.init()` with `(1,8,8,5)` and `model.apply()` (via `_play_game`) receiving `(1,320)` leading to `ScopeParamShapeError`. Specifically, `[DEBUG Conv2D_JAX __call__] Initial x.shape: (1, 8, 8, 5)` during init vs. `[DEBUG Conv2D_JAX __call__] Initial x.shape: (1, 320)` during inference.
+
+[TODO] 29. **Investigate and Fix `NaN` Losses in Learner (`alpha_zero_jax.py`)**
+    *   **`NaN` Losses**:
+        *   **Symptom**: `Total Loss` and `Policy Loss` are reported as `NaN` during training, while `Value Loss` might be a number.
+        *   **Potential Causes**:
+            *   Logits becoming `inf` or `-inf` passed to `optax.softmax_cross_entropy`.
+            *   Invalid policy targets (e.g., not summing to 1, containing `NaN`s).
+            *   All actions for a state being illegal, leading to all logits being `-inf`, potentially causing `NaN` in softmax cross-entropy.
+            *   Division by zero if `batch_legals_masks.any(axis=1)` is `False` and the corresponding unmasked policy loss was `inf` or `NaN` (leading to `0 * inf` or `0 * nan`).
+        *   **Debugging Steps**:
+            *   Verify `batch_policy_targets` are valid probability distributions.
+            *   Log statistics (min, max, mean, presence of `NaN`/`inf`) of `policy_logits` and `batch_policy_targets` just before `optax.softmax_cross_entropy`.
+            *   Check if `batch_legals_masks.any(axis=1)` is `False` for any samples and how it interacts with the calculated policy loss for those samples.
+            *   Inspect the model's internal masking of illegal actions (setting logits to `-jnp.inf`).
+    *   **Citation**: Learner logs showing `NaN` for policy/total loss.
+
+[TODO] 30. **Investigate and Fix Checkpointing Errors in Learner (`alpha_zero_jax.py`)**
+    *   **Checkpointing Errors**:
+        *   **Symptom**: Errors like "No such file or directory" (e.g., `b'opt_state.0.count/'`) or "add() argument after ** must be a mapping, not NoneType" during `checkpoints.save_checkpoint`.
+        *   **Potential Causes**:
+            *   Race conditions or issues with atomic saving/renaming of the "latest" checkpoint, especially with Orbax backend.
+            *   `NaN` values in model parameters or optimizer state, causing serialization failures.
+            *   Incorrect state structure being passed to `checkpoints.save_checkpoint` (e.g., `None` where a dictionary is expected).
+        *   **Debugging Steps**:
+            *   Examine the structure and content of `variables` and `opt_state` just before saving.
+            *   Simplify the checkpoint saving logic temporarily (e.g., only save step-numbered checkpoints, disable "latest" to isolate).
+            *   Review Orbax documentation for best practices in atomic saving.
+    *   **Citation**: Learner logs showing errors during checkpoint saving.

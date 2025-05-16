@@ -66,6 +66,7 @@ flags.DEFINE_integer("nn_width", 64, "Hidden layer size or ResNet filter count."
 flags.DEFINE_integer("nn_depth", 2, "Number of hidden layers or ResNet blocks.") # Smaller for MLP default
 flags.DEFINE_bool("quiet", False, "Don't show the moves as they're played.")
 flags.DEFINE_integer("master_seed", 0, "Master PRNG seed for JAX, Python random, and NumPy.")
+flags.DEFINE_integer("log_level", 0, "Logging verbosity: 0=outcome only, 1=minimal per-game, 2=full debug.")
 
 # New ResNet/ResNeSt specific flags (optional, use if nn_model="resnet" and you want generic ResNet)
 flags.DEFINE_list("resnet_depth_config", None, "Stage sizes for generic ResNet, e.g., 2,2,2,2 for ResNet18. Comma-separated.")
@@ -116,7 +117,8 @@ def main(argv):
       resnet_stem_kwargs=json.loads(FLAGS.resnet_stem_kwargs_json),
       resnet_block_callable_name=FLAGS.resnet_block_callable_name,
       resnet_block_kwargs=json.loads(FLAGS.resnet_block_kwargs_json),
-      evaluator_cache_size=FLAGS.evaluator_cache_size
+      evaluator_cache_size=FLAGS.evaluator_cache_size,
+      log_level=FLAGS.log_level,
   )
 
   # Create a temp dir if path is not set.

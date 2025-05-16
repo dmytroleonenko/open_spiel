@@ -3,6 +3,9 @@ import jax
 import jax.numpy as jnp
 import optax
 from flax.training import checkpoints
+import orbax.checkpoint as ocp # Orbax CheckpointManager and options
+from orbax.checkpoint.path import atomicity as ocp_atomicity # For CommitFileTemporaryPath
+from flax.training import orbax_utils # For save/restore args
 import random
 import time
 import itertools # For itertools.count in learner
@@ -62,6 +65,7 @@ class ConfigJAX(collections.namedtuple(
         "resnet_block_callable_name",# Optional[str]: Name of the block callable for generic ResNet (e.g., "ResNetBlock", "ResNetBottleneckBlock").
         "resnet_block_kwargs",      # Optional[Mapping]: Keyword arguments for the ResNet block.
         "evaluator_cache_size",     # int: Size of the LRU cache for the evaluator.
+        "log_level",                # int: Logging verbosity: 0=outcome only, 1=minimal, 2=debug
     ])):
   """A config for the JAX AlphaZero model/experiment."""
   # To allow None defaults for Optional fields in namedtuple, provide them at instantiation.
@@ -276,23 +280,21 @@ def _init_bot(config: ConfigJAX, game: pyspiel.Game, evaluator_: mcts.Evaluator,
 
 # _play_game function from open_spiel/python/algorithms/alpha_zero/alpha_zero.py
 # Adapted to use TrajectoryState and Trajectory already defined in this file.
-def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list, temperature: float, temperature_drop: int, numpy_seed: int):
+def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list, temperature: float, temperature_drop: int, numpy_seed: int, log_level: int = 0):
   """Play one game, return the trajectory."""
   trajectory = Trajectory() # Uses Trajectory class defined in this file
   actions = []
   state = game.new_initial_state()
   random_state = np.random.RandomState(numpy_seed) # Use the passed numpy_seed
-  if logger:
+  if logger and log_level >= 2:
     logger.opt_print(f" Starting game {game_num} (seed: {numpy_seed}) ".center(60, "-"))
-    logger.opt_print(f"Initial state:\\n{state}")
+    logger.opt_print(f"Initial state:\n{state}")
 
   while not state.is_terminal():
     if state.is_chance_node():
       outcomes = state.chance_outcomes()
       action_list, prob_list = zip(*outcomes)
       action = random_state.choice(action_list, p=prob_list)
-      # action_str = state.action_to_string(state.current_player(), action) # Not used locally
-      # actions.append(action_str) # Actions list only for logging final summary
       state.apply_action(action)
     else:
       player = state.current_player()
@@ -300,7 +302,6 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list, temperatur
       policy = np.zeros(game.num_distinct_actions())
       for c in root.children:
         policy[c.action] = c.explore_count
-      
       # Apply temperature
       if temperature == 0: # Avoid division by zero, choose greedily
           action = root.best_child().action
@@ -311,7 +312,6 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list, temperatur
             action = root.best_child().action
           else:
             action = random_state.choice(len(policy), p=policy) # NEW: Use seeded random_state
-
       # Store state, action, policy, value
       current_trajectory_state = TrajectoryState(
           state.observation_tensor(), # Uses TrajectoryState from this file
@@ -319,18 +319,17 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list, temperatur
           state.legal_actions_mask(), action, policy,
           root.total_reward / root.explore_count if root.explore_count > 0 else 0) # Value from MCTS search
       trajectory.add(current_trajectory_state)
-      
       action_str_log = state.action_to_string(player, action)
       actions.append(action_str_log) # For final game log
-      if logger:
+      if logger and log_level >= 2:
         logger.opt_print(f"Player {player} sampled action: {action_str_log}")
       state.apply_action(action)
   
-  if logger:
+  if logger and log_level >= 2:
     logger.opt_print(f"Game finished. Next state:\n{state}")
 
   trajectory.returns = state.returns()
-  if logger:
+  if logger and log_level >= 1:
     logger.print(f"Game {game_num}: Returns: {' '.join(map(str, trajectory.returns))}; Actions: {' '.join(actions)}")
   return trajectory
 
@@ -341,10 +340,25 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
   """An actor process that plays games and sends trajectories to the learner."""
   logger.print(f"Actor {num} started with PRNG key: {prng_key}")
 
-  # Actor-specific PRNG key by folding in its number
   actor_internal_key = jax.random.fold_in(prng_key, num)
   model_init_key, actor_run_key = jax.random.split(actor_internal_key)
 
+  # Directory for the learner's 'latest' checkpoint (atomically updated by learner)
+  latest_ckpt_load_dir = os.path.join(config.path, "checkpoints_jax_latest_atomic")
+
+  if not config.path:
+      logger.print(f"Warning: Actor {num} - config.path is not set. Checkpoint loading will be disabled.")
+  
+  # Checkpointer for loading the 'latest' checkpoint
+  actor_latest_checkpointer = ocp.Checkpointer(
+      ocp.PyTreeCheckpointHandler(),
+      # temporary_path_class is not strictly needed for restore, but harmless if kept.
+      # For simplicity, we can match the learner's checkpointer config for this path.
+      temporary_path_class=ocp_atomicity.CommitFileTemporaryPath 
+  )
+  if logger and config.path:
+      logger.print(f"Actor {num}: Will load latest checkpoints (via Checkpointer) from: {latest_ckpt_load_dir}")
+  
   logger.print(f"Actor {num}: Initializing model (about to call init_flax_model_and_variables)")
   try:
     flax_model, variables = model_jax.init_flax_model_and_variables(model_init_key, config, game)
@@ -375,47 +389,46 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
     """Attempts to load the latest checkpoint. Returns updated variables or current if no new checkpoint."""
     new_variables = current_variables
     loaded_new_checkpoint = False
-    if not ckpt_dir: # If path is not set, cannot load checkpoints
+    
+    if not config.path: # If path is not set, cannot load checkpoints
         return new_variables, loaded_new_checkpoint
 
-    # Path to the 'latest' checkpoint. Learner saves this.
-    latest_checkpoint_path = os.path.join(ckpt_dir, "latest")
+    # Check if the dedicated 'latest' checkpoint directory exists for Checkpointer
+    if not os.path.exists(latest_ckpt_load_dir) or not os.path.isdir(latest_ckpt_load_dir):
+        logger.opt_print(f"Actor {num}: 'latest_atomic' checkpoint directory not found at {latest_ckpt_load_dir}. No update.")
+        return new_variables, loaded_new_checkpoint
 
     try:
-      # Attempt to load the "latest" checkpoint. If it differs from the current, it's an update.
-      # Learner saves {'variables': variables, 'opt_state': opt_state}; actor only needs 'variables'.
-      target_to_restore = {'variables': current_variables} # Provide current_variables as a template
+      target_to_restore = {'variables': current_variables} 
+      # Learner saves {'variables': ..., 'opt_state': ...}. 
+      # Actor only needs 'variables'. PyTreeCheckpointHandler can selectively restore.
 
-      # Attempt to restore. If `latest_checkpoint_path` doesn't exist, it will return None or raise error
-      # depending on flax version and exact usage. Let's assume it returns None if not found.
-      if os.path.exists(latest_checkpoint_path): # Only attempt if the 'latest' file/link exists
-          logger.print(f"Actor {num}: Attempting to load checkpoint from {latest_checkpoint_path}")
-          restored_state = checkpoints.restore_checkpoint(
-              ckpt_dir=latest_checkpoint_path, # Pass the direct path to "latest"
-              target=target_to_restore
-          )
+      logger.print(f"Actor {num}: Attempting to load 'latest_atomic' checkpoint from {latest_ckpt_load_dir}")
+      
+      restored_pytree = actor_latest_checkpointer.restore(
+          directory=latest_ckpt_load_dir,
+          item=target_to_restore 
+      )
 
-          if restored_state and restored_state['variables'] is not current_variables: # Check if something was actually restored and is different
-              new_variables = restored_state['variables']
-              current_az_evaluator.update_variables(new_variables) # Update evaluator with new variables
-              logger.print(f"Actor {num}: Loaded new checkpoint. Inference cache info: {current_az_evaluator.cache_info()}")
-              current_az_evaluator.clear_cache() # Clearing cache as model updated
-              logger.print(f"Actor {num}: Cache cleared. New cache info: {current_az_evaluator.cache_info()}")
-              loaded_new_checkpoint = True
-          else:
-              logger.opt_print(f"Actor {num}: No new checkpoint found or restore failed at {latest_checkpoint_path}. Keeping current model variables.")
+      if restored_pytree and 'variables' in restored_pytree and restored_pytree['variables'] is not current_variables:
+          new_variables = restored_pytree['variables']
+          current_az_evaluator.update_variables(new_variables)
+          logger.print(f"Actor {num}: Loaded new 'latest_atomic' checkpoint from {latest_ckpt_load_dir}. Inference cache info: {current_az_evaluator.cache_info()}")
+          current_az_evaluator.clear_cache()
+          logger.print(f"Actor {num}: Cache cleared. New cache info: {current_az_evaluator.cache_info()}")
+          loaded_new_checkpoint = True
       else:
-          logger.opt_print(f"Actor {num}: 'latest' checkpoint file not found at {latest_checkpoint_path}. No update.")
+          logger.opt_print(f"Actor {num}: No new checkpoint data found or restore failed from {latest_ckpt_load_dir}. Keeping current model variables.")
 
     except Exception as e:
-      logger.print(f"Actor {num}: Error loading checkpoint from {latest_checkpoint_path}: {e}")
-      # Continue with existing variables
+      logger.print(f"Actor {num}: Error loading 'latest_atomic' checkpoint from {latest_ckpt_load_dir}: {e}")
+      logger.print(traceback.format_exc())
     return new_variables, loaded_new_checkpoint
 
   # Main actor loop
   for game_num in itertools.count():
     # Try to update model from checkpoint
-    variables, _ = update_checkpoint_fn(variables, az_evaluator)
+    variables, _ = update_checkpoint_fn(variables, az_evaluator) # az_evaluator is passed here
     
     # Derive a seed for this specific game from the actor's run key
     # Fold in game_num to ensure each game gets a unique PRNG sequence if actor is restarted/reused.
@@ -430,7 +443,8 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
         bots=bots,
         temperature=config.temperature,
         temperature_drop=config.temperature_drop,
-        numpy_seed=current_numpy_seed
+        numpy_seed=current_numpy_seed,
+        log_level=config.log_level
     )
     
     # For each player, create a player-specific trajectory and send it.
@@ -460,112 +474,108 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
 def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
               queue: spawn._ProcessQueue, prng_key: jax.random.PRNGKey):
   """A process that plays the latest checkpoint vs standard MCTS."""
-  logger.print(f"Evaluator {num} started with PRNG key: {prng_key}")
+  if config.log_level >= 2:
+    logger.print(f"Evaluator {num} started with PRNG key: {prng_key}")
 
   evaluator_internal_key = jax.random.fold_in(prng_key, num)
   model_init_key, evaluator_run_key = jax.random.split(evaluator_internal_key)
 
-  logger.print(f"Evaluator {num}: Initializing model (about to call init_flax_model_and_variables)")
+  # Directory for the learner's 'latest' checkpoint (atomically updated by learner)
+  latest_ckpt_load_dir_eval = os.path.join(config.path, "checkpoints_jax_latest_atomic")
+
+  if not config.path and config.log_level >= 1:
+    logger.print(f"Warning: Evaluator {num} - config.path is not set. Checkpoint loading will be disabled.")
+
+  # Checkpointer for loading the 'latest' checkpoint
+  evaluator_latest_checkpointer = ocp.Checkpointer(
+      ocp.PyTreeCheckpointHandler(),
+      temporary_path_class=ocp_atomicity.CommitFileTemporaryPath
+  )
+  if logger and config.path and config.log_level >=1:
+      logger.print(f"Evaluator {num}: Will load latest checkpoints (via Checkpointer) from: {latest_ckpt_load_dir_eval}")
+
+  if config.log_level >= 2:
+    logger.print(f"Evaluator {num}: Initializing model (about to call init_flax_model_and_variables)")
   try:
     flax_model, variables = model_jax.init_flax_model_and_variables(model_init_key, config, game)
-    logger.print(f"Evaluator {num}: Model initialized successfully. Model: {flax_model}")
+    if config.log_level >= 2:
+      logger.print(f"Evaluator {num}: Model initialized successfully. Model: {flax_model}")
   except Exception as e:
     logger.print(f"Evaluator {num}: Model initialization FAILED: {e}")
     import traceback as tb; logger.print(tb.format_exc())
     raise
 
-  logger.print(f"Evaluator {num}: Initializing AlphaZeroEvaluatorJAX")
+  if config.log_level >= 2:
+    logger.print(f"Evaluator {num}: Initializing AlphaZeroEvaluatorJAX")
   az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables, config.evaluator_cache_size)
   
-  # The MCTS bot that uses the AZ model. Initialize for player 0, for example.
-  # The actual player assignment happens in the game loop via current_bots.
   az_bot = _init_bot(config, game, az_evaluator, evaluation=True, player_id_for_bot=0)
-
-  # A standard MCTS bot with a random rollout evaluator to play against.
-  # It's important that this opponent is reasonably strong but not overly slow.
-  # The number of simulations for the opponent can be fixed or varied.
-  # Original AlphaZero used `eval_levels` to vary opponent strength.
   random_rollout_evaluator = mcts.RandomRolloutEvaluator()
+  results_buffer = Buffer(config.evaluation_window)
+  # ckpt_dir_base = os.path.join(config.path, "checkpoints_jax_managed") if config.path else None # No longer needed for latest, only for periodic if evaluator were to load those
   
-  # `eval_levels` from config determines different difficulties for the opponent.
-  # An evaluator process might be pinned to one level or cycle through them.
-  # For simplicity here, let's assume this evaluator instance handles one level, 
-  # or cycles if `num` (evaluator index) is used to determine difficulty.
-  # The original `evaluator` function varied difficulty based on `game_num % config.eval_levels`.
-  # Let's keep that structure.
-
-  results_buffer = Buffer(config.evaluation_window) # To store recent results for averaging
-
-  ckpt_dir = os.path.join(config.path, "checkpoints_jax") if config.path else None
-  if not config.path:
-    logger.print(f"Warning: Evaluator {num} - config.path is not set. Checkpoint loading will be disabled.")
-
-  current_loaded_step = -1 # Keep track of the loaded checkpoint step to avoid redundant loads of the same file
+  # current_loaded_step variable is unused and can be removed.
+  # nonlocal current_loaded_step in update_checkpoint_eval_fn is also not needed then.
 
   def update_checkpoint_eval_fn(current_vars, current_az_eval):
-    nonlocal current_loaded_step
     new_vars = current_vars
-    if not ckpt_dir:
-        return new_vars, False # False indicates no new checkpoint loaded
-
-    latest_checkpoint_file = os.path.join(ckpt_dir, "latest")
+    loaded_new = False
+    
+    if not config.path: 
+        return new_vars, loaded_new
+    
+    if not os.path.exists(latest_ckpt_load_dir_eval) or not os.path.isdir(latest_ckpt_load_dir_eval):
+        if config.log_level >= 2:
+            logger.opt_print(f"Evaluator {num}: 'latest_atomic' checkpoint directory not found at {latest_ckpt_load_dir_eval}.")
+        return new_vars, loaded_new
 
     try:
-        if os.path.exists(latest_checkpoint_file):
-            # Attempt to restore the "latest" checkpoint. A change in the restored variables' content
-            # (or identity, depending on flax.checkpoints behavior) indicates a new checkpoint.
-            # Robust checking might involve comparing variable contents or step numbers if available.
-            # For now, rely on the restored object differing if an update occurred.
-            target_to_restore = {'variables': current_vars} 
-            restored_state = checkpoints.restore_checkpoint(ckpt_dir=latest_checkpoint_file, target=target_to_restore)
+        target_to_restore = {'variables': current_vars}
+        if config.log_level >= 1:
+            logger.print(f"Evaluator {num}: Attempting to load 'latest_atomic' checkpoint from {latest_ckpt_load_dir_eval}")
+        
+        restored_pytree = evaluator_latest_checkpointer.restore(
+            directory=latest_ckpt_load_dir_eval,
+            item=target_to_restore
+        )
 
-            if restored_state and restored_state['variables'] is not current_vars:
-                new_vars = restored_state['variables']
-                current_az_eval.update_variables(new_vars)
-                logger.print(f"Evaluator {num}: Loaded new checkpoint from {latest_checkpoint_file}.")
-                # current_az_eval.clear_cache() is called by update_variables
-                return new_vars, True # True indicates new checkpoint loaded
-            else:
-                logger.opt_print(f"Evaluator {num}: No new checkpoint data found at {latest_checkpoint_file}.")
+        if restored_pytree and 'variables' in restored_pytree and restored_pytree['variables'] is not current_vars:
+            new_vars = restored_pytree['variables']
+            current_az_eval.update_variables(new_vars)
+            if config.log_level >= 1:
+                logger.print(f"Evaluator {num}: Loaded new 'latest_atomic' checkpoint from {latest_ckpt_load_dir_eval}. Updated model variables.")
+            loaded_new = True
         else:
-            logger.opt_print(f"Evaluator {num}: 'latest' checkpoint file not found at {latest_checkpoint_file}.")
+            if config.log_level >= 2:
+                logger.opt_print(f"Evaluator {num}: No new checkpoint data found or restore failed from {latest_ckpt_load_dir_eval}.")
 
     except Exception as e:
-      logger.print(f"Evaluator {num}: Error loading checkpoint from {latest_checkpoint_file}: {e}")
-    return new_vars, False
-
-  # Main evaluator loop
+      logger.print(f"Evaluator {num}: Error loading 'latest_atomic' checkpoint from {latest_ckpt_load_dir_eval}: {e}")
+      logger.print(traceback.format_exc())
+    return new_vars, loaded_new
   for game_num in itertools.count():
-    # Update model from checkpoint
     variables, loaded_new = update_checkpoint_eval_fn(variables, az_evaluator)
     if loaded_new:
-        # Reset results buffer if model changed, to evaluate the new model cleanly.
         results_buffer = Buffer(config.evaluation_window)
-        logger.print(f"Evaluator {num}: Model updated, results buffer reset.")
-
-    # Determine opponent strength (difficulty from original AlphaZero, fixed for now).
+        if config.log_level >= 1:
+          logger.print(f"Evaluator {num}: Model updated, results buffer reset.")
     difficulty = (game_num // 2) % config.eval_levels if config.eval_levels > 0 else 0
     opponent_simulations = config.max_simulations 
     opponent_bot = mcts.MCTSBot(
         game,
-        config.uct_c, # Use same UCT as AZ for opponent, or could be different
-        opponent_simulations, # Number of simulations for the opponent
-        random_rollout_evaluator, # Opponent uses random rollouts
-        solve=False, # Original was solve=True for MCTS+Solver. Let's match that if possible.
+        config.uct_c, 
+        opponent_simulations, 
+        random_rollout_evaluator, 
+        solve=False, 
         verbose=False,
         dont_return_chance_node=True
     )
-
-    # Alternate who plays first (AZ vs Opponent)
     az_player = game_num % 2
     current_bots = [az_bot, opponent_bot] if az_player == 0 else [opponent_bot, az_bot]
-    
-    logger.opt_print(f"Evaluator {num}, Game {game_num}: AZ player {az_player}, Opponent difficulty {difficulty}")
-
-    # Generate a numpy_seed for this game, as in actor
+    if config.log_level >= 2:
+      logger.opt_print(f"Evaluator {num}, Game {game_num}: AZ player {az_player}, Opponent difficulty {difficulty}")
     game_specific_rng_key = jax.random.fold_in(evaluator_run_key, game_num)
     numpy_seed = jax.random.randint(game_specific_rng_key, shape=(), minval=0, maxval=jnp.iinfo(jnp.int32).max).item()
-
     trajectory = _play_game(
         logger=logger, 
         game_num=game_num, 
@@ -573,28 +583,19 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
         bots=current_bots, 
         temperature=1,        # For evaluation, use deterministic policy (temp=1, best_child in _play_game if temp_drop=0)
         temperature_drop=0,   # No randomness in action selection after initial phase for evaluation
-        numpy_seed=numpy_seed
+        numpy_seed=numpy_seed,
+        log_level=config.log_level
     )
-
-    # Log result and send to learner (or a central stats collector)
-    # The `queue` for evaluator is typically for it to send results *to* the learner/main process.
     result_for_az_player = trajectory.returns[az_player]
     results_buffer.append(result_for_az_player)
-    
     avg_score = sum(results_buffer.data) / len(results_buffer.data) if results_buffer.data else 0
-
-    logger.print(f"Evaluator {num}, Game {game_num}: Result for AZ player {az_player}: {result_for_az_player:.2f}. Avg score: {avg_score:.3f} over {len(results_buffer.data)} games.")
-
+    if config.log_level >= 0:
+      logger.print(f"Evaluator {num}, Game {game_num}: Result for AZ player {az_player}: {result_for_az_player:.2f}. Avg score: {avg_score:.3f} over {len(results_buffer.data)} games.")
     try:
-      # Queue item: (difficulty_level, score_for_az_player)
       queue.put((difficulty, result_for_az_player))
     except Exception as e:
       logger.print(f"Evaluator {num}: Error sending result to queue: {e}")
-      # Decide if to break or continue.
       pass
-    
-    # Optional: small delay
-    # time.sleep(config.evaluator_sleep_seconds if hasattr(config, 'evaluator_sleep_seconds') else 1)
 
 
 def broadcast_fn(message):
@@ -675,7 +676,7 @@ def alpha_zero_jax(config: ConfigJAX):
         main_process_logger.print("AlphaZero JAX stopping. Signaling actors and evaluators to exit.")
         for proc in processes:
             try:
-                proc.join(timeout=JOIN_WAIT_DELAY * 10) 
+                proc.join()
             except Exception as join_e: 
                 main_process_logger.print(f"Error joining process: {join_e}")
         main_process_logger.print("AlphaZero JAX run completed.")
@@ -747,11 +748,10 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             broadcast_fn, # Added broadcast_fn here
             prng_key: jax.random.PRNGKey):
   """A learner that consumes actor trajectories and evaluator results, and updates the model."""
-  # The logger variable is now reliably passed by the @watcher decorator.
-  if logger: # Check if logger is provided (it should be by watcher)
+  if logger and config.log_level >= 2:
     logger.print(f"JAX Learner started with PRNG key: {prng_key}")
     logger.print(f"Learner using game: {game}, config: {config}") # Log basic info
-  else: # Fallback if watcher didn't provide logger (should not happen)
+  elif not logger:
     print(f"JAX Learner started (no logger) with PRNG key: {prng_key}")
 
 
@@ -767,36 +767,78 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   #   loaded_game = game
 
   flax_model, variables = model_jax.init_flax_model_and_variables(
-      learner_key_for_init, config, game # Use the game object
+      learner_key_for_init, config, game
   )
   optimizer = optax.adamw(learning_rate=config.learning_rate, weight_decay=config.weight_decay)
   opt_state = optimizer.init(variables['params'])
 
   replay_buffer = Buffer(config.replay_buffer_size)
   
-  # Restore from checkpoint if available
-  ckpt_dir = os.path.join(config.path, "checkpoints_jax") if config.path else None
-  if ckpt_dir:
-    os.makedirs(ckpt_dir, exist_ok=True)
-    # Try to restore the latest checkpoint
-    # Target for restore should match what's saved (variables and opt_state)
-    restore_target = {'variables': variables, 'opt_state': opt_state}
-    latest_checkpoint_path = os.path.join(ckpt_dir, "latest") # Default name by save_checkpoint(..., step="latest", prefix="")
-    
-    # Use checkpoints.restore_checkpoint correctly. It expects the ckpt_dir and optionally a specific step.
-    # If restoring "latest", the path should be to the directory containing the "latest" file/symlink.
-    try:
-      restored_state = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, target=restore_target, step="latest", prefix="") 
-      if restored_state:
-        variables = restored_state['variables']
-        opt_state = restored_state['opt_state']
-        if logger: logger.print(f"Learner restored checkpoint from {latest_checkpoint_path}")
-      else:
-        if logger: logger.print(f"No 'latest' checkpoint found at {ckpt_dir} to restore. Starting fresh.")
-    except FileNotFoundError: # Specific exception if the checkpoint dir or file doesn't exist
-        if logger: logger.print(f"Checkpoint file/directory for 'latest' not found at {ckpt_dir}. Starting fresh.")
-    except Exception as e: # Catch other potential errors during restore
-        if logger: logger.print(f"Error restoring 'latest' checkpoint from {ckpt_dir}: {e}. Starting fresh.")
+  # ---- Orbax Checkpointing Setup ----
+  # Directory for periodic, managed checkpoints
+  managed_ckpt_dir = os.path.join(config.path, "checkpoints_jax_managed")
+
+  # Directory for the single 'latest' checkpoint (atomically updated)
+  latest_ckpt_target_dir = os.path.join(config.path, "checkpoints_jax_latest_atomic") 
+
+  if logger:
+      logger.print(f"Managed checkpoints will be saved to: {managed_ckpt_dir}")
+      logger.print(f"Latest checkpoint (atomic via temp + rename) will be at: {latest_ckpt_target_dir}")
+
+  # For periodic checkpoints
+  mngr_options = ocp.CheckpointManagerOptions(
+      save_interval_steps=config.checkpoint_freq if config.checkpoint_freq > 0 else 0,
+      max_to_keep=3,
+      create=True,
+      enable_async_checkpointing=False
+  )
+  checkpoint_manager = ocp.CheckpointManager(
+      directory=managed_ckpt_dir,
+      # checkpointers=simple_commit_handler, # REMOVED - was causing TypeError
+      options=mngr_options
+  )
+
+  # Checkpointer for the single 'latest' checkpoint, using CommitFileTemporaryPath
+  # This will now write to a unique temp path each time before being moved.
+  latest_checkpointer = ocp.Checkpointer(
+      ocp.PyTreeCheckpointHandler(), # Standard handler
+      temporary_path_class=ocp_atomicity.CommitFileTemporaryPath # Specified on Checkpointer
+  )
+  if logger:
+      logger.print(f"Using Checkpointer with CommitFileTemporaryPath for staging latest checkpoints.")
+
+  # Attempt to restore from the CheckpointManager (latest periodic checkpoint)
+  initial_step = 0
+  if checkpoint_manager.latest_step() is not None:
+      initial_step = checkpoint_manager.latest_step()
+      try:
+          # Target for restore must match what was saved. Orbax saves the raw pytree.
+          # We are saving a dict: {'variables': variables, 'opt_state': opt_state}
+          target_to_restore_mngr = {'variables': variables, 'opt_state': opt_state}
+          restored_mngr_state = checkpoint_manager.restore(
+              step=initial_step,
+              args=ocp.args.Composite( # Use Composite to restore specific parts
+                  variables=ocp.args.StandardRestore(variables),
+                  opt_state=ocp.args.StandardRestore(opt_state)
+              )
+              # item=target_to_restore_mngr # Alternative if not using Composite args
+          )
+          if restored_mngr_state:
+              variables = restored_mngr_state['variables']
+              opt_state = restored_mngr_state['opt_state']
+              if logger: logger.print(f"Learner restored periodic checkpoint from {managed_ckpt_dir} at step {initial_step}")
+          else:
+              if logger: logger.print(f"No periodic checkpoint found by manager at {managed_ckpt_dir} (step {initial_step}). Starting fresh.")
+              initial_step = 0 # Reset step if restore failed
+      except Exception as e:
+          if logger:
+              logger.print(f"Error restoring periodic checkpoint via manager from {managed_ckpt_dir} (step {initial_step}): {e}. Starting fresh.")
+              logger.print(traceback.format_exc())
+          initial_step = 0 # Reset step on error
+  else:
+      if logger: logger.print(f"No existing periodic checkpoints found by manager in {managed_ckpt_dir}. Starting fresh.")
+      initial_step = 0
+  # ---- End Orbax Checkpointing Setup ----
 
   data_log = None
   if config.path:
@@ -820,22 +862,19 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   @jax.jit
   def train_step_fn(current_variables, current_opt_state, batch_observations, batch_legals_masks, batch_policy_targets, batch_value_targets):
     # Defines the loss function and computes gradients.
+
     def loss_and_grad_inner_fn(params):
-      # Ensure apply_vars includes 'params' and potentially 'batch_stats'
       apply_vars = {'params': params}
-      if 'batch_stats' in current_variables: # Check if model uses batch_stats
+      if 'batch_stats' in current_variables:
         apply_vars['batch_stats'] = current_variables['batch_stats']
       
-      # Determine if model needs mutable state for batch_stats
       mutable_list = ['batch_stats'] if 'batch_stats' in apply_vars else None
 
-      # Model application
-      # The model's __call__ should accept legals_mask and apply it internally to logits.
       preds_and_state = flax_model.apply(
-          apply_vars, 
-          batch_observations, 
-          legals_mask=batch_legals_masks, # Pass legals_mask to model as keyword
-          training=True, 
+          apply_vars,
+          batch_observations,
+          legals_mask=batch_legals_masks,
+          training=True,
           mutable=mutable_list
       )
       
@@ -845,20 +884,21 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         (policy_logits, value_preds) = preds_and_state
         updated_model_state = None
 
-      # Policy loss: softmax cross-entropy. Assumes policy_logits are raw logits.
-      # Assumes batch_policy_targets are probability distributions.
-      # The model should have handled masking illegal actions by setting their logits to -inf.
-      policy_loss = optax.softmax_cross_entropy(logits=policy_logits, labels=batch_policy_targets)
+      policy_loss_ce = optax.safe_softmax_cross_entropy(logits=policy_logits, labels=batch_policy_targets)
       
-      # Masking for samples with no legal actions (e.g. terminal states mistakenly in batch)
-      # This outer mask zero_outs loss for samples where no action was possible at all.
-      # batch_legals_masks.any(axis=1) is True if there's at least one legal action for that sample.
-      # This is an additional safeguard. The primary masking of illegal actions should happen in the model.
-      policy_loss = policy_loss * batch_legals_masks.any(axis=1)
-      policy_loss = jnp.mean(policy_loss)
+      # Debug prints for policy loss (can be removed after verification)
+      # jax.debug.print("--- train_step_fn DEBUG: policy_loss_ce (raw_values): {vals}", vals=policy_loss_ce)
+      # jax.debug.print("--- train_step_fn DEBUG: policy_loss_ce stats: shape={s}, min={min_val}, max={max_val}, mean={mean_val}, NaNs={nans}, Infs={infs}",
+      #                 s=policy_loss_ce.shape, min_val=jnp.min(policy_loss_ce), max_val=jnp.max(policy_loss_ce),
+      #                 mean_val=jnp.mean(policy_loss_ce),
+      #                 nans=jnp.sum(jnp.isnan(policy_loss_ce)), infs=jnp.sum(jnp.isinf(policy_loss_ce)))
 
-      # Value loss: squared error.
-      # Ensure shapes are compatible for squared_error. value_preds might be (N, 1), targets (N,).
+      has_at_least_one_legal_action = jnp.any(batch_legals_masks, axis=1)
+      policy_loss_final_contrib = jnp.where(has_at_least_one_legal_action, policy_loss_ce, 0.0)
+      
+      num_valid_policy_samples = jnp.sum(has_at_least_one_legal_action)
+      policy_loss = jnp.sum(policy_loss_final_contrib) / jnp.maximum(num_valid_policy_samples, 1.0)
+
       value_loss = optax.squared_error(
           predictions=jnp.squeeze(value_preds, axis=-1),
           targets=jnp.squeeze(batch_value_targets, axis=-1)
@@ -871,13 +911,17 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
     (loss_val, (new_model_state, p_loss, v_loss)), grads = jax.value_and_grad(
         loss_and_grad_inner_fn, has_aux=True)(current_variables['params'])
     
-    updates, new_opt_state = optimizer.update(grads, current_opt_state, current_variables['params']) # Changed apply_updates to update
+    updates, new_opt_state = optimizer.update(grads, current_opt_state, current_variables['params'])
     new_params = optax.apply_updates(current_variables['params'], updates)
     
     new_variables = current_variables.copy()
     new_variables['params'] = new_params
-    if new_model_state and 'batch_stats' in new_model_state: # Check if batch_stats were updated
+    if new_model_state and 'batch_stats' in new_model_state:
         new_variables['batch_stats'] = new_model_state['batch_stats']
+    
+    # Debug prints for variable and opt_state contents (can be removed after verification)
+    # jax.debug.print("--- train_step_fn OUTPUT: new_variables PyTree structure ---")
+    # ... (existing debug prints for variables and opt_state)
           
     return new_variables, new_opt_state, loss_val, p_loss, v_loss
 
@@ -885,17 +929,15 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   last_time = time.time()
   total_trajectories = 0
   
-  # Store current losses for logging, initialize to NaN
   current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
 
-
-  # This generator yields trajectories from actor_queues
   def trajectory_generator():
     while True:
       found = 0
       for queue_idx, queue in enumerate(actor_queues): # Use actor_queues
         try:
-          yield queue.get_nowait() 
+          item = queue.get_nowait()
+          yield item 
           found += 1
         except spawn.Empty: # Use spawn.Empty
           pass
@@ -918,8 +960,8 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
           # This part might need timeout logic if queues can remain empty indefinitely and block training.
       return collected
       
-  for step in itertools.count(1): # Start step from 1 for 1-based indexing if preferred for logging
-    if config.max_steps > 0 and step > config.max_steps: # Check before starting step
+  for step in itertools.count(initial_step + 1): # Start step from last restored step + 1
+    if config.max_steps > 0 and step > config.max_steps:
         if logger: logger.print(f"Max steps {config.max_steps} reached. Exiting learner.")
         break
 
@@ -955,6 +997,11 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         trajectories_to_process = collect_trajectories(num_to_collect=1) # Process one trajectory for stats per step for now
 
         for traj in trajectories_to_process:
+            if not hasattr(traj, "states"): # Add this check
+                if logger:
+                    logger.print(f"Learner: Received object of type {type(traj)} from actor queue: {repr(traj)}. Skipping.")
+                continue
+
             total_trajectories += 1
             num_trajectories += 1
             game_lengths.add(len(traj))
@@ -964,14 +1011,15 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
 
             # Map scalar return to outcome string for HistogramNamed
             current_player_return = traj.returns # This is now a scalar
-            outcome_str = None # Initialize to None
+            outcome_bucket_id = None # NEW LOGIC: for integer index
+
             if current_player_return is not None: # Check if return value is not None
                 if current_player_return > 0: # Win for this player
-                    outcome_str = "win"
+                    outcome_bucket_id = 0 # Index for "win"
                 elif current_player_return < 0: # Loss for this player
-                    outcome_str = "loss"
+                    outcome_bucket_id = 1 # Index for "loss"
                 elif current_player_return == 0: # Draw
-                    outcome_str = "draw"
+                    outcome_bucket_id = 2 # Index for "draw"
                 # Add other mappings if quit/eval states are possible and have distinct scalar returns.
                 # Example: if quit is -2 and eval is -3, map them to "quit" and "eval" strings.
                 # elif current_player_return == -2: # Example for quit
@@ -982,22 +1030,20 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
                     # Log an unexpected return value but don't add to histogram or default to something.
                     # This case should ideally not be hit if actors correctly set scalar returns.
                     if logger:
-                        logger.print(f"Learner: Received trajectory with unexpected (but non-None) return value: {current_player_return}. Not mapping to known outcome string.")
+                        logger.print(f"Learner: Received trajectory with unexpected (but non-None) return value: {current_player_return}. Not mapping to known outcome for histogram.")
             else: # current_player_return is None
                  if logger:
                     logger.print(f"Learner: Received trajectory with None return value. Not adding to outcomes histogram.")
 
 
-            if outcome_str:
+            if outcome_bucket_id is not None: # NEW LOGIC
                 try:
-                    # Ensure outcome_names_for_histogram is defined and accessible here
-                    # Example: outcome_names_for_histogram = ["win", "loss", "draw", "quit", "eval"]
-                    # This should match the keys used when initializing outcomes = stats.HistogramNamed(...)
-                    bucket_id = outcomes.get_bucket_id(outcome_str) # Using get_bucket_id if available or direct mapping
-                    outcomes.add(bucket_id)
-                except (ValueError, KeyError) as e_hist: # Catch if string not in names or other issue
+                    # Directly add the outcome string to the histogram
+                    # outcomes.add(outcome_str) # OLD LOGIC
+                    outcomes.add(outcome_bucket_id) # NEW LOGIC: Pass integer index
+                except (ValueError, KeyError, IndexError) as e_hist: # Catch if string not in names or other issue
                     if logger:
-                        logger.print(f"Learner: Error adding outcome '{outcome_str}' (return: {current_player_return}) to histogram: {e_hist}. Histogram names: {outcomes.counts.keys()}")
+                        logger.print(f"Learner: Error adding outcome bucket_id '{outcome_bucket_id}' (return: {current_player_return}) to histogram: {e_hist}. Histogram names: {outcomes._names if hasattr(outcomes, '_names') else 'N/A'}")
 
 
             # Add states to replay buffer
@@ -1028,7 +1074,8 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         if logger: logger.opt_print("Learner: All actor queues empty.") # opt_print for less frequent messages
         # Continue to next part of the loop (e.g. try training if buffer is full)
     except Exception as e:
-        if logger: logger.print(f"Learner: Error processing actor queue: {e}")
+        if logger: 
+            logger.print(f"Learner: Error processing actor queue: {e}")
         # Potentially skip this learner step or handle error more gracefully
     
     now = time.time()
@@ -1038,9 +1085,8 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
     # Calculate effective actors contributing to this step's data
     # This is a bit heuristic; if actors are much faster than learner, effective_actors might be high.
     # If only one trajectory was processed, effective_actors for this stat could be 1.
-    effective_actors = config.actors # Assume all actors are contributing over time.
+    effective_actors = config.actors
 
-    # Log stats even if no training step is taken, to monitor data flow
     log_message_timing = (
         f"Step: {step}, Game Speed: {num_trajectories / seconds:.1f} games/s, "
         f"{num_states / seconds:.1f} states/s. "
@@ -1049,7 +1095,9 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
     )
     log_message_buffer = f"Buffer size: {len(replay_buffer)}. Total states seen by buffer: {replay_buffer.total_seen}"
 
-    step_log_msg_prefix = f"[{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}] Step: {step}"
+    # Use initial_step for the first log, then the loop's step variable
+    current_log_step = step # step starts from 1 in the loop, initial_step is 0-based from manager
+    step_log_msg_prefix = f"[{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}] Step: {current_log_step}"
     if logger:
       logger.print(step_log_msg_prefix)
       logger.print(log_message_timing)
@@ -1059,16 +1107,32 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
     save_path_for_broadcast = None # Initialize, will be updated if checkpoint is saved
     if len(replay_buffer) >= config.train_batch_size and config.train_batch_size > 0:
       batch_data = replay_buffer.sample(config.train_batch_size)
+      if logger: # Add this logging
+          logger.print(f"Training on batch of size: {len(batch_data)}")
       
       # Ensure TrainInputJAX.stack method is available and used correctly.
       # If not, stack manually here. For now, assuming model_jax.TrainInputJAX.stack exists.
       try:
         stacked_input = model_jax.TrainInputJAX.stack(batch_data)
+        if logger: # Add this logging
+            # ADDED: Log types of stacked_input fields
+            logger.print(f"Learner Python Loop: Types of stacked_input fields: "
+                         f"obs_type={type(stacked_input.observation)}, "
+                         f"legals_type={type(stacked_input.legals_mask)}, "
+                         f"policy_type={type(stacked_input.policy_target)}, "
+                         f"value_type={type(stacked_input.value_target)}")
+            # Original logging for shapes, which might be causing the error
+            logger.print(f"Stacked batch shapes: obs={stacked_input.observation.shape}, legals={stacked_input.legals_mask.shape}, policy={stacked_input.policy_target.shape}, value={stacked_input.value_target.shape}")
         batch_obs_jnp = jnp.array(stacked_input.observation, dtype=jnp.float32)
         batch_legals_jnp = jnp.array(stacked_input.legals_mask, dtype=jnp.bool_) 
         batch_policy_jnp = jnp.array(stacked_input.policy_target, dtype=jnp.float32)
         batch_value_jnp = jnp.array(stacked_input.value_target, dtype=jnp.float32)
         
+        if logger: # ADDED: Log shapes before JIT call
+            logger.print(f"Learner Python Loop: Shapes before train_step_fn call: "
+                         f"obs={batch_obs_jnp.shape}, legals={batch_legals_jnp.shape}, "
+                         f"policy={batch_policy_jnp.shape}, value={batch_value_jnp.shape}")
+
         variables, opt_state, total_loss_val, policy_loss_val, value_loss_val = train_step_fn(
             variables, opt_state, batch_obs_jnp, batch_legals_jnp, batch_policy_jnp, batch_value_jnp
         )
@@ -1078,111 +1142,22 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         if logger: 
           logger.print(loss_log_msg)
         
-        # JAX Checkpointing
-        if ckpt_dir: 
-            save_target = {'variables': variables, 'opt_state': opt_state}
-            step_prefix = "checkpoint_"
-            
-            if config.checkpoint_freq > 0 and step % config.checkpoint_freq == 0:
-                keep_value = config.checkpoint_freq 
-                try:
-                    saved_periodic_path = checkpoints.save_checkpoint(
-                        ckpt_dir=ckpt_dir, 
-                        target=save_target, 
-                        step=step, 
-                        prefix=step_prefix, 
-                        overwrite=True, 
-                        keep=keep_value 
-                    )
-                    if logger: 
-                      logger.opt_print(f"Saved step checkpoint: {saved_periodic_path} (kept {keep_value})")
-                except Exception as e:
-                    err_msg = f"Error saving step checkpoint {step}: {e}"
-                    if logger: 
-                      logger.print(err_msg)
-
-            # Update "latest" checkpoint using a temporary directory strategy
-            temp_latest_dir_name = "latest_inprogress"
-            temp_latest_full_path = os.path.join(ckpt_dir, temp_latest_dir_name)
-            final_latest_full_path = os.path.join(ckpt_dir, "latest")
-
-            try:
-                if os.path.exists(temp_latest_full_path):
-                    shutil.rmtree(temp_latest_full_path)
-                    if logger:
-                        logger.opt_print(f"Removed pre-existing temporary latest checkpoint directory: {temp_latest_full_path}")
-                
-                # Orbax saves directly into the directory given by ckpt_dir, it doesn't create a subdir named by step unless prefix is used.
-                # So, we save into `temp_latest_full_path` directly.
-                # The `step` arg here can be e.g. current `step` or 1 if we only care about the content, not the sub-folder name.
-                # Let's ensure the save is into temp_latest_full_path.
-                # save_checkpoint for Orbax will create its own structure *inside* temp_latest_full_path if step is not None.
-                # To have temp_latest_full_path *be* the checkpoint, we should set step=None or a fixed value.
-                # Let's use step=1 within this temp dir.
-                os.makedirs(temp_latest_full_path, exist_ok=True) # Ensure the base for save_checkpoint exists
-
-                # Save to the temporary in-progress directory.
-                # Orbax CheckpointManager is usually preferred for more complex scenarios.
-                # For this direct save_checkpoint, it will save under temp_latest_full_path/1 (if step=1)
-                # Or directly files like 'metadata', 'tree' if step=None (or step=<string>)
-
-                # Let's simplify: have save_checkpoint write its structure *inside* temp_latest_full_path.
-                # Then rename this whole directory.
-                # We'll use a dummy step name like "checkpoint" within this temp structure.
-                inner_step_name_for_temp = "chkpt"
-                checkpoints.save_checkpoint(
-                    ckpt_dir=temp_latest_full_path, # Base directory for this save operation
-                    target=save_target,
-                    step=inner_step_name_for_temp,  # This will create a subdir temp_latest_full_path/chkpt
-                    prefix="", # No additional prefix for the subdir name
-                    overwrite=True, 
-                    keep=1 
-                )
+        # ---- Orbax Checkpointing: Save ----
+        save_target_pytree = {'variables': variables, 'opt_state': opt_state}
+        try:
+            if checkpoint_manager.should_save(step):
+                checkpoint_manager.save(step, args=ocp.args.Composite(
+                    variables=ocp.args.StandardSave(variables),
+                    opt_state=ocp.args.StandardSave(opt_state)
+                ))
                 if logger:
-                    logger.opt_print(f"Successfully saved checkpoint to temporary location: {os.path.join(temp_latest_full_path, inner_step_name_for_temp)}")
-
-                if os.path.exists(final_latest_full_path):
-                    shutil.rmtree(final_latest_full_path)
-                    if logger:
-                        logger.opt_print(f"Removed old 'latest' checkpoint at: {final_latest_full_path}")
-                
-                # We need to rename the actual content (e.g., temp_latest_full_path/chkpt) to final_latest_full_path
-                # Or, if save_checkpoint doesn't create a subdir with step, then rename temp_latest_full_path itself.
-                # Given save_checkpoint behavior, it creates a sub-directory named by `step` (or `prefix`+`step`).
-                # So, we rename `os.path.join(temp_latest_full_path, inner_step_name_for_temp)` to `final_latest_full_path`.
-                
-                source_to_rename = os.path.join(temp_latest_full_path, inner_step_name_for_temp)
-                if os.path.exists(source_to_rename): # Check if the expected source from save_checkpoint exists
-                    os.rename(source_to_rename, final_latest_full_path)
-                    save_path_for_broadcast = final_latest_full_path
-                    if logger:
-                        logger.opt_print(f"Updated 'latest' checkpoint by renaming {source_to_rename} to {final_latest_full_path}")
-                    # Clean up the (now empty) parent temp_latest_full_path directory
-                    try:
-                        os.rmdir(temp_latest_full_path) 
-                    except OSError as e_rmdir:
-                        if logger: logger.opt_print(f"Could not remove empty temp parent dir {temp_latest_full_path}: {e_rmdir}")
-                else:
-                    if logger: logger.print(f"Source for rename {source_to_rename} not found after temp save.")
-                    save_path_for_broadcast = None
-
-
-            except Exception as e:
-                err_msg = f"Error updating latest checkpoint: {e}"
-                if logger:
-                    logger.print(err_msg)
-                # Cleanup temp_latest_full_path if it still exists after an error
-                if os.path.exists(temp_latest_full_path):
-                    try:
-                        shutil.rmtree(temp_latest_full_path)
-                        if logger:
-                            logger.opt_print(f"Cleaned up temporary latest checkpoint directory after error: {temp_latest_full_path}")
-                    except Exception as e_clean:
-                        if logger:
-                            logger.print(f"Error cleaning up temporary latest checkpoint directory {temp_latest_full_path}: {e_clean}")
-                save_path_for_broadcast = None 
-        else:
-            pass # Checkpointing disabled if ckpt_dir is None
+                    logger.opt_print(f"Saved checkpoint for step {step} via manager to {managed_ckpt_dir}")
+        except Exception as e:
+            err_msg = f"Error saving checkpoint for step {step} via manager: {e}"
+            if logger:
+                logger.print(err_msg)
+                logger.print(traceback.format_exc())
+        # ---- End Orbax Checkpointing: Save ----
 
       except AttributeError as e:
         error_msg = f"Error during training data preparation (possibly missing TrainInputJAX.stack): {e}"
@@ -1256,10 +1231,10 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         logger.print(max_steps_msg)
       break
 
-    if save_path_for_broadcast and broadcast_fn: 
-        broadcast_msg = f"Broadcasting checkpoint: {save_path_for_broadcast}"
+    if save_path_for_broadcast and broadcast_fn: # This broadcast is now only for OTHER types of messages if any.
+        broadcast_msg = f"Broadcasting checkpoint: {save_path_for_broadcast}" # This message is now potentially misleading if path is None
         if logger: 
-          logger.opt_print(broadcast_msg) # Changed from logger.print for periodic status
+          logger.opt_print(broadcast_msg) 
         broadcast_fn(save_path_for_broadcast) 
   
   final_msg = f"[{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}] JAX Learner finished."

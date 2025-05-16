@@ -212,34 +212,52 @@ class Conv2D_JAX(nn.Module):
 
   @nn.compact
   def __call__(self, x: jax.Array, training: bool, legals_mask: Optional[jax.Array] = None):
-    # Reshape flat input (Batch, Features) to expected 3D spatial format (Batch, H, W, C)
-    if hasattr(self, 'expected_input_shape') and self.expected_input_shape and x.ndim == 2:
-      if np.prod(self.expected_input_shape) == x.shape[1]: # Check if total features match
-          x = x.reshape((x.shape[0],) + self.expected_input_shape)
-      else:
-        # Potential mismatch, see comment in ResNet_JAX
-        pass
+    if self.expected_input_shape:  # Expected shape is H, W, C
+      if x.ndim == 2:  # Input is flat (Batch, Features)
+        batch_size = x.shape[0]
+        # Ensure product of expected_input_shape matches feature count if flat
+        if np.prod(self.expected_input_shape) != x.shape[1]:
+          raise ValueError(
+              f"Conv2D_JAX: Flat input feature count {x.shape[1]} does not "
+              f"match product of expected_input_shape {self.expected_input_shape}."
+          )
+        x = x.reshape((batch_size,) + self.expected_input_shape)
 
-    # Torso
-    # The `training` flag will be used by ConvBlock for its BatchNorm layers.
-    current_filters = self.nn_width
     # Save the output of the torso before heads are applied
     torso_output = x 
     for i in range(self.nn_depth):
-      torso_output = ConvBlock(n_filters=current_filters, 
+      torso_output = ConvBlock(
+          n_filters=self.nn_width,
                                kernel_size=(3, 3), 
                                strides=(1, 1), 
-                               padding='SAME', 
-                               name=f'conv_block_{i}')(torso_output, training=training)
-      
-    # TF-style Policy Head for Conv2D
-    ph = nn.Conv(features=2, kernel_size=(1,1), padding='SAME', name="policy_head_conv1x1")(torso_output)
-    ph = nn.BatchNorm(use_running_average=not training, name="policy_head_bn")(ph)
-    ph = nn.relu(ph)
-    ph = ph.reshape((ph.shape[0], -1))
-    policy_logits = nn.Dense(features=self.output_size, name="policy_head_dense")(ph)
+          padding="SAME",
+          name=f"torso_conv_block_{i}")(torso_output, training=training)
 
-    # TF-style Value Head for Conv2D
+    # Flatten the output for the dense layers
+    # flat_x = nn.Flatten()(torso_output) # Original, but caused issues with Flax if input shape changed.
+    flat_x = torso_output.reshape((torso_output.shape[0], -1)) # More robust flattening
+
+    # Policy head
+    # policy_hidden = nn.Dense(features=self.nn_width, name="policy_hidden")(flat_x)
+    # policy_hidden = nn.relu(policy_hidden)
+    # policy_logits_pre_mask = nn.Dense(features=self.output_size, name="policy_head")(policy_hidden)
+    policy_logits_pre_mask = nn.Dense(features=self.output_size, name="policy_head")(flat_x)
+
+    if legals_mask is not None:
+      # Ensure legals_mask has the same batch dimension and number of actions
+      if legals_mask.shape[0] != policy_logits_pre_mask.shape[0] or \
+         legals_mask.shape[1] != policy_logits_pre_mask.shape[1]:
+        raise ValueError(
+            f"Shape mismatch: policy_logits_pre_mask {policy_logits_pre_mask.shape} "
+            f"vs legals_mask {legals_mask.shape}")
+      policy_logits = jnp.where(legals_mask, policy_logits_pre_mask, -jnp.inf)
+    else:
+      # This case should ideally only happen during model initialization or if the game has no concept of legals
+      # For safety, let policy_logits be the unmasked logits if legals_mask is None
+      # However, this might lead to issues if the model is used in contexts expecting masked logits
+      policy_logits = policy_logits_pre_mask
+
+    # Value head
     vh = nn.Conv(features=1, kernel_size=(1,1), padding='SAME', name="value_head_conv1x1")(torso_output)
     vh = nn.BatchNorm(use_running_average=not training, name="value_head_bn")(vh)
     vh = nn.relu(vh)
@@ -248,9 +266,6 @@ class Conv2D_JAX(nn.Module):
     vh = nn.relu(vh)
     value_output = nn.Dense(features=1, name="value_head_dense2")(vh)
     value_output = jnp.tanh(value_output)
-
-    if legals_mask is not None:
-      policy_logits = jnp.where(legals_mask, policy_logits, -jnp.inf)
 
     return (policy_logits, value_output)
 
