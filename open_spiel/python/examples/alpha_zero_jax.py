@@ -29,6 +29,7 @@ import pyspiel
 
 from open_spiel.python.algorithms.alpha_zero_jax import alpha_zero_jax as alpha_zero_jax_lib # Renamed to avoid clash
 from open_spiel.python.algorithms.alpha_zero_jax.alpha_zero_jax import ConfigJAX
+from open_spiel.python.algorithms.alpha_zero_jax.alpha_zero_jax import set_external_libraries_log_level
 from open_spiel.python.utils import spawn
 
 FLAGS = flags.FLAGS
@@ -66,7 +67,7 @@ flags.DEFINE_integer("nn_width", 64, "Hidden layer size or ResNet filter count."
 flags.DEFINE_integer("nn_depth", 2, "Number of hidden layers or ResNet blocks.") # Smaller for MLP default
 flags.DEFINE_bool("quiet", False, "Don't show the moves as they're played.")
 flags.DEFINE_integer("master_seed", 0, "Master PRNG seed for JAX, Python random, and NumPy.")
-flags.DEFINE_integer("log_level", 0, "Logging verbosity: 0=outcome only, 1=minimal per-game, 2=full debug.")
+flags.DEFINE_enum("log_level", "INFO", ["ERROR","WARN","INFO","DEBUG","TRACE"], "Logging verbosity.")
 
 # New ResNet/ResNeSt specific flags (optional, use if nn_model="resnet" and you want generic ResNet)
 flags.DEFINE_list("resnet_depth_config", None, "Stage sizes for generic ResNet, e.g., 2,2,2,2 for ResNet18. Comma-separated.")
@@ -81,6 +82,15 @@ flags.DEFINE_bool(
     "game_specific_az_path", True,
     "Whether to append game name to path."
     " Disable to lead a checkpoint from path directly.")
+
+# Insert this mapping before config = ConfigJAX(...)
+LOG_LEVELS = {
+    "ERROR": 0,
+    "WARN": 1,
+    "INFO": 2,
+    "DEBUG": 3,
+    "TRACE": 4,
+}
 
 def main(argv):
   del argv # Unused
@@ -118,8 +128,11 @@ def main(argv):
       resnet_block_callable_name=FLAGS.resnet_block_callable_name,
       resnet_block_kwargs=json.loads(FLAGS.resnet_block_kwargs_json),
       evaluator_cache_size=FLAGS.evaluator_cache_size,
-      log_level=FLAGS.log_level,
+      log_level=LOG_LEVELS[FLAGS.log_level],
   )
+
+  # Set external library log levels to match config
+  set_external_libraries_log_level(config.log_level)
 
   # Create a temp dir if path is not set.
   if not config.path:

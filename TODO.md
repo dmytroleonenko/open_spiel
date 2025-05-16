@@ -383,7 +383,7 @@ Implementation of Long Narde rules, based on a copy of "games/backgammon".
             *   This reshaped `x` is then used by the subsequent convolutional layers.
     *   **Citation**: Debug logs from checkers run showing `model.init()` with `(1,8,8,5)` and `model.apply()` (via `_play_game`) receiving `(1,320)` leading to `ScopeParamShapeError`. Specifically, `[DEBUG Conv2D_JAX __call__] Initial x.shape: (1, 8, 8, 5)` during init vs. `[DEBUG Conv2D_JAX __call__] Initial x.shape: (1, 320)` during inference.
 
-[TODO] 29. **Investigate and Fix `NaN` Losses in Learner (`alpha_zero_jax.py`)**
+[DONE] 29. **Investigate and Fix `NaN` Losses in Learner (`alpha_zero_jax.py`)**
     *   **`NaN` Losses**:
         *   **Symptom**: `Total Loss` and `Policy Loss` are reported as `NaN` during training, while `Value Loss` might be a number.
         *   **Potential Causes**:
@@ -398,7 +398,7 @@ Implementation of Long Narde rules, based on a copy of "games/backgammon".
             *   Inspect the model's internal masking of illegal actions (setting logits to `-jnp.inf`).
     *   **Citation**: Learner logs showing `NaN` for policy/total loss.
 
-[TODO] 30. **Investigate and Fix Checkpointing Errors in Learner (`alpha_zero_jax.py`)**
+[DONE] 30. **Investigate and Fix Checkpointing Errors in Learner (`alpha_zero_jax.py`)**
     *   **Checkpointing Errors**:
         *   **Symptom**: Errors like "No such file or directory" (e.g., `b'opt_state.0.count/'`) or "add() argument after ** must be a mapping, not NoneType" during `checkpoints.save_checkpoint`.
         *   **Potential Causes**:
@@ -410,3 +410,19 @@ Implementation of Long Narde rules, based on a copy of "games/backgammon".
             *   Simplify the checkpoint saving logic temporarily (e.g., only save step-numbered checkpoints, disable "latest" to isolate).
             *   Review Orbax documentation for best practices in atomic saving.
     *   **Citation**: Learner logs showing errors during checkpoint saving.
+
+[DONE] 31. **Define and Clean Up Logging Levels in `alpha_zero_jax.py`)**
+    *   Remove all pre-existing debug print statements introduced for shape/type inspection (e.g., "Learner Python Loop: Types...", "Stacked batch shapes", "Shapes before train_step_fn call").
+    *   Categorize log output by `log_level`:
+        - **log_level=3**: Per-step training summaries (games/s, states/s, buffer size, losses).
+        - **log_level=2**: Warnings and errors (checkpoint failures, NaNs), and per-episode or checkpoint summaries.
+        - **log_level=1**: Final experiment summary only (aggregate losses, final checkpoint path).
+    *   Suppress redundant library and Orbax INFO logs at all levels by configuring absl and the logger appropriately.
+    *   Ensure `quiet=True` fully suppresses per-move actor prints.
+
+32. **Implement named log-level constants and suppress third-party verbose logs**  
+    *   Add in-code suppression of Orbax/Abseil INFO logs via `os.environ['GLOG_minloglevel']` and `absl.logging.set_verbosity`.  
+    *   Define `ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE` constants at the top of `alpha_zero_jax.py`.  
+    *   Change example script's `--log_level` flag from `DEFINE_integer` to `DEFINE_enum("log_level", "INFO", ["ERROR","WARN","INFO","DEBUG","TRACE"], "Logging verbosity level")`.  
+    *   Replace all numeric `config.log_level >= N` checks with the new named constants.  
+    *   Citation: Chat discussion on 2025-05-16 about logging suppression and log-level constants.

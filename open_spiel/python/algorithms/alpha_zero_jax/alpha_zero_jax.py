@@ -15,6 +15,11 @@ import os # Added for checkpointing directory management
 import shutil # Added for rmtree and rename
 import functools # For watcher decorator
 import traceback # For watcher decorator
+import tracemalloc
+import psutil
+import gc
+import logging
+import absl.logging
 
 from . import model_jax
 from . import evaluator_jax # For AlphaZeroEvaluatorJAX
@@ -28,6 +33,20 @@ JOIN_WAIT_DELAY = 0.001
 VALUE_ACC_HIST_BUCKETS = 20  # Number of buckets for value accuracy histograms
 VALUE_PRED_HIST_BUCKETS = 20 # Number of buckets for value prediction histograms
 EVALS_STAT_WINDOW = 100      # Window for evaluation statistics
+
+# ---- Named log-level constants for logging discipline ----
+ERROR = 0
+WARN = 1
+INFO = 2
+DEBUG = 3
+TRACE = 4
+# Log-level meanings:
+#   ERROR: Only critical errors and experiment-ending events.
+#   WARN:  Warnings about recoverable issues or unexpected states.
+#   INFO:  High-level experiment progress, start/stop, per-episode summaries.
+#   DEBUG: Per-step training summaries, checkpointing, detailed diagnostics.
+#   TRACE: Extremely verbose, per-move or per-action logs (rarely used).
+# All logging output in this file should be gated by these levels, and no print() should appear unless guarded by log_level >= DEBUG or higher.
 
 
 class ConfigJAX(collections.namedtuple(
@@ -320,9 +339,7 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list, temperatur
           root.total_reward / root.explore_count if root.explore_count > 0 else 0) # Value from MCTS search
       trajectory.add(current_trajectory_state)
       action_str_log = state.action_to_string(player, action)
-      actions.append(action_str_log) # For final game log
-      if logger and log_level >= 2:
-        logger.opt_print(f"Player {player} sampled action: {action_str_log}")
+      actions.append(action_str_log)  # For final game log
       state.apply_action(action)
   
   if logger and log_level >= 2:
@@ -338,7 +355,8 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list, temperatur
 def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
           queue: spawn._ProcessQueue, prng_key: jax.random.PRNGKey):
   """An actor process that plays games and sends trajectories to the learner."""
-  logger.print(f"Actor {num} started with PRNG key: {prng_key}")
+  if config.log_level >= DEBUG:
+    logger.print(f"Actor {num} started with PRNG key: {prng_key}")
 
   actor_internal_key = jax.random.fold_in(prng_key, num)
   model_init_key, actor_run_key = jax.random.split(actor_internal_key)
@@ -346,29 +364,31 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
   # Directory for the learner's 'latest' checkpoint (atomically updated by learner)
   latest_ckpt_load_dir = os.path.join(config.path, "checkpoints_jax_latest_atomic")
 
-  if not config.path:
+  if not config.path and config.log_level >= INFO:
       logger.print(f"Warning: Actor {num} - config.path is not set. Checkpoint loading will be disabled.")
-  
+
   # Checkpointer for loading the 'latest' checkpoint
   actor_latest_checkpointer = ocp.Checkpointer(
-      ocp.PyTreeCheckpointHandler(),
-      # temporary_path_class is not strictly needed for restore, but harmless if kept.
-      # For simplicity, we can match the learner's checkpointer config for this path.
-      temporary_path_class=ocp_atomicity.CommitFileTemporaryPath 
+      ocp.PyTreeCheckpointHandler(use_ocdbt=False),
+      temporary_path_class=ocp_atomicity.AtomicRenameTemporaryPath
   )
-  if logger and config.path:
+  if logger and config.path and config.log_level >= DEBUG:
       logger.print(f"Actor {num}: Will load latest checkpoints (via Checkpointer) from: {latest_ckpt_load_dir}")
-  
-  logger.print(f"Actor {num}: Initializing model (about to call init_flax_model_and_variables)")
+
+  if config.log_level >= DEBUG:
+    logger.print(f"Actor {num}: Initializing model (about to call init_flax_model_and_variables)")
   try:
     flax_model, variables = model_jax.init_flax_model_and_variables(model_init_key, config, game)
-    logger.print(f"Actor {num}: Model initialized successfully. Model: {flax_model}")
+    if config.log_level >= DEBUG:
+      logger.print(f"Actor {num}: Model initialized successfully. Model: {flax_model}")
   except Exception as e:
-    logger.print(f"Actor {num}: Model initialization FAILED: {e}")
-    import traceback as tb; logger.print(tb.format_exc())
+    if config.log_level >= INFO:
+      logger.print(f"Actor {num}: Model initialization FAILED: {e}")
+      import traceback as tb; logger.print(tb.format_exc())
     raise
   
-  logger.print(f"Actor {num}: Initializing AlphaZeroEvaluatorJAX")
+  if config.log_level >= DEBUG:
+    logger.print(f"Actor {num}: Initializing AlphaZeroEvaluatorJAX")
   # Initialize evaluator
   az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables, config.evaluator_cache_size)
 
@@ -393,36 +413,33 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
     if not config.path: # If path is not set, cannot load checkpoints
         return new_variables, loaded_new_checkpoint
 
-    # Check if the dedicated 'latest' checkpoint directory exists for Checkpointer
-    if not os.path.exists(latest_ckpt_load_dir) or not os.path.isdir(latest_ckpt_load_dir):
-        logger.opt_print(f"Actor {num}: 'latest_atomic' checkpoint directory not found at {latest_ckpt_load_dir}. No update.")
+    # Skip update if checkpoint directory is missing or empty
+    if not os.path.exists(latest_ckpt_load_dir) or not os.path.isdir(latest_ckpt_load_dir) or not os.listdir(latest_ckpt_load_dir):
+        if config.log_level >= INFO:
+            logger.opt_print(f"Actor {num}: 'latest_atomic' checkpoint dir missing or empty at {latest_ckpt_load_dir}. No update.")
         return new_variables, loaded_new_checkpoint
 
     try:
-      target_to_restore = {'variables': current_variables} 
-      # Learner saves {'variables': ..., 'opt_state': ...}. 
-      # Actor only needs 'variables'. PyTreeCheckpointHandler can selectively restore.
+      # Restore full variables PyTree from atomic checkpoint
+      restored_variables = actor_latest_checkpointer.restore(latest_ckpt_load_dir)
 
-      logger.print(f"Actor {num}: Attempting to load 'latest_atomic' checkpoint from {latest_ckpt_load_dir}")
-      
-      restored_pytree = actor_latest_checkpointer.restore(
-          directory=latest_ckpt_load_dir,
-          item=target_to_restore 
-      )
-
-      if restored_pytree and 'variables' in restored_pytree and restored_pytree['variables'] is not current_variables:
-          new_variables = restored_pytree['variables']
-          current_az_evaluator.update_variables(new_variables)
-          logger.print(f"Actor {num}: Loaded new 'latest_atomic' checkpoint from {latest_ckpt_load_dir}. Inference cache info: {current_az_evaluator.cache_info()}")
-          current_az_evaluator.clear_cache()
-          logger.print(f"Actor {num}: Cache cleared. New cache info: {current_az_evaluator.cache_info()}")
-          loaded_new_checkpoint = True
+      if restored_variables is not current_variables:
+        new_variables = restored_variables
+      current_az_evaluator.update_variables(new_variables)
+      if config.log_level >= INFO:
+        logger.print(f"Actor {num}: Loaded new 'latest_atomic' checkpoint from {latest_ckpt_load_dir}. Inference cache info: {current_az_evaluator.cache_info()}")
+        current_az_evaluator.clear_cache()
+        logger.print(f"Actor {num}: Cache cleared. New cache info: {current_az_evaluator.cache_info()}")
+        loaded_new_checkpoint = True
       else:
-          logger.opt_print(f"Actor {num}: No new checkpoint data found or restore failed from {latest_ckpt_load_dir}. Keeping current model variables.")
+          if config.log_level >= DEBUG:
+            logger.opt_print(f"Actor {num}: No new checkpoint data found or restore failed from {latest_ckpt_load_dir}. Keeping current model variables.")
+          loaded_new_checkpoint = False
 
     except Exception as e:
-      logger.print(f"Actor {num}: Error loading 'latest_atomic' checkpoint from {latest_ckpt_load_dir}: {e}")
-      logger.print(traceback.format_exc())
+      if config.log_level >= INFO:
+        logger.print(f"Actor {num}: Error loading 'latest_atomic' checkpoint from {latest_ckpt_load_dir}: {e}")
+        logger.print(traceback.format_exc())
     return new_variables, loaded_new_checkpoint
 
   # Main actor loop
@@ -461,9 +478,11 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
 
             try:
                 queue.put(player_specific_trajectory)
-                logger.opt_print(f"Actor {num}: Sent trajectory for player {p_id} from game {game_num} to learner. Return: {player_specific_trajectory.returns}")
+                if config.log_level >= DEBUG:
+                  logger.opt_print(f"Actor {num}: Sent trajectory for player {p_id} from game {game_num} to learner. Return: {player_specific_trajectory.returns}")
             except Exception as e:
-                logger.print(f"Actor {num}: Error sending player-specific trajectory (p_id {p_id}, game {game_num}) to queue: {e}")
+                if config.log_level >= INFO:
+                  logger.print(f"Actor {num}: Error sending player-specific trajectory (p_id {p_id}, game {game_num}) to queue: {e}")
                 pass
 
     # Short delay to prevent actor from hogging CPU if queue is slow
@@ -474,7 +493,7 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
 def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
               queue: spawn._ProcessQueue, prng_key: jax.random.PRNGKey):
   """A process that plays the latest checkpoint vs standard MCTS."""
-  if config.log_level >= 2:
+  if config.log_level >= DEBUG:
     logger.print(f"Evaluator {num} started with PRNG key: {prng_key}")
 
   evaluator_internal_key = jax.random.fold_in(prng_key, num)
@@ -483,29 +502,30 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
   # Directory for the learner's 'latest' checkpoint (atomically updated by learner)
   latest_ckpt_load_dir_eval = os.path.join(config.path, "checkpoints_jax_latest_atomic")
 
-  if not config.path and config.log_level >= 1:
+  if not config.path and config.log_level >= INFO:
     logger.print(f"Warning: Evaluator {num} - config.path is not set. Checkpoint loading will be disabled.")
 
   # Checkpointer for loading the 'latest' checkpoint
   evaluator_latest_checkpointer = ocp.Checkpointer(
-      ocp.PyTreeCheckpointHandler(),
-      temporary_path_class=ocp_atomicity.CommitFileTemporaryPath
+      ocp.PyTreeCheckpointHandler(use_ocdbt=False),
+      temporary_path_class=ocp_atomicity.AtomicRenameTemporaryPath
   )
-  if logger and config.path and config.log_level >=1:
+  if logger and config.path and config.log_level >=INFO:
       logger.print(f"Evaluator {num}: Will load latest checkpoints (via Checkpointer) from: {latest_ckpt_load_dir_eval}")
 
-  if config.log_level >= 2:
+  if config.log_level >= DEBUG:
     logger.print(f"Evaluator {num}: Initializing model (about to call init_flax_model_and_variables)")
   try:
     flax_model, variables = model_jax.init_flax_model_and_variables(model_init_key, config, game)
-    if config.log_level >= 2:
+    if config.log_level >= DEBUG:
       logger.print(f"Evaluator {num}: Model initialized successfully. Model: {flax_model}")
   except Exception as e:
-    logger.print(f"Evaluator {num}: Model initialization FAILED: {e}")
-    import traceback as tb; logger.print(tb.format_exc())
+    if config.log_level >= INFO:
+      logger.print(f"Evaluator {num}: Model initialization FAILED: {e}")
+      import traceback as tb; logger.print(tb.format_exc())
     raise
 
-  if config.log_level >= 2:
+  if config.log_level >= DEBUG:
     logger.print(f"Evaluator {num}: Initializing AlphaZeroEvaluatorJAX")
   az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables, config.evaluator_cache_size)
   
@@ -524,34 +544,26 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
     if not config.path: 
         return new_vars, loaded_new
     
-    if not os.path.exists(latest_ckpt_load_dir_eval) or not os.path.isdir(latest_ckpt_load_dir_eval):
-        if config.log_level >= 2:
-            logger.opt_print(f"Evaluator {num}: 'latest_atomic' checkpoint directory not found at {latest_ckpt_load_dir_eval}.")
+    # Skip update if checkpoint directory is missing or empty
+    if not os.path.exists(latest_ckpt_load_dir_eval) or not os.path.isdir(latest_ckpt_load_dir_eval) or not os.listdir(latest_ckpt_load_dir_eval):
+        if config.log_level >= INFO:
+            logger.opt_print(f"Evaluator {num}: 'latest_atomic' checkpoint dir missing or empty at {latest_ckpt_load_dir_eval}. No update.")
         return new_vars, loaded_new
 
     try:
-        target_to_restore = {'variables': current_vars}
+        # Restore full variables PyTree from atomic checkpoint
+        restored_variables = evaluator_latest_checkpointer.restore(latest_ckpt_load_dir_eval)
+
+        if restored_variables is not current_vars:
+            new_vars = restored_variables
+        current_az_eval.update_variables(new_vars)
         if config.log_level >= 1:
-            logger.print(f"Evaluator {num}: Attempting to load 'latest_atomic' checkpoint from {latest_ckpt_load_dir_eval}")
-        
-        restored_pytree = evaluator_latest_checkpointer.restore(
-            directory=latest_ckpt_load_dir_eval,
-            item=target_to_restore
-        )
-
-        if restored_pytree and 'variables' in restored_pytree and restored_pytree['variables'] is not current_vars:
-            new_vars = restored_pytree['variables']
-            current_az_eval.update_variables(new_vars)
-            if config.log_level >= 1:
-                logger.print(f"Evaluator {num}: Loaded new 'latest_atomic' checkpoint from {latest_ckpt_load_dir_eval}. Updated model variables.")
+            logger.print(f"Evaluator {num}: Loaded new 'latest_atomic' checkpoint from {latest_ckpt_load_dir_eval}. Updated model variables.")
             loaded_new = True
-        else:
-            if config.log_level >= 2:
-                logger.opt_print(f"Evaluator {num}: No new checkpoint data found or restore failed from {latest_ckpt_load_dir_eval}.")
-
     except Exception as e:
-      logger.print(f"Evaluator {num}: Error loading 'latest_atomic' checkpoint from {latest_ckpt_load_dir_eval}: {e}")
-      logger.print(traceback.format_exc())
+      if config.log_level >= INFO:
+        logger.print(f"Evaluator {num}: Error loading 'latest_atomic' checkpoint from {latest_ckpt_load_dir_eval}: {e}")
+        logger.print(traceback.format_exc())
     return new_vars, loaded_new
   for game_num in itertools.count():
     variables, loaded_new = update_checkpoint_eval_fn(variables, az_evaluator)
@@ -589,12 +601,13 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
     result_for_az_player = trajectory.returns[az_player]
     results_buffer.append(result_for_az_player)
     avg_score = sum(results_buffer.data) / len(results_buffer.data) if results_buffer.data else 0
-    if config.log_level >= 0:
+    if config.log_level >= ERROR:
       logger.print(f"Evaluator {num}, Game {game_num}: Result for AZ player {az_player}: {result_for_az_player:.2f}. Avg score: {avg_score:.3f} over {len(results_buffer.data)} games.")
     try:
       queue.put((difficulty, result_for_az_player))
     except Exception as e:
-      logger.print(f"Evaluator {num}: Error sending result to queue: {e}")
+      if config.log_level >= 1:
+        logger.print(f"Evaluator {num}: Error sending result to queue: {e}")
       pass
 
 
@@ -602,7 +615,15 @@ def broadcast_fn(message):
     # This is a placeholder for broadcasting messages to actors/evaluators if needed.
     # In the current implementation, it just prints/logs the message.
     # If a logger is needed, use a global or pass as argument (not required for pickling).
-    print(f"Broadcasting message (placeholder): {message}")
+    # Only print if a global config exists and log_level >= DEBUG, otherwise suppress.
+    try:
+        from inspect import currentframe, getouterframes
+        frame = getouterframes(currentframe())[1].frame
+        config = frame.f_locals.get('config', None)
+        if config is not None and hasattr(config, 'log_level') and config.log_level >= DEBUG:
+            print(f"Broadcasting message (placeholder): {message}")
+    except Exception:
+        pass
     # If you want to use a logger, you can set a global logger variable here.
     # Or, you can make this a no-op if not needed.
     pass
@@ -618,7 +639,7 @@ def alpha_zero_jax(config: ConfigJAX):
     main_log_name = "main_alpha_zero_jax" 
     main_process_logger = file_logger.FileLogger(main_log_directory, main_log_name, not config.quiet)
     actual_log_file_path = os.path.join(main_log_directory, f'log-{main_log_name}.txt')
-    if not config.quiet:
+    if not config.quiet and config.log_level >= INFO:
         print(f"Main process logging to: {actual_log_file_path}")
     process_keys = jax.random.split(main_key, 1 + config.actors + config.evaluators)
     learner_key = process_keys[0]
@@ -628,7 +649,8 @@ def alpha_zero_jax(config: ConfigJAX):
     processes = []
     actor_process_queues = []
     evaluator_process_queues = []
-    main_process_logger.print(f"Starting {config.actors} actors...")
+    if config.log_level >= INFO:
+        main_process_logger.print(f"Starting {config.actors} actors...")
     for i in range(config.actors):
         actor_kwargs = {
             "game": game,
@@ -639,7 +661,8 @@ def alpha_zero_jax(config: ConfigJAX):
         p = spawn.Process(target=actor, kwargs=actor_kwargs)
         processes.append(p)
         actor_process_queues.append(p.queue)
-    main_process_logger.print(f"Starting {config.evaluators} evaluators...")
+    if config.log_level >= INFO:
+        main_process_logger.print(f"Starting {config.evaluators} evaluators...")
     for i in range(config.evaluators):
         eval_kwargs = {
             "game": game,
@@ -658,28 +681,31 @@ def alpha_zero_jax(config: ConfigJAX):
         "prng_key": learner_key,
         "broadcast_fn": broadcast_fn  # Pass the top-level function
     }
-    main_process_logger.print("Starting Learner...")
-    p_learner = spawn.Process(target=learner, kwargs=learner_kwargs)
-    processes.append(p_learner)
+    if config.log_level >= INFO:
+        main_process_logger.print("Starting Learner in main process...")
     try:
         learner(
             game=game,
             config=config,
-            actor_queues=actor_process_queues, 
-            evaluator_queues=evaluator_process_queues, 
-            broadcast_fn=broadcast_fn, 
+            actor_queues=actor_process_queues,
+            evaluator_queues=evaluator_process_queues,
+            broadcast_fn=broadcast_fn,
             prng_key=learner_key
         )
-    except (KeyboardInterrupt, EOFError) as e: 
-        main_process_logger.print(f"Caught {type(e).__name__}, stopping AlphaZero JAX.")
+    except (KeyboardInterrupt, EOFError) as e:
+        if config.log_level >= INFO:
+            main_process_logger.print(f"Caught {type(e).__name__}, stopping AlphaZero JAX.")
     finally:
-        main_process_logger.print("AlphaZero JAX stopping. Signaling actors and evaluators to exit.")
+        if config.log_level >= INFO:
+            main_process_logger.print("AlphaZero JAX stopping. Signaling actors and evaluators to exit.")
         for proc in processes:
             try:
                 proc.join()
-            except Exception as join_e: 
-                main_process_logger.print(f"Error joining process: {join_e}")
-        main_process_logger.print("AlphaZero JAX run completed.")
+            except Exception as join_e:
+                if config.log_level >= INFO:
+                    main_process_logger.print(f"Error joining process: {join_e}")
+        if config.log_level >= INFO:
+            main_process_logger.print("AlphaZero JAX run completed.")
 
 
 # Entry point for the script (if run directly)
@@ -748,12 +774,18 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             broadcast_fn, # Added broadcast_fn here
             prng_key: jax.random.PRNGKey):
   """A learner that consumes actor trajectories and evaluator results, and updates the model."""
-  if logger and config.log_level >= 2:
+  # Start Python allocation tracing and RSS monitoring
+  tracemalloc.start()
+  _mem_proc = psutil.Process(os.getpid())
+  if logger and config.log_level >= DEBUG:
     logger.print(f"JAX Learner started with PRNG key: {prng_key}")
     logger.print(f"Learner using game: {game}, config: {config}") # Log basic info
   elif not logger:
-    print(f"JAX Learner started (no logger) with PRNG key: {prng_key}")
-
+    try:
+        if config is not None and hasattr(config, 'log_level') and config.log_level >= DEBUG:
+            print(f"JAX Learner started (no logger) with PRNG key: {prng_key}")
+    except Exception:
+        pass
 
   # Initialize model and optimizer
   learner_key_for_init, prng_key = jax.random.split(prng_key) # Use prng_key for subsequent ops
@@ -781,7 +813,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   # Directory for the single 'latest' checkpoint (atomically updated)
   latest_ckpt_target_dir = os.path.join(config.path, "checkpoints_jax_latest_atomic") 
 
-  if logger:
+  if logger and config.log_level >= INFO:
       logger.print(f"Managed checkpoints will be saved to: {managed_ckpt_dir}")
       logger.print(f"Latest checkpoint (atomic via temp + rename) will be at: {latest_ckpt_target_dir}")
 
@@ -801,11 +833,14 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   # Checkpointer for the single 'latest' checkpoint, using CommitFileTemporaryPath
   # This will now write to a unique temp path each time before being moved.
   latest_checkpointer = ocp.Checkpointer(
-      ocp.PyTreeCheckpointHandler(), # Standard handler
-      temporary_path_class=ocp_atomicity.CommitFileTemporaryPath # Specified on Checkpointer
+      ocp.PyTreeCheckpointHandler(use_ocdbt=False),
+      temporary_path_class=ocp_atomicity.AtomicRenameTemporaryPath
   )
-  if logger:
-      logger.print(f"Using Checkpointer with CommitFileTemporaryPath for staging latest checkpoints.")
+  if logger and config.log_level >= INFO:
+      logger.print(f"Using Checkpointer with AtomicRenameTemporaryPath for staging latest checkpoints.")
+
+  # Ensure the atomic checkpoint directory exists
+  os.makedirs(latest_ckpt_target_dir, exist_ok=True)
 
   # Attempt to restore from the CheckpointManager (latest periodic checkpoint)
   initial_step = 0
@@ -927,6 +962,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
 
   # ---- Main Learner Loop ----
   last_time = time.time()
+  start_time = last_time  # Global start time for throughput stats
   total_trajectories = 0
   
   current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
@@ -961,6 +997,18 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
       return collected
       
   for step in itertools.count(initial_step + 1): # Start step from last restored step + 1
+    # Log memory usage and tracemalloc stats every 4 steps
+    if logger and step % 200 == 0:
+        rss_mb = _mem_proc.memory_info().rss / (1024 * 1024)
+        logger.print(f"Learner step {step}: RSS memory usage: {rss_mb:.2f} MB")
+        try:
+            snapshot = tracemalloc.take_snapshot()
+            top_stats = snapshot.statistics('lineno')
+            logger.print("[Top 5 memory allocations]")
+            for stat in top_stats[:5]:
+                logger.print(str(stat))
+        except Exception as e:
+            logger.print(f"Error taking tracemalloc snapshot: {e}")
     if config.max_steps > 0 and step > config.max_steps:
         if logger: logger.print(f"Max steps {config.max_steps} reached. Exiting learner.")
         break
@@ -994,7 +1042,19 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         # Using the collect_trajectories helper
         # Collect a small number of trajectories to process per learner step
         # This is a placeholder, a more robust strategy for data ingestion might be needed.
-        trajectories_to_process = collect_trajectories(num_to_collect=1) # Process one trajectory for stats per step for now
+        # Drain all available trajectories from actor queues to avoid backlog
+        trajectories_to_process = []
+        for queue_idx, queue in enumerate(actor_queues):
+            while True:
+                try:
+                    traj = queue.get_nowait()
+                    trajectories_to_process.append(traj)
+                except spawn.Empty:
+                    break
+                except Exception as e:
+                    if logger:
+                        logger.print(f"Learner: Error draining actor_queue {queue_idx}: {e}")
+                    break
 
         for traj in trajectories_to_process:
             if not hasattr(traj, "states"): # Add this check
@@ -1071,7 +1131,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
                 replay_buffer.append(train_input)
 
     except spawn.Empty: # Should be handled by trajectory_generator now
-        if logger: logger.opt_print("Learner: All actor queues empty.") # opt_print for less frequent messages
+        if logger and config.log_level >= DEBUG: logger.opt_print("Learner: All actor queues empty.") # opt_print for less frequent messages
         # Continue to next part of the loop (e.g. try training if buffer is full)
     except Exception as e:
         if logger: 
@@ -1082,23 +1142,24 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
     seconds = now - last_time
     last_time = now
     
+    # Compute global elapsed time since start
+    global_elapsed = now - start_time
+    
     # Calculate effective actors contributing to this step's data
     # This is a bit heuristic; if actors are much faster than learner, effective_actors might be high.
     # If only one trajectory was processed, effective_actors for this stat could be 1.
     effective_actors = config.actors
 
     log_message_timing = (
-        f"Step: {step}, Game Speed: {num_trajectories / seconds:.1f} games/s, "
-        f"{num_states / seconds:.1f} states/s. "
-        f"{num_states / (effective_actors * seconds):.1f} states/(s*actor), game_length: "
-        f"{num_states / num_trajectories if num_trajectories > 0 else 0:.1f}"
+        f"Step: {step}, Global Game Speed: {total_trajectories/global_elapsed:.1f} games/s, "
+        f"Global States/s: {replay_buffer.total_seen/global_elapsed:.1f}"
     )
     log_message_buffer = f"Buffer size: {len(replay_buffer)}. Total states seen by buffer: {replay_buffer.total_seen}"
 
     # Use initial_step for the first log, then the loop's step variable
     current_log_step = step # step starts from 1 in the loop, initial_step is 0-based from manager
     step_log_msg_prefix = f"[{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}] Step: {current_log_step}"
-    if logger:
+    if logger and config.log_level >= DEBUG:
       logger.print(step_log_msg_prefix)
       logger.print(log_message_timing)
       logger.print(log_message_buffer)
@@ -1107,51 +1168,59 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
     save_path_for_broadcast = None # Initialize, will be updated if checkpoint is saved
     if len(replay_buffer) >= config.train_batch_size and config.train_batch_size > 0:
       batch_data = replay_buffer.sample(config.train_batch_size)
-      if logger: # Add this logging
+      if logger and config.log_level >= DEBUG:
           logger.print(f"Training on batch of size: {len(batch_data)}")
       
       # Ensure TrainInputJAX.stack method is available and used correctly.
       # If not, stack manually here. For now, assuming model_jax.TrainInputJAX.stack exists.
       try:
         stacked_input = model_jax.TrainInputJAX.stack(batch_data)
-        if logger: # Add this logging
-            # ADDED: Log types of stacked_input fields
-            logger.print(f"Learner Python Loop: Types of stacked_input fields: "
-                         f"obs_type={type(stacked_input.observation)}, "
-                         f"legals_type={type(stacked_input.legals_mask)}, "
-                         f"policy_type={type(stacked_input.policy_target)}, "
-                         f"value_type={type(stacked_input.value_target)}")
-            # Original logging for shapes, which might be causing the error
-            logger.print(f"Stacked batch shapes: obs={stacked_input.observation.shape}, legals={stacked_input.legals_mask.shape}, policy={stacked_input.policy_target.shape}, value={stacked_input.value_target.shape}")
         batch_obs_jnp = jnp.array(stacked_input.observation, dtype=jnp.float32)
         batch_legals_jnp = jnp.array(stacked_input.legals_mask, dtype=jnp.bool_) 
         batch_policy_jnp = jnp.array(stacked_input.policy_target, dtype=jnp.float32)
         batch_value_jnp = jnp.array(stacked_input.value_target, dtype=jnp.float32)
         
-        if logger: # ADDED: Log shapes before JIT call
-            logger.print(f"Learner Python Loop: Shapes before train_step_fn call: "
-                         f"obs={batch_obs_jnp.shape}, legals={batch_legals_jnp.shape}, "
-                         f"policy={batch_policy_jnp.shape}, value={batch_value_jnp.shape}")
-
         variables, opt_state, total_loss_val, policy_loss_val, value_loss_val = train_step_fn(
             variables, opt_state, batch_obs_jnp, batch_legals_jnp, batch_policy_jnp, batch_value_jnp
         )
         current_total_loss, current_policy_loss, current_value_loss = total_loss_val, policy_loss_val, value_loss_val 
         
         loss_log_msg = f"Step: {step}, Total Loss: {current_total_loss:.4f}, Policy Loss: {current_policy_loss:.4f}, Value Loss: {current_value_loss:.4f}"
-        if logger: 
+        if logger and config.log_level >= DEBUG:
           logger.print(loss_log_msg)
         
         # ---- Orbax Checkpointing: Save ----
         save_target_pytree = {'variables': variables, 'opt_state': opt_state}
         try:
+            # Periodic checkpoint save if enabled
             if checkpoint_manager.should_save(step):
-                checkpoint_manager.save(step, args=ocp.args.Composite(
-                    variables=ocp.args.StandardSave(variables),
-                    opt_state=ocp.args.StandardSave(opt_state)
-                ))
-                if logger:
+                checkpoint_manager.save(
+                    step,
+                    args=ocp.args.Composite(
+                        variables=ocp.args.StandardSave(variables),
+                        opt_state=ocp.args.StandardSave(opt_state),
+                        metrics=ocp.args.JsonSave({
+                            'step': step,
+                            'policy_head_loss': float(policy_loss_val),
+                            'value_head_loss': float(value_loss_val)
+                        })
+                    )
+                )
+                if logger and config.log_level >= DEBUG:
                     logger.opt_print(f"Saved checkpoint for step {step} via manager to {managed_ckpt_dir}")
+            # ---- Orbax Checkpointing: Atomic Save of variables only ----
+            try:
+                latest_checkpointer.save(
+                    latest_ckpt_target_dir,
+                    args=ocp.args.PyTreeSave(item=variables),
+                    force=True
+                )
+                if logger and config.log_level >= DEBUG:
+                    logger.opt_print(f"Saved atomic latest checkpoint (variables) to {latest_ckpt_target_dir}")
+                save_path_for_broadcast = latest_ckpt_target_dir
+            except Exception as e_atomic:
+                if logger:
+                    logger.print(f"Error saving atomic latest checkpoint to {latest_ckpt_target_dir}: {e_atomic}")
         except Exception as e:
             err_msg = f"Error saving checkpoint for step {step} via manager: {e}"
             if logger:
@@ -1168,7 +1237,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
 
     else:
       current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
-      if logger: 
+      if logger and config.log_level >= DEBUG:
         logger.opt_print(f"Step: {step}, Replay buffer not full enough for training. Size: {len(replay_buffer)}/{config.train_batch_size}")
 
     # Collect evaluation results
@@ -1223,7 +1292,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         }
         data_log.write(metrics_to_log)
 
-    if logger: logger.print("") # Add a newline for readability in FileLogger
+    if logger and config.log_level >= DEBUG: logger.print("") # Add a newline for readability in FileLogger
 
     if config.max_steps > 0 and step >= config.max_steps:
       max_steps_msg = f"Max steps {config.max_steps} reached. Exiting learner."
@@ -1233,12 +1302,12 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
 
     if save_path_for_broadcast and broadcast_fn: # This broadcast is now only for OTHER types of messages if any.
         broadcast_msg = f"Broadcasting checkpoint: {save_path_for_broadcast}" # This message is now potentially misleading if path is None
-        if logger: 
+        if logger and config.log_level >= DEBUG:
           logger.opt_print(broadcast_msg) 
         broadcast_fn(save_path_for_broadcast) 
   
   final_msg = f"[{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}] JAX Learner finished."
-  if logger: 
+  if logger and config.log_level >= INFO:
     logger.print(final_msg)
 
 # ---- Start of AlphaZero JAX main execution example ----
@@ -1419,3 +1488,29 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
 #     app.run(main)
 
 # ---- End of AlphaZero JAX main execution example ---- 
+
+def set_external_libraries_log_level(log_level):
+    """Set logging level for Orbax, JAX, Flax, and absl based on internal log_level."""
+    level_map = {
+        0: logging.ERROR,   # ERROR
+        1: logging.WARNING, # WARN
+        2: logging.INFO,    # INFO
+        3: logging.DEBUG,   # DEBUG
+        4: logging.NOTSET,  # TRACE (or use DEBUG)
+    }
+    py_level = level_map.get(log_level, logging.INFO)
+    for logger_name in [
+        "orbax", "orbax.checkpoint", "jax", "flax", "absl", "absl.logging"
+    ]:
+        logging.getLogger(logger_name).setLevel(py_level)
+    # Optionally set the root logger as well
+    logging.getLogger().setLevel(py_level)
+    # absl logging (sometimes not fully controlled by logging module)
+    if log_level == 0:
+        absl.logging.set_verbosity('error')
+    elif log_level == 1:
+        absl.logging.set_verbosity('warning')
+    elif log_level == 2:
+        absl.logging.set_verbosity('info')
+    else:
+        absl.logging.set_verbosity('debug')
