@@ -52,14 +52,14 @@ import sys # For getattr(sys.modules[__name__], ...) if used, or a local dict is
 # are based on or utilize code from the n2cholas/jax-resnet repository:
 # https://github.com/n2cholas/jax-resnet
 # Original copyright and license terms apply to those components.
-from open_spiel.python.algorithms.jax_resnet.jax_resnet import (
+from open_spiel.python.algorithms.alpha_zero_jax.resnet import (
     ResNetStem, ResNetBlock, ResNetBottleneckBlock,
     ResNetDStem, ResNetDBlock, ResNetDBottleneckBlock,
     ResNeStBottleneckBlock # Added ResNeSt variant
 )
-from open_spiel.python.algorithms.jax_resnet.jax_resnet.common import ConvBlock # Used by Conv2D_JAX
-from open_spiel.python.algorithms.jax_resnet.jax_resnet.resnet import STAGE_SIZES # For ResNet variants
-from open_spiel.python.algorithms.jax_resnet.jax_resnet.splat import SplAtConv2d # For ResNeSt
+from open_spiel.python.algorithms.alpha_zero_jax.resnet.common import ConvBlock # Used by Conv2D_JAX
+from open_spiel.python.algorithms.alpha_zero_jax.resnet.resnet import STAGE_SIZES # For ResNet variants
+from open_spiel.python.algorithms.alpha_zero_jax.resnet.splat import SplAtConv2d # For ResNeSt
 
 
 
