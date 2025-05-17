@@ -123,6 +123,10 @@ class RemoteEvaluator:
         self._log_interval_seconds = 10 # Log metrics every 10 seconds
         self._inferences_since_last_log = 0
 
+        # Timeout for waiting for a specific response, in seconds
+        self._response_wait_timeout_seconds = 1000.0 # e.g., 10 seconds
+        self._response_get_interval_seconds = 0.1 # Timeout for individual queue.get() calls
+
 
     def _inference(self, state: "pyspiel.State") -> tuple[float, "_np.ndarray"]:  # type: ignore # pylint: disable=undefined-variable
         """Sends a state for inference and returns the value and policy."""
@@ -156,34 +160,49 @@ class RemoteEvaluator:
 
         try:
           self.logger.debug(f"Actor {self._actor_id}: Waiting for response for request {request_id}...")
-          # Changed to blocking get without timeout
-          response_tuple = self._inference_response_queue.get(block=True)
+          
+          wait_start_time = time.time()
+          while True: # Loop to find the correct response
+            if time.time() - wait_start_time > self._response_wait_timeout_seconds:
+              self.logger.error(f"Actor {self._actor_id}: Timeout waiting for response for request {request_id} after {self._response_wait_timeout_seconds}s.")
+              raise TimeoutError(f"Actor {self._actor_id}: Timeout waiting for response for request {request_id}")
 
-          if response_tuple is SHUTDOWN_SENTINEL:
-            # Old log removed: # if self._logger and self._log_level >= _INFO_LEVEL:
-            #   self._logger.print(f"Actor {self._actor_id}: Received SHUTDOWN_SENTINEL while waiting for response. Propagating shutdown.", flush=True)
-            self.logger.info(f"Actor {self._actor_id}: Received SHUTDOWN_SENTINEL while waiting for response. Propagating shutdown.")
-            # Re-put sentinel for other consumers if any, though typically one evaluator per response queue.
-            self._inference_response_queue.put(SHUTDOWN_SENTINEL, block=False) 
-            raise ShutdownException("Shutdown received while waiting for inference response.")
+            try:
+              # Get with a short timeout to allow checking the overall wait_start_time
+              response_tuple = self._inference_response_queue.get(block=True, timeout=self._response_get_interval_seconds)
+            except _std_queue.Empty: # Timeout for this specific get() call
+              self.logger.log(logging.DEBUG - 1 if hasattr(logging, 'DEBUG') else 5, f"Actor {self._actor_id}: Queue empty while waiting for {request_id}, retrying.") # Custom level for very verbose
+              continue # Continue to check overall timeout and retry get()
 
-          response = InferenceResponse.from_tuple(response_tuple)
+            if not isinstance(response_tuple, tuple):
+              if response_tuple is SHUTDOWN_SENTINEL:
+                  self.logger.info(f"Actor {self._actor_id}: Received SHUTDOWN_SENTINEL from response queue while waiting for {request_id}. Propagating shutdown.")
+              else:
+                  self.logger.error(
+                      f"Actor {self._actor_id}: Received non-tuple, non-sentinel message from response queue while waiting for {request_id}. "
+                      f"Type: {type(response_tuple)}, Value: {str(response_tuple)[:200]}. Treating as shutdown."
+                  )
+              try:
+                  self._inference_response_queue.put(SHUTDOWN_SENTINEL, block=False)
+              except Exception as e_put:
+                   self.logger.warning(f"Actor {self._actor_id}: Error re-putting SHUTDOWN_SENTINEL on queue: {e_put}")
+              raise ShutdownException("Invalid (non-tuple) message received while waiting for inference response.")
 
-          if response.request_id != request_id:
-            # Old log removed: # if self._logger and self._log_level >= _WARN_LEVEL:
-            #   self._logger.print(f"Actor {self._actor_id}: Received response for {response.request_id}, but expected {request_id}. Discarding.", flush=True)
-            self.logger.warning(f"Actor {self._actor_id}: Received response for {response.request_id}, but expected {request_id}. Discarding.")
-            # This is a problematic state, may need to re-queue or raise a more specific error.
-            # For now, we'll try to get another message, assuming it's a simple out-of-order issue.
-            # This could loop indefinitely if the queue is broken. A retry limit might be needed.
-            # Or, better, ensure request_id matching is handled by the servicer or a multiplexer.
-            # For now, let's raise an error as this indicates a logic flaw.
-            raise ValueError(f"Actor {self._actor_id}: Mismatched response ID. Expected {request_id}, got {response.request_id}")
+            response = InferenceResponse.from_tuple(response_tuple)
 
-
-          # Old log removed: # if self._logger and self._log_level >= _DEBUG_LEVEL:
-          #   self._logger.print(f"Actor {self._actor_id}: Received response for request {request_id}. Value: {response.value:.3f}")
-          self.logger.debug(f"Actor {self._actor_id}: Received response for request {request_id}. Value: {response.value:.3f}")
+            if response.request_id == request_id:
+              # This is the response we were waiting for
+              self.logger.debug(f"Actor {self._actor_id}: Received expected response for request {request_id}. Value: {response.value:.3f}")
+              break # Exit the while True loop, proceed to process response
+            else:
+              # This is a response for a different request (e.g., stale)
+              self.logger.warning(
+                  f"Actor {self._actor_id}: Received response for {response.request_id} while waiting for {request_id}. Discarding stale/unexpected response."
+              )
+              # Loop again to get the next message
+              continue
+          
+          # If loop broken, 'response' is the correct one.
 
           # Cache the successful result before returning
           self._cache.put(obs_key, (response.value, response.policy_probs))
