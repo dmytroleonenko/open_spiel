@@ -213,12 +213,18 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list,
                temperature: float, temperature_drop: int,
                numpy_seed: int, log_level: int = 0):
   """Plays one game, returning the trajectory."""
-  # Required for np.random operations to be deterministic when using spawn
-  # This needs to be called in each process that uses np.random.
-  np.random.seed(numpy_seed)
+  if logger and log_level >= 3: # DEBUG
+    logger.print(f"Game {game_num}: Entered _play_game. numpy_seed: {numpy_seed}")
 
+  np.random.seed(numpy_seed)
   trajectory = Trajectory()
+  
+  if logger and log_level >= 3: # DEBUG
+    logger.print(f"Game {game_num}: About to call game.new_initial_state() for game '{game.get_type().short_name}'")
   state = game.new_initial_state()
+  if logger and log_level >= 3: # DEBUG
+    logger.print(f"Game {game_num}: game.new_initial_state() returned. State: {state}")
+
   random_state = np.random.RandomState(numpy_seed)
 
   if log_level >= 3: # DEBUG
@@ -241,9 +247,11 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list,
 
     # Bot play
     # The AlphaZeroBot (MCTSBot) will use its evaluator (RemoteEvaluator) here
+    if logger and log_level >= 3: # DEBUG, changed from TRACE to ensure it shows up with TRACE level
+        logger.print(f"Game {game_num} Player {current_player}: Calling bot.step_with_policy(state)")
     action_and_policy_or_error = bot.step_with_policy(state)
-    if logger and log_level >= 4: # TRACE
-        logger.print(f"Game {game_num} Player {current_player} bot.step_with_policy returned: {action_and_policy_or_error}")
+    if logger and log_level >= 3: # DEBUG, changed from TRACE to ensure it shows up with TRACE level
+        logger.print(f"Game {game_num} Player {current_player}: bot.step_with_policy returned: {action_and_policy_or_error}")
     
     # Check if the return is as expected (a tuple/list of two elements)
     if not (isinstance(action_and_policy_or_error, (tuple, list)) and len(action_and_policy_or_error) == 2):
@@ -306,90 +314,83 @@ def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
           inference_response_queue # mp.Queue
           ):
   """An actor process that plays games and sends trajectories to the learner."""
-  # Each actor needs its own PRNG state for numpy operations.
-  # JAX PRNG keys are not used here directly.
-  np.random.seed(initial_seed)
-  random.seed(initial_seed) # Also for Python's random if used by game or other logic
+  # Determine if debug_mode should be enabled for RemoteEvaluator
+  # Based on config.log_level (DEBUG=3, TRACE=4)
+  remote_evaluator_debug_mode = config.log_level >= 3 # DEBUG or TRACE
 
-  if logger is None: # Fallback if watcher didn't inject logger (e.g. if not decorated)
-      logger = file_logger.FileLogger(config.path, f"actor_{num}", not config.quiet)
+  # Seed Python's random and NumPy for this actor process
+  random.seed(initial_seed)
+  np_seed = random.randint(0, 2**31 - 1) # Generate a derived seed for NumPy
+  np.random.seed(np_seed)
+  if logger and config.log_level >= 3: # DEBUG
+    logger.print(f"Actor {num} started with initial_seed: {initial_seed}, numpy_seed: {np_seed}")
 
-  logger.print(f"Actor {num} started with initial_seed: {initial_seed}, numpy_seed: {initial_seed}")
 
-  # Initialize the RemoteEvaluator for this actor
-  # The actor_id (num) is used by the InferenceServicer to route responses.
-  az_evaluator = RemoteEvaluator(
+  evaluator_ = RemoteEvaluator(
       game=game,
-      actor_id=num, # Use the actor/evaluator number as its ID
+      actor_id=num,
       inference_request_queue=inference_request_queue,
       inference_response_queue=inference_response_queue,
       max_cache_size=config.evaluator_cache_size,
-      debug_mode=(getattr(config, 'actor_verbosity', config.log_level) >= _ACTOR_DEBUG_LEVEL) # Pass debug_mode
+      debug_mode=remote_evaluator_debug_mode # Pass debug_mode
   )
 
-  bots = [_init_bot(config, game, az_evaluator, False, p) for p in range(game.num_players())]
-  
-  # Seed for game num to ensure different games if multiple actors start "simultaneously"
-  # And to ensure that _play_game gets a deterministic seed based on game_num + initial_seed
-  game_num_iterator = itertools.count(start=num, step=config.actors)
+  # Use player_id 0 for the bot in self-play, as it's from player 0's perspective.
+  # The actual current_player is handled by the game state.
+  bot = _init_bot(config, game, evaluator_, evaluation=False, player_id_for_bot=0)
 
+  for game_num in itertools.count(1): # Start game numbers from 1
+    # Determine temperature for this game
+    # Original logic: temperature an MCTSBot parameter.
+    # Here, temperature is used for action selection *after* MCTS policy.
+    # It's not a direct parameter of MCTSBot search itself in this setup.
+    current_temperature = (
+        config.temperature if config.temperature_drop == 0 or game_num < config.temperature_drop else 0.)
+    
+    if logger and config.log_level >= 4: # TRACE
+        logger.print(f"Actor {num} Game {game_num}: Starting game with temperature {current_temperature}")
 
-  try:
-    while True:
-      try:
-        game_num = next(game_num_iterator)
-        
-        # Construct a unique seed for this specific game play
-        # to ensure np.random operations within _play_game are deterministic
-        # for this game instance across potential reruns or different actor setups.
-        numpy_seed_for_game = initial_seed + game_num
+    # Generate a unique seed for this game play based on the initial actor seed
+    # This ensures that if an actor restarts, it doesn't replay the exact same games
+    # if initial_seed was the same.
+    game_specific_numpy_seed = random.randint(0, 2**31 - 1)
 
-        trajectory = _play_game(
-            logger,
-            game_num,
-            game,
-            bots,
-            config.temperature, # This temperature is for action selection policy
-            config.temperature_drop,
-            numpy_seed=numpy_seed_for_game,
-            log_level=config.log_level)
-        
-        if trajectory is None or not trajectory.states:
-            logger.print(f"Actor {num} game {game_num}: Trajectory was None or empty, skipping.")
-            continue
-
-        # Send the trajectory to the learner via the shared queue
-        # The learner will then update the values in the trajectory.
-        if config.log_level >= 3: # DEBUG
-            logger.print(f"Actor {num} game {game_num}: sending trajectory of {len(trajectory.states)} states.")
-        queue.put(trajectory) # This could block or raise if queue is mismanaged, but typically ProcessQueue handles it.
-
-      except (TimeoutError, std_queue.Full, std_queue.Empty) as e_transient: # Catch specific transient errors
-        if logger:
-            logger.print(f"Actor {num} caught transient error in main loop: {type(e_transient).__name__}: {e_transient}. Continuing.")
-        time.sleep(1)  # Brief pause before continuing the loop
-        continue
-      # More critical errors within the loop will fall through to the outer Exception handler.
-
-  except ShutdownException:
-    logger.print(f"Actor {num} received shutdown signal. Exiting.")
-  except Exception as e: # pylint: disable=broad-except
-    logger.print(f"Actor {num} caught unhandled error: {e}\n{traceback.format_exc()}")
-    # Optionally re-raise or signal main process
-  finally:
-    # Attempt to signal shutdown to the inference request queue.
-    # This is mostly a best-effort and might be redundant if main servicer shutdown is robust.
     try:
-        # The tuple structure here was: (SHUTDOWN_SENTINEL, actor_id, None, None, None)
-        # BatchAssemblyThread expects SHUTDOWN_SENTINEL directly or an InferenceRequest.
-        # Sending the simple SHUTDOWN_SENTINEL might be cleaner if this signal is desired,
-        # but the main servicer.stop() should handle this.
-        # Removing to avoid deserialization errors in BatchAssemblyThread.
-        pass 
-    except Exception: # pylint: disable=broad-except
-        # Log if needed, but generally suppress errors during shutdown signaling.
-        pass
-    logger.print(f"Actor {num} finished.")
+      trajectory = _play_game(
+          logger=logger, # Pass the actor's logger
+          game_num=game_num,
+          game=game,
+          bots=[bot, bot],  # Both sides are played by the same bot logic
+          temperature=current_temperature,
+          temperature_drop=config.temperature_drop, # Though not directly used by _play_game's temp logic
+          numpy_seed=game_specific_numpy_seed, # Pass the game-specific seed
+          log_level=config.log_level # Pass the main log_level
+          )
+      if trajectory:
+        # logger.print(f"Actor {num} Game {game_num} completed. Trajectory length: {len(trajectory.states)}")
+        queue.put(trajectory)
+      else: # Should not happen if _play_game returns a trajectory or raises
+        if logger and config.log_level >= 1: # WARN
+            logger.print(f"Actor {num} Game {game_num}: _play_game returned None or empty trajectory. Skipping.")
+    except ShutdownException:
+      if logger and config.log_level >= 2: # INFO
+        logger.print(f"Actor {num} received ShutdownException. Exiting play game loop.")
+      # Ensure the evaluator's resources are cleaned up if possible,
+      # though RemoteEvaluator itself doesn't have explicit close().
+      # The sentinel on its queue should handle its exit if it's blocked.
+      break # Exit the game playing loop
+    except Exception as e: # Catch other exceptions during game play
+      if logger and config.log_level >= 0: # ERROR
+        logger.print(f"Actor {num} Game {game_num}: Exception during _play_game: {type(e).__name__} - {e}. Traceback: {traceback.format_exc()}")
+      # Depending on severity, might break or continue to next game.
+      # For now, let's break on any error to avoid spamming.
+      break
+
+  if logger and config.log_level >= 2: # INFO
+    logger.print(f"Actor {num} finished {game_num -1} games.")
+  # Signal to learner that this actor is done (e.g. by closing queue or sending sentinel)
+  # The current setup relies on process join in the main script.
+  # If queue needs explicit close or sentinel, add here.
 
 
 @watcher

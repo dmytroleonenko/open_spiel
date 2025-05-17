@@ -116,6 +116,13 @@ class RemoteEvaluator:
         self._cache = LRUCache(max_size=max_cache_size)
         self.logger.info(f"RemoteEvaluator for Actor {self._actor_id} initialized. Cache size: {max_cache_size}. Log file: {log_file_path}")
 
+        # Metrics for inference rate
+        self._inference_count = 0
+        self._first_inference_time = None
+        self._last_log_time = time.time()
+        self._log_interval_seconds = 10 # Log metrics every 10 seconds
+        self._inferences_since_last_log = 0
+
 
     def _inference(self, state: "pyspiel.State") -> tuple[float, "_np.ndarray"]:  # type: ignore # pylint: disable=undefined-variable
         """Sends a state for inference and returns the value and policy."""
@@ -180,6 +187,30 @@ class RemoteEvaluator:
 
           # Cache the successful result before returning
           self._cache.put(obs_key, (response.value, response.policy_probs))
+          
+          # Update inference metrics
+          if self._first_inference_time is None:
+              self._first_inference_time = time.time()
+          self._inference_count += 1
+          self._inferences_since_last_log += 1
+          
+          current_time = time.time()
+          if current_time - self._last_log_time >= self._log_interval_seconds:
+              elapsed_since_last_log = current_time - self._last_log_time
+              if elapsed_since_last_log > 0:
+                  inferences_per_sec_interval = self._inferences_since_last_log / elapsed_since_last_log
+                  self.logger.info(f"Actor {self._actor_id}: Inferences in last {elapsed_since_last_log:.2f}s: {self._inferences_since_last_log}, Rate: {inferences_per_sec_interval:.2f} inf/s")
+              
+              if self._first_inference_time and (current_time - self._first_inference_time > 0):
+                  overall_elapsed_time = current_time - self._first_inference_time
+                  overall_inferences_per_sec = self._inference_count / overall_elapsed_time
+                  self.logger.info(f"Actor {self._actor_id}: Total inferences: {self._inference_count}, Overall Rate: {overall_inferences_per_sec:.2f} inf/s (since first inference)")
+
+              self._last_log_time = current_time
+              self._inferences_since_last_log = 0
+              if self.logger.handlers: # Ensure handler exists
+                  self.logger.handlers[0].flush()
+              
           return response.value, response.policy_probs
 
         except ShutdownException: # Re-raise if it's our specific shutdown signal
@@ -236,7 +267,16 @@ class RemoteEvaluator:
         #   self._logger.print(f"Actor {self._actor_id}: Cache Info: Size={self._cache.size()}, Max Size={self._cache.max_size}, Hits={self._cache.hits}, Misses={self._cache.misses}")
         # Get info from cache object correctly
         cache_stats = self._cache.info()
-        self.logger.info(f"Actor {self._actor_id}: Cache Info: Size={self._cache.size}, Max Size={self._cache.max_size}, Hits={cache_stats['hits']}, Misses={cache_stats['misses']}")
+        ips_str = "N/A"
+        if self._first_inference_time:
+            elapsed = time.time() - self._first_inference_time
+            if elapsed > 0:
+                ips = self._inference_count / elapsed
+                ips_str = f"{ips:.2f}"
+        
+        self.logger.info(f"Actor {self._actor_id}: Cache Info: Size={self._cache.size}, Max Size={self._cache.max_size}, Hits={cache_stats['hits']}, Misses={cache_stats['misses']}. Inferences: {self._inference_count}, Inf/Sec (overall): {ips_str}")
+        if self.logger.handlers: # Ensure handler exists
+            self.logger.handlers[0].flush()
         return cache_stats # Return the dict
 
     def clear_cache(self):
