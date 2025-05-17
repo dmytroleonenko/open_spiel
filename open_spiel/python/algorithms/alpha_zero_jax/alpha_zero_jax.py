@@ -582,6 +582,9 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   # ---- Main Learner Loop (Refactored) ----
   while True:
     loop_iteration += 1
+    # Ensure seconds_for_this_train_period is defined for each iteration.
+    # It will be updated if a training step actually occurs.
+    seconds_for_this_train_period = 0.0 
 
     if config.max_steps > 0 and training_step_count >= config.max_steps:
         if logger: logger.print(f"Max training steps {config.max_steps} reached (current: {training_step_count}). Exiting learner.")
