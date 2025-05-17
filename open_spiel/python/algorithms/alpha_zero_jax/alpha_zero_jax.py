@@ -523,13 +523,33 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
           
     return new_variables, new_opt_state, loss_val, p_loss, v_loss
 
-  # ---- Main Learner Loop ----
+  # ---- Main Learner Loop (Refactored) ----
   last_time = time.time()
   start_time = last_time  # Global start time for throughput stats
   total_trajectories = 0
   
   current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
 
+  # ---- New variables for refactored learner loop ----
+  training_step_count = initial_step  # initial_step is 0-based from checkpoint or 0
+  
+  # Accumulators for stats between training steps
+  last_successful_train_time = time.time() 
+  states_accumulated_since_last_train = 0
+  trajectories_accumulated_since_last_train = 0
+  
+  loop_iteration = 0 # For periodic logging when not training
+
+  # Ensure initial_step isn't negative (e.g. if manager returns -1 for no checkpoints)
+  if training_step_count < 0: 
+      training_step_count = 0
+      if logger: logger.print(f"Corrected initial_step from {initial_step} to 0.")
+      initial_step = 0 # Ensure initial_step used below for first log is also correct
+      
+  if logger and config.log_level >= INFO:
+    logger.print(f"Learner starting. Initial training_step_count: {training_step_count}. Max steps: {config.max_steps if config.max_steps > 0 else 'unlimited'}.")
+
+  # The trajectory_generator and collect_trajectories functions remain as they were.
   def trajectory_generator():
     while True:
       found = 0
@@ -559,11 +579,83 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
           # This part might need timeout logic if queues can remain empty indefinitely and block training.
       return collected
       
-  for step in itertools.count(initial_step + 1): # Start step from last restored step + 1
-    # Log memory usage and tracemalloc stats every 4 steps
-    if logger and step % 200 == 0:
+  # ---- Main Learner Loop (Refactored) ----
+  while True:
+    loop_iteration += 1
+
+    if config.max_steps > 0 and training_step_count >= config.max_steps:
+        if logger: logger.print(f"Max training steps {config.max_steps} reached (current: {training_step_count}). Exiting learner.")
+        break
+
+    # --- Collect data from actors ---
+    # Drain all available trajectories from actor queues to avoid backlog
+    trajectories_this_iteration = []
+    for queue_idx, queue in enumerate(actor_queues):
+        while True:
+            try:
+                traj = queue.get_nowait()
+                trajectories_this_iteration.append(traj)
+            except spawn.Empty:
+                break
+            except Exception as e:
+                if logger:
+                    logger.print(f"Learner: Error draining actor_queue {queue_idx}: {e}")
+                break
+    
+    states_this_iteration = 0
+    for traj in trajectories_this_iteration:
+        if not hasattr(traj, "states"):
+            if logger:
+                logger.print(f"Learner: Received object of type {type(traj)} from actor queue: {repr(traj)}. Skipping.")
+            continue
+
+        total_trajectories += 1 # Global counter
+        states_this_iteration += len(traj.states)
+        
+        # Accumulate for per-training-step stats
+        trajectories_accumulated_since_last_train += 1
+        states_accumulated_since_last_train += len(traj.states)
+
+        # Stat updates (game_lengths, outcomes, replay_buffer append)
+        game_lengths.add(len(traj))
+        game_lengths_hist.add(len(traj))
+        
+        current_player_return = traj.returns
+        outcome_bucket_id = None
+        if current_player_return is not None:
+            if current_player_return > 0: outcome_bucket_id = 0
+            elif current_player_return < 0: outcome_bucket_id = 1
+            elif current_player_return == 0: outcome_bucket_id = 2
+            else:
+                if logger: logger.print(f"Learner: Unexpected return value {current_player_return}, not mapping to outcome.")
+        else:
+            if logger: logger.print(f"Learner: Trajectory with None return value.")
+
+        if outcome_bucket_id is not None:
+            try:
+                outcomes.add(outcome_bucket_id)
+            except Exception as e_hist:
+                if logger: logger.print(f"Learner: Error adding outcome bucket_id '{outcome_bucket_id}' to histogram: {e_hist}")
+        
+        for transition in traj.states:
+            train_input = model_jax.TrainInputJAX(
+                observation=transition.observation,
+                legals_mask=transition.legals_mask,
+                policy_target=transition.policy,
+                value_target=jnp.array(traj.returns, dtype=jnp.float32)
+            )
+            replay_buffer.append(train_input)
+    # --- End Data Collection ---
+
+    # --- Periodic General Logging (not tied to training step) ---
+    now_for_general_log = time.time()
+    seconds_this_loop_iter = now_for_general_log - last_time # last_time is for loop iteration timing
+    last_time = now_for_general_log
+    
+    # Log memory usage periodically
+    if logger and loop_iteration % 200 == 1: # e.g., every 200 loop iterations, on the first one too
         rss_mb = _mem_proc.memory_info().rss / (1024 * 1024)
-        logger.print(f"Learner step {step}: RSS memory usage: {rss_mb:.2f} MB")
+        logger.print(f"Learner loop iter {loop_iteration}, Train steps: {training_step_count}: RSS memory usage: {rss_mb:.2f} MB")
         try:
             snapshot = tracemalloc.take_snapshot()
             top_stats = snapshot.statistics('lineno')
@@ -572,172 +664,30 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
                 logger.print(str(stat))
         except Exception as e:
             logger.print(f"Error taking tracemalloc snapshot: {e}")
-    if config.max_steps > 0 and step > config.max_steps:
-        if logger: logger.print(f"Max steps {config.max_steps} reached. Exiting learner.")
-        break
 
-    # Get trajectories from actors
-    # How many trajectories to pull depends on how much data is needed.
-    # Example: Pull enough for a batch, or a fixed number.
-    # For simplicity, let's assume we pull enough trajectories that contain at least train_batch_size states.
-    # This part is crucial and might need refinement based on typical trajectory length.
-    
-    # Simplistic approach: pull a number of trajectories, then add all their states to buffer.
-    # If replay_buffer is smaller than batch_size, this will wait.
-    # A better way might be to ensure buffer has enough for a batch before sampling.
-    
-    # For now, continuously add to replay buffer from actor queues.
-    # The original TF code has a loop that tries to get one trajectory.
-    
-    num_states = 0
-    num_trajectories = 0
-    # Try to get at least one trajectory to process for stats, even if buffer is full
-    # This loop will block until a trajectory is available or an error occurs
-    
-    try:
-        # Get one trajectory to update stats and add to buffer
-        # This get() might block if queues are empty.
-        # Consider timeout or non-blocking with sleep if learner should do other things.
-        # For now, let's assume actor_queues[0] is a valid queue to try.
-        # A round-robin or random selection might be better if many actor_queues.
-        # The trajectory_generator handles iterating through queues.
-        
-        # Using the collect_trajectories helper
-        # Collect a small number of trajectories to process per learner step
-        # This is a placeholder, a more robust strategy for data ingestion might be needed.
-        # Drain all available trajectories from actor queues to avoid backlog
-        trajectories_to_process = []
-        for queue_idx, queue in enumerate(actor_queues):
-            while True:
-                try:
-                    traj = queue.get_nowait()
-                    trajectories_to_process.append(traj)
-                except spawn.Empty:
-                    break
-                except Exception as e:
-                    if logger:
-                        logger.print(f"Learner: Error draining actor_queue {queue_idx}: {e}")
-                    break
+    # Log global speed and buffer status periodically
+    if logger and config.log_level >= DEBUG and loop_iteration % 200 == 1: # Log less frequently
+        global_elapsed = now_for_general_log - start_time
+        log_message_timing_global = (
+            f"Loop Iter: {loop_iteration}, Train Steps: {training_step_count}, "
+            f"Global Game Speed: {total_trajectories/global_elapsed:.1f} games/s (Total games: {total_trajectories}), "
+            f"Global States/s: {replay_buffer.total_seen/global_elapsed:.1f} (Total states in buffer: {len(replay_buffer)}, Seen by buffer: {replay_buffer.total_seen})"
+        )
+        logger.print(f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] {log_message_timing_global}")
+        if trajectories_this_iteration: # Log if data was processed this iteration
+            logger.print(f"  Iter Speed: {len(trajectories_this_iteration)/seconds_this_loop_iter:.1f} traj/s, {states_this_iteration/seconds_this_loop_iter:.1f} states/s (this iter: {len(trajectories_this_iteration)} traj, {states_this_iteration} states in {seconds_this_loop_iter:.2f}s)")
+        logger.print("") # Newline for readability
+    # --- End Periodic General Logging ---
 
-        for traj in trajectories_to_process:
-            if not hasattr(traj, "states"): # Add this check
-                if logger:
-                    logger.print(f"Learner: Received object of type {type(traj)} from actor queue: {repr(traj)}. Skipping.")
-                continue
-
-            total_trajectories += 1
-            num_trajectories += 1
-            game_lengths.add(len(traj))
-            game_lengths_hist.add(len(traj))
-            num_states += len(traj)
-            # outcomes.add(traj.returns) # Old incorrect way
-
-            # Map scalar return to outcome string for HistogramNamed
-            current_player_return = traj.returns # This is now a scalar
-            outcome_bucket_id = None # NEW LOGIC: for integer index
-
-            if current_player_return is not None: # Check if return value is not None
-                if current_player_return > 0: # Win for this player
-                    outcome_bucket_id = 0 # Index for "win"
-                elif current_player_return < 0: # Loss for this player
-                    outcome_bucket_id = 1 # Index for "loss"
-                elif current_player_return == 0: # Draw
-                    outcome_bucket_id = 2 # Index for "draw"
-                # Add other mappings if quit/eval states are possible and have distinct scalar returns.
-                # Example: if quit is -2 and eval is -3, map them to "quit" and "eval" strings.
-                # elif current_player_return == -2: # Example for quit
-                #     outcome_str = "quit"
-                # elif current_player_return == -3: # Example for eval
-                #     outcome_str = "eval"
-                else:
-                    # Log an unexpected return value but don't add to histogram or default to something.
-                    # This case should ideally not be hit if actors correctly set scalar returns.
-                    if logger:
-                        logger.print(f"Learner: Received trajectory with unexpected (but non-None) return value: {current_player_return}. Not mapping to known outcome for histogram.")
-            else: # current_player_return is None
-                 if logger:
-                    logger.print(f"Learner: Received trajectory with None return value. Not adding to outcomes histogram.")
-
-
-            if outcome_bucket_id is not None: # NEW LOGIC
-                try:
-                    # Directly add the outcome string to the histogram
-                    # outcomes.add(outcome_str) # OLD LOGIC
-                    outcomes.add(outcome_bucket_id) # NEW LOGIC: Pass integer index
-                except (ValueError, KeyError, IndexError) as e_hist: # Catch if string not in names or other issue
-                    if logger:
-                        logger.print(f"Learner: Error adding outcome bucket_id '{outcome_bucket_id}' (return: {current_player_return}) to histogram: {e_hist}. Histogram names: {outcomes._names if hasattr(outcomes, '_names') else 'N/A'}")
-
-
-            # Add states to replay buffer
-            # Each element in traj.states is a TrajectoryState
-            for transition in traj.states: # CORRECTED: Iterate over traj.states
-                # Create TrainInputJAX from TrajectoryState
-                # Determine the actual value_target based on the player's outcome (traj.returns)
-                # This assumes traj.returns is the scalar outcome for the current player's perspective
-                # For AlphaZero, the value target for each state is typically the final game outcome for that player.
-                
-                # Ensure policy and value are appropriate. MCTS value might need to be discounted or returns used.
-                # For now, assuming transition.value is the MCTS-derived value for that state,
-                # and traj.returns is the final game outcome from the player's perspective.
-                # The value_target for training is usually the final game outcome.
-                
-                # Check if transition.policy is correctly shaped/normalized if it's an MCTS policy
-                # Check if transition.value is the MCTS value (usually Q-value or similar)
-
-                train_input = model_jax.TrainInputJAX(
-                    observation=transition.observation,
-                    legals_mask=transition.legals_mask,
-                    policy_target=transition.policy, 
-                    value_target=jnp.array(traj.returns, dtype=jnp.float32) # Use game outcome as value target
-                )
-                replay_buffer.append(train_input)
-
-    except spawn.Empty: # Should be handled by trajectory_generator now
-        if logger and config.log_level >= DEBUG: logger.opt_print("Learner: All actor queues empty.") # opt_print for less frequent messages
-        # Continue to next part of the loop (e.g. try training if buffer is full)
-    except Exception as e:
-        if logger: 
-            logger.print(f"Learner: Error processing actor queue: {e}")
-        # Potentially skip this learner step or handle error more gracefully
-    
-    now = time.time()
-    seconds = now - last_time
-    last_time = now
-    
-    # Compute global elapsed time since start
-    global_elapsed = now - start_time
-    
-    # Calculate effective actors contributing to this step's data
-    # This is a bit heuristic; if actors are much faster than learner, effective_actors might be high.
-    # If only one trajectory was processed, effective_actors for this stat could be 1.
-    effective_actors = config.actors
-
-    log_message_timing = (
-        f"Step: {step}, Global Game Speed: {total_trajectories/global_elapsed:.1f} games/s, "
-        f"Global States/s: {replay_buffer.total_seen/global_elapsed:.1f}"
-    )
-    log_message_buffer = f"Buffer size: {len(replay_buffer)}. Total states seen by buffer: {replay_buffer.total_seen}"
-
-    # Use initial_step for the first log, then the loop's step variable
-    current_log_step = step # step starts from 1 in the loop, initial_step is 0-based from manager
-    step_log_msg_prefix = f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] Step: {current_log_step}"
-    if logger and config.log_level >= DEBUG:
-      logger.print(step_log_msg_prefix)
-      logger.print(log_message_timing)
-      logger.print(log_message_buffer)
-
-    # Actual JAX training step
-    save_path_for_broadcast = None # Initialize, will be updated if checkpoint is saved
+    # --- Actual JAX Training Step ---
+    save_path_for_broadcast = None 
     if len(replay_buffer) >= config.train_batch_size and config.train_batch_size > 0:
+      training_step_count += 1 # Increment for this training operation
+      
       batch_data = replay_buffer.sample(config.train_batch_size)
       if logger and config.log_level >= DEBUG:
-          logger.print(f"Training on batch of size: {len(batch_data)}")
+          logger.print(f"Training Step {training_step_count}: Processing batch of {len(batch_data)} samples...")
       
-      if logger and config.log_level >= DEBUG:
-        logger.print(f"Learner: Processing training batch of {len(batch_data)} samples on TPU...")
-      # Ensure TrainInputJAX.stack method is available and used correctly.
-      # If not, stack manually here. For now, assuming model_jax.TrainInputJAX.stack exists.
       try:
         stacked_input = model_jax.TrainInputJAX.stack(batch_data)
         batch_obs_jnp = jnp.array(stacked_input.observation, dtype=jnp.float32)
@@ -748,68 +698,107 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         variables, opt_state, total_loss_val, policy_loss_val, value_loss_val = train_step_fn(
             variables, opt_state, batch_obs_jnp, batch_legals_jnp, batch_policy_jnp, batch_value_jnp
         )
-        # Update the inference servicer with the new model variables
         if servicer:
             servicer.update_model_variables(variables)
         
         current_total_loss, current_policy_loss, current_value_loss = total_loss_val, policy_loss_val, value_loss_val 
         
-        loss_log_msg = f"Step: {step}, Total Loss: {current_total_loss:.4f}, Policy Loss: {current_policy_loss:.4f}, Value Loss: {current_value_loss:.4f}"
+        loss_log_msg = f"Training Step: {training_step_count}, Total Loss: {current_total_loss:.4f}, Policy Loss: {current_policy_loss:.4f}, Value Loss: {current_value_loss:.4f}"
         if logger and config.log_level >= DEBUG:
           logger.print(loss_log_msg)
         
-        # ---- Orbax Checkpointing: Save ----
+        # ---- Orbax Checkpointing: Save (based on training_step_count) ----
         save_target_pytree = {'variables': variables, 'opt_state': opt_state}
         try:
-            # Periodic checkpoint save if enabled
-            if checkpoint_manager.should_save(step):
+            if checkpoint_manager.should_save(training_step_count): # Use training_step_count
                 checkpoint_manager.save(
-                    step,
+                    training_step_count, # Use training_step_count
                     args=ocp.args.Composite(
                         variables=ocp.args.StandardSave(variables),
                         opt_state=ocp.args.StandardSave(opt_state),
                         metrics=ocp.args.JsonSave({
-                            'step': step,
+                            'step': training_step_count, # Use training_step_count
                             'policy_head_loss': float(policy_loss_val),
                             'value_head_loss': float(value_loss_val)
                         })
                     )
                 )
                 if logger and config.log_level >= DEBUG:
-                    logger.opt_print(f"Saved checkpoint for step {step} via manager to {managed_ckpt_dir}")
-            # ---- Orbax Checkpointing: Atomic Save of variables only ----
-            try:
-                latest_checkpointer.save(
-                    latest_ckpt_target_dir,
-                    args=ocp.args.PyTreeSave(item=variables),
-                    force=True
-                )
-                if logger and config.log_level >= DEBUG:
-                    logger.opt_print(f"Saved atomic latest checkpoint (variables) to {latest_ckpt_target_dir}")
-                save_path_for_broadcast = latest_ckpt_target_dir
-            except Exception as e_atomic:
-                if logger:
-                    logger.print(f"Error saving atomic latest checkpoint to {latest_ckpt_target_dir}: {e_atomic}")
+                    logger.opt_print(f"Saved checkpoint for training_step {training_step_count} via manager to {managed_ckpt_dir}")
+            
+            latest_checkpointer.save(
+                latest_ckpt_target_dir,
+                args=ocp.args.PyTreeSave(item=variables),
+                force=True
+            )
+            if logger and config.log_level >= DEBUG:
+                logger.opt_print(f"Saved atomic latest checkpoint (variables) for training_step {training_step_count} to {latest_ckpt_target_dir}")
+            save_path_for_broadcast = latest_ckpt_target_dir # This path is broadcast
+            
         except Exception as e:
-            err_msg = f"Error saving checkpoint for step {step} via manager: {e}"
+            err_msg = f"Error saving checkpoint for training_step {training_step_count}: {e}"
             if logger:
                 logger.print(err_msg)
                 logger.print(traceback.format_exc())
-        # ---- End Orbax Checkpointing: Save ----
+        # ---- End Orbax Checkpointing ----
 
       except AttributeError as e:
-        error_msg = f"Error during training data preparation (possibly missing TrainInputJAX.stack): {e}"
+        error_msg = f"Error during training data preparation (possibly missing TrainInputJAX.stack) for step {training_step_count}: {e}"
         if logger: 
           logger.print(error_msg)
         current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan') 
+        training_step_count -=1 # Decrement as this training step failed before completion
+      
+      # ---- Data Logging after successful training step ----
+      now_after_train = time.time()
+      seconds_for_this_train_period = now_after_train - last_successful_train_time
+      last_successful_train_time = now_after_train
 
-    else:
+      if data_log:
+          metrics_to_log = {
+              "step": training_step_count, # This is the actual training step number
+              "total_states_seen_by_buffer": replay_buffer.total_seen,
+              "replay_buffer_size": len(replay_buffer),
+              "states_per_s_since_last_train": states_accumulated_since_last_train / seconds_for_this_train_period if seconds_for_this_train_period > 0 else 0,
+              "trajectories_per_s_since_last_train": trajectories_accumulated_since_last_train / seconds_for_this_train_period if seconds_for_this_train_period > 0 else 0,
+              "states_in_train_period": states_accumulated_since_last_train,
+              "trajectories_in_train_period": trajectories_accumulated_since_last_train,
+              "seconds_for_train_period": seconds_for_this_train_period,
+              "total_trajectories_global": total_trajectories, # Global count
+              "game_length": game_lengths.as_dict,
+              "game_length_hist": game_lengths_hist.data,
+              "outcomes": outcomes.data,
+              "value_accuracy": [v.as_dict for v in value_accuracies],
+              "value_prediction": [v.as_dict for v in value_predictions],
+              "eval": {
+                  "count": evals[0].total_seen if evals and evals[0] else 0,
+                  "results": [sum(e.data) / len(e.data) if len(e.data) > 0 else 0 for e in evals]
+              },
+              "loss": {
+                  "total": float(current_total_loss),
+                  "policy": float(current_policy_loss),
+                  "value": float(current_value_loss),
+              },
+          }
+          data_log.write(metrics_to_log)
+          # Reset accumulators for next training period
+          states_accumulated_since_last_train = 0
+          trajectories_accumulated_since_last_train = 0
+      
+      if save_path_for_broadcast:
+          broadcast_msg = f"Broadcasting checkpoint from training_step {training_step_count}: {save_path_for_broadcast}"
+          if logger and config.log_level >= DEBUG:
+            logger.opt_print(broadcast_msg) 
+          broadcast_fn(save_path_for_broadcast)
+
+    else: # Not enough data in replay buffer to train
       current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
-      if logger and config.log_level >= DEBUG:
-        logger.opt_print(f"Step: {step}, Replay buffer not full enough for training. Size: {len(replay_buffer)}/{config.train_batch_size}")
+      if logger and config.log_level >= DEBUG and loop_iteration % 200 == 1 : # Log less frequently if not training
+        logger.opt_print(f"Learner (loop iter {loop_iteration}, train steps {training_step_count}): Replay buffer not full enough. Size: {len(replay_buffer)}/{config.train_batch_size}. Waiting...")
+      time.sleep(0.1) # Yield CPU, wait for more data from actors
 
-    # Collect evaluation results
-    for i, evac_queue in enumerate(evaluator_queues): # Now uses the passed evaluator_queues
+    # Collect evaluation results (can happen regardless of training step)
+    for i, evac_queue in enumerate(evaluator_queues):
         while True:
             try:
                 # Assuming evaluator puts (difficulty_level_idx, outcome_for_az_player)
@@ -833,20 +822,21 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
     # Log to data_logger
     if data_log:
         metrics_to_log = {
-            "step": step,
+            "step": training_step_count, # This is the actual training step number
             "total_states_seen_by_buffer": replay_buffer.total_seen,
             "replay_buffer_size": len(replay_buffer),
-            "states_per_s": num_states / seconds if seconds > 0 else 0,
-            "states_per_s_actor": num_states / (effective_actors * seconds) if seconds > 0 else 0,
-            "total_trajectories": total_trajectories,
-            "trajectories_per_s": num_trajectories / seconds if seconds > 0 else 0,
+            "states_per_s_since_last_train": states_accumulated_since_last_train / seconds_for_this_train_period if seconds_for_this_train_period > 0 else 0,
+            "trajectories_per_s_since_last_train": trajectories_accumulated_since_last_train / seconds_for_this_train_period if seconds_for_this_train_period > 0 else 0,
+            "states_in_train_period": states_accumulated_since_last_train,
+            "trajectories_in_train_period": trajectories_accumulated_since_last_train,
+            "seconds_for_train_period": seconds_for_this_train_period,
+            "total_trajectories_global": total_trajectories, # Global count
             "game_length": game_lengths.as_dict,
-            "game_length_hist": game_lengths_hist.data, # list of counts
-            "outcomes": outcomes.data, # dict with 'counts' and 'names'
+            "game_length_hist": game_lengths_hist.data,
+            "outcomes": outcomes.data,
             "value_accuracy": [v.as_dict for v in value_accuracies],
             "value_prediction": [v.as_dict for v in value_predictions],
             "eval": {
-                # Assuming evals[0] is representative for 'count' if multiple levels
                 "count": evals[0].total_seen if evals and evals[0] else 0,
                 "results": [sum(e.data) / len(e.data) if len(e.data) > 0 else 0 for e in evals]
             },
@@ -854,33 +844,17 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
                 "total": float(current_total_loss),
                 "policy": float(current_policy_loss),
                 "value": float(current_value_loss),
-                # L2 loss is part of adamw, not explicitly tracked here unless added to train_step_fn
             },
-            # "cache": { ... } # MCTS cache stats are not easily available here, can be added if evaluator sends them
         }
         data_log.write(metrics_to_log)
 
-    if logger and config.log_level >= DEBUG: logger.print("") # Add a newline for readability in FileLogger
+    if logger and config.log_level >= INFO:
+        final_msg = f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] JAX Learner finished."
+        logger.print(final_msg)
 
-    if config.max_steps > 0 and step >= config.max_steps:
-      max_steps_msg = f"Max steps {config.max_steps} reached. Exiting learner."
-      if logger: 
-        logger.print(max_steps_msg)
-      break
-
-    if save_path_for_broadcast: # This broadcast is now only for OTHER types of messages if any.
-        broadcast_msg = f"Broadcasting checkpoint: {save_path_for_broadcast}" # This message is now potentially misleading if path is None
-        if logger and config.log_level >= DEBUG:
-          logger.opt_print(broadcast_msg) 
-        broadcast_fn(save_path_for_broadcast) 
-  
-  final_msg = f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] JAX Learner finished."
-  if logger and config.log_level >= INFO:
-    logger.print(final_msg)
-
-  # Stop the inference servicer before exiting
-  if servicer:
-    servicer.stop()
+    # Stop the inference servicer before exiting
+    if servicer:
+        servicer.stop()
 
 def set_external_libraries_log_level(log_level):
     """Set logging level for Orbax, JAX, Flax, and absl based on internal log_level."""
