@@ -426,3 +426,72 @@ Implementation of Long Narde rules, based on a copy of "games/backgammon".
     *   Change example script's `--log_level` flag from `DEFINE_integer` to `DEFINE_enum("log_level", "INFO", ["ERROR","WARN","INFO","DEBUG","TRACE"], "Logging verbosity level")`.  
     *   Replace all numeric `config.log_level >= N` checks with the new named constants.  
     *   Citation: Chat discussion on 2025-05-16 about logging suppression and log-level constants.
+
+## 9. Remote Inference Service Tasks
+
+**High-Level Overview**
+
+We centralize all model initialization, inference, and TPU interactions in the main process, ensuring exactly one TPU context and avoiding cross-process conflicts. Actor and evaluator processes remain pure-Python and CPU-bound, running MCTS self-play and generating inference requests. These requests are batched by the main process to maximize TPU throughput, with results returned to the origin processes. This architecture provides:
+
+- Full CPU parallelism for game simulation and MCTS actors.
+- Efficient, batched TPU inference in a single process to avoid repeated initialization.
+- Clear separation: actors/evaluators handle data generation; the learner/inference service handles model computation and training.
+- Robustness in environments (e.g., Colab) where TPU resources cannot be shared across processes.
+
+**Why Refactor?**
+
+- Multi-process JAX/TPU initialization leads to resource conflicts and `XlaRuntimeError` (e.g., "TPU is already in use") on platforms like Colab or single-TPU servers.
+- In the current design, each actor/evaluator subprocess attempts to import JAX and initialize the TPU, causing repeated context acquisitions and failures.
+- Centralizing all TPU-based inference and model initialization in one main process eliminates contention and runtime errors.
+- Batching inference requests maximizes TPU utilization, reducing per-request overhead and improving overall throughput.
+
+- [DONE] [VERIFIED] Define message protocol:
+  - Request: ("inference_req", request_id, actor_id, observation, legals_mask)
+  - Response: ("inference_resp", request_id, value, policy_probs)
+
+- [DONE] [VERIFIED] Create a shared inference request queue in the main process.
+
+- [DONE] [VERIFIED] Implement `RemoteEvaluator` stub in actor and evaluator processes that:
+  1. Generates a unique `request_id` (e.g., via `uuid4().hex`).
+  2. Sends `("inference_req", request_id, actor_id, observation, legals_mask)` on the shared request queue.
+  3. Blocks (with optional timeout) on `queue.get()` for the matching `("inference_resp", request_id, value, policy)` message.
+  4. Returns `(value, policy)` to the MCTS logic.
+
+- [DONE] [VERIFIED] In the main script, initialize the JAX/Flax model and its variables exactly once on the TPU before spawning any processes.
+
+- [DONE] [VERIFIED] Build an `InferenceServicer` in the main process comprising:
+  - **BatchAssemblyThread**:
+    - Polls all actor & evaluator queues for "inference_req" messages.
+    - Accumulates requests into batches (up to batch size N or after timeout T).
+    - Enqueues prepared batches on a `ReadyForInferenceBatchQueue`.
+  - **InferenceExecutionThread**:
+    - Dequeues a batch from `ReadyForInferenceBatchQueue`.
+    - Calls `model.apply(variables, batched_obs, training=False, legals_mask=batched_legals)` on the TPU.
+    - Sends back `("inference_resp", request_id, value, policy)` to each origin queue.
+
+- [DONE] [VERIFIED] Pass the shared request queue and per-process queues into spawn.Process kwargs for actor and evaluator.
+
+- [DONE] [VERIFIED] Remove all JAX/Flax imports and `init_flax_model_and_variables` calls from actor and evaluator subprocesses.
+
+- [DONE] [VERIFIED] Ensure actor and evaluator processes run only pure-Python MCTS logic and use `RemoteEvaluator` for inference.
+
+- [DONE] [VERIFIED] Update the learner function to reuse the single TPU-initialized model and variables for both training and inference servicing.
+
+- [DONE] [VERIFIED] Implement graceful shutdown: 
+  - Main process signals `InferenceServicer` to stop.
+  - `InferenceServicer` threads use `SHUTDOWN_SENTINEL` to stop and signal downstream.
+  - `RemoteEvaluator` raises `ShutdownException` on receiving sentinel or queue errors.
+  - Actor and Evaluator processes catch `ShutdownException` to break their main loops and exit gracefully.
+  - Main process joins all spawned processes.
+
+- [DONE] [VERIFIED] Refactor `alpha_zero_jax.py` to prevent actor/evaluator subprocesses from importing JAX/Flax directly (e.g., move to separate pure-Python file or use import guards).
+- [DONE] [VERIFIED] Modify `InferenceServicer` in `alpha_zero_jax.py` to use `InferenceRequest.from_tuple()` in `BatchAssemblyThread` and `InferenceResponse(...).to_tuple()` in `InferenceExecutionThread`.
+- [DONE] [VERIFIED] Refactor `InferenceExecutionThread` in `alpha_zero_jax.py` to use a JIT-compiled `batched_inference_fn` that includes `jax.nn.softmax` internally.
+- [DONE] [VERIFIED] Update `BatchAssemblyThread.run()` in `alpha_zero_jax.py` to catch both `mp.queues.Empty` and `std_queue.Empty` for robust timeout handling.
+- [DONE] [VERIFIED] Initialize `processes = [], actor_process_queues = [], and evaluator_process_queues = []` lists in the `alpha_zero_jax` function within `open_spiel/python/algorithms/alpha_zero_jax/alpha_zero_jax.py` before these lists are appended to.
+- [DONE] [VERIFIED] Instantiate `inference_request_queue = mp.Queue()` in the `alpha_zero_jax` function within `open_spiel/python/algorithms/alpha_zero_jax/alpha_zero_jax.py` before it is passed as an argument to actors, evaluators, or the learner.
+- [TODO] Conduct end-to-end testing on TPU to verify:
+  - Only one TPU initialization occurs (no XlaRuntimeError).
+  - Batched inference requests are processed correctly and efficiently.
+  - Actor processes generate trajectories in parallel with expected throughput.
+  - Learner training and checkpointing operate as intended.

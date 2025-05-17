@@ -20,11 +20,18 @@ import psutil
 import gc
 import logging
 import absl.logging
+import multiprocessing as mp  # For remote inference service queue
+import queue as std_queue # For robust exception handling in BatchAssemblyThread (Reviewer Task 4)
+import threading # For InferenceServicer threads
 
 from . import model_jax
-from . import evaluator_jax # For AlphaZeroEvaluatorJAX
+from . import evaluator_jax # For AlphaZeroEvaluatorJAX (though less used by actors now)
 from open_spiel.python.utils import spawn, file_logger, data_logger, stats # Activated file_logger, spawn, data_logger, stats
 from open_spiel.python.algorithms import mcts # Activated mcts
+from .remote_inference import RemoteEvaluator, InferenceRequest, InferenceResponse, SHUTDOWN_SENTINEL, ShutdownException
+
+# NEW IMPORT for actor and evaluator logic
+from .actor_evaluator_logic import actor, evaluator, watcher
 
 # Time to wait for processes to join.
 JOIN_WAIT_DELAY = 0.001
@@ -85,555 +92,25 @@ class ConfigJAX(collections.namedtuple(
         "resnet_block_kwargs",      # Optional[Mapping]: Keyword arguments for the ResNet block.
         "evaluator_cache_size",     # int: Size of the LRU cache for the evaluator.
         "log_level",                # int: Logging verbosity: 0=outcome only, 1=minimal, 2=debug
-    ])):
+        "remote_evaluator_timeout_ms", # int: Timeout in milliseconds for remote evaluator queue operations.
+        "inference_batch_timeout_ms", # float: Timeout in milliseconds for BatchAssemblyThread to form a batch.
+        "inference_batch_size",     # int: Batch size for inference requests.
+    ])):                                 # Default for remote_evaluator_timeout_ms can be set at instantiation.
   """A config for the JAX AlphaZero model/experiment."""
   # To allow None defaults for Optional fields in namedtuple, provide them at instantiation.
   # Default values for new optional fields can be handled in the main script creating the ConfigJAX instance.
   pass
 
-class TrajectoryState(object):
-  """A particular point along a trajectory."""
-
-  def __init__(self, observation, current_player, legals_mask, action, policy,
-               value):
-    self.observation = observation
-    self.current_player = current_player
-    self.legals_mask = legals_mask
-    self.action = action
-    self.policy = policy
-    self.value = value
-
-
-class Trajectory(object):
-  """A sequence of observations, actions and policies, and the outcomes."""
-
-  def __init__(self):
-    self.states = []
-    self.returns = None
-
-  def __len__(self):
-    return len(self.states)
-
-  def add(self, trajectory_state: TrajectoryState):
-    self.states.append(trajectory_state)
-
-
-class Buffer(object):
-  """A fixed size buffer that keeps the newest values."""
-
-  def __init__(self, max_size):
-    self.max_size = max_size
-    self.data = []
-    self.total_seen = 0  # The number of items that have passed through.
-
-  def __len__(self):
-    return len(self.data)
-
-  def __bool__(self):
-    return bool(self.data)
-
-  def append(self, val):
-    return self.extend([val])
-
-  def extend(self, batch):
-    batch = list(batch)
-    self.total_seen += len(batch)
-    self.data.extend(batch)
-    if len(self.data) > self.max_size:
-        self.data = self.data[len(self.data) - self.max_size:]
-
-
-  def sample(self, count):
-    count = min(count, len(self.data))
-    if count == 0:
-        return []
-    return random.sample(self.data, count)
-
-
-# Watcher decorator from open_spiel/python/algorithms/alpha_zero/alpha_zero.py
-def watcher(fn):
-  """Decorator to print exceptions and start/end logging for processes."""
-
-  @functools.wraps(fn)
-  def _watcher(*args, **kwargs):
-    name = fn.__name__
-    config = kwargs.get("config")
-    num = kwargs.get("num", "process")
-
-    if not config:
-        raise ValueError(f"Watcher for '{name}': 'config' object not provided in kwargs. "
-                         "A config object with a 'path' attribute is required for logging.")
-
-    if not hasattr(config, 'path') or not config.path:
-        raise ValueError(f"Watcher for '{name}': 'config.path' is not set or is empty. "
-                         "A valid directory path is required for file logging.")
-
-    _file_log_path_dir = config.path
-    _log_name_prefix = f"{name}_{num}"
-    _also_to_stdout = not config.quiet if hasattr(config, 'quiet') else True
-
-    _logger = file_logger.FileLogger(path=_file_log_path_dir, name=_log_name_prefix, also_to_stdout=_also_to_stdout)
-
-    try:
-      _logger.print(f"{name} started")
-      kwargs_to_pass = kwargs.copy()
-      if fn.__name__ == 'learner':
-        kwargs_to_pass.pop('queue', None)  # Remove queue if it exists for learner
-      if 'logger' in fn.__code__.co_varnames:
-        kwargs_to_pass['logger'] = _logger
-      return fn(*args, **kwargs_to_pass)
-    except Exception as e:
-      _logger.print(f"Exception caught in {name}: {type(e).__name__}: {e}")
-      _logger.print(traceback.format_exc())
-      raise
-    finally:
-      _logger.print(f"{name} exiting")
-      if _logger: # Check if logger was successfully created
-        _logger.close() # Use the close() method of FileLogger
-
-  return _watcher
-
-
-# NEW CLASS DEFINITION STARTS HERE
-class AlphaZeroBot(mcts.MCTSBot):
-  """A MCTSBot for AlphaZero with added debug logging and assertions."""
-  # player_id is declared by mcts.MCTSBot, pylint: disable=no-member
-
-  def __init__(self,
-               player_id: int, # This is the player_id for this bot instance
-               game: pyspiel.Game, 
-               evaluator: mcts.Evaluator,
-               uct_c: float,
-               max_simulations: int,
-               # AlphaZero specific params that MCTSBot's dirichlet_noise tuple expects
-               policy_alpha: float, 
-               policy_epsilon: float,
-               # MCTSBot's add_dirichlet_noise flag, determined by _play_game logic
-               add_dirichlet_noise_for_bot: bool, # This boolean flag indicates if noise should be applied
-               temperature: float, 
-               temperature_drop: int,
-               # Standard MCTSBot args
-               solve: bool = True, 
-               verbose: bool = False,
-               child_selection_fn=mcts.SearchNode.uct_value,
-               dont_return_chance_node: bool = False):
-    
-    # mcts.MCTSBot's dirichlet_noise parameter expects a tuple (epsilon, alpha) or None.
-    # Construct this tuple based on add_dirichlet_noise_for_bot.
-    dirichlet_noise_tuple = (policy_epsilon, policy_alpha) if add_dirichlet_noise_for_bot else None
-
-    super().__init__(
-        game=game,
-        # player_id=player_id, # REMOVED: MCTSBot.__init__ does not take player_id
-        evaluator=evaluator,
-        uct_c=uct_c,
-        max_simulations=max_simulations,
-        solve=solve,
-        verbose=verbose,
-        child_selection_fn=child_selection_fn,
-        dirichlet_noise=dirichlet_noise_tuple, # Pass the (epsilon, alpha) tuple or None
-        dont_return_chance_node=dont_return_chance_node,
-    )
-    # Explicitly set player_id for this bot instance.
-    # pyspiel.Bot (superclass of MCTSBot) has a player_id attribute.
-    # It is typically set by the system managing the bot or can be set here.
-    # For OpenSpiel, player_id is usually 0 or 1 for two-player games.
-    # The MCTSBot might use this internally for some logic if available.
-    self.player_id = player_id # ADDED: Set player_id attribute directly
-
-    # Store AZ-specific params on the instance if they are needed by AlphaZeroBot's methods
-    # (e.g. if it were to override _dirichlet_noise, though it doesn't currently)
-    self.az_policy_alpha = policy_alpha 
-    self.az_policy_epsilon = policy_epsilon
-    self.az_temperature = temperature
-    self.az_temperature_drop = temperature_drop
-    
-    # self.dirichlet_noise is an attribute set by the MCTSBot superclass constructor.
-    # It will be None if no noise, or the (epsilon, alpha) tuple if noise is active.
-    # The actual attribute in MCTSBot is _dirichlet_noise.
-    is_noise_active_on_bot_instance = self._dirichlet_noise is not None
-
-
-
-    # Assertion: If noise is active on the bot (meaning dirichlet_noise_tuple was not None),
-    # then the alpha component of that noise (self.az_policy_alpha) must be positive.
-    if is_noise_active_on_bot_instance and not (self.az_policy_alpha > 0):
-        raise ValueError(
-            f"AlphaZeroBot Consistency Check: If Dirichlet noise is active (inferred from self._dirichlet_noise being {self._dirichlet_noise}), "
-            f"then az_policy_alpha (which is '{self.az_policy_alpha}') must be > 0. "
-            f"This check is for player {self.player_id}.")
-
-# NEW CLASS DEFINITION ENDS HERE
-
-
-# _init_bot function from open_spiel/python/algorithms/alpha_zero/alpha_zero.py
-def _init_bot(config: ConfigJAX, game: pyspiel.Game, evaluator_: mcts.Evaluator, evaluation: bool, player_id_for_bot: int):
-  """Initializes an AlphaZeroBot (JAX specific)."""
-  
-  # Determine if noise should be added for this specific bot instance.
-  # - `evaluation` is True: No noise (deterministic play for evaluation).
-  # - `evaluation` is False (e.g. actor self-play): Noise is active if policy_alpha and policy_epsilon are > 0.
-  #   This matches the logic in the original _play_game for AlphaZeroBot instantiation.
-  should_add_noise_flag = False
-  if not evaluation: # Only consider noise if not in evaluation mode
-    if config.policy_alpha > 0 and config.policy_epsilon > 0:
-      should_add_noise_flag = True
-      
-  return AlphaZeroBot(
-      player_id=player_id_for_bot,
-      game=game,
-      evaluator=evaluator_,
-      uct_c=config.uct_c,
-      max_simulations=config.max_simulations,
-      policy_alpha=config.policy_alpha, 
-      policy_epsilon=config.policy_epsilon,
-      add_dirichlet_noise_for_bot=should_add_noise_flag, # Pass the boolean flag
-      temperature=config.temperature, # Temperature for policy sampling (though MCTSBot doesn't use it directly for search)
-      temperature_drop=config.temperature_drop, # (Same as above)
-      solve=False, # AlphaZero does not solve in the traditional sense
-      verbose=False,
-      child_selection_fn=mcts.SearchNode.puct_value, # PUCT for AlphaZero
-      dont_return_chance_node=True
-  )
-
-
-# _play_game function from open_spiel/python/algorithms/alpha_zero/alpha_zero.py
-# Adapted to use TrajectoryState and Trajectory already defined in this file.
-def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list, temperature: float, temperature_drop: int, numpy_seed: int, log_level: int = 0):
-  """Play one game, return the trajectory."""
-  trajectory = Trajectory() # Uses Trajectory class defined in this file
-  actions = []
-  state = game.new_initial_state()
-  random_state = np.random.RandomState(numpy_seed) # Use the passed numpy_seed
-  if logger and log_level >= 2:
-    logger.opt_print(f" Starting game {game_num} (seed: {numpy_seed}) ".center(60, "-"))
-    logger.opt_print(f"Initial state:\n{state}")
-
-  while not state.is_terminal():
-    if state.is_chance_node():
-      outcomes = state.chance_outcomes()
-      action_list, prob_list = zip(*outcomes)
-      action = random_state.choice(action_list, p=prob_list)
-      state.apply_action(action)
-    else:
-      player = state.current_player()
-      root = bots[player].mcts_search(state)
-      policy = np.zeros(game.num_distinct_actions())
-      for c in root.children:
-        policy[c.action] = c.explore_count
-      # Apply temperature
-      if temperature == 0: # Avoid division by zero, choose greedily
-          action = root.best_child().action
-      else:
-          policy = policy**(1 / temperature)
-          policy /= policy.sum()
-          if len(actions) >= temperature_drop: # After temperature_drop moves, pick best action
-            action = root.best_child().action
-          else:
-            action = random_state.choice(len(policy), p=policy) # NEW: Use seeded random_state
-      # Store state, action, policy, value
-      current_trajectory_state = TrajectoryState(
-          state.observation_tensor(), # Uses TrajectoryState from this file
-          state.current_player(),
-          state.legal_actions_mask(), action, policy,
-          root.total_reward / root.explore_count if root.explore_count > 0 else 0) # Value from MCTS search
-      trajectory.add(current_trajectory_state)
-      action_str_log = state.action_to_string(player, action)
-      actions.append(action_str_log)  # For final game log
-      state.apply_action(action)
-  
-  if logger and log_level >= 2:
-    logger.opt_print(f"Game finished. Next state:\n{state}")
-
-  trajectory.returns = state.returns()
-  if logger and log_level >= 1:
-    logger.print(f"Game {game_num}: Returns: {' '.join(map(str, trajectory.returns))}; Actions: {' '.join(actions)}")
-  return trajectory
-
-
-@watcher
-def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
-          queue: spawn._ProcessQueue, prng_key: jax.random.PRNGKey):
-  """An actor process that plays games and sends trajectories to the learner."""
-  if config.log_level >= DEBUG:
-    logger.print(f"Actor {num} started with PRNG key: {prng_key}")
-
-  actor_internal_key = jax.random.fold_in(prng_key, num)
-  model_init_key, actor_run_key = jax.random.split(actor_internal_key)
-
-  # Directory for the learner's 'latest' checkpoint (atomically updated by learner)
-  latest_ckpt_load_dir = os.path.join(config.path, "checkpoints_jax_latest_atomic")
-
-  if not config.path and config.log_level >= INFO:
-      logger.print(f"Warning: Actor {num} - config.path is not set. Checkpoint loading will be disabled.")
-
-  # Checkpointer for loading the 'latest' checkpoint
-  actor_latest_checkpointer = ocp.Checkpointer(
-      ocp.PyTreeCheckpointHandler(use_ocdbt=False),
-      temporary_path_class=ocp_atomicity.AtomicRenameTemporaryPath
-  )
-  if logger and config.path and config.log_level >= DEBUG:
-      logger.print(f"Actor {num}: Will load latest checkpoints (via Checkpointer) from: {latest_ckpt_load_dir}")
-
-  if config.log_level >= DEBUG:
-    logger.print(f"Actor {num}: Initializing model (about to call init_flax_model_and_variables)")
-  try:
-    flax_model, variables = model_jax.init_flax_model_and_variables(model_init_key, config, game)
-    if config.log_level >= DEBUG:
-      logger.print(f"Actor {num}: Model initialized successfully. Model: {flax_model}")
-  except Exception as e:
-    if config.log_level >= INFO:
-      logger.print(f"Actor {num}: Model initialization FAILED: {e}")
-      import traceback as tb; logger.print(tb.format_exc())
-    raise
-  
-  if config.log_level >= DEBUG:
-    logger.print(f"Actor {num}: Initializing AlphaZeroEvaluatorJAX")
-  # Initialize evaluator
-  az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables, config.evaluator_cache_size)
-
-  # Create a bot for each player in the game.
-  # These bots will be used by _play_game.
-  bots = []
-  for i in range(game.num_players()): # Corrected loop range
-      bots.append(_init_bot(config, game, az_evaluator, evaluation=False, player_id_for_bot=i))
-
-  # Checkpoint directory - ensure it's defined based on config.path
-  # The learner creates this, actor just reads from it.
-  ckpt_dir = os.path.join(config.path, "checkpoints_jax") if config.path else None
-  if not config.path:
-      logger.print(f"Warning: Actor {num} - config.path is not set. Checkpoint loading will be disabled.")
-
-
-  def update_checkpoint_fn(current_variables, current_az_evaluator):
-    """Attempts to load the latest checkpoint. Returns updated variables or current if no new checkpoint."""
-    new_variables = current_variables
-    loaded_new_checkpoint = False
-    
-    if not config.path: # If path is not set, cannot load checkpoints
-        return new_variables, loaded_new_checkpoint
-
-    # Skip update if checkpoint directory is missing or empty
-    if not os.path.exists(latest_ckpt_load_dir) or not os.path.isdir(latest_ckpt_load_dir) or not os.listdir(latest_ckpt_load_dir):
-        if config.log_level >= INFO:
-            logger.opt_print(f"Actor {num}: 'latest_atomic' checkpoint dir missing or empty at {latest_ckpt_load_dir}. No update.")
-        return new_variables, loaded_new_checkpoint
-
-    try:
-      # Restore full variables PyTree from atomic checkpoint
-      restored_variables = actor_latest_checkpointer.restore(latest_ckpt_load_dir)
-
-      if restored_variables is not current_variables:
-        new_variables = restored_variables
-      current_az_evaluator.update_variables(new_variables)
-      if config.log_level >= INFO:
-        logger.print(f"Actor {num}: Loaded new 'latest_atomic' checkpoint from {latest_ckpt_load_dir}. Inference cache info: {current_az_evaluator.cache_info()}")
-        current_az_evaluator.clear_cache()
-        logger.print(f"Actor {num}: Cache cleared. New cache info: {current_az_evaluator.cache_info()}")
-        loaded_new_checkpoint = True
-      else:
-          if config.log_level >= DEBUG:
-            logger.opt_print(f"Actor {num}: No new checkpoint data found or restore failed from {latest_ckpt_load_dir}. Keeping current model variables.")
-          loaded_new_checkpoint = False
-
-    except Exception as e:
-      if config.log_level >= INFO:
-        logger.print(f"Actor {num}: Error loading 'latest_atomic' checkpoint from {latest_ckpt_load_dir}: {e}")
-        logger.print(traceback.format_exc())
-    return new_variables, loaded_new_checkpoint
-
-  # Main actor loop
-  for game_num in itertools.count():
-    # Try to update model from checkpoint
-    variables, _ = update_checkpoint_fn(variables, az_evaluator) # az_evaluator is passed here
-    
-    # Derive a seed for this specific game from the actor's run key
-    # Fold in game_num to ensure each game gets a unique PRNG sequence if actor is restarted/reused.
-    game_specific_rng_key = jax.random.fold_in(actor_run_key, game_num)
-    current_numpy_seed = jax.random.randint(game_specific_rng_key, shape=(), minval=0, maxval=jnp.iinfo(jnp.int32).max).item()
-
-    # Play a game
-    full_trajectory = _play_game(
-        logger=logger,
-        game_num=game_num,
-        game=game,
-        bots=bots,
-        temperature=config.temperature,
-        temperature_drop=config.temperature_drop,
-        numpy_seed=current_numpy_seed,
-        log_level=config.log_level
-    )
-    
-    # For each player, create a player-specific trajectory and send it.
-    list_of_returns_from_game = full_trajectory.returns
-    if list_of_returns_from_game is None:
-        logger.print(f"Actor {num}, Game {game_num}: full_trajectory.returns is None. Skipping sending.")
-    elif not isinstance(list_of_returns_from_game, list) or len(list_of_returns_from_game) != game.num_players():
-        logger.print(f"Actor {num}, Game {game_num}: full_trajectory.returns is not a list of correct length. Got: {list_of_returns_from_game}. Skipping.")
-    else:
-        for p_id in range(game.num_players()):
-            player_specific_trajectory = Trajectory()
-            player_specific_trajectory.states = full_trajectory.states
-            player_specific_trajectory.returns = list_of_returns_from_game[p_id]
-
-            try:
-                queue.put(player_specific_trajectory)
-                if config.log_level >= DEBUG:
-                  logger.opt_print(f"Actor {num}: Sent trajectory for player {p_id} from game {game_num} to learner. Return: {player_specific_trajectory.returns}")
-            except Exception as e:
-                if config.log_level >= INFO:
-                  logger.print(f"Actor {num}: Error sending player-specific trajectory (p_id {p_id}, game {game_num}) to queue: {e}")
-                pass
-
-    # Short delay to prevent actor from hogging CPU if queue is slow
-    time.sleep(0.001) # Small sleep to avoid busy-waiting
-
-
-@watcher
-def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
-              queue: spawn._ProcessQueue, prng_key: jax.random.PRNGKey):
-  """A process that plays the latest checkpoint vs standard MCTS."""
-  if config.log_level >= DEBUG:
-    logger.print(f"Evaluator {num} started with PRNG key: {prng_key}")
-
-  evaluator_internal_key = jax.random.fold_in(prng_key, num)
-  model_init_key, evaluator_run_key = jax.random.split(evaluator_internal_key)
-
-  # Directory for the learner's 'latest' checkpoint (atomically updated by learner)
-  latest_ckpt_load_dir_eval = os.path.join(config.path, "checkpoints_jax_latest_atomic")
-
-  if not config.path and config.log_level >= INFO:
-    logger.print(f"Warning: Evaluator {num} - config.path is not set. Checkpoint loading will be disabled.")
-
-  # Checkpointer for loading the 'latest' checkpoint
-  evaluator_latest_checkpointer = ocp.Checkpointer(
-      ocp.PyTreeCheckpointHandler(use_ocdbt=False),
-      temporary_path_class=ocp_atomicity.AtomicRenameTemporaryPath
-  )
-  if logger and config.path and config.log_level >=INFO:
-      logger.print(f"Evaluator {num}: Will load latest checkpoints (via Checkpointer) from: {latest_ckpt_load_dir_eval}")
-
-  if config.log_level >= DEBUG:
-    logger.print(f"Evaluator {num}: Initializing model (about to call init_flax_model_and_variables)")
-  try:
-    flax_model, variables = model_jax.init_flax_model_and_variables(model_init_key, config, game)
-    if config.log_level >= DEBUG:
-      logger.print(f"Evaluator {num}: Model initialized successfully. Model: {flax_model}")
-  except Exception as e:
-    if config.log_level >= INFO:
-      logger.print(f"Evaluator {num}: Model initialization FAILED: {e}")
-      import traceback as tb; logger.print(tb.format_exc())
-    raise
-
-  if config.log_level >= DEBUG:
-    logger.print(f"Evaluator {num}: Initializing AlphaZeroEvaluatorJAX")
-  az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables, config.evaluator_cache_size)
-  
-  az_bot = _init_bot(config, game, az_evaluator, evaluation=True, player_id_for_bot=0)
-  random_rollout_evaluator = mcts.RandomRolloutEvaluator()
-  results_buffer = Buffer(config.evaluation_window)
-  # ckpt_dir_base = os.path.join(config.path, "checkpoints_jax_managed") if config.path else None # No longer needed for latest, only for periodic if evaluator were to load those
-  
-  # current_loaded_step variable is unused and can be removed.
-  # nonlocal current_loaded_step in update_checkpoint_eval_fn is also not needed then.
-
-  def update_checkpoint_eval_fn(current_vars, current_az_eval):
-    new_vars = current_vars
-    loaded_new = False
-    
-    if not config.path: 
-        return new_vars, loaded_new
-    
-    # Skip update if checkpoint directory is missing or empty
-    if not os.path.exists(latest_ckpt_load_dir_eval) or not os.path.isdir(latest_ckpt_load_dir_eval) or not os.listdir(latest_ckpt_load_dir_eval):
-        if config.log_level >= INFO:
-            logger.opt_print(f"Evaluator {num}: 'latest_atomic' checkpoint dir missing or empty at {latest_ckpt_load_dir_eval}. No update.")
-        return new_vars, loaded_new
-
-    try:
-        # Restore full variables PyTree from atomic checkpoint
-        restored_variables = evaluator_latest_checkpointer.restore(latest_ckpt_load_dir_eval)
-
-        if restored_variables is not current_vars:
-            new_vars = restored_variables
-        current_az_eval.update_variables(new_vars)
-        if config.log_level >= 1:
-            logger.print(f"Evaluator {num}: Loaded new 'latest_atomic' checkpoint from {latest_ckpt_load_dir_eval}. Updated model variables.")
-            loaded_new = True
-    except Exception as e:
-      if config.log_level >= INFO:
-        logger.print(f"Evaluator {num}: Error loading 'latest_atomic' checkpoint from {latest_ckpt_load_dir_eval}: {e}")
-        logger.print(traceback.format_exc())
-    return new_vars, loaded_new
-  for game_num in itertools.count():
-    variables, loaded_new = update_checkpoint_eval_fn(variables, az_evaluator)
-    if loaded_new:
-        results_buffer = Buffer(config.evaluation_window)
-        if config.log_level >= 1:
-          logger.print(f"Evaluator {num}: Model updated, results buffer reset.")
-    difficulty = (game_num // 2) % config.eval_levels if config.eval_levels > 0 else 0
-    opponent_simulations = config.max_simulations 
-    opponent_bot = mcts.MCTSBot(
-        game,
-        config.uct_c, 
-        opponent_simulations, 
-        random_rollout_evaluator, 
-        solve=False, 
-        verbose=False,
-        dont_return_chance_node=True
-    )
-    az_player = game_num % 2
-    current_bots = [az_bot, opponent_bot] if az_player == 0 else [opponent_bot, az_bot]
-    if config.log_level >= 2:
-      logger.opt_print(f"Evaluator {num}, Game {game_num}: AZ player {az_player}, Opponent difficulty {difficulty}")
-    game_specific_rng_key = jax.random.fold_in(evaluator_run_key, game_num)
-    numpy_seed = jax.random.randint(game_specific_rng_key, shape=(), minval=0, maxval=jnp.iinfo(jnp.int32).max).item()
-    trajectory = _play_game(
-        logger=logger, 
-        game_num=game_num, 
-        game=game, 
-        bots=current_bots, 
-        temperature=1,        # For evaluation, use deterministic policy (temp=1, best_child in _play_game if temp_drop=0)
-        temperature_drop=0,   # No randomness in action selection after initial phase for evaluation
-        numpy_seed=numpy_seed,
-        log_level=config.log_level
-    )
-    result_for_az_player = trajectory.returns[az_player]
-    results_buffer.append(result_for_az_player)
-    avg_score = sum(results_buffer.data) / len(results_buffer.data) if results_buffer.data else 0
-    if config.log_level >= ERROR:
-      logger.print(f"Evaluator {num}, Game {game_num}: Result for AZ player {az_player}: {result_for_az_player:.2f}. Avg score: {avg_score:.3f} over {len(results_buffer.data)} games.")
-    try:
-      queue.put((difficulty, result_for_az_player))
-    except Exception as e:
-      if config.log_level >= 1:
-        logger.print(f"Evaluator {num}: Error sending result to queue: {e}")
-      pass
-
-
-def broadcast_fn(message):
-    # This is a placeholder for broadcasting messages to actors/evaluators if needed.
-    # In the current implementation, it just prints/logs the message.
-    # If a logger is needed, use a global or pass as argument (not required for pickling).
-    # Only print if a global config exists and log_level >= DEBUG, otherwise suppress.
-    try:
-        from inspect import currentframe, getouterframes
-        frame = getouterframes(currentframe())[1].frame
-        config = frame.f_locals.get('config', None)
-        if config is not None and hasattr(config, 'log_level') and config.log_level >= DEBUG:
-            print(f"Broadcasting message (placeholder): {message}")
-    except Exception:
-        pass
-    # If you want to use a logger, you can set a global logger variable here.
-    # Or, you can make this a no-op if not needed.
-    pass
 
 def alpha_zero_jax(config: ConfigJAX):
     """Main entry point for JAX AlphaZero."""
     import pyspiel  # Ensure pyspiel is imported in this scope
     main_key = jax.random.PRNGKey(config.master_seed)
-    random.seed(config.master_seed)
-    np.random.seed(config.master_seed)
+    # Python and NumPy random seeds are set globally for the main process if needed,
+    # but actor/evaluator subprocesses will get their own dedicated integer seeds.
+    random.seed(config.master_seed) 
+    np.random.seed(config.master_seed) # Seed NumPy for main process
+
     os.makedirs(config.path, exist_ok=True)
     main_log_directory = config.path 
     main_log_name = "main_alpha_zero_jax" 
@@ -641,14 +118,28 @@ def alpha_zero_jax(config: ConfigJAX):
     actual_log_file_path = os.path.join(main_log_directory, f'log-{main_log_name}.txt')
     if not config.quiet and config.log_level >= INFO:
         print(f"Main process logging to: {actual_log_file_path}")
-    process_keys = jax.random.split(main_key, 1 + config.actors + config.evaluators)
-    learner_key = process_keys[0]
-    actor_keys = process_keys[1:1+config.actors]
-    evaluator_keys = process_keys[1+config.actors:]
     game = pyspiel.load_game(config.game)
+    servicer_key, spawn_key = jax.random.split(main_key)
+    inference_model, inference_variables = model_jax.init_flax_model_and_variables(
+        servicer_key, config, game)
+    process_keys = jax.random.split(spawn_key, 1 + config.actors + config.evaluators)
+    learner_key = process_keys[0]
+    actor_seed_keys = process_keys[1 : 1 + config.actors]
+    evaluator_seed_keys = process_keys[1 + config.actors : 1 + config.actors + config.evaluators]
+
+    actor_initial_seeds = [jax.random.randint(key, (), 0, 2**31 - 1).item() for key in actor_seed_keys]
+    evaluator_initial_seeds = [jax.random.randint(key, (), 0, 2**31 - 1).item() for key in evaluator_seed_keys]
+
+    # Create a consolidated list of response queues for remote inference
+    total_remote_clients = config.actors + config.evaluators
+    all_client_response_queues = [mp.Queue() for _ in range(total_remote_clients)]
+
+    # Initialize inference_request_queue and lists for processes and their queues
+    inference_request_queue = mp.Queue()
     processes = []
     actor_process_queues = []
     evaluator_process_queues = []
+
     if config.log_level >= INFO:
         main_process_logger.print(f"Starting {config.actors} actors...")
     for i in range(config.actors):
@@ -656,7 +147,9 @@ def alpha_zero_jax(config: ConfigJAX):
             "game": game,
             "config": config,
             "num": i,
-            "prng_key": actor_keys[i]
+            "initial_seed": actor_initial_seeds[i],
+            "inference_request_queue": inference_request_queue,
+            "inference_response_queue": all_client_response_queues[i]
         }
         p = spawn.Process(target=actor, kwargs=actor_kwargs)
         processes.append(p)
@@ -668,7 +161,9 @@ def alpha_zero_jax(config: ConfigJAX):
             "game": game,
             "config": config,
             "num": i,
-            "prng_key": evaluator_keys[i]
+            "initial_seed": evaluator_initial_seeds[i], # CORRECTED: Was evaluator_keys[i]
+            "inference_request_queue": inference_request_queue,
+            "inference_response_queue": all_client_response_queues[config.actors + i]
         }
         p = spawn.Process(target=evaluator, kwargs=eval_kwargs)
         processes.append(p)
@@ -679,18 +174,27 @@ def alpha_zero_jax(config: ConfigJAX):
         "actor_queues": actor_process_queues,
         "evaluator_queues": evaluator_process_queues,
         "prng_key": learner_key,
-        "broadcast_fn": broadcast_fn  # Pass the top-level function
+        "inference_request_queue": inference_request_queue,
+        # "actor_inference_response_queues": actor_inference_response_queues, # Old, now consolidated
+        "all_client_response_queues": all_client_response_queues, # New consolidated list
+        "initial_flax_model": inference_model,      # Pass the centrally initialized model
+        "initial_variables": inference_variables   # Pass the centrally initialized variables
     }
     if config.log_level >= INFO:
         main_process_logger.print("Starting Learner in main process...")
     try:
+        # Call learner directly with unpacked kwargs for clarity
         learner(
-            game=game,
-            config=config,
-            actor_queues=actor_process_queues,
-            evaluator_queues=evaluator_process_queues,
-            broadcast_fn=broadcast_fn,
-            prng_key=learner_key
+            game=learner_kwargs["game"],
+            config=learner_kwargs["config"],
+            actor_queues=learner_kwargs["actor_queues"],
+            evaluator_queues=learner_kwargs["evaluator_queues"],
+            prng_key=learner_kwargs["prng_key"],
+            inference_request_queue=learner_kwargs["inference_request_queue"],
+            # "actor_inference_response_queues": learner_kwargs["actor_inference_response_queues"], # Old
+            all_client_response_queues=learner_kwargs["all_client_response_queues"], # New
+            initial_flax_model=learner_kwargs["initial_flax_model"],
+            initial_variables=learner_kwargs["initial_variables"]
         )
     except (KeyboardInterrupt, EOFError) as e:
         if config.log_level >= INFO:
@@ -764,15 +268,18 @@ def alpha_zero_jax(config: ConfigJAX):
 
 # Learner function (skeleton was present in original file, make sure signature matches)
 # The original skeleton was: learner(*, game, config, actors, evaluators, broadcast_fn, logger, prng_key)
-# It should be: learner(*, game, config, actor_queues, evaluator_queues, broadcast_fn, prng_key)
+# It should be: learner(*, game, config, actor_queues, evaluator_queues, prng_key)
 # The logger for learner is created by its own @watcher decorator.
 
 @watcher
 def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             actor_queues: list[spawn._ProcessQueue], 
             evaluator_queues: list[spawn._ProcessQueue], 
-            broadcast_fn, # Added broadcast_fn here
-            prng_key: jax.random.PRNGKey):
+            prng_key: jax.random.PRNGKey,
+            inference_request_queue: mp.Queue, 
+            # actor_inference_response_queues: list[mp.Queue], # Old
+            all_client_response_queues: list[mp.Queue], # New
+            initial_flax_model, initial_variables): 
   """A learner that consumes actor trajectories and evaluator results, and updates the model."""
   # Start Python allocation tracing and RSS monitoring
   tracemalloc.start()
@@ -788,24 +295,56 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         pass
 
   # Initialize model and optimizer
-  learner_key_for_init, prng_key = jax.random.split(prng_key) # Use prng_key for subsequent ops
-  
-  # Ensure game object is loaded if only game name was passed in config,
-  # or use the passed game object.
-  # The 'game' parameter to learner should be a loaded pyspiel.Game object.
-  # if isinstance(game, str): # This check might be needed if only game name is passed
-  #   loaded_game = pyspiel.load_game(game)
-  # else:
-  #   loaded_game = game
-
-  flax_model, variables = model_jax.init_flax_model_and_variables(
-      learner_key_for_init, config, game
-  )
+  flax_model = initial_flax_model
+  variables = initial_variables
   optimizer = optax.adamw(learning_rate=config.learning_rate, weight_decay=config.weight_decay)
   opt_state = optimizer.init(variables['params'])
 
   replay_buffer = Buffer(config.replay_buffer_size)
   
+  # Initialize the InferenceServicer
+  # This is where the batch_timeout_ms was hardcoded.
+  # The user mentioned line 316. This part is an educated guess of the surrounding code.
+  # The actual InferenceServicer initialization might be slightly different.
+  # We need to find where 'servicer' or 'InferenceServicer' is created.
+  
+  # Assuming servicer is created like this based on its __init__ signature
+  # and the hardcoded value reference.
+  # The `initial_flax_model` and `initial_variables` are now passed to learner
+  # so the servicer will use the jitted apply function derived from these.
+  
+  # JIT the model application function for inference servicer
+  # This jit'd function will be passed to the InferenceServicer.
+  # It should take (variables, batch_observations, batch_legals_masks)
+  @jax.jit
+  def _batched_inference_fn_for_servicer(model_vars, obs_batch, legals_batch):
+      # initial_flax_model.apply is expected to handle legals_mask internally
+      # by setting logits of illegal actions to -jnp.inf.
+      policy_logits, value_preds = initial_flax_model.apply(
+          model_vars, 
+          obs_batch, 
+          legals_mask=legals_batch, # Pass legals_mask to the model
+          training=False, 
+          mutable=False # No batch stats updates during pure inference
+      )
+      policy_probs = jax.nn.softmax(policy_logits, axis=-1)
+      return policy_probs, value_preds # Return probabilities and value predictions
+
+  servicer = InferenceServicer(
+      request_queue=inference_request_queue,
+      all_client_response_queues=all_client_response_queues,
+      model_apply_fn=_batched_inference_fn_for_servicer, # Pass the new JITted function
+      initial_model_variables=initial_variables, # Pass the initial variables
+      max_batch_size=config.inference_batch_size, # Use the new config field for inference batch size
+      batch_timeout_ms=config.inference_batch_timeout_ms, # Use the new config field
+      num_actors=config.actors, # Used for logging/config within servicer
+      output_size=config.output_size, # Pass output_size
+      logger=logger, # Pass the learner's logger
+      log_level=config.log_level
+  )
+  servicer.start()
+  logger.print("Learner: InferenceServicer started.")
+
   # ---- Orbax Checkpointing Setup ----
   # Directory for periodic, managed checkpoints
   managed_ckpt_dir = os.path.join(config.path, "checkpoints_jax_managed")
@@ -1171,6 +710,8 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
       if logger and config.log_level >= DEBUG:
           logger.print(f"Training on batch of size: {len(batch_data)}")
       
+      if logger and config.log_level >= DEBUG:
+        logger.print(f"Learner: Processing training batch of {len(batch_data)} samples on TPU...")
       # Ensure TrainInputJAX.stack method is available and used correctly.
       # If not, stack manually here. For now, assuming model_jax.TrainInputJAX.stack exists.
       try:
@@ -1183,6 +724,10 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         variables, opt_state, total_loss_val, policy_loss_val, value_loss_val = train_step_fn(
             variables, opt_state, batch_obs_jnp, batch_legals_jnp, batch_policy_jnp, batch_value_jnp
         )
+        # Update the inference servicer with the new model variables
+        if servicer:
+            servicer.update_model_variables(variables)
+        
         current_total_loss, current_policy_loss, current_value_loss = total_loss_val, policy_loss_val, value_loss_val 
         
         loss_log_msg = f"Step: {step}, Total Loss: {current_total_loss:.4f}, Policy Loss: {current_policy_loss:.4f}, Value Loss: {current_value_loss:.4f}"
@@ -1233,7 +778,6 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         if logger: 
           logger.print(error_msg)
         current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan') 
-
 
     else:
       current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
@@ -1300,7 +844,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         logger.print(max_steps_msg)
       break
 
-    if save_path_for_broadcast and broadcast_fn: # This broadcast is now only for OTHER types of messages if any.
+    if save_path_for_broadcast: # This broadcast is now only for OTHER types of messages if any.
         broadcast_msg = f"Broadcasting checkpoint: {save_path_for_broadcast}" # This message is now potentially misleading if path is None
         if logger and config.log_level >= DEBUG:
           logger.opt_print(broadcast_msg) 
@@ -1310,184 +854,9 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   if logger and config.log_level >= INFO:
     logger.print(final_msg)
 
-# ---- Start of AlphaZero JAX main execution example ----
-# FLAGS = flags.FLAGS
-
-# # Game and AlphaZero parameters
-# flags.DEFINE_string("game", "tic_tac_toe", "Name of the game.")
-# flags.DEFINE_string("path", None, "Path to save data.") # If None, a temp dir is used.
-# flags.DEFINE_float("learning_rate", 0.001, "Learning rate.")
-# flags.DEFINE_float("weight_decay", 0.0001, "Weight decay.")
-# flags.DEFINE_integer("train_batch_size", 128, "Batch size for training.")
-# flags.DEFINE_integer("replay_buffer_size", 2**16, "Replay buffer size.") # 65536
-# flags.DEFINE_integer("replay_buffer_reuse", 1, "Replay buffer reuse.")
-# flags.DEFINE_integer("max_steps", 0, "Number of training steps. 0 for infinite.")
-# flags.DEFINE_integer("checkpoint_freq", 100, "Save a checkpoint every N steps.")
-# flags.DEFINE_integer("actors", 2, "Number of actors.")
-# flags.DEFINE_integer("evaluators", 1, "Number of evaluators.")
-# flags.DEFINE_integer("evaluation_window", 100, "How often to run evaluations.")
-# flags.DEFINE_integer("eval_levels", 7, "Number of levels for MCTS eval.") # Corresponds to Bot levels
-# flags.DEFINE_float("uct_c", 2, "UCT constant.")
-# flags.DEFINE_integer("max_simulations", 100, "Max MCTS simulations per move.")
-# flags.DEFINE_float("policy_alpha", 0.3, "Alpha for Dirichlet noise.") # Should match game's num_actions typically
-# flags.DEFINE_float("policy_epsilon", 0.25, "Epsilon for Dirichlet noise.")
-# flags.DEFINE_float("temperature", 1.0, "Initial temperature for policy sampling.")
-# flags.DEFINE_integer("temperature_drop", 10, "Drop temperature to 0 after this many moves.")
-# flags.DEFINE_string("nn_model", "mlp", "Neural network model type (mlp, resnet, resnet18, etc.).")
-# flags.DEFINE_integer("nn_width", 256, "Width of the neural network.")
-# flags.DEFINE_integer("nn_depth", 20, "Depth of the neural network (e.g., number of hidden layers in MLP/Conv2D). For a generic 'resnet' model, this often corresponds to the number of residual blocks (e.g., 20 for an AlphaGo Zero-like model).")
-# flags.DEFINE_boolean("quiet", False, "Disable all logging.")
-# flags.DEFINE_integer("master_seed", 42, "Master RNG seed for JAX and other random operations.")
-# flags.DEFINE_integer("evaluator_cache_size", 2**16, "Size of the LRU cache for the evaluator.")
-
-# # ResNet specific config flags (used if nn_model is 'resnet')
-# flags.DEFINE_list("resnet_depth_config_list", None, "List of ints for resnet stage sizes, e.g., '2,2,2,2' for ResNet18 like structure. Used if nn_model is 'resnet'.")
-# flags.DEFINE_string("resnet_stem_name", "ResNetStem", "Name of the stem callable (e.g., ResNetStem, ResNetDStem). Used if nn_model is 'resnet'.")
-# flags.DEFINE_string("resnet_stem_kwargs_json", None, "JSON string for stem_kwargs, e.g., '{\"stem_width\": 32}'. Used if nn_model is 'resnet'.")
-# flags.DEFINE_string("resnet_block_name", "ResNetBlock", "Name of the block callable (e.g., ResNetBlock, ResNetBottleneckBlock). Used if nn_model is 'resnet'.")
-# flags.DEFINE_string("resnet_block_kwargs_json", None, "JSON string for block_kwargs, e.g., '{\"expansion\": 2}'. Used if nn_model is 'resnet'.")
-
-# def main(argv):
-#     del argv # Unused
-
-#     game_instance = pyspiel.load_game(FLAGS.game)
-#     observation_shape = game_instance.observation_tensor_shape()
-#     output_size = game_instance.num_distinct_actions()
-
-#     # Path creation
-#     data_path = FLAGS.path
-#     if data_path is None:
-#         data_path = tempfile.mkdtemp(prefix=f"az_jax_{FLAGS.game}_")
-#         print(f"No path specified, using temporary directory: {data_path}")
-#     
-#     # Initialize ResNet specific fields to None by default
-#     current_resnet_depth_config = None
-#     current_resnet_stem_callable_name = None
-#     current_resnet_stem_kwargs = None
-#     current_resnet_block_callable_name = None
-#     current_resnet_block_kwargs = None
-
-#     if FLAGS.nn_model == "resnet":
-#         print("Configuring a generic ResNet model based on FLAGS.")
-#         # Example of how these fields would be populated with Python data structures:
-#         # current_resnet_depth_config = [2, 2, 2, 2]  # e.g., for a ResNet18-like structure
-#         # current_resnet_stem_callable_name = "ResNetDStem"
-#         # current_resnet_stem_kwargs = {"stem_width": 32, "deep_stem": False} # Example
-#         # current_resnet_block_callable_name = "ResNetDBlock"
-#         # current_resnet_block_kwargs = {"projection_shortcut": True} # Example, specific to block type
-
-#         if FLAGS.resnet_depth_config_list:
-#             try:
-#                 # The list flag might come in as strings, convert to int
-#                 current_resnet_depth_config = [int(x) for x in FLAGS.resnet_depth_config_list]
-#             except ValueError as e:
-#                 print(f"Error parsing resnet_depth_config_list: {e}. It should be a list of integers.")
-#                 sys.exit(1)
-#         else:
-#             # Default to a simple structure if nn_model is 'resnet' but no depth_config is given.
-#             # Using nn_depth to create a simple config, e.g., [FLAGS.nn_depth] * 2 (two stages)
-#             # This is just an example; init_flax_model_and_variables will raise error if not provided correctly for 'resnet'
-#             print(f"Warning: nn_model='resnet' but no resnet_depth_config_list provided. model_jax will likely require it.")
-#             # Example: current_resnet_depth_config = [FLAGS.nn_depth, FLAGS.nn_depth]
-#         
-#         current_resnet_stem_callable_name = FLAGS.resnet_stem_name
-#         current_resnet_block_callable_name = FLAGS.resnet_block_name
-
-#         if FLAGS.resnet_stem_kwargs_json:
-#             try:
-#                 current_resnet_stem_kwargs = json.loads(FLAGS.resnet_stem_kwargs_json)
-#             except json.JSONDecodeError as e:
-#                 print(f"Error parsing resnet_stem_kwargs_json: {e}")
-#                 sys.exit(1)
-#         
-#         if FLAGS.resnet_block_kwargs_json:
-#             try:
-#                 current_resnet_block_kwargs = json.loads(FLAGS.resnet_block_kwargs_json)
-#             except json.JSONDecodeError as e:
-#                 print(f"Error parsing resnet_block_kwargs_json: {e}")
-#                 sys.exit(1)
-#         
-#         print(f"  Using resnet_depth_config: {current_resnet_depth_config}")
-#         print(f"  Using resnet_stem_callable_name: {current_resnet_stem_callable_name}")
-#         print(f"  Using resnet_stem_kwargs: {current_resnet_stem_kwargs}")
-#         print(f"  Using resnet_block_callable_name: {current_resnet_block_callable_name}")
-#         print(f"  Using resnet_block_kwargs: {current_resnet_block_kwargs}")
-
-#     elif FLAGS.nn_model in ["mlp", "resnet18", "resnet50", "resnest50fast"]: # etc.
-#         print(f"Using named model: {FLAGS.nn_model}. ResNet specific config fields will be None.")
-#         # For named models or MLP, these specific resnet config fields are typically None,
-#         # as init_flax_model_and_variables handles their structure internally.
-#         # They *could* be set here if one wanted to use the generic override mechanism
-#         # for a named model, but that's an advanced use case.
-#         current_resnet_depth_config = None
-#         current_resnet_stem_callable_name = None
-#         current_resnet_stem_kwargs = None
-#         current_resnet_block_callable_name = None
-#         current_resnet_block_kwargs = None
-#         # Example: If you wanted to override resnet18's block_kwargs:
-#         # if FLAGS.nn_model == "resnet18" and FLAGS.resnet_block_kwargs_json:
-#         #     current_resnet_block_kwargs = json.loads(FLAGS.resnet_block_kwargs_json)
-
-#     config = ConfigJAX(
-#         game=FLAGS.game,
-#         path=data_path,
-#         learning_rate=FLAGS.learning_rate,
-#         weight_decay=FLAGS.weight_decay,
-#         train_batch_size=FLAGS.train_batch_size,
-#         replay_buffer_size=FLAGS.replay_buffer_size,
-#         replay_buffer_reuse=FLAGS.replay_buffer_reuse,
-#         max_steps=FLAGS.max_steps,
-#         checkpoint_freq=FLAGS.checkpoint_freq,
-#         actors=FLAGS.actors,
-#         evaluators=FLAGS.evaluators,
-#         evaluation_window=FLAGS.evaluation_window,
-#         eval_levels=FLAGS.eval_levels,
-#         uct_c=FLAGS.uct_c,
-#         max_simulations=FLAGS.max_simulations,
-#         policy_alpha=FLAGS.policy_alpha,
-#         policy_epsilon=FLAGS.policy_epsilon,
-#         temperature=FLAGS.temperature,
-#         temperature_drop=FLAGS.temperature_drop,
-#         nn_model=FLAGS.nn_model,
-#         nn_width=FLAGS.nn_width,
-#         nn_depth=FLAGS.nn_depth, # Note: nn_depth serves different purposes for MLP vs generic ResNet
-#         observation_shape=observation_shape,
-#         output_size=output_size,
-#         quiet=FLAGS.quiet,
-#         master_seed=FLAGS.master_seed,
-#         # Pass the (potentially None) ResNet specific fields
-#         resnet_depth_config=current_resnet_depth_config,
-#         resnet_stem_callable_name=current_resnet_stem_callable_name,
-#         resnet_stem_kwargs=current_resnet_stem_kwargs,
-#         resnet_block_callable_name=current_resnet_block_callable_name,
-#         resnet_block_kwargs=current_resnet_block_kwargs,
-#         evaluator_cache_size=FLAGS.evaluator_cache_size
-#     )
-
-#     # Save the config to a JSON file in the path for reproducibility
-#     try:
-#         os.makedirs(config.path, exist_ok=True)
-#         config_path = os.path.join(config.path, "config_jax.json")
-#         # Convert namedtuple to dict for JSON serialization
-#         # For JAX keys or other non-serializable objects, handle them appropriately if they were in config
-#         config_dict = config._asdict()
-#         with open(config_path, "w") as f:
-#             json.dump(config_dict, f, indent=2, sort_keys=True)
-#         print(f"Saved config to {config_path}")
-#     except Exception as e:
-#         print(f"Error saving config to JSON: {e}")
-
-#     # Call the main AlphaZero JAX function
-#     # This function is expected to be defined elsewhere in this file.
-#     alpha_zero_jax(config)
-
-# if __name__ == "__main__":
-#     # It's good practice to ensure JAX is using the desired platform early.
-#     # For example, to force CPU:
-#     # jax.config.update('jax_platform_name', 'cpu')
-#     app.run(main)
-
-# ---- End of AlphaZero JAX main execution example ---- 
+  # Stop the inference servicer before exiting
+  if servicer:
+    servicer.stop()
 
 def set_external_libraries_log_level(log_level):
     """Set logging level for Orbax, JAX, Flax, and absl based on internal log_level."""
@@ -1514,3 +883,381 @@ def set_external_libraries_log_level(log_level):
         absl.logging.set_verbosity('info')
     else:
         absl.logging.set_verbosity('debug')
+
+
+# ---- Inference Servicer Components ----
+# Based on the plan in TODO.md, Section 9.
+
+class BatchAssemblyThread(threading.Thread):
+    def __init__(self, request_queue: mp.Queue,
+                 ready_batch_queue: std_queue.Queue,
+                 max_batch_size: int, batch_timeout_ms: float,
+                 num_actors: int, logger, log_level: int):
+        super().__init__(name="BatchAssemblyThread")
+        self.request_queue = request_queue
+        self.ready_batch_queue = ready_batch_queue
+        self.max_batch_size = max_batch_size
+        self.batch_timeout_sec = batch_timeout_ms / 1000.0
+        self.num_actors = num_actors # For logging
+        self._stop_event = threading.Event()
+        self.logger = logger
+        self.log_level = log_level
+
+    def stop(self):
+        self._stop_event.set()
+        # Attempt to unblock the request_queue.get() by putting a sentinel
+        # This helps if the thread is waiting on an empty queue during shutdown.
+        try:
+            self.request_queue.put_nowait(SHUTDOWN_SENTINEL)
+        except std_queue.Full: # mp.Queue.put_nowait raises queue.Full
+            if self.logger and self.log_level >= WARN:
+                self.logger.print("BatchAssemblyThread: request_queue full while trying to put SHUTDOWN_SENTINEL during stop().")
+        except Exception as e: # pylint: disable=broad-except
+            if self.logger and self.log_level >= WARN:
+                self.logger.print(f"BatchAssemblyThread: Error putting SHUTDOWN_SENTINEL to request_queue during stop(): {e}")
+
+
+    def run(self):
+        if self.logger and self.log_level >= DEBUG:
+            self.logger.print("BatchAssemblyThread started.")
+        current_batch_requests = [] # Stores (InferenceRequest_obj, origin_response_queue_idx)
+        batch_assembly_start_time = time.time()
+
+        while not self._stop_event.is_set():
+            try:
+                # Calculate remaining timeout for the current batch assembly window
+                # If batch is empty, use full timeout, otherwise use remaining time.
+                if not current_batch_requests:
+                    timeout_for_get = self.batch_timeout_sec
+                else:
+                    elapsed_in_window = time.time() - batch_assembly_start_time
+                    timeout_for_get = self.batch_timeout_sec - elapsed_in_window
+                
+                # Ensure timeout is not negative; use a very small positive value if it is,
+                # to prevent blocking indefinitely or causing errors.
+                # A small positive timeout also prevents busy-waiting if timeout_for_get becomes zero.
+                timeout_for_get = max(0.001, timeout_for_get)
+
+                raw_request_tuple = self.request_queue.get(timeout=timeout_for_get)
+
+                if raw_request_tuple == SHUTDOWN_SENTINEL:
+                    if self.logger and self.log_level >= INFO:
+                        self.logger.print("BatchAssemblyThread received SHUTDOWN_SENTINEL on request_queue. Signaling ready_batch_queue and exiting.")
+                    # Propagate SHUTDOWN_SENTINEL to the InferenceExecutionThread
+                    self.ready_batch_queue.put(SHUTDOWN_SENTINEL) 
+                    break # Exit the loop
+
+                # Deserialize the request tuple using InferenceRequest.from_tuple
+                try:
+                    inference_request_obj = InferenceRequest.from_tuple(raw_request_tuple)
+                except ValueError as e:
+                    if self.logger and self.log_level >= WARN:
+                        self.logger.print(f"BatchAssemblyThread: Error deserializing request: {e}. Skipping request: {raw_request_tuple}")
+                    continue # Skip this malformed request
+
+                # The actor_id from the deserialized request is the index for all_client_response_queues
+                origin_response_queue_idx = inference_request_obj.actor_id 
+                current_batch_requests.append((inference_request_obj, origin_response_queue_idx))
+
+                # If this is the first request in a new batch, reset the assembly start time
+                if len(current_batch_requests) == 1:
+                    batch_assembly_start_time = time.time()
+
+            except (std_queue.Empty, mp.queues.Empty): # Catches timeout from mp.Queue.get(), which raises queue.Empty.
+                                                      # mp.queues.Empty is typically an alias for queue.Empty.
+                # This means self.request_queue.get() timed out.
+                # Proceed to check if the current (possibly empty) batch should be sent.
+                pass 
+
+            except Exception as e: # pylint: disable=broad-except
+                if self._stop_event.is_set(): # Don't log errors if we are shutting down
+                    break
+                if self.logger and self.log_level >= ERROR:
+                    self.logger.print(f"BatchAssemblyThread: Unexpected error processing request: {e}. Traceback: {traceback.format_exc()}")
+                # Avoid busy-looping on persistent errors if not timeout-related
+                if not isinstance(e, std_queue.Empty):
+                    time.sleep(0.01) 
+                continue
+
+
+            # Determine if the current batch should be sent
+            # Send if:
+            # 1. The batch is full OR
+            # 2. The batch is non-empty AND the batch assembly timeout has been reached.
+            send_batch_now = False
+            if current_batch_requests: # Only consider sending if batch is non-empty
+                if len(current_batch_requests) >= self.max_batch_size:
+                    send_batch_now = True
+                elif (time.time() - batch_assembly_start_time >= self.batch_timeout_sec):
+                    send_batch_now = True
+            
+            if send_batch_now:
+                if self.logger and self.log_level >= TRACE: # TRACE for per-batch send
+                    self.logger.print(f"BatchAssemblyThread: Sending batch of size {len(current_batch_requests)}")
+                try:
+                    # Send a list of (InferenceRequest_obj, origin_idx) tuples
+                    self.ready_batch_queue.put(list(current_batch_requests), timeout=1.0) # Use a timeout for putting
+                except std_queue.Full:
+                    if self.logger and self.log_level >= WARN:
+                        self.logger.print("BatchAssemblyThread: ready_batch_queue is full. Batch dropped.")
+                    # Batch is dropped. Consider retry or other strategies if this is critical.
+                finally:
+                    # Always clear the current batch and reset the timer after attempting to send
+                    current_batch_requests.clear()
+                    batch_assembly_start_time = time.time() 
+
+        # Final cleanup or logging after the loop exits
+        if self.logger and self.log_level >= DEBUG:
+            self.logger.print("BatchAssemblyThread finished.")
+
+class InferenceExecutionThread(threading.Thread):
+    def __init__(self, ready_batch_queue: std_queue.Queue,
+                 all_client_response_queues: list[mp.Queue], 
+                 model_apply_fn, 
+                 model_variables, 
+                 output_size: int,
+                 logger, log_level: int):
+        super().__init__(name="InferenceExecutionThread")
+        self.ready_batch_queue = ready_batch_queue
+        self.all_client_response_queues = all_client_response_queues
+        self.model_apply_fn = model_apply_fn # This should be a JITted function
+        self.model_variables = model_variables 
+        self.output_size = output_size
+        self._stop_event = threading.Event()
+        self.logger = logger
+        self.log_level = log_level
+        self._variables_lock = threading.Lock() 
+
+    def stop(self):
+        self._stop_event.set()
+        # Put a sentinel on its own queue to unblock the get() call if it's waiting
+        try:
+            self.ready_batch_queue.put_nowait(SHUTDOWN_SENTINEL)
+        except std_queue.Full:
+            if self.logger and self.log_level >= WARN:
+                self.logger.print("InferenceExecutionThread: ready_batch_queue full while trying to put SHUTDOWN_SENTINEL during stop().")
+        except Exception as e: # pylint: disable=broad-except
+            if self.logger and self.log_level >= WARN:
+                self.logger.print(f"InferenceExecutionThread: Error putting SHUTDOWN_SENTINEL to ready_batch_queue during stop(): {e}")
+
+
+    def update_variables(self, new_variables):
+        with self._variables_lock:
+            self.model_variables = new_variables
+        if self.logger and self.log_level >= TRACE: # TRACE for variable updates
+            self.logger.print("InferenceExecutionThread: Updated model variables.")
+
+    def run(self):
+        if self.logger and self.log_level >= DEBUG:
+            self.logger.print("InferenceExecutionThread started.")
+        
+        while not self._stop_event.is_set():
+            try:
+                # Get a batch of requests (or SHUTDOWN_SENTINEL) from BatchAssemblyThread
+                # Use a timeout to periodically check the _stop_event
+                batch_data_from_assembler = self.ready_batch_queue.get(timeout=0.1) 
+            except std_queue.Empty:
+                continue # Timeout, check stop_event and loop again
+
+            if batch_data_from_assembler == SHUTDOWN_SENTINEL:
+                if self.logger and self.log_level >= INFO:
+                    self.logger.print("InferenceExecutionThread received SHUTDOWN_SENTINEL. Exiting.")
+                # No need to propagate SHUTDOWN_SENTINEL to client queues here,
+                # as RemoteEvaluator should handle timeouts or get SHUTDOWN_SENTINEL 
+                # directly from the main process orchestrating the shutdown.
+                break # Exit the loop
+
+            if not batch_data_from_assembler: # Should not happen if sentinel is handled
+                continue
+
+            # batch_data_from_assembler is a list of (InferenceRequest_obj, origin_response_queue_idx)
+            batched_observations_list = []
+            batched_legals_masks_list = []
+            # Store (request_id, origin_response_queue_idx) for sending responses
+            request_details_for_response = [] 
+
+            for inference_request_obj, origin_idx in batch_data_from_assembler:
+                batched_observations_list.append(inference_request_obj.observation)
+                batched_legals_masks_list.append(inference_request_obj.legals_mask)
+                request_details_for_response.append((inference_request_obj.request_id, origin_idx))
+            
+            if not batched_observations_list: # If batch ended up empty after processing
+                continue
+
+            # Stack observations and masks into JAX arrays
+            # Observations and legals_masks are expected to be NumPy arrays from RemoteEvaluator
+            try:
+                obs_array_batch = jnp.asarray(np.stack(batched_observations_list))
+                legals_array_batch = jnp.asarray(np.stack(batched_legals_masks_list))
+            except Exception as e: # pylint: disable=broad-except
+                if self.logger and self.log_level >= ERROR:
+                    self.logger.print(f"InferenceExecutionThread: Error stacking batch data: {e}. Batch items: {len(batched_observations_list)}")
+                # Consider sending error responses to clients for this batch.
+                # For now, log and skip.
+                for req_id, origin_idx in request_details_for_response:
+                    try:
+                        error_value = np.array(0.0, dtype=np.float32)
+                        error_policy = np.zeros(self.output_size, dtype=np.float32)  # Use self.output_size
+                        error_resp = InferenceResponse(request_id=req_id, value=error_value, policy_probs=error_policy) # Dummy error response
+                        self.all_client_response_queues[origin_idx].put_nowait(error_resp.to_tuple())
+                    except (std_queue.Full, IndexError) as err_put:
+                         if self.logger and self.log_level >= WARN:
+                            self.logger.print(f"InferenceExecutionThread: Failed to send error for req {req_id} to client {origin_idx}: {err_put}")
+                continue
+
+            # Perform batched inference
+            # Access model_variables safely using the lock
+            with self._variables_lock:
+                current_vars = self.model_variables
+            
+            try:
+                # model_apply_fn is the JITted function _batched_inference_fn_for_servicer,
+                # which expects (variables, obs_batch, legals_batch)
+                # and returns (policy_probs_batch, value_output_batch) where policy_probs are already softmaxed.
+                policy_probs_batch, value_output_batch = self.model_apply_fn(
+                    current_vars, obs_array_batch, legals_array_batch) 
+                
+                # Ensure results are NumPy arrays for sending via queue
+                policy_arrays_np = np.asarray(policy_probs_batch)
+                # value_output_batch should be (batch_size, 1), squeeze to (batch_size,)
+                value_scalars_np = np.asarray(value_output_batch).squeeze(axis=-1) 
+            
+            except Exception as e: # pylint: disable=broad-except
+                if self.logger and self.log_level >= ERROR:
+                    self.logger.print(f"InferenceExecutionThread: Error during model_apply_fn: {e}. Batch obs shape: {obs_array_batch.shape}, legals shape: {legals_array_batch.shape}")
+                # Send error responses
+                for req_id, origin_idx in request_details_for_response:
+                    try:
+                        error_value = np.array(0.0, dtype=np.float32)
+                        error_policy = np.zeros(self.output_size, dtype=np.float32)  # Use self.output_size
+                        error_resp = InferenceResponse(request_id=req_id, value=error_value, policy_probs=error_policy) # Dummy error response
+                        self.all_client_response_queues[origin_idx].put_nowait(error_resp.to_tuple())
+                    except (std_queue.Full, IndexError) as err_put:
+                         if self.logger and self.log_level >= WARN:
+                            self.logger.print(f"InferenceExecutionThread: Failed to send error (model_apply_fn error) for req {req_id} to client {origin_idx}: {err_put}")
+                continue
+
+
+            # Distribute results back to the respective origin queues
+            for i, (req_id, origin_idx) in enumerate(request_details_for_response):
+                value_scalar_for_client = value_scalars_np[i]
+                policy_array_for_client = policy_arrays_np[i]
+                
+                # Construct InferenceResponse object and then convert to tuple
+                response_obj = InferenceResponse(request_id=req_id, 
+                                                 value=value_scalar_for_client, 
+                                                 policy_probs=policy_array_for_client)
+                response_tuple = response_obj.to_tuple()
+
+                try:
+                    # Use origin_idx to get the correct response queue from all_client_response_queues
+                    self.all_client_response_queues[origin_idx].put(response_tuple, timeout=0.1) # Short timeout
+                except std_queue.Full:
+                    if self.logger and self.log_level >= WARN:
+                        self.logger.print(f"InferenceExecutionThread: Response queue full for client {origin_idx}. Dropping response for req {req_id}.")
+                except IndexError: # Should not happen if actor_id is managed correctly
+                    if self.logger and self.log_level >= ERROR:
+                         self.logger.print(f"InferenceExecutionThread: Invalid origin_idx {origin_idx} for req {req_id}. Max index {len(self.all_client_response_queues)-1}. Dropping response.")
+                except Exception as e_put: # pylint: disable=broad-except
+                    if self.logger and self.log_level >= ERROR:
+                         self.logger.print(f"InferenceExecutionThread: Error putting response for req {req_id} to client {origin_idx}: {e_put}")
+
+
+        if self.logger and self.log_level >= DEBUG:
+            self.logger.print("InferenceExecutionThread finished.")
+
+# Helper class to manage the inference service threads
+class InferenceServicer:
+    def __init__(self,
+                 request_queue: mp.Queue,
+                 all_client_response_queues: list[mp.Queue], 
+                 model_apply_fn, 
+                 initial_model_variables,
+                 max_batch_size: int,
+                 batch_timeout_ms: float,
+                 num_actors: int, # For logging/config
+                 output_size: int, # For dummy error policies
+                 logger,
+                 log_level: int):
+        self.request_queue = request_queue
+        self.all_client_response_queues = all_client_response_queues
+        self.logger = logger
+        self.log_level = log_level
+
+        self.ready_batch_queue = std_queue.Queue(maxsize=num_actors * 2) # Internal queue
+
+        self.assembly_thread = BatchAssemblyThread(
+            request_queue=self.request_queue,
+            ready_batch_queue=self.ready_batch_queue,
+            max_batch_size=max_batch_size,
+            batch_timeout_ms=batch_timeout_ms,
+            num_actors=num_actors,
+            logger=self.logger,
+            log_level=self.log_level
+        )
+        self.execution_thread = InferenceExecutionThread(
+            ready_batch_queue=self.ready_batch_queue,
+            all_client_response_queues=self.all_client_response_queues,
+            model_apply_fn=model_apply_fn,
+            model_variables=initial_model_variables, # Initial variables
+            output_size=output_size, # Pass output_size
+            logger=self.logger,
+            log_level=self.log_level
+        )
+
+    def start(self):
+        if self.logger and self.log_level >= INFO:
+            self.logger.print("InferenceServicer starting threads...")
+        self.assembly_thread.start()
+        self.execution_thread.start()
+        if self.logger and self.log_level >= INFO:
+            self.logger.print("InferenceServicer threads started.")
+
+    def stop(self, timeout_sec=5.0):
+        if self.logger and self.log_level >= INFO:
+            self.logger.print("InferenceServicer stopping threads...")
+
+        self.assembly_thread.stop()
+        self.execution_thread.stop()
+
+        self.assembly_thread.join(timeout=timeout_sec)
+        self.execution_thread.join(timeout=timeout_sec)
+
+        if self.assembly_thread.is_alive():
+            if self.logger and self.log_level >= WARN:
+                self.logger.print("BatchAssemblyThread did not stop in time.")
+        if self.execution_thread.is_alive():
+            if self.logger and self.log_level >= WARN:
+                self.logger.print("InferenceExecutionThread did not stop in time.")
+        
+        # Propagate SHUTDOWN_SENTINEL to all client response queues
+        for q in self.all_client_response_queues:
+            try:
+                q.put_nowait(SHUTDOWN_SENTINEL)
+            except Exception:  # pylint: disable=broad-except
+                if self.logger and self.log_level >= WARN:
+                    self.logger.print(f"InferenceServicer: Error putting SHUTDOWN_SENTINEL on a client response queue.")
+        
+        # Drain queues (optional, good for clean shutdown)
+        self._drain_queue(self.request_queue, "Request Queue")
+        self._drain_queue(self.ready_batch_queue, "Ready Batch Queue")
+
+    def _drain_queue(self, q, q_name):
+        drained_count = 0
+        while True:
+            try:
+                q.get_nowait()
+                drained_count +=1
+            except (mp.queues.Empty, std_queue.Empty):
+                break
+            except Exception: # pylint: disable=broad-except
+                break 
+        if drained_count > 0 and self.logger and self.log_level >= DEBUG:
+            self.logger.print(f"Drained {drained_count} items from {q_name} during servicer stop.")
+
+
+    def update_model_variables(self, new_variables):
+        # Pass the update to the execution thread
+        self.execution_thread.update_variables(new_variables)
+
+# ---- END Inference Servicer Components ----
