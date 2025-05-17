@@ -76,6 +76,7 @@ flags.DEFINE_string("resnet_stem_kwargs_json", "{}", "JSON string of keyword arg
 flags.DEFINE_string("resnet_block_callable_name", "ResNetBlock", "Name of the block callable for generic ResNet.")
 flags.DEFINE_string("resnet_block_kwargs_json", "{}", "JSON string of keyword arguments for the ResNet block.")
 flags.DEFINE_integer("evaluator_cache_size", 2**16, "Size of the LRU cache for the JAX evaluator.") # 65536
+flags.DEFINE_integer("inference_batch_size", 8, "Batch size for evaluator inference.")
 
 # From TF AlphaZero, for game_specific_az_path
 flags.DEFINE_bool(
@@ -129,6 +130,7 @@ def main(argv):
       resnet_block_kwargs=json.loads(FLAGS.resnet_block_kwargs_json),
       evaluator_cache_size=FLAGS.evaluator_cache_size,
       log_level=LOG_LEVELS[FLAGS.log_level],
+      inference_batch_size=FLAGS.inference_batch_size,
   )
 
   # Set external library log levels to match config

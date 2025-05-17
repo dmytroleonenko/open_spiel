@@ -85,6 +85,7 @@ class ConfigJAX(collections.namedtuple(
         "resnet_block_kwargs",      # Optional[Mapping]: Keyword arguments for the ResNet block.
         "evaluator_cache_size",     # int: Size of the LRU cache for the evaluator.
         "log_level",                # int: Logging verbosity: 0=outcome only, 1=minimal, 2=debug
+        "inference_batch_size",     # int: Batch size for evaluator inference.
     ])):
   """A config for the JAX AlphaZero model/experiment."""
   # To allow None defaults for Optional fields in namedtuple, provide them at instantiation.
@@ -390,7 +391,7 @@ def actor(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
   if config.log_level >= DEBUG:
     logger.print(f"Actor {num}: Initializing AlphaZeroEvaluatorJAX")
   # Initialize evaluator
-  az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables, config.evaluator_cache_size)
+  az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables, config.evaluator_cache_size, config.inference_batch_size)
 
   # Create a bot for each player in the game.
   # These bots will be used by _play_game.
@@ -527,7 +528,7 @@ def evaluator(*, game: pyspiel.Game, config: ConfigJAX, logger, num: int,
 
   if config.log_level >= DEBUG:
     logger.print(f"Evaluator {num}: Initializing AlphaZeroEvaluatorJAX")
-  az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables, config.evaluator_cache_size)
+  az_evaluator = evaluator_jax.AlphaZeroEvaluatorJAX(game, flax_model, variables, config.evaluator_cache_size, config.inference_batch_size)
   
   az_bot = _init_bot(config, game, az_evaluator, evaluation=True, player_id_for_bot=0)
   random_rollout_evaluator = mcts.RandomRolloutEvaluator()
