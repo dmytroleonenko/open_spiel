@@ -7,6 +7,10 @@ import numpy as _np
 import multiprocessing as mp # Ensure this import is present
 # import pyspiel # Not strictly needed here if only dealing with np arrays and basic types
 from open_spiel.python.algorithms import mcts
+import time # Ensure time module is imported
+import traceback # For traceback.format_exc() in _receive_response
+import logging
+import collections
 
 # Message type identifiers
 INFERENCE_REQ: str = "inference_req"
@@ -18,18 +22,19 @@ class InferenceRequest:
     actor_id: int
     observation: Any
     legals_mask: Any
+    request_time: float # For monitoring staleness
 
     def to_tuple(self) -> Tuple:
         """Serialize to a tuple message."""
-        return (INFERENCE_REQ, self.request_id, self.actor_id, self.observation, self.legals_mask)
+        return (INFERENCE_REQ, self.request_id, self.actor_id, self.observation, self.legals_mask, self.request_time)
 
     @staticmethod
     def from_tuple(message: Tuple) -> "InferenceRequest":
         """Deserialize a tuple message into an InferenceRequest."""
-        type_, request_id, actor_id, observation, legals_mask = message
+        type_, request_id, actor_id, observation, legals_mask, request_time = message
         if type_ != INFERENCE_REQ:
             raise ValueError(f"Invalid message type: {type_}, expected {INFERENCE_REQ}")
-        return InferenceRequest(request_id=request_id, actor_id=actor_id, observation=observation, legals_mask=legals_mask)
+        return InferenceRequest(request_id=request_id, actor_id=actor_id, observation=observation, legals_mask=legals_mask, request_time=request_time)
 
 @dataclass(frozen=True)
 class InferenceResponse:
@@ -49,122 +54,235 @@ class InferenceResponse:
             raise ValueError(f"Invalid message type: {type_}, expected {INFERENCE_RESP}")
         return InferenceResponse(request_id=request_id, value=value, policy_probs=policy_probs)
 
-SHUTDOWN_SENTINEL = ("shutdown",)
+SHUTDOWN_SENTINEL = object()
 
 class ShutdownException(Exception):
     """Custom exception to signal graceful shutdown."""
     pass
 
-class RemoteEvaluator(mcts.Evaluator):
-    """A proxy evaluator that sends inference requests to a central service."""
+class RemoteEvaluator:
+    """An MCTS Evaluator that sends inference requests to a remote service."""
 
-    def __init__(self, actor_id: int, 
-                 request_queue: mp.Queue, 
-                 response_queue: mp.Queue, 
-                 timeout_ms: int = 10000, # Default to 10 seconds in ms
-                 logger=None, 
-                 log_level: int = 0):
-        """Initializes a remote evaluator.
+    def __init__(
+        self,
+        game: "pyspiel.Game",  # type: ignore # pylint: disable=undefined-variable
+        actor_id: int,
+        inference_request_queue: "_std_queue.Queue",  # type: ignore # pylint: disable=undefined-variable
+        inference_response_queue: "_std_queue.Queue",  # type: ignore # pylint: disable=undefined-variable
+        max_cache_size: int = 2**16,  # Aligns with AlphaZeroConfig default
+        debug_mode: bool = False
+    ):
+        """Initializes a remote MCTS evaluator.
 
         Args:
-            actor_id: Unique ID for this actor/client process.
-            request_queue: The multiprocessing.Queue to send requests on.
-            response_queue: The multiprocessing.Queue to receive responses from.
-            timeout_ms: Timeout in milliseconds for waiting for a response.
-            logger: Optional logger instance.
-            log_level: Optional log level for internal messages.
+          game: The game object.
+          actor_id: A unique identifier for this actor/evaluator instance.
+          inference_request_queue: A queue to send inference requests to.
+          inference_response_queue: A queue to receive inference responses from.
+          max_cache_size: Maximum size of the LRU cache for inference results.
+          debug_mode: If True, enables more verbose logging for debugging.
         """
-        super().__init__() # mcts.Evaluator has no __init__ args
-        self.actor_id = actor_id
-        self.request_queue = request_queue
-        self.response_queue = response_queue
-        self.timeout_sec = timeout_ms / 1000.0 if timeout_ms is not None else None # Convert ms to seconds
-        self.logger = logger
-        self.log_level = log_level
-        self._request_counter = 0
+        self._game = game
+        self._actor_id = actor_id
+        self._inference_request_queue = inference_request_queue
+        self._inference_response_queue = inference_response_queue
+        self._debug_mode = debug_mode
 
-    def _send_request(self, observation, legals_mask):
+        # Setup dedicated logger for this RemoteEvaluator instance
+        self.logger = logging.getLogger(f"RemoteEvaluator_Actor_{self._actor_id}")
+        self.logger.setLevel(logging.DEBUG if self._debug_mode else logging.INFO) # Default to INFO, DEBUG if debug_mode
+        
+        # Create file handler
+        log_file_path = f"log-remote_evaluator_actor_{self._actor_id}.txt"
+        # Overwrite log file on each init for cleaner logs per run
+        file_handler = logging.FileHandler(log_file_path, mode='w') 
+        file_handler.setLevel(logging.DEBUG) # Capture all levels in file
+        
+        # Create formatter and add it to the handler
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        
+        # Add the handler to the logger
+        if not self.logger.handlers:
+            self.logger.addHandler(file_handler)
+            self.logger.propagate = False # Avoid duplicate logs in parent/root logger if configured
+        # else: # Handler already exists, useful if __init__ can be called multiple times
+            # log_file_path = self.logger.handlers[0].baseFilename if self.logger.handlers else "N/A"
+
+
+        # LRU Cache for inference results
+        # The cache key will be a string representation of the observation tensor.
+        # The value will be the (value, policy_probs) tuple.
+        self._cache = LRUCache(max_size=max_cache_size)
+        self.logger.info(f"RemoteEvaluator for Actor {self._actor_id} initialized. Cache size: {max_cache_size}. Log file: {log_file_path}")
+
+
+    def _inference(self, state: "pyspiel.State") -> tuple[float, "_np.ndarray"]:  # type: ignore # pylint: disable=undefined-variable
+        """Sends a state for inference and returns the value and policy."""
+        # Check cache first
+        obs_tensor = _np.asarray(state.observation_tensor()) # Ensure NumPy array
+        obs_key = obs_tensor.tobytes() # Use .tobytes() for robust hashing
+
+        cached_result = self._cache.get(obs_key)
+        if cached_result is not None:
+          # Old log removed: # if self._logger and self._log_level >= _TRACE_LEVEL:
+          #   self._logger.print(f"Actor {self._actor_id}: Cache hit for state.")
+          self.logger.debug(f"Actor {self._actor_id}: Cache hit for state.")
+          return cached_result
+
         request_id = uuid4().hex
-        # Create InferenceRequest object and convert to tuple
-        inference_request_obj = InferenceRequest(
-            request_id=request_id,
-            actor_id=self.actor_id,
-            observation=observation,
-            legals_mask=legals_mask
-        )
-        request_tuple = inference_request_obj.to_tuple()
+        # Old log removed: # if self._logger and self._log_level >= _DEBUG_LEVEL:
+        #   self._logger.print(f"Actor {self._actor_id}: Sending inference request {request_id}")
+        self.logger.debug(f"Actor {self._actor_id}: Sending inference request {request_id}")
+
         try:
-            self.request_queue.put(request_tuple, timeout=self.timeout_sec) 
-        except _std_queue.Full:
-            if self.logger and self.log_level >= 1: # WARN level
-                self.logger.print(f"RemoteEvaluator (Actor {self.actor_id}): Request queue full. Request {request_id} might be dropped or delayed.")
-            raise
-        return request_id # Return the generated request_id
+          request = InferenceRequest(
+              request_id=request_id,
+              actor_id=self._actor_id,
+              observation=obs_tensor, # Already NumPy array
+              legals_mask=_np.asarray(state.legal_actions_mask()), # Ensure NumPy array
+              request_time=time.time())
+          self._inference_request_queue.put(request.to_tuple(), block=True)
+        except Exception as e:
+          self.logger.error(f"Actor {self._actor_id}: Error putting request {request_id} on queue: {e}")
+          raise
 
-    def _receive_response(self, request_id):
-        response_data_tuple = None
         try:
-            # Get the raw message first
-            raw_message = self.response_queue.get(timeout=self.timeout_sec)
+          self.logger.debug(f"Actor {self._actor_id}: Waiting for response for request {request_id}...")
+          # Changed to blocking get without timeout
+          response_tuple = self._inference_response_queue.get(block=True)
 
-            # Check for SHUTDOWN_SENTINEL before unpacking
-            if raw_message == SHUTDOWN_SENTINEL:
-                if self.logger and self.log_level >= 2: # INFO level
-                    self.logger.print(f"RemoteEvaluator (Actor {self.actor_id}): Received SHUTDOWN_SENTINEL on response queue.")
-                raise ShutdownException("Received shutdown sentinel on response queue")
-            
-            # If not sentinel, proceed to unpack (assuming it's a valid response tuple)
-            response_type, resp_request_id, value, policy_probs = raw_message
-            
-            if response_type != INFERENCE_RESP or resp_request_id != request_id:
-                raise RuntimeError(f"Invalid response type or ID received: {raw_message}, expected for ID {request_id}")
-            
-            response_data_tuple = value, policy_probs
+          if response_tuple is SHUTDOWN_SENTINEL:
+            # Old log removed: # if self._logger and self._log_level >= _INFO_LEVEL:
+            #   self._logger.print(f"Actor {self._actor_id}: Received SHUTDOWN_SENTINEL while waiting for response. Propagating shutdown.", flush=True)
+            self.logger.info(f"Actor {self._actor_id}: Received SHUTDOWN_SENTINEL while waiting for response. Propagating shutdown.")
+            # Re-put sentinel for other consumers if any, though typically one evaluator per response queue.
+            self._inference_response_queue.put(SHUTDOWN_SENTINEL, block=False) 
+            raise ShutdownException("Shutdown received while waiting for inference response.")
 
-        except _std_queue.Empty: # mp.Queue.get() raises queue.Empty on timeout
-            if self.logger and self.log_level >= 1: # WARN level
-                self.logger.print(f"RemoteEvaluator (Actor {self.actor_id}): Timeout waiting for response for request {request_id}")
-            raise TimeoutError(f"Timeout waiting for inference response for request {request_id}") from None
-        except ShutdownException: # Re-raise if it was a ShutdownException from SHUTDOWN_SENTINEL check
+          response = InferenceResponse.from_tuple(response_tuple)
+
+          if response.request_id != request_id:
+            # Old log removed: # if self._logger and self._log_level >= _WARN_LEVEL:
+            #   self._logger.print(f"Actor {self._actor_id}: Received response for {response.request_id}, but expected {request_id}. Discarding.", flush=True)
+            self.logger.warning(f"Actor {self._actor_id}: Received response for {response.request_id}, but expected {request_id}. Discarding.")
+            # This is a problematic state, may need to re-queue or raise a more specific error.
+            # For now, we'll try to get another message, assuming it's a simple out-of-order issue.
+            # This could loop indefinitely if the queue is broken. A retry limit might be needed.
+            # Or, better, ensure request_id matching is handled by the servicer or a multiplexer.
+            # For now, let's raise an error as this indicates a logic flaw.
+            raise ValueError(f"Actor {self._actor_id}: Mismatched response ID. Expected {request_id}, got {response.request_id}")
+
+
+          # Old log removed: # if self._logger and self._log_level >= _DEBUG_LEVEL:
+          #   self._logger.print(f"Actor {self._actor_id}: Received response for request {request_id}. Value: {response.value:.3f}")
+          self.logger.debug(f"Actor {self._actor_id}: Received response for request {request_id}. Value: {response.value:.3f}")
+
+          # Cache the successful result before returning
+          self._cache.put(obs_key, (response.value, response.policy_probs))
+          return response.value, response.policy_probs
+
+        except ShutdownException: # Re-raise if it's our specific shutdown signal
             raise
-        except ValueError as ve: # Handles unpacking errors if raw_message is not as expected
-            if self.logger and self.log_level >= 0: # ERROR level
-                self.logger.print(f"RemoteEvaluator (Actor {self.actor_id}): Error unpacking response for req {request_id}: {ve}. Message: {raw_message}")
-            raise RuntimeError(f"Error unpacking response for request {request_id}") from ve
-        except Exception as e: # pylint: disable=broad-except
-            if self.logger and self.log_level >= 0: # ERROR level
-                self.logger.print(f"RemoteEvaluator (Actor {self.actor_id}): Generic error receiving response for req {request_id}: {e}. Message: {raw_message if 'raw_message' in locals() else 'N/A'}")
-            # Ensure any other exception is also wrapped or re-raised appropriately
-            # If it's not a Timeout or Shutdown, it's likely a RuntimeError or similar critical issue.
-            if not isinstance(e, (TimeoutError, ShutdownException, RuntimeError)):
-                 raise RuntimeError(f"Unexpected error receiving response for request {request_id}") from e
-            else:
-                raise # Re-raise known critical exceptions
-        
-        return response_data_tuple
-    
-    def evaluate(self, state):
-        """Evaluates a state using the central inference model."""
-        observation = _np.asarray(state.observation_tensor(), dtype=_np.float32)
-        legals_mask = _np.asarray(state.legal_actions_mask(), dtype=_np.bool_)
-        
-        req_id = self._send_request(observation, legals_mask)
-        value, _ = self._receive_response(req_id) # Use the same req_id, ignore policy for evaluate
-        
-        return _np.array([value, -value]) # For a zero-sum game
+        except Exception as e:
+          # Old log removed: # if self._logger and self._log_level >= _ERROR_LEVEL:
+          #   self._logger.print(f"Actor {self._actor_id}: Error getting response for request {request_id} from queue: {e}", flush=True)
+          self.logger.error(f"Actor {self._actor_id}: Error getting response for request {request_id} from queue: {e}")
+          raise
 
-    def prior(self, state):
-        """Computes the-policy prior for a state, potentially using remote inference."""
+    def evaluate(self, state: "pyspiel.State"):  # type: ignore # pylint: disable=undefined-variable
+        """Returns a value for the given state."""
+        value, _ = self._inference(state)
+        # Assuming a two-player zero-sum game.
+        return _np.array([value, -value])
+
+    def prior(self, state: "pyspiel.State"):  # type: ignore # pylint: disable=undefined-variable
+        """Returns a policy for the given state."""
         if state.is_chance_node():
             return state.chance_outcomes()
+        elif state.is_terminal():
+            return [] # Or handle as appropriate for MCTS, typically not called on terminal.
 
-        observation = _np.asarray(state.observation_tensor(), dtype=_np.float32)
-        legals_mask = _np.asarray(state.legal_actions_mask(), dtype=_np.bool_)
+        _, policy_probs = self._inference(state)
+        legal_actions = state.legal_actions()
         
-        req_id = self._send_request(observation, legals_mask)
-        _, policy_probs = self._receive_response(req_id) # Use the same req_id, ignore value for prior (or use if needed)
+        # Ensure policy_probs corresponds to legal_actions.
+        # The policy_probs from inference should already be masked or aligned
+        # with all possible actions. MCTS expects priors for legal actions only.
         
-        return [(action, policy_probs[action]) for action in state.legal_actions() if policy_probs[action] > 0]
+        priors = []
+        for action in legal_actions:
+            # policy_probs should be a vector over all actions.
+            # We need to map the action to its index if policy_probs is not already
+            # a dict or a structure that can be indexed by `action`.
+            # Assuming policy_probs is a numpy array where indices match action numbers.
+            if action < len(policy_probs):
+                priors.append((action, policy_probs[action]))
+            else:
+                # This case should ideally not happen if policy_probs is for all actions
+                # Old log removed: # if self._logger and self._log_level >= _WARN_LEVEL:
+                #     self._logger.print(f"Actor {self._actor_id}: Action {action} out of bounds for policy_probs (len {len(policy_probs)}). Assigning 0 prior.", flush=True)
+                self.logger.warning(f"Actor {self._actor_id}: Action {action} out of bounds for policy_probs (len {len(policy_probs)}). Assigning 0 prior.")
+                priors.append((action, 0.0))
+                
+        # It's crucial that the sum of priors for legal actions is close to 1 (or normalized).
+        # The inference should provide a valid probability distribution.
+        # MCTS might normalize it anyway.
+        return priors
+
+    def cache_info(self):
+        """Returns information about the cache."""
+        # Old log removed: # if self._logger and self._log_level >= _INFO_LEVEL:
+        #   self._logger.print(f"Actor {self._actor_id}: Cache Info: Size={self._cache.size()}, Max Size={self._cache.max_size}, Hits={self._cache.hits}, Misses={self._cache.misses}")
+        # Get info from cache object correctly
+        cache_stats = self._cache.info()
+        self.logger.info(f"Actor {self._actor_id}: Cache Info: Size={self._cache.size}, Max Size={self._cache.max_size}, Hits={cache_stats['hits']}, Misses={cache_stats['misses']}")
+        return cache_stats # Return the dict
+
+    def clear_cache(self):
+        """Clears the cache."""
+        # Old log removed: # if self._logger and self._log_level >= _INFO_LEVEL:
+        #   self._logger.print(f"Actor {self._actor_id}: Clearing cache.")
+        self.logger.info(f"Actor {self._actor_id}: Clearing cache.")
+        self._cache.clear()
+
+# Helper for LRU Cache
+# (A simple LRU cache implementation if not using an external library)
+# For simplicity, using collections.OrderedDict as a basic LRU cache.
+# A more robust LRU cache might be needed for high performance.
+class LRUCache:
+    def __init__(self, max_size):
+        self.max_size = max_size
+        self.cache = collections.OrderedDict()
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, key):
+        if key not in self.cache:
+            self.misses += 1
+            return None
+        self.hits += 1
+        self.cache.move_to_end(key)
+        return self.cache[key]
+
+    def put(self, key, value):
+        if key in self.cache:
+            self.cache.move_to_end(key)
+        self.cache[key] = value
+        if len(self.cache) > self.max_size:
+            self.cache.popitem(last=False)
+
+    def info(self):
+        return {"size": len(self.cache), "max_size": self.max_size, "hits": self.hits, "misses": self.misses}
+
+    @property # Make size a property
+    def size(self):
+        return len(self.cache)
+    
+    def clear(self):
+        self.cache.clear()
+        self.hits = 0
+        self.misses = 0
 
 # Add pyspiel import if state methods are directly called (they are)
 from open_spiel.python import games # Needed for pyspiel.State type hint if used

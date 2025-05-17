@@ -490,6 +490,17 @@ We centralize all model initialization, inference, and TPU interactions in the m
 - [DONE] [VERIFIED] Update `BatchAssemblyThread.run()` in `alpha_zero_jax.py` to catch both `mp.queues.Empty` and `std_queue.Empty` for robust timeout handling.
 - [DONE] [VERIFIED] Initialize `processes = [], actor_process_queues = [], and evaluator_process_queues = []` lists in the `alpha_zero_jax` function within `open_spiel/python/algorithms/alpha_zero_jax/alpha_zero_jax.py` before these lists are appended to.
 - [DONE] [VERIFIED] Instantiate `inference_request_queue = mp.Queue()` in the `alpha_zero_jax` function within `open_spiel/python/algorithms/alpha_zero_jax/alpha_zero_jax.py` before it is passed as an argument to actors, evaluators, or the learner.
+- [DONE] **Decouple `RemoteEvaluator` Logging for Dedicated Log Files**
+    -   **Why**: To provide a separate, dedicated log file for each `RemoteEvaluator` instance (e.g., `log-remote_evaluator_actor_{actor_id}.txt`), making it easier to debug remote inference communication without interference from general actor logs. This also simplifies `RemoteEvaluator`'s interface and standardizes its internal logging.
+    -   **What & Where**:
+        1.  **Modify `RemoteEvaluator` in `open_spiel/python/algorithms/alpha_zero_jax/remote_inference.py`**:
+            *   Remove `logger`, `log_level`, and `log_file` parameters from `RemoteEvaluator.__init__` (around lines 71-86).
+            *   In `__init__`, unconditionally create a standard Python `logging.Logger` (e.g., `logging.getLogger(f"RemoteEvaluator_Actor_{actor_id}")`) and configure it with a `FileHandler` to write to `log-remote_evaluator_actor_{actor_id}.txt`. Set a default logging level (e.g., `logging.DEBUG`).
+            *   Replace all conditional `if self.logger: if self.log_level >= _XXX_LEVEL: self.logger.print(...)` calls throughout `RemoteEvaluator` (e.g., lines 132-134, 140-142, 159-161, 170-172, 175-177, 183-185, 189-192, 196-198, 205-207, 213-216, 222-224) with standard `self.logger.debug()`, `self.logger.info()`, `self.logger.warning()`, or `self.logger.error()` calls, as appropriate for the message severity.
+            *   Remove the `_ERROR_LEVEL`, `_WARN_LEVEL`, `_INFO_LEVEL`, `_DEBUG_LEVEL`, `_TRACE_LEVEL` constants (around lines 17-22).
+        2.  **Update `RemoteEvaluator` Instantiation in `open_spiel/python/algorithms/alpha_zero_jax/actor_evaluator_logic.py`**:
+            *   In the `actor` function, when `RemoteEvaluator` is created (around line 100, but this line number will change as the dummy actor is reverted), remove the `logger=logger` and `log_level=config.actor_verbosity` arguments from the constructor call.
+    -   **Citation**: Current `RemoteEvaluator` implementation in [remote_inference.py](mdc:open_spiel/python/algorithms/alpha_zero_jax/remote_inference.py) and its usage in `actor_evaluator_logic.py`. This task addresses the user's request for separate log files for remote inference components.
 - [TODO] Conduct end-to-end testing on TPU to verify:
   - Only one TPU initialization occurs (no XlaRuntimeError).
   - Batched inference requests are processed correctly and efficiently.

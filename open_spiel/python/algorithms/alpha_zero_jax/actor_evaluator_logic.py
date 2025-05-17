@@ -29,6 +29,10 @@ from open_spiel.python.algorithms import mcts
 from open_spiel.python.utils import file_logger, spawn # spawn for ProcessQueue type hint
 from .remote_inference import RemoteEvaluator, SHUTDOWN_SENTINEL, ShutdownException
 
+# Define debug level constants used by actor and evaluator
+_ACTOR_DEBUG_LEVEL = 3
+_EVALUATOR_DEBUG_LEVEL = 3
+
 # It's assumed that ConfigJAX is passed as an argument and actor/evaluator
 # will access fields like config.uct_c, config.path, config.quiet, etc.
 # Log level constants (ERROR, WARN, INFO, DEBUG, TRACE) are defined in
@@ -237,7 +241,20 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list,
 
     # Bot play
     # The AlphaZeroBot (MCTSBot) will use its evaluator (RemoteEvaluator) here
-    action, policy_dict = bot.step_with_policy(state)
+    action_and_policy_or_error = bot.step_with_policy(state)
+    if logger and log_level >= 4: # TRACE
+        logger.print(f"Game {game_num} Player {current_player} bot.step_with_policy returned: {action_and_policy_or_error}")
+    
+    # Check if the return is as expected (a tuple/list of two elements)
+    if not (isinstance(action_and_policy_or_error, (tuple, list)) and len(action_and_policy_or_error) == 2):
+        if logger and log_level >= 0: # ERROR
+            logger.print(f"Game {game_num} Player {current_player} bot.step_with_policy returned unexpected value: {action_and_policy_or_error}. Expected (action, policy_dict). Aborting game.")
+        # To prevent crash and allow actor to continue to next game, return current (incomplete) trajectory or None
+        # However, this might hide underlying issues. For now, let it try to unpack and potentially fail to see original error.
+        # Consider: return trajectory # or return None if trajectory is empty
+        pass # Let it proceed to unpack to see if the TypeError still occurs naturally
+
+    policy_dict, action = action_and_policy_or_error
     
     # Convert policy from dict to a dense array based on legal actions
     # This policy is what MCTS search, after noise and temperature, recommends.
@@ -284,7 +301,7 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list,
 
 @watcher
 def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
-          queue: spawn.ProcessQueue, initial_seed: int,
+          queue: spawn._ProcessQueue, initial_seed: int,
           inference_request_queue, # mp.Queue
           inference_response_queue # mp.Queue
           ):
@@ -302,12 +319,12 @@ def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
   # Initialize the RemoteEvaluator for this actor
   # The actor_id (num) is used by the InferenceServicer to route responses.
   az_evaluator = RemoteEvaluator(
-      actor_id=num, # Unique ID for this actor/client
-      request_queue=inference_request_queue,
-      response_queue=inference_response_queue,
-      timeout_ms=config.remote_evaluator_timeout_ms,
-      logger=logger,
-      log_level=config.log_level
+      game=game,
+      actor_id=num, # Use the actor/evaluator number as its ID
+      inference_request_queue=inference_request_queue,
+      inference_response_queue=inference_response_queue,
+      max_cache_size=config.evaluator_cache_size,
+      debug_mode=(getattr(config, 'actor_verbosity', config.log_level) >= _ACTOR_DEBUG_LEVEL) # Pass debug_mode
   )
 
   bots = [_init_bot(config, game, az_evaluator, False, p) for p in range(game.num_players())]
@@ -357,8 +374,7 @@ def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
   except ShutdownException:
     logger.print(f"Actor {num} received shutdown signal. Exiting.")
   except Exception as e: # pylint: disable=broad-except
-    logger.print(f"Actor {num} caught unhandled error: {e}
-{traceback.format_exc()}")
+    logger.print(f"Actor {num} caught unhandled error: {e}\n{traceback.format_exc()}")
     # Optionally re-raise or signal main process
   finally:
     # Attempt to signal shutdown to the inference request queue.
@@ -378,7 +394,7 @@ def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
 
 @watcher
 def evaluator(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
-                queue: spawn.ProcessQueue, initial_seed: int,
+                queue: spawn._ProcessQueue, initial_seed: int,
                 inference_request_queue, # mp.Queue
                 inference_response_queue # mp.Queue
                 ):
@@ -393,12 +409,12 @@ def evaluator(*, game: pyspiel.Game, config, logger, num: int, # config is Confi
 
   # Initialize RemoteEvaluator for this evaluator process
   az_evaluator = RemoteEvaluator(
-      actor_id=config.actors + num, # Unique ID, offset from actor IDs
-      request_queue=inference_request_queue,
-      response_queue=inference_response_queue,
-      timeout_ms=config.remote_evaluator_timeout_ms,
-      logger=logger,
-      log_level=config.log_level
+      game=game,
+      actor_id=num, # Use the actor/evaluator number as its ID
+      inference_request_queue=inference_request_queue,
+      inference_response_queue=inference_response_queue,
+      max_cache_size=config.evaluator_cache_size,
+      debug_mode=(getattr(config, 'evaluator_verbosity', config.log_level) >= _EVALUATOR_DEBUG_LEVEL) # Pass debug_mode
   )
 
   # Create bots with different MCTS budgets for evaluation
@@ -476,8 +492,7 @@ def evaluator(*, game: pyspiel.Game, config, logger, num: int, # config is Confi
   except ShutdownException:
     logger.print(f"Evaluator {num} received shutdown signal. Exiting.")
   except Exception as e: # pylint: disable=broad-except
-    logger.print(f"Evaluator {num} caught unhandled error: {e}
-{traceback.format_exc()}")
+    logger.print(f"Evaluator {num} caught unhandled error: {e}\n{traceback.format_exc()}")
   finally:
     # Similar to actor, best-effort signal.
     try:

@@ -77,6 +77,11 @@ flags.DEFINE_string("resnet_block_callable_name", "ResNetBlock", "Name of the bl
 flags.DEFINE_string("resnet_block_kwargs_json", "{}", "JSON string of keyword arguments for the ResNet block.")
 flags.DEFINE_integer("evaluator_cache_size", 2**16, "Size of the LRU cache for the JAX evaluator.") # 65536
 
+# New flags for inference and remote evaluation timeouts and batch size
+flags.DEFINE_integer("remote_evaluator_timeout_ms", 30000, "Timeout in milliseconds for remote evaluator queue operations.") # Increased from 100 to 30000
+flags.DEFINE_float("inference_batch_timeout_ms", 50.0, "Timeout in milliseconds for BatchAssemblyThread to form a batch.")
+flags.DEFINE_integer("inference_batch_size", 32, "Batch size for inference requests.")
+
 # From TF AlphaZero, for game_specific_az_path
 flags.DEFINE_bool(
     "game_specific_az_path", True,
@@ -129,6 +134,10 @@ def main(argv):
       resnet_block_kwargs=json.loads(FLAGS.resnet_block_kwargs_json),
       evaluator_cache_size=FLAGS.evaluator_cache_size,
       log_level=LOG_LEVELS[FLAGS.log_level],
+      # New arguments for ConfigJAX
+      remote_evaluator_timeout_ms=FLAGS.remote_evaluator_timeout_ms,
+      inference_batch_timeout_ms=FLAGS.inference_batch_timeout_ms,
+      inference_batch_size=FLAGS.inference_batch_size,
   )
 
   # Set external library log levels to match config

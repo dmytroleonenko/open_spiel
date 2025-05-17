@@ -31,7 +31,7 @@ from open_spiel.python.algorithms import mcts # Activated mcts
 from .remote_inference import RemoteEvaluator, InferenceRequest, InferenceResponse, SHUTDOWN_SENTINEL, ShutdownException
 
 # NEW IMPORT for actor and evaluator logic
-from .actor_evaluator_logic import actor, evaluator, watcher
+from .actor_evaluator_logic import actor, evaluator, watcher, Buffer
 
 # Time to wait for processes to join.
 JOIN_WAIT_DELAY = 0.001
@@ -302,33 +302,57 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
 
   replay_buffer = Buffer(config.replay_buffer_size)
   
-  # Initialize the InferenceServicer
-  # This is where the batch_timeout_ms was hardcoded.
-  # The user mentioned line 316. This part is an educated guess of the surrounding code.
-  # The actual InferenceServicer initialization might be slightly different.
-  # We need to find where 'servicer' or 'InferenceServicer' is created.
-  
-  # Assuming servicer is created like this based on its __init__ signature
-  # and the hardcoded value reference.
-  # The `initial_flax_model` and `initial_variables` are now passed to learner
-  # so the servicer will use the jitted apply function derived from these.
-  
-  # JIT the model application function for inference servicer
-  # This jit'd function will be passed to the InferenceServicer.
-  # It should take (variables, batch_observations, batch_legals_masks)
+  # ---- JIT Warmup for Inference Function ----
+  # Define the inference function to be JITted (same as used by InferenceServicer)
   @jax.jit
-  def _batched_inference_fn_for_servicer(model_vars, obs_batch, legals_batch):
-      # initial_flax_model.apply is expected to handle legals_mask internally
-      # by setting logits of illegal actions to -jnp.inf.
+  def _batched_inference_fn_for_warmup(model_vars, obs_batch, legals_batch):
       policy_logits, value_preds = initial_flax_model.apply(
           model_vars, 
           obs_batch, 
-          legals_mask=legals_batch, # Pass legals_mask to the model
+          legals_mask=legals_batch,
           training=False, 
-          mutable=False # No batch stats updates during pure inference
+          mutable=False
       )
       policy_probs = jax.nn.softmax(policy_logits, axis=-1)
-      return policy_probs, value_preds # Return probabilities and value predictions
+      return policy_probs, value_preds
+
+  # Create dummy data for warmup
+  # game object is available here in learner
+  dummy_observation_shape = game.observation_tensor_shape()
+  dummy_output_size = game.num_distinct_actions()
+  dummy_obs_batch = jnp.zeros((1,) + tuple(dummy_observation_shape), dtype=jnp.float32)
+  dummy_legals_batch = jnp.zeros((1, dummy_output_size), dtype=jnp.bool_)
+
+  if logger and config.log_level >= INFO:
+      logger.print(f"Learner: Warming up JIT for inference function with dummy_obs_batch shape: {dummy_obs_batch.shape}, dummy_legals_batch shape: {dummy_legals_batch.shape}...")
+  warmup_start_time = time.time()
+  try:
+    _ = _batched_inference_fn_for_warmup(variables, dummy_obs_batch, dummy_legals_batch)
+    # Optionally, block until compilation is done if JAX JIT is async by default in some setups.
+    # For most cases, the first call will block until compilation finishes.
+    # You could use .block_until_ready() on the result if needed, e.g. _[0].block_until_ready()
+    if logger and config.log_level >= INFO:
+        logger.print(f"Learner: JIT warmup completed in {time.time() - warmup_start_time:.4f}s.")
+  except Exception as e_warmup:
+    if logger and config.log_level >= WARN:
+        logger.print(f"Learner: Error during JIT warmup: {e_warmup}. Continuing without warmup...")
+        logger.print(traceback.format_exc())
+  # ---- End JIT Warmup ----
+
+  # Initialize the InferenceServicer
+  # Pass the already JITted function (_batched_inference_fn_for_warmup) or redefine it for clarity
+  # For clarity, let's redefine the one passed to servicer, ensuring it's the same logic.
+  @jax.jit
+  def _batched_inference_fn_for_servicer(model_vars, obs_batch, legals_batch):
+      policy_logits, value_preds = initial_flax_model.apply(
+          model_vars, 
+          obs_batch, 
+          legals_mask=legals_batch,
+          training=False, 
+          mutable=False
+      )
+      policy_probs = jax.nn.softmax(policy_logits, axis=-1)
+      return policy_probs, value_preds
 
   servicer = InferenceServicer(
       request_queue=inference_request_queue,
@@ -943,11 +967,12 @@ class BatchAssemblyThread(threading.Thread):
                 if raw_request_tuple == SHUTDOWN_SENTINEL:
                     if self.logger and self.log_level >= INFO:
                         self.logger.print("BatchAssemblyThread received SHUTDOWN_SENTINEL on request_queue. Signaling ready_batch_queue and exiting.")
-                    # Propagate SHUTDOWN_SENTINEL to the InferenceExecutionThread
                     self.ready_batch_queue.put(SHUTDOWN_SENTINEL) 
-                    break # Exit the loop
+                    break 
 
-                # Deserialize the request tuple using InferenceRequest.from_tuple
+                if self.logger and self.log_level >= 4: # TRACE
+                    self.logger.print(f"BatchAssemblyThread: Received raw request: {raw_request_tuple}")
+
                 try:
                     inference_request_obj = InferenceRequest.from_tuple(raw_request_tuple)
                 except ValueError as e:
@@ -1148,6 +1173,9 @@ class InferenceExecutionThread(threading.Thread):
                                                  value=value_scalar_for_client, 
                                                  policy_probs=policy_array_for_client)
                 response_tuple = response_obj.to_tuple()
+
+                if self.logger and self.log_level >= 4: # TRACE
+                    self.logger.print(f"InferenceExecutionThread: Sending response to client {origin_idx} for req {req_id}: {response_tuple}")
 
                 try:
                     # Use origin_idx to get the correct response queue from all_client_response_queues
