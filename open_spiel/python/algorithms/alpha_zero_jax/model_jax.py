@@ -149,8 +149,10 @@ class ResNet_JAX(nn.Module):
     # when the model is invoked via `model.apply(..., training=training_status)`.
 
     # Reshape flat input (Batch, Features) to expected 3D spatial format (Batch, H, W, C)
+    # expected_input_shape is (C,H,W) from game.observation_tensor_shape() if CHW layout
     if hasattr(self, 'expected_input_shape') and self.expected_input_shape and x.ndim == 2:
       if np.prod(self.expected_input_shape) == x.shape[1]: # Check if total features match
+        # Reshape to (N, C, H, W)
         x = x.reshape((x.shape[0],) + self.expected_input_shape)
       else:
         # This case should ideally not happen if expected_input_shape is correctly set
@@ -158,6 +160,14 @@ class ResNet_JAX(nn.Module):
         # For now, we proceed, but this indicates a potential mismatch.
         pass
 
+    # If input is NCHW (e.g. x.shape = (N,C,H,W)) and model expects NHWC, transpose.
+    # self.expected_input_shape stores (C,H,W)
+    if x.ndim == 4 and hasattr(self, 'expected_input_shape') and self.expected_input_shape and \
+       x.shape[1] == self.expected_input_shape[0] and \
+       x.shape[2] == self.expected_input_shape[1] and \
+       x.shape[3] == self.expected_input_shape[2]:
+      x = jnp.transpose(x, (0, 2, 3, 1))  # NCHW -> NHWC
+      # After transpose, x.shape is (N, H, W, C) using game's H, W, C
 
     stem = self.stem_constructor()
     x = stem(x, training=training)
