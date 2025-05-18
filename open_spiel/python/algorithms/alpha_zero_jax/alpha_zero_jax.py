@@ -644,6 +644,11 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   accumulated_inference_queue_size = 0
   inference_queue_size_samples = 0
 
+  # For periodic rate logging
+  last_rate_log_time = time.time()
+  RATE_LOG_INTERVAL = 30.0  # Log rates every 30 seconds
+  states_since_last_rate_log = 0
+  training_steps_since_last_rate_log = 0
 
   current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
 
@@ -675,9 +680,6 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         if logger and config.log_level >= WARN: # Changed to WARN as this is problematic
             logger.print("Learner: No actor queues configured or list is empty. Cannot collect trajectories. Waiting briefly.")
         time.sleep(1) # Prevent busy loop if no actors
-        # continue # This would skip the rest of the loop, including max_steps check if training_step_count is high
-                   # And also skip training, potentially leading to a spin if this happens repeatedly.
-                   # For now, let it proceed; if buffer is empty, training will be skipped.
 
     for queue_idx, queue in enumerate(actor_queues):
         while True:
@@ -712,6 +714,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
              current_num_states_in_traj = len(traj.states)
         num_states_this_iter += current_num_states_in_traj
         states_accumulated_since_last_train += current_num_states_in_traj
+        states_since_last_rate_log += current_num_states_in_traj  # Add to rate logging counter
         
         current_player_return = traj.returns 
         outcome_bucket_id = None 
@@ -747,6 +750,20 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             )
             replay_buffer.append(train_input)
     # --- End Data Collection ---
+
+    # --- Periodic Rate Logging (every 30 seconds) ---
+    current_time = time.time()
+    if current_time - last_rate_log_time >= RATE_LOG_INTERVAL:
+        elapsed = current_time - last_rate_log_time
+        if elapsed > 0:
+            states_per_sec = states_since_last_rate_log / elapsed
+            training_steps_per_sec = training_steps_since_last_rate_log / elapsed
+            if logger and config.log_level >= INFO:
+                logger.print(f"Rates (30s avg): {states_per_sec:.1f} states/s, {training_steps_per_sec:.1f} training steps/s")
+        # Reset counters
+        states_since_last_rate_log = 0
+        training_steps_since_last_rate_log = 0
+        last_rate_log_time = current_time
 
     # --- Periodic General Logging (not tied to training step) ---
     now_for_general_log = time.time()
@@ -788,6 +805,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             )
             
             training_step_count += 1 # Increment after successful training step
+            training_steps_since_last_rate_log += 1  # Add to rate logging counter
             training_performed_this_iteration = True # Set if any step in the burst happens
             actual_train_steps_this_burst += 1
             
