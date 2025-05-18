@@ -143,8 +143,12 @@ class ResNeStBottleneckBlock(ResNetBottleneckBlock):
     splat_cls: ModuleDef = SplAtConv2d
 
     @nn.compact
-    def __call__(self, x):
-        assert self.radix == 2  # TODO: implement radix != 2
+    def __call__(self, x, training: bool):
+        # For ResNeSt, the SplAtConv2d is used as the main 3x3 convolution.
+        # The original ResNetBottleneckBlock structure is largely reused.
+        # The key difference is replacing self.conv_block_cls in the middle conv
+        # with a SplAtConv2d configured with self.radix, self.groups etc.
+        assert self.radix in [1, 2] # Allow radix 1 for ResNeSt Fast
 
         skip_cls = partial(self.skip_cls, conv_block_cls=self.conv_block_cls)
         group_width = int(self.n_hidden * (self.base_width / 64.)) * self.groups
