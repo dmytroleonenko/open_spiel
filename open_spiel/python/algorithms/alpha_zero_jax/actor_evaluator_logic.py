@@ -31,8 +31,8 @@ from open_spiel.python.utils import file_logger, spawn # spawn for ProcessQueue 
 from .remote_inference import RemoteEvaluator, SHUTDOWN_SENTINEL, ShutdownException
 
 # Define debug level constants used by actor and evaluator
-_ACTOR_DEBUG_LEVEL = 3
-_EVALUATOR_DEBUG_LEVEL = 3
+# _ACTOR_DEBUG_LEVEL = 3 # No longer needed for RemoteEvaluator's debug_mode
+# _EVALUATOR_DEBUG_LEVEL = 3 # No longer needed for RemoteEvaluator's debug_mode
 
 # It's assumed that ConfigJAX is passed as an argument and actor/evaluator
 # will access fields like config.uct_c, config.path, config.quiet, etc.
@@ -360,7 +360,7 @@ def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
   """An actor process that plays games and sends trajectories to the learner."""
   # Determine if debug_mode should be enabled for RemoteEvaluator
   # Based on config.log_level (DEBUG=3, TRACE=4)
-  remote_evaluator_debug_mode = config.log_level >= 3 # DEBUG or TRACE
+  # remote_evaluator_debug_mode = config.log_level >= 3 # DEBUG or TRACE # No longer needed
 
   # Determine log_path for RemoteEvaluator
   # The watcher for 'actor' creates logs in config.path/actor_NUM/
@@ -383,7 +383,8 @@ def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
       inference_request_queue=inference_request_queue,
       inference_response_queue=inference_response_queue,
       max_cache_size=config.evaluator_cache_size,
-      debug_mode=remote_evaluator_debug_mode, # Pass debug_mode
+      numeric_log_level=config.log_level, # CHANGED: Pass numeric_log_level from config
+      # debug_mode=remote_evaluator_debug_mode, # OLD: Pass debug_mode
       log_path=evaluator_log_path # Pass the constructed log_path
   )
 
@@ -471,7 +472,8 @@ def evaluator(*, game: pyspiel.Game, config, logger, num: int, # config is Confi
       inference_request_queue=inference_request_queue,
       inference_response_queue=inference_response_queue,
       max_cache_size=config.evaluator_cache_size,
-      debug_mode=(getattr(config, 'evaluator_verbosity', config.log_level) >= _EVALUATOR_DEBUG_LEVEL), # Pass debug_mode
+      numeric_log_level=config.log_level, # CHANGED: Pass numeric_log_level from config
+      # debug_mode=(getattr(config, 'evaluator_verbosity', config.log_level) >= _EVALUATOR_DEBUG_LEVEL), # OLD: Pass debug_mode
       log_path=evaluator_log_path_for_eval_process # Pass the constructed log_path
   )
 
