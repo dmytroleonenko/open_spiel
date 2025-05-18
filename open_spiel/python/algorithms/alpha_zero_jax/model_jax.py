@@ -591,8 +591,8 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
 
           # ResNeSt Variants
           elif model_type == "resnest50fast":
-              stem_constructor = functools.partial(ResNetDStem, stem_width=32, avg_pool_first=True, conv_block_cls=ConvBlock)
-              _block_kwargs = {"radix": 1, "groups": 1, "base_width": 64, "avg_pool_first": True, "expansion": 4, **getattr(config, 'resnet_block_kwargs', {})}
+              stem_constructor = functools.partial(ResNetDStem, stem_width=32, conv_block_cls=ConvBlock)
+              _block_kwargs = {"radix": 1, "groups": 1, "base_width": 64, "expansion": 4, **getattr(config, 'resnet_block_kwargs', {})}
               block_constructor = functools.partial(ResNeStBottleneckBlock, conv_block_cls=ConvBlock, splat_conv_cls=SplAtConv2d)
               depth_config = STAGE_SIZES[50]
               model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=_block_kwargs, expected_input_shape=observation_shape)
