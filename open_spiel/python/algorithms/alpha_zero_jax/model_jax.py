@@ -160,7 +160,7 @@ class ResNet_JAX(nn.Module):
 
 
     stem = self.stem_constructor()
-    x = stem(x)
+    x = stem(x, training=training)
     x = nn.max_pool(x, window_shape=(3, 3), strides=(2, 2), padding='SAME')
 
     current_n_hidden = self.nn_width
