@@ -22,7 +22,7 @@ class ResNetStem(nn.Module):
     conv_block_cls: ModuleDef = ConvBlock
 
     @nn.compact
-    def __call__(self, x):
+    def __call__(self, x, training=False):
         return self.conv_block_cls(64,
                                    kernel_size=(7, 7),
                                    strides=(2, 2),
@@ -37,7 +37,7 @@ class ResNetDStem(nn.Module):
     adaptive_first_width: bool = False
 
     @nn.compact
-    def __call__(self, x):
+    def __call__(self, x, training=False):
         cls = partial(self.conv_block_cls, kernel_size=(3, 3), padding=((1, 1), (1, 1)))
         first_width = (8 * (x.shape[-1] + 1)
                        if self.adaptive_first_width else self.stem_width)
@@ -88,7 +88,7 @@ class ResNetBlock(nn.Module):
     skip_cls: ModuleDef = ResNetSkipConnection
 
     @nn.compact
-    def __call__(self, x):
+    def __call__(self, x, training=False):
         skip_cls = partial(self.skip_cls, conv_block_cls=self.conv_block_cls)
         y = self.conv_block_cls(self.n_hidden,
                                 padding=[(1, 1), (1, 1)],
@@ -110,7 +110,7 @@ class ResNetBottleneckBlock(nn.Module):
     skip_cls: ModuleDef = ResNetSkipConnection
 
     @nn.compact
-    def __call__(self, x):
+    def __call__(self, x, training=False):
         skip_cls = partial(self.skip_cls, conv_block_cls=self.conv_block_cls)
         group_width = int(self.n_hidden * (self.base_width / 64.)) * self.groups
 
@@ -127,15 +127,53 @@ class ResNetBottleneckBlock(nn.Module):
         return self.activation(y + skip_cls(self.strides)(x, y.shape))
 
 
-class ResNetDBlock(ResNetBlock):
+class ResNetDBlock(nn.Module):
+    n_hidden: int
+    strides: Tuple[int, int] = (1, 1)
+
+    activation: Callable = nn.relu
+    conv_block_cls: ModuleDef = ConvBlock
     skip_cls: ModuleDef = ResNetDSkipConnection
 
+    @nn.compact
+    def __call__(self, x, training=False):
+        skip_cls = partial(self.skip_cls, conv_block_cls=self.conv_block_cls)
+        y = self.conv_block_cls(self.n_hidden,
+                                padding=[(1, 1), (1, 1)],
+                                strides=self.strides)(x)
+        y = self.conv_block_cls(self.n_hidden, padding=[(1, 1), (1, 1)],
+                                is_last=True)(y)
+        return self.activation(y + skip_cls(self.strides)(x, y.shape))
 
-class ResNetDBottleneckBlock(ResNetBottleneckBlock):
+
+class ResNetDBottleneckBlock(nn.Module):
+    n_hidden: int
+    strides: Tuple[int, int] = (1, 1)
+    expansion: int = 4
+    groups: int = 1  # cardinality
+    base_width: int = 64
+
+    activation: Callable = nn.relu
+    conv_block_cls: ModuleDef = ConvBlock
     skip_cls: ModuleDef = ResNetDSkipConnection
 
+    @nn.compact
+    def __call__(self, x, training=False):
+        skip_cls = partial(self.skip_cls, conv_block_cls=self.conv_block_cls)
+        group_width = int(self.n_hidden * (self.base_width / 64.)) * self.groups
 
-class ResNeStBottleneckBlock(ResNetBottleneckBlock):
+        y = self.conv_block_cls(group_width, kernel_size=(1, 1))(x)
+        y = self.conv_block_cls(group_width,
+                                strides=self.strides,
+                                groups=self.groups,
+                                padding=((1, 1), (1, 1)))(y)
+        y = self.conv_block_cls(self.n_hidden * self.expansion,
+                                kernel_size=(1, 1),
+                                is_last=True)(y)
+        return self.activation(y + skip_cls(self.strides)(x, y.shape))
+
+
+class ResNeStBottleneckBlock(nn.Module):
     skip_cls: ModuleDef = ResNeStSkipConnection
     avg_pool_first: bool = False
     radix: int = 2
@@ -143,7 +181,7 @@ class ResNeStBottleneckBlock(ResNetBottleneckBlock):
     splat_cls: ModuleDef = SplAtConv2d
 
     @nn.compact
-    def __call__(self, x, training: bool):
+    def __call__(self, x, training=False):
         # For ResNeSt, the SplAtConv2d is used as the main 3x3 convolution.
         # The original ResNetBottleneckBlock structure is largely reused.
         # The key difference is replacing self.conv_block_cls in the middle conv

@@ -234,23 +234,19 @@ class Conv2D_JAX(nn.Module):
         x = x.reshape((batch_size,) + self.expected_input_shape)
 
     # Save the output of the torso before heads are applied
-    torso_output = x 
+    torso_output = x
     for i in range(self.nn_depth):
       torso_output = ConvBlock(
           n_filters=self.nn_width,
-                               kernel_size=(3, 3), 
-                               strides=(1, 1), 
+                               kernel_size=(3, 3),
+                               strides=(1, 1),
           padding="SAME",
           name=f"torso_conv_block_{i}")(torso_output, training=training)
 
     # Flatten the output for the dense layers
-    # flat_x = nn.Flatten()(torso_output) # Original, but caused issues with Flax if input shape changed.
     flat_x = torso_output.reshape((torso_output.shape[0], -1)) # More robust flattening
 
     # Policy head
-    # policy_hidden = nn.Dense(features=self.nn_width, name="policy_hidden")(flat_x)
-    # policy_hidden = nn.relu(policy_hidden)
-    # policy_logits_pre_mask = nn.Dense(features=self.output_size, name="policy_head")(policy_hidden)
     policy_logits_pre_mask = nn.Dense(features=self.output_size, name="policy_head")(flat_x)
 
     if legals_mask is not None:
