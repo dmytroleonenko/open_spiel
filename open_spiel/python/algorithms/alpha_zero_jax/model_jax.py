@@ -180,7 +180,7 @@ class ResNet_JAX(nn.Module):
             **effective_block_kwargs
         }
         block = self.block_constructor(**current_block_params)
-        x = block(x) 
+        x = block(x, training=training) 
 
     # TF-style Policy Head for ResNet
     ph = nn.Conv(features=2, kernel_size=(1,1), padding='SAME', name="policy_head_conv1x1")(x)
