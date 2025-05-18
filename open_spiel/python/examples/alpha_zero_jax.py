@@ -79,7 +79,7 @@ flags.DEFINE_integer("evaluator_cache_size", 2**16, "Size of the LRU cache for t
 
 # New flags for inference and remote evaluation timeouts and batch size
 flags.DEFINE_integer("remote_evaluator_timeout_ms", 30000, "Timeout in milliseconds for remote evaluator queue operations.") # Increased from 100 to 30000
-flags.DEFINE_float("inference_batch_timeout_ms", 50.0, "Timeout in milliseconds for BatchAssemblyThread to form a batch.")
+flags.DEFINE_float("inference_batch_timeout_ms", 1.0, "Timeout in milliseconds for BatchAssemblyThread to form a batch.")
 flags.DEFINE_integer("inference_batch_size", 32, "Batch size for inference requests.")
 
 # From TF AlphaZero, for game_specific_az_path

@@ -11,10 +11,14 @@ import time # Ensure time module is imported
 import traceback # For traceback.format_exc() in _receive_response
 import logging
 import collections
+import os # Added import
 
 # Message type identifiers
 INFERENCE_REQ: str = "inference_req"
 INFERENCE_RESP: str = "inference_resp"
+
+# --- EARLY DEBUG PRINT ---
+print(f"[REMOTE_INFERENCE_DEBUG] Top of remote_inference.py. PID: {os.getpid()}", flush=True)
 
 @dataclass(frozen=True)
 class InferenceRequest:
@@ -70,7 +74,8 @@ class RemoteEvaluator:
         inference_request_queue: "_std_queue.Queue",  # type: ignore # pylint: disable=undefined-variable
         inference_response_queue: "_std_queue.Queue",  # type: ignore # pylint: disable=undefined-variable
         max_cache_size: int = 2**16,  # Aligns with AlphaZeroConfig default
-        debug_mode: bool = False
+        debug_mode: bool = False,
+        log_path: str = "" # Added log_path parameter
     ):
         """Initializes a remote MCTS evaluator.
 
@@ -81,7 +86,11 @@ class RemoteEvaluator:
           inference_response_queue: A queue to receive inference responses from.
           max_cache_size: Maximum size of the LRU cache for inference results.
           debug_mode: If True, enables more verbose logging for debugging.
+          log_path: Directory to store log files. Defaults to current directory.
         """
+        # --- EARLY INIT DEBUG PRINT ---
+        print(f"[REMOTE_EVALUATOR_DEBUG] Actor {actor_id} Init Start. PID: {os.getpid()}", flush=True)
+
         self._game = game
         self._actor_id = actor_id
         self._inference_request_queue = inference_request_queue
@@ -89,12 +98,23 @@ class RemoteEvaluator:
         self._debug_mode = debug_mode
 
         # Setup dedicated logger for this RemoteEvaluator instance
+        # --- PRE-LOGGER SETUP DEBUG PRINT ---
+        print(f"[REMOTE_EVALUATOR_DEBUG] Actor {self._actor_id} Pre-Logger Setup. debug_mode: {debug_mode}, log_path: '{log_path}'. PID: {os.getpid()}", flush=True)
         self.logger = logging.getLogger(f"RemoteEvaluator_Actor_{self._actor_id}")
         self.logger.setLevel(logging.DEBUG if self._debug_mode else logging.INFO) # Default to INFO, DEBUG if debug_mode
         
         # Create file handler
-        log_file_path = f"log-remote_evaluator_actor_{self._actor_id}.txt"
+        filename = f"log-remote_evaluator_actor_{self._actor_id}.txt"
+        # --- PRE-LOGFILE CREATION DEBUG PRINT ---
+        print(f"[REMOTE_EVALUATOR_DEBUG] Actor {self._actor_id} Pre-FileHandler. Filename: {filename}, log_path: '{log_path}'. PID: {os.getpid()}", flush=True)
+        if log_path and not os.path.exists(log_path):
+            # --- MKDIRS DEBUG PRINT ---
+            print(f"[REMOTE_EVALUATOR_DEBUG] Actor {self._actor_id} Creating log_path: '{log_path}'. PID: {os.getpid()}", flush=True)
+            os.makedirs(log_path, exist_ok=True)
+        log_file_path = os.path.join(log_path, filename) if log_path else filename
         # Overwrite log file on each init for cleaner logs per run
+        # --- FILEHANDLER INSTANTIATION DEBUG PRINT ---
+        print(f"[REMOTE_EVALUATOR_DEBUG] Actor {self._actor_id} Instantiating FileHandler with path: '{log_file_path}'. PID: {os.getpid()}", flush=True)
         file_handler = logging.FileHandler(log_file_path, mode='w') 
         file_handler.setLevel(logging.DEBUG) # Capture all levels in file
         
@@ -103,6 +123,8 @@ class RemoteEvaluator:
         file_handler.setFormatter(formatter)
         
         # Add the handler to the logger
+        # --- POST-LOGGER SETUP DEBUG PRINT ---
+        print(f"[REMOTE_EVALUATOR_DEBUG] Actor {self._actor_id} Post-Logger Setup. PID: {os.getpid()}", flush=True)
         if not self.logger.handlers:
             self.logger.addHandler(file_handler)
             self.logger.propagate = False # Avoid duplicate logs in parent/root logger if configured
@@ -113,10 +135,15 @@ class RemoteEvaluator:
         # LRU Cache for inference results
         # The cache key will be a string representation of the observation tensor.
         # The value will be the (value, policy_probs) tuple.
+        # --- PRE-CACHE INIT DEBUG PRINT ---
+        print(f"[REMOTE_EVALUATOR_DEBUG] Actor {self._actor_id} Pre-Cache Init. PID: {os.getpid()}", flush=True)
         self._cache = LRUCache(max_size=max_cache_size)
         self.logger.info(f"RemoteEvaluator for Actor {self._actor_id} initialized. Cache size: {max_cache_size}. Log file: {log_file_path}")
 
         # Metrics for inference rate
+        # --- POST-INIT DEBUG PRINT ---
+        print(f"[REMOTE_EVALUATOR_DEBUG] Actor {self._actor_id} Init End. PID: {os.getpid()}", flush=True)
+
         self._inference_count = 0
         self._first_inference_time = None
         self._last_log_time = time.time()
@@ -158,10 +185,10 @@ class RemoteEvaluator:
           self.logger.error(f"Actor {self._actor_id}: Error putting request {request_id} on queue: {e}")
           raise
 
-        try:
-          self.logger.debug(f"Actor {self._actor_id}: Waiting for response for request {request_id}...")
-          
+        try:          
           wait_start_time = time.time()
+          # --- [REMINF_DEBUG] Pre-response loop ---
+          self.logger.debug(f"Actor {self._actor_id}: Entering wait loop for response to request {request_id}. Timeout: {self._response_wait_timeout_seconds}s, Interval: {self._response_get_interval_seconds}s")
           while True: # Loop to find the correct response
             if time.time() - wait_start_time > self._response_wait_timeout_seconds:
               self.logger.error(f"Actor {self._actor_id}: Timeout waiting for response for request {request_id} after {self._response_wait_timeout_seconds}s.")
@@ -169,9 +196,14 @@ class RemoteEvaluator:
 
             try:
               # Get with a short timeout to allow checking the overall wait_start_time
+              # --- [REMINF_DEBUG] Pre-get from response queue ---
+              self.logger.debug(f"Actor {self._actor_id}: Attempting .get() on response queue for request {request_id}. Loop time elapsed: {time.time() - wait_start_time:.2f}s")
               response_tuple = self._inference_response_queue.get(block=True, timeout=self._response_get_interval_seconds)
+              # --- [REMINF_DEBUG] Post-get from response queue ---
+              self.logger.debug(f"Actor {self._actor_id}: .get() returned for request {request_id}. Item type: {type(response_tuple)}, Item: {str(response_tuple)[:200]}")
             except _std_queue.Empty: # Timeout for this specific get() call
-              self.logger.log(logging.DEBUG - 1 if hasattr(logging, 'DEBUG') else 5, f"Actor {self._actor_id}: Queue empty while waiting for {request_id}, retrying.") # Custom level for very verbose
+              # --- [REMINF_DEBUG] Response queue .get() timed out (Empty exception) ---
+              self.logger.log(logging.DEBUG -1 if hasattr(logging, 'DEBUG') else 5, f"Actor {self._actor_id}: Response queue empty (timeout {self._response_get_interval_seconds}s) while waiting for {request_id}, retrying. Overall wait time: {time.time() - wait_start_time:.2f}s")
               continue # Continue to check overall timeout and retry get()
 
             if not isinstance(response_tuple, tuple):
@@ -188,6 +220,8 @@ class RemoteEvaluator:
                    self.logger.warning(f"Actor {self._actor_id}: Error re-putting SHUTDOWN_SENTINEL on queue: {e_put}")
               raise ShutdownException("Invalid (non-tuple) message received while waiting for inference response.")
 
+            # --- [REMINF_DEBUG] Response received, pre-deserialization ---
+            self.logger.debug(f"Actor {self._actor_id}: Tuple message received from response queue: {response_tuple}. Attempting to deserialize for request {request_id}.")
             response = InferenceResponse.from_tuple(response_tuple)
 
             if response.request_id == request_id:

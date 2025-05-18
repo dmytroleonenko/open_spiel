@@ -20,6 +20,7 @@ import itertools
 import random
 import time
 import traceback
+import os
 
 import numpy as np
 import pyspiel
@@ -231,8 +232,20 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list,
     logger.print(f"Starting game {game_num} with numpy_seed: {numpy_seed}, "
                  f"initial temperature: {temperature}, temp_drop: {temperature_drop}")
 
+  turn_number = 0
+  while True: # Changed from `while not state.is_terminal():` to allow logging before the check
+    turn_number += 1
+    if logger and log_level >= 3: # DEBUG
+        logger.print(f"Game {game_num} [PG_DEBUG]: Turn {turn_number} BEGIN. Current player: {state.current_player() if not state.is_terminal() else 'N/A (terminal)'}")
 
-  while not state.is_terminal():
+    if logger and log_level >= 4: # TRACE
+        logger.print(f"Game {game_num} [PG_DEBUG]: Turn {turn_number} About to check state.is_terminal(). Current state: {state.history_str() if hasattr(state, 'history_str') else str(state)}")
+    
+    if state.is_terminal():
+        if logger and log_level >= 3: # DEBUG
+            logger.print(f"Game {game_num} [PG_DEBUG]: Turn {turn_number} State IS terminal. Exiting play loop.")
+        break # Exit the while True loop
+
     if state.is_chance_node():
       # Chance node: sample an outcome
       outcomes, probs = zip(*state.chance_outcomes())
@@ -250,33 +263,60 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list,
     if logger and log_level >= 3: # DEBUG, changed from TRACE to ensure it shows up with TRACE level
         logger.print(f"Game {game_num} Player {current_player}: Calling bot.step_with_policy(state)")
     action_and_policy_or_error = bot.step_with_policy(state)
-    if logger and log_level >= 3: # DEBUG, changed from TRACE to ensure it shows up with TRACE level
-        logger.print(f"Game {game_num} Player {current_player}: bot.step_with_policy returned: {action_and_policy_or_error}")
     
+    # --- [PG_DEBUG] Log raw output from bot.step_with_policy ---
+    if logger and log_level >= 3: # DEBUG
+        logger.print(f"Game {game_num} Player {current_player} [PG_DEBUG]: bot.step_with_policy returned: {action_and_policy_or_error}")
+
     # Check if the return is as expected (a tuple/list of two elements)
     if not (isinstance(action_and_policy_or_error, (tuple, list)) and len(action_and_policy_or_error) == 2):
         if logger and log_level >= 0: # ERROR
-            logger.print(f"Game {game_num} Player {current_player} bot.step_with_policy returned unexpected value: {action_and_policy_or_error}. Expected (action, policy_dict). Aborting game.")
-        # To prevent crash and allow actor to continue to next game, return current (incomplete) trajectory or None
-        # However, this might hide underlying issues. For now, let it try to unpack and potentially fail to see original error.
-        # Consider: return trajectory # or return None if trajectory is empty
-        pass # Let it proceed to unpack to see if the TypeError still occurs naturally
+            logger.print(f"Game {game_num} Player {current_player} [PG_DEBUG] bot.step_with_policy returned unexpected value: {action_and_policy_or_error}. Expected (action, policy_dict). Aborting game for this actor.")
+        return trajectory # Return current trajectory (might be empty or partial)
+        
+    try:
+        # --- [PG_DEBUG] Pre-unpacking policy and action ---
+        if logger and log_level >= 3: # DEBUG
+            logger.print(f"Game {game_num} Player {current_player} [PG_DEBUG]: Pre-unpacking action_and_policy_or_error.")
+        policy_dict, action = action_and_policy_or_error
+        # --- [PG_DEBUG] Post-unpacking policy and action ---
+        if logger and log_level >= 3: # DEBUG
+            logger.print(f"Game {game_num} Player {current_player} [PG_DEBUG]: Unpacked. Action: {action}, Policy_dict type: {type(policy_dict)}, Policy_dict items (first 5): {list(policy_dict)[:5] if isinstance(policy_dict, list) else str(policy_dict)[:100]}")
+    except Exception as e_unpack:
+        if logger and log_level >= 0: # ERROR
+            logger.print(f"Game {game_num} Player {current_player} [PG_DEBUG] Error unpacking (policy_dict, action): {e_unpack}. Value was: {action_and_policy_or_error}. Traceback: {traceback.format_exc()}")
+        return trajectory # Return current (possibly empty or partial) trajectory
 
-    policy_dict, action = action_and_policy_or_error
-    
     # Convert policy from dict to a dense array based on legal actions
     # This policy is what MCTS search, after noise and temperature, recommends.
     policy = np.zeros(game.num_distinct_actions(), dtype=np.float32)
-    for act, prob in policy_dict:
-        policy[act] = prob
-    
+    try:
+        # --- [PG_DEBUG] Pre-processing policy_dict into dense policy array ---
+        if logger and log_level >= 3: # DEBUG
+            logger.print(f"Game {game_num} Player {current_player} [PG_DEBUG]: Pre-processing policy_dict into dense array. Num distinct actions: {game.num_distinct_actions()}")
+        for act, prob in policy_dict:
+            policy[act] = prob
+        # --- [PG_DEBUG] Post-processing policy_dict ---
+        if logger and log_level >= 3: # DEBUG
+            logger.print(f"Game {game_num} Player {current_player} [PG_DEBUG]: Dense policy array created. Sum: {np.sum(policy):.3f}")
+    except Exception as e_policy_proc:
+        if logger and log_level >= 0: # ERROR
+            logger.print(f"Game {game_num} Player {current_player} [PG_DEBUG] Error processing policy_dict: {e_policy_proc}. Policy_dict was: {policy_dict}. Traceback: {traceback.format_exc()}")
+        return trajectory # Return current trajectory
+
     # Store the state, action, policy
     # Value will be filled in later by the learner after the game is done.
+    # --- [PG_DEBUG] Pre-trajectory.add ---
+    if logger and log_level >= 3: # DEBUG
+        logger.print(f"Game {game_num} Player {current_player} [PG_DEBUG]: Adding to trajectory. Action: {action}")
     trajectory.add(
         TrajectoryState(state.observation_tensor(), current_player,
                         state.legal_actions_mask(), action, policy,
                         value=0.0)) # Placeholder value
 
+    # --- [PG_DEBUG] Pre-apply_action ---
+    if logger and log_level >= 3: # DEBUG
+        logger.print(f"Game {game_num} Player {current_player} [PG_DEBUG]: Applying action {action} to state.")
     state.apply_action(action)
     if log_level >= 4: # TRACE
         logger.print(f"Game {game_num} Player {current_player} action: {action}")
@@ -304,6 +344,10 @@ def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list,
 
   if log_level >= 3: # DEBUG
     logger.print(f"Game {game_num} finished. Returns: {returns}")
+  
+  # --- [PG_DEBUG] Pre-queue.put(trajectory) ---
+  if logger and log_level >= 3: # DEBUG
+    logger.print(f"Game {game_num} [PG_DEBUG]: About to put trajectory on queue. Length: {len(trajectory)}")
   return trajectory
 
 
@@ -317,6 +361,13 @@ def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
   # Determine if debug_mode should be enabled for RemoteEvaluator
   # Based on config.log_level (DEBUG=3, TRACE=4)
   remote_evaluator_debug_mode = config.log_level >= 3 # DEBUG or TRACE
+
+  # Determine log_path for RemoteEvaluator
+  # The watcher for 'actor' creates logs in config.path/actor_NUM/
+  # For consistency, RemoteEvaluator could log there too, or directly in config.path
+  # Current RemoteEvaluator default is CWD. Let's make it explicit.
+  evaluator_log_path = os.path.join(config.path, f"actor_{num}_remote_eval")
+  # os.makedirs(evaluator_log_path, exist_ok=True) # Ensure dir exists
 
   # Seed Python's random and NumPy for this actor process
   random.seed(initial_seed)
@@ -332,7 +383,8 @@ def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
       inference_request_queue=inference_request_queue,
       inference_response_queue=inference_response_queue,
       max_cache_size=config.evaluator_cache_size,
-      debug_mode=remote_evaluator_debug_mode # Pass debug_mode
+      debug_mode=remote_evaluator_debug_mode, # Pass debug_mode
+      log_path=evaluator_log_path # Pass the constructed log_path
   )
 
   # Use player_id 0 for the bot in self-play, as it's from player 0's perspective.
@@ -403,6 +455,10 @@ def evaluator(*, game: pyspiel.Game, config, logger, num: int, # config is Confi
   np.random.seed(initial_seed)
   random.seed(initial_seed)
 
+  # Determine log_path for RemoteEvaluator for evaluators
+  evaluator_log_path_for_eval_process = os.path.join(config.path, f"evaluator_{num}_remote_eval")
+  # os.makedirs(evaluator_log_path_for_eval_process, exist_ok=True) # Ensure dir exists
+
   if logger is None:
       logger = file_logger.FileLogger(config.path, f"evaluator_{num}", not config.quiet)
   
@@ -415,7 +471,8 @@ def evaluator(*, game: pyspiel.Game, config, logger, num: int, # config is Confi
       inference_request_queue=inference_request_queue,
       inference_response_queue=inference_response_queue,
       max_cache_size=config.evaluator_cache_size,
-      debug_mode=(getattr(config, 'evaluator_verbosity', config.log_level) >= _EVALUATOR_DEBUG_LEVEL) # Pass debug_mode
+      debug_mode=(getattr(config, 'evaluator_verbosity', config.log_level) >= _EVALUATOR_DEBUG_LEVEL), # Pass debug_mode
+      log_path=evaluator_log_path_for_eval_process # Pass the constructed log_path
   )
 
   # Create bots with different MCTS budgets for evaluation

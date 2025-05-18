@@ -15,8 +15,6 @@ import os # Added for checkpointing directory management
 import shutil # Added for rmtree and rename
 import functools # For watcher decorator
 import traceback # For watcher decorator
-import tracemalloc
-import psutil
 import gc
 import logging
 import absl.logging
@@ -31,7 +29,7 @@ from open_spiel.python.algorithms import mcts # Activated mcts
 from .remote_inference import RemoteEvaluator, InferenceRequest, InferenceResponse, SHUTDOWN_SENTINEL, ShutdownException
 
 # NEW IMPORT for actor and evaluator logic
-from .actor_evaluator_logic import actor, evaluator, watcher, Buffer
+from .actor_evaluator_logic import actor, evaluator, watcher as base_watcher, Buffer # Renamed watcher to base_watcher to avoid conflict
 
 # Time to wait for processes to join.
 JOIN_WAIT_DELAY = 0.001
@@ -54,6 +52,71 @@ TRACE = 4
 #   DEBUG: Per-step training summaries, checkpointing, detailed diagnostics.
 #   TRACE: Extremely verbose, per-move or per-action logs (rarely used).
 # All logging output in this file should be gated by these levels, and no print() should appear unless guarded by log_level >= DEBUG or higher.
+
+# Custom watcher that catches BaseException
+def watcher(fn):
+    @functools.wraps(fn)
+    def _watcher_wrapper(*args, **kwargs):
+        # --- [WATCHER_DEBUG] ---
+        print(f"[WATCHER_DEBUG] Watcher for {fn.__name__ if fn else 'None (fn is None)'} called. fn is: {fn}. PID: {os.getpid()}")
+        if 'config' in kwargs and hasattr(kwargs['config'], 'path'):
+            print(f"[WATCHER_DEBUG] Watcher for {fn.__name__ if fn else 'None (fn is None)'}: config.path is '{kwargs['config'].path}'. PID: {os.getpid()}")
+        else:
+            print(f"[WATCHER_DEBUG] Watcher for {fn.__name__ if fn else 'None (fn is None)'}: config or config.path not in kwargs. PID: {os.getpid()}")
+
+        logger = None
+        # Attempt to get logger from kwargs, similar to original base_watcher
+        if 'logger' in kwargs and kwargs['logger'] is not None:
+            logger = kwargs['logger']
+        elif 'config' in kwargs and hasattr(kwargs['config'], 'path') and kwargs['config'].path:
+            # --- [WATCHER_DEBUG] Temporarily use a fixed name for the log directory for learner's watcher
+            dir_name_for_log = fn.__name__ if fn.__name__ == "learner" else "unknown_watched_function"
+            if fn.__name__ != "learner":
+                print(f"[WATCHER_DEBUG] WARNING: fn.__name__ is '{fn.__name__}', not 'learner'. Using '{dir_name_for_log}' for log dir. PID: {os.getpid()}")
+            # log_dir = os.path.join(kwargs['config'].path, fn.__name__)
+            log_dir = os.path.join(kwargs['config'].path, "learner") # DIAGNOSTIC: Hardcode for learner's watcher
+            print(f"[WATCHER_DEBUG] Watcher for {fn.__name__ if fn else 'None'}: Using hardcoded log_dir: '{log_dir}'. PID: {os.getpid()}")
+
+            os.makedirs(log_dir, exist_ok=True)
+            # Use a more specific log name if num is available, common for actor/evaluator
+            log_num_suffix = f"_{kwargs['num']}" if 'num' in kwargs else ""
+            # Determine also_to_stdout based on config.quiet, if config is available
+            should_also_print_to_stdout = not kwargs['config'].quiet if 'config' in kwargs and hasattr(kwargs['config'], 'quiet') else True
+            logger = file_logger.FileLogger(log_dir, f"{fn.__name__}{log_num_suffix}_log", also_to_stdout=should_also_print_to_stdout)
+        else: # Fallback to a basic print if no logger can be configured
+            class PrintLogger:
+                def print(self, *pargs, **pkwargs): print(*pargs, **pkwargs)
+                def opt_print(self, *pargs, **pkwargs): print(*pargs, **pkwargs) # For compatibility
+            logger = PrintLogger()
+            logger.print(f"{fn.__name__}_watcher: Warning: No logger or config.path provided. Using basic print for exceptions.")
+
+        try:
+            if logger and hasattr(logger, 'print'):
+                 logger.print(f"{fn.__name__} (watched): Starting execution.")
+
+            kwargs_for_fn = kwargs.copy()
+            import inspect
+            sig = inspect.signature(fn)
+            if 'logger' in sig.parameters and 'logger' not in kwargs_for_fn:
+                kwargs_for_fn['logger'] = logger
+
+            return fn(*args, **kwargs_for_fn)
+        except BaseException as e:  # Catch BaseException
+            if logger and hasattr(logger, 'print'):
+                logger.print(f"--- CAUGHT BY WATCHER IN {fn.__name__} ---")
+                logger.print(f"{fn.__name__}_watcher: A BaseException occurred in {fn.__name__}:\n{traceback.format_exc()}")
+            else: # Fallback print if logger failed or is None
+                print(f"--- FALLBACK WATCHER EXCEPTION PRINT FOR {fn.__name__} ---")
+                print(f"{fn.__name__}_watcher: A BaseException occurred in {fn.__name__}:\n{traceback.format_exc()}")
+            # Decide if to re-raise or handle. For critical errors, process might need to stop.
+            # For now, let it propagate if it's very critical, or absorb if it's for managed shutdown.
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise # Re-raise critical exit exceptions
+            # Otherwise, the process might terminate here after logging.
+        finally:
+            if logger and hasattr(logger, 'print'):
+                logger.print(f"{fn.__name__} (watched): Finished execution (normally or after exception).")
+    return _watcher_wrapper
 
 
 class ConfigJAX(collections.namedtuple(
@@ -104,6 +167,8 @@ class ConfigJAX(collections.namedtuple(
 
 def alpha_zero_jax(config: ConfigJAX):
     """Main entry point for JAX AlphaZero."""
+    # --- [AZ_JAX_DEBUG] ---
+    print(f"[AZ_JAX_DEBUG] alpha_zero_jax started. PID: {os.getpid()}")
     import pyspiel  # Ensure pyspiel is imported in this scope
     main_key = jax.random.PRNGKey(config.master_seed)
     # Python and NumPy random seeds are set globally for the main process if needed,
@@ -111,6 +176,8 @@ def alpha_zero_jax(config: ConfigJAX):
     random.seed(config.master_seed) 
     np.random.seed(config.master_seed) # Seed NumPy for main process
 
+    # --- [AZ_JAX_DEBUG] ---
+    print(f"[AZ_JAX_DEBUG] Config path is: {config.path}. PID: {os.getpid()}")
     os.makedirs(config.path, exist_ok=True)
     main_log_directory = config.path 
     main_log_name = "main_alpha_zero_jax" 
@@ -119,6 +186,30 @@ def alpha_zero_jax(config: ConfigJAX):
     if not config.quiet and config.log_level >= INFO:
         print(f"Main process logging to: {actual_log_file_path}")
     game = pyspiel.load_game(config.game)
+
+    # --- [AZ_JAX_DEBUG] Game Details --- 
+    print(f"[AZ_JAX_DEBUG] Game: {config.game}")
+    print(f"[AZ_JAX_DEBUG] Observation Tensor Shape: {game.observation_tensor_shape()}")
+    print(f"[AZ_JAX_DEBUG] Observation Tensor Layout: {game.observation_tensor_layout()}")
+    print(f"[AZ_JAX_DEBUG] Num Distinct Actions: {game.num_distinct_actions()}")
+    # --- End Game Details ---
+
+    # Populate config with game-specific details if not already done (e.g. by a launcher script)
+    # This is crucial for model initialization.
+    config_updates = {}
+    if config.observation_shape is None or not config.observation_shape:
+        config_updates["observation_shape"] = tuple(game.observation_tensor_shape())
+    if config.output_size is None or config.output_size == 0:
+        config_updates["output_size"] = game.num_distinct_actions()
+    
+    if config_updates:
+        config = config._replace(**config_updates)
+        # --- [AZ_JAX_DEBUG] Config Updated ---
+        print(f"[AZ_JAX_DEBUG] Config updated with game details: observation_shape={config.observation_shape}, output_size={config.output_size}")
+    else:
+        # --- [AZ_JAX_DEBUG] Config Unchanged ---
+        print(f"[AZ_JAX_DEBUG] Config already had game details: observation_shape={config.observation_shape}, output_size={config.output_size}")
+
     servicer_key, spawn_key = jax.random.split(main_key)
     inference_model, inference_variables = model_jax.init_flax_model_and_variables(
         servicer_key, config, game)
@@ -183,6 +274,8 @@ def alpha_zero_jax(config: ConfigJAX):
     if config.log_level >= INFO:
         main_process_logger.print("Starting Learner in main process...")
     try:
+        # --- [AZ_JAX_DEBUG] ---
+        print(f"[AZ_JAX_DEBUG] About to call learner. PID: {os.getpid()}")
         # Call learner directly with unpacked kwargs for clarity
         learner(
             game=learner_kwargs["game"],
@@ -196,10 +289,22 @@ def alpha_zero_jax(config: ConfigJAX):
             initial_flax_model=learner_kwargs["initial_flax_model"],
             initial_variables=learner_kwargs["initial_variables"]
         )
+        # --- [AZ_JAX_DEBUG] ---
+        print(f"[AZ_JAX_DEBUG] Learner call finished (no top-level exception). PID: {os.getpid()}")
     except (KeyboardInterrupt, EOFError) as e:
+        # --- [AZ_JAX_DEBUG] ---
+        print(f"[AZ_JAX_DEBUG] Learner call caught {type(e).__name__}. PID: {os.getpid()}")
         if config.log_level >= INFO:
             main_process_logger.print(f"Caught {type(e).__name__}, stopping AlphaZero JAX.")
+    except Exception as e_learner_call: # Catch any other exception from learner call itself or watcher
+        # --- [AZ_JAX_DEBUG] ---
+        print(f"[AZ_JAX_DEBUG] Learner call caught generic Exception: {type(e_learner_call)} - {e_learner_call}. PID: {os.getpid()}")
+        print(f"[AZ_JAX_DEBUG] Traceback: {traceback.format_exc()}") # Print traceback here
+        if config.log_level >= ERROR: # Use ERROR level for unexpected exceptions
+             main_process_logger.print(f"Generic exception during learner execution: {type(e_learner_call)} - {e_learner_call}\n{traceback.format_exc()}")
     finally:
+        # --- [AZ_JAX_DEBUG] ---
+        print(f"[AZ_JAX_DEBUG] Entering finally block for learner call. PID: {os.getpid()}")
         if config.log_level >= INFO:
             main_process_logger.print("AlphaZero JAX stopping. Signaling actors and evaluators to exit.")
         for proc in processes:
@@ -263,13 +368,8 @@ def alpha_zero_jax(config: ConfigJAX):
 # learner(*, game, config, actor_queues, evaluator_queues, broadcast_fn, prng_key)
 # The logger for learner is created by its own @watcher decorator.
 
-# END OF alpha_zero_jax function
-
-
-# Learner function (skeleton was present in original file, make sure signature matches)
-# The original skeleton was: learner(*, game, config, actors, evaluators, broadcast_fn, logger, prng_key)
-# It should be: learner(*, game, config, actor_queues, evaluator_queues, prng_key)
-# The logger for learner is created by its own @watcher decorator.
+# --- [AZ_JAX_DEBUG] --- Printing watcher object before learner def
+print(f"[AZ_JAX_DEBUG] Type of 'watcher' before learner def: {type(watcher)}, {watcher}. PID: {os.getpid() if 'os' in globals() else 'os not imported yet'}")
 
 @watcher
 def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
@@ -282,8 +382,6 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             initial_flax_model, initial_variables): 
   """A learner that consumes actor trajectories and evaluator results, and updates the model."""
   # Start Python allocation tracing and RSS monitoring
-  tracemalloc.start()
-  _mem_proc = psutil.Process(os.getpid())
   if logger and config.log_level >= DEBUG:
     logger.print(f"JAX Learner started with PRNG key: {prng_key}")
     logger.print(f"Learner using game: {game}, config: {config}") # Log basic info
@@ -523,129 +621,129 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
           
     return new_variables, new_opt_state, loss_val, p_loss, v_loss
 
-  # ---- Main Learner Loop (Refactored) ----
+  # ---- Main Learner Loop ----
   last_time = time.time()
   start_time = last_time  # Global start time for throughput stats
   total_trajectories = 0
   
-  current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
+  # Counters for this learner instance
+  training_step_count = initial_step # Start from restored step
+  loop_iteration = 0 # Will be 1-based in the loop
 
-  # ---- New variables for refactored learner loop ----
-  training_step_count = initial_step  # initial_step is 0-based from checkpoint or 0
-  
-  # Accumulators for stats between training steps
-  last_successful_train_time = time.time() 
+  # For periodic stats logging within the learner, independent of training steps
+  DEFAULT_STATS_LOG_PERIOD = 1000 # Log general stats every X loop iterations if no training
+  last_stats_log_iter = 0
+  STATS_LOG_INTERVAL = 1000 # Interval for logging average inference queue size
+
+  # For calculating states/s specifically for periods between training
   states_accumulated_since_last_train = 0
   trajectories_accumulated_since_last_train = 0
-  
-  loop_iteration = 0 # For periodic logging when not training
+  time_of_last_train_step_or_start = time.time() # Initialize here
 
-  # Ensure initial_step isn't negative (e.g. if manager returns -1 for no checkpoints)
-  if training_step_count < 0: 
-      training_step_count = 0
-      if logger: logger.print(f"Corrected initial_step from {initial_step} to 0.")
-      initial_step = 0 # Ensure initial_step used below for first log is also correct
-      
-  if logger and config.log_level >= INFO:
-    logger.print(f"Learner starting. Initial training_step_count: {training_step_count}. Max steps: {config.max_steps if config.max_steps > 0 else 'unlimited'}.")
+  # For calculating average inference queue size
+  accumulated_inference_queue_size = 0
+  inference_queue_size_samples = 0
 
-  # The trajectory_generator and collect_trajectories functions remain as they were.
-  def trajectory_generator():
-    while True:
-      found = 0
-      for queue_idx, queue in enumerate(actor_queues): # Use actor_queues
-        try:
-          item = queue.get_nowait()
-          yield item 
-          found += 1
-        except spawn.Empty: # Use spawn.Empty
-          pass
-        except Exception as e: # Catch other potential errors
-          if logger: logger.print(f"Error getting trajectory from actor_queue {queue_idx}: {e}")
 
-      if not found: # If all queues were empty, pause briefly
-        time.sleep(0.001) # Small sleep to avoid busy-waiting
+  current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
 
-  # This function collects a batch of trajectories.
-  # It can be made more sophisticated (e.g. to ensure diversity or recency if needed).
-  def collect_trajectories(num_to_collect):
-      collected = []
-      for traj in trajectory_generator(): # trajectory_generator will loop until enough data is found or error
-          if traj: # Ensure trajectory is not None
-            collected.append(traj)
-            if len(collected) >= num_to_collect:
-                break
-          # Add a safeguard if generator somehow misbehaves, though it should block or yield.
-          # This part might need timeout logic if queues can remain empty indefinitely and block training.
-      return collected
-      
-  # ---- Main Learner Loop (Refactored) ----
-  while True:
-    loop_iteration += 1
-    # Ensure seconds_for_this_train_period is defined for each iteration.
-    # It will be updated if a training step actually occurs.
-    seconds_for_this_train_period = 0.0 
+  if logger: logger.print(f"Learner starting. Initial training_step_count: {training_step_count}. Max steps: {config.max_steps}. Loop iterations will start from 1.")
 
-    if config.max_steps > 0 and training_step_count >= config.max_steps:
-        if logger: logger.print(f"Max training steps {config.max_steps} reached (current: {training_step_count}). Exiting learner.")
-        break
+  for current_loop_iteration_raw in itertools.count(1): # This is an infinite loop unless broken
+    loop_iteration = current_loop_iteration_raw # Ensure it's used as 1-based
 
-    # --- Collect data from actors ---
+    # --- Accumulate inference queue size for averaging ---
+    try:
+        current_inf_q_size = inference_request_queue.qsize()
+        accumulated_inference_queue_size += current_inf_q_size
+        inference_queue_size_samples += 1
+    except NotImplementedError: # qsize is not implemented on all platforms (e.g. macOS for mp.Queue)
+        if logger and config.log_level >= WARN and loop_iteration % DEFAULT_STATS_LOG_PERIOD == 0 : # Log once per period
+             logger.print(f"Learner: inference_request_queue.qsize() not implemented on this platform. Cannot log average inference queue size.")
+
+    if logger and config.log_level >= TRACE: # TRACE level for per-iteration start
+        logger.print(f"Learner: Main loop iteration {loop_iteration} BEGIN.")
+
+    # ---- Data Collection ----
+    # (Code for collecting trajectories from actor_queues)
+    # ... (existing trajectory collection logic) ...
+    num_states_this_iter = 0
+    num_trajectories_this_iter = 0
+    trajectories_to_process = []
     # Drain all available trajectories from actor queues to avoid backlog
-    trajectories_this_iteration = []
+    if not actor_queues: # Check if actor_queues is empty or None
+        if logger and config.log_level >= WARN: # Changed to WARN as this is problematic
+            logger.print("Learner: No actor queues configured or list is empty. Cannot collect trajectories. Waiting briefly.")
+        time.sleep(1) # Prevent busy loop if no actors
+        # continue # This would skip the rest of the loop, including max_steps check if training_step_count is high
+                   # And also skip training, potentially leading to a spin if this happens repeatedly.
+                   # For now, let it proceed; if buffer is empty, training will be skipped.
+
     for queue_idx, queue in enumerate(actor_queues):
         while True:
             try:
                 traj = queue.get_nowait()
-                trajectories_this_iteration.append(traj)
+                if traj: # Ensure trajectory is not None
+                    trajectories_to_process.append(traj)
+                else: # Should not happen with get_nowait unless queue stores None
+                    if logger and config.log_level >= WARN:
+                        logger.print(f"Learner: Received None from actor_queue {queue_idx}. Skipping.")
             except spawn.Empty:
-                break
+                break # Queue is empty for now
             except Exception as e:
                 if logger:
                     logger.print(f"Learner: Error draining actor_queue {queue_idx}: {e}")
-                break
-    
-    states_this_iteration = 0
-    for traj in trajectories_this_iteration:
-        if not hasattr(traj, "states"):
+                break # Avoid busy-looping on a problematic queue
+
+    for traj in trajectories_to_process:
+        if not hasattr(traj, "states"): 
             if logger:
-                logger.print(f"Learner: Received object of type {type(traj)} from actor queue: {repr(traj)}. Skipping.")
+                logger.print(f"Learner: Received object of type {type(traj)} from actor queue: {repr(traj)[:200]}. Skipping.")
             continue
 
-        total_trajectories += 1 # Global counter
-        states_this_iteration += len(traj.states)
-        
-        # Accumulate for per-training-step stats
+        total_trajectories += 1 # Global counter for all trajectories seen by this learner instance
+        num_trajectories_this_iter += 1
         trajectories_accumulated_since_last_train += 1
-        states_accumulated_since_last_train += len(traj.states)
-
-        # Stat updates (game_lengths, outcomes, replay_buffer append)
         game_lengths.add(len(traj))
         game_lengths_hist.add(len(traj))
         
-        current_player_return = traj.returns
-        outcome_bucket_id = None
-        if current_player_return is not None:
-            if current_player_return > 0: outcome_bucket_id = 0
-            elif current_player_return < 0: outcome_bucket_id = 1
-            elif current_player_return == 0: outcome_bucket_id = 2
-            else:
-                if logger: logger.print(f"Learner: Unexpected return value {current_player_return}, not mapping to outcome.")
-        else:
-            if logger: logger.print(f"Learner: Trajectory with None return value.")
+        current_num_states_in_traj = 0
+        if hasattr(traj, 'states') and traj.states is not None:
+             current_num_states_in_traj = len(traj.states)
+        num_states_this_iter += current_num_states_in_traj
+        states_accumulated_since_last_train += current_num_states_in_traj
+        
+        current_player_return = traj.returns 
+        outcome_bucket_id = None 
 
-        if outcome_bucket_id is not None:
+        if current_player_return is not None: 
+            # Determine outcome based on player 0's perspective if returns is an array
+            # Assumes traj.returns is a numpy array like [P0_return, P1_return, ...]
+            player0_return = current_player_return[0] if isinstance(current_player_return, (np.ndarray, list)) and len(current_player_return) > 0 else current_player_return
+            
+            if player0_return > 0: outcome_bucket_id = 0 
+            elif player0_return < 0: outcome_bucket_id = 1 
+            elif player0_return == 0: outcome_bucket_id = 2 
+            else:
+                if logger:
+                    logger.print(f"Learner: Trajectory with unexpected player 0 return value: {player0_return} (original: {current_player_return}). Not mapping to outcome.")
+        else: 
+             if logger and config.log_level >= DEBUG: # Log Nones only at DEBUG
+                logger.opt_print(f"Learner: Trajectory with None return value. Not adding to outcomes histogram.")
+
+        if outcome_bucket_id is not None: 
             try:
-                outcomes.add(outcome_bucket_id)
-            except Exception as e_hist:
-                if logger: logger.print(f"Learner: Error adding outcome bucket_id '{outcome_bucket_id}' to histogram: {e_hist}")
+                outcomes.add(outcome_bucket_id) 
+            except (ValueError, KeyError, IndexError) as e_hist: 
+                if logger:
+                    logger.print(f"Learner: Error adding outcome bucket_id '{outcome_bucket_id}' (return: {current_player_return}) to histogram: {e_hist}. Names: {outcomes._names if hasattr(outcomes, '_names') else 'N/A'}")
         
         for transition in traj.states:
             train_input = model_jax.TrainInputJAX(
                 observation=transition.observation,
                 legals_mask=transition.legals_mask,
                 policy_target=transition.policy,
-                value_target=jnp.array(traj.returns, dtype=jnp.float32)
+                value_target=jnp.array(traj.returns[transition.current_player], dtype=jnp.float32)
             )
             replay_buffer.append(train_input)
     # --- End Data Collection ---
@@ -655,181 +753,156 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
     seconds_this_loop_iter = now_for_general_log - last_time # last_time is for loop iteration timing
     last_time = now_for_general_log
     
-    # Log memory usage periodically
-    if logger and loop_iteration % 200 == 1: # e.g., every 200 loop iterations, on the first one too
-        rss_mb = _mem_proc.memory_info().rss / (1024 * 1024)
-        logger.print(f"Learner loop iter {loop_iteration}, Train steps: {training_step_count}: RSS memory usage: {rss_mb:.2f} MB")
-        try:
-            snapshot = tracemalloc.take_snapshot()
-            top_stats = snapshot.statistics('lineno')
-            logger.print("[Top 5 memory allocations]")
-            for stat in top_stats[:5]:
-                logger.print(str(stat))
-        except Exception as e:
-            logger.print(f"Error taking tracemalloc snapshot: {e}")
+    # --- Max Steps Check ---
+    if config.max_steps > 0 and training_step_count >= config.max_steps:
+        if logger and config.log_level >= INFO: # Log this at INFO
+            logger.print(f"Learner: Max training steps {config.max_steps} reached (current: {training_step_count}). Exiting learner main loop.")
+        break # EXIT POINT for the main learner loop
 
-    # Log global speed and buffer status periodically
-    if logger and config.log_level >= DEBUG and loop_iteration % 200 == 1: # Log less frequently
-        global_elapsed = now_for_general_log - start_time
-        log_message_timing_global = (
-            f"Loop Iter: {loop_iteration}, Train Steps: {training_step_count}, "
-            f"Global Game Speed: {total_trajectories/global_elapsed:.1f} games/s (Total games: {total_trajectories}), "
-            f"Global States/s: {replay_buffer.total_seen/global_elapsed:.1f} (Total states in buffer: {len(replay_buffer)}, Seen by buffer: {replay_buffer.total_seen})"
-        )
-        logger.print(f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] {log_message_timing_global}")
-        if trajectories_this_iteration: # Log if data was processed this iteration
-            logger.print(f"  Iter Speed: {len(trajectories_this_iteration)/seconds_this_loop_iter:.1f} traj/s, {states_this_iteration/seconds_this_loop_iter:.1f} states/s (this iter: {len(trajectories_this_iteration)} traj, {states_this_iteration} states in {seconds_this_loop_iter:.2f}s)")
-        logger.print("") # Newline for readability
-    # --- End Periodic General Logging ---
-
-    # --- Actual JAX Training Step ---
-    save_path_for_broadcast = None 
+    # --- Training Step ---
+    training_performed_this_iteration = False
+    # training_performed_this_iteration is reset at the start of the outer loop implicitly by not being set
+    # It will be set to True if any training step in the burst below occurs.
     if len(replay_buffer) >= config.train_batch_size and config.train_batch_size > 0:
-      training_step_count += 1 # Increment for this training operation
-      
-      batch_data = replay_buffer.sample(config.train_batch_size)
-      if logger and config.log_level >= DEBUG:
-          logger.print(f"Training Step {training_step_count}: Processing batch of {len(batch_data)} samples...")
-      
-      try:
-        stacked_input = model_jax.TrainInputJAX.stack(batch_data)
-        batch_obs_jnp = jnp.array(stacked_input.observation, dtype=jnp.float32)
-        batch_legals_jnp = jnp.array(stacked_input.legals_mask, dtype=jnp.bool_) 
-        batch_policy_jnp = jnp.array(stacked_input.policy_target, dtype=jnp.float32)
-        batch_value_jnp = jnp.array(stacked_input.value_target, dtype=jnp.float32)
-        
-        variables, opt_state, total_loss_val, policy_loss_val, value_loss_val = train_step_fn(
-            variables, opt_state, batch_obs_jnp, batch_legals_jnp, batch_policy_jnp, batch_value_jnp
-        )
-        if servicer:
-            servicer.update_model_variables(variables)
-        
-        current_total_loss, current_policy_loss, current_value_loss = total_loss_val, policy_loss_val, value_loss_val 
-        
-        loss_log_msg = f"Training Step: {training_step_count}, Total Loss: {current_total_loss:.4f}, Policy Loss: {current_policy_loss:.4f}, Value Loss: {current_value_loss:.4f}"
-        if logger and config.log_level >= DEBUG:
-          logger.print(loss_log_msg)
-        
-        # ---- Orbax Checkpointing: Save (based on training_step_count) ----
-        save_target_pytree = {'variables': variables, 'opt_state': opt_state}
-        try:
-            if checkpoint_manager.should_save(training_step_count): # Use training_step_count
-                checkpoint_manager.save(
-                    training_step_count, # Use training_step_count
-                    args=ocp.args.Composite(
-                        variables=ocp.args.StandardSave(variables),
-                        opt_state=ocp.args.StandardSave(opt_state),
-                        metrics=ocp.args.JsonSave({
-                            'step': training_step_count, # Use training_step_count
-                            'policy_head_loss': float(policy_loss_val),
-                            'value_head_loss': float(value_loss_val)
-                        })
+      actual_train_steps_this_burst = 0
+      for _ in range(config.replay_buffer_reuse): # Use the config parameter
+          if training_step_count >= config.max_steps:
+              break
+          if len(replay_buffer) < config.train_batch_size: # Buffer might empty during burst
+              if logger and config.log_level >= DEBUG and actual_train_steps_this_burst > 0:
+                   logger.print(f"Learner: Replay buffer emptied during training burst after {actual_train_steps_this_burst} steps. Burst intended for {config.replay_buffer_reuse} steps.")
+              break
+
+          batch_data = replay_buffer.sample(config.train_batch_size)
+          # No DEBUG log for sampling here, it's too frequent if replay_buffer_reuse > 1
+          
+          try:
+            stacked_input = model_jax.TrainInputJAX.stack(batch_data)
+            batch_obs_jnp = jnp.array(stacked_input.observation, dtype=jnp.float32)
+            batch_legals_jnp = jnp.array(stacked_input.legals_mask, dtype=jnp.bool_)
+            batch_policy_jnp = jnp.array(stacked_input.policy_target, dtype=jnp.float32)
+            batch_value_jnp = jnp.array(stacked_input.value_target, dtype=jnp.float32)
+            
+            variables, opt_state, total_loss_val, policy_loss_val, value_loss_val = train_step_fn(
+                variables, opt_state, batch_obs_jnp, batch_legals_jnp, batch_policy_jnp, batch_value_jnp
+            )
+            
+            training_step_count += 1 # Increment after successful training step
+            training_performed_this_iteration = True # Set if any step in the burst happens
+            actual_train_steps_this_burst += 1
+            
+            if servicer: # Update servicer model after successful training step
+                servicer.update_model_variables(variables)
+            
+            current_total_loss, current_policy_loss, current_value_loss = total_loss_val, policy_loss_val, value_loss_val
+            
+            loss_log_msg = f"Training Step: {training_step_count}, Total Loss: {current_total_loss:.4f}, Policy Loss: {current_policy_loss:.4f}, Value Loss: {current_value_loss:.4f}"
+            if logger and config.log_level >= DEBUG: # This log might be very verbose if reuse > 1
+              logger.print(loss_log_msg)
+            
+            # ---- Orbax Checkpointing: Save (based on training_step_count) ----
+            save_target_pytree = {'variables': variables, 'opt_state': opt_state}
+            try:
+                if checkpoint_manager.should_save(training_step_count): # Use training_step_count
+                    checkpoint_manager.save(
+                        training_step_count, # Use training_step_count
+                        args=ocp.args.Composite(
+                            variables=ocp.args.StandardSave(variables),
+                            opt_state=ocp.args.StandardSave(opt_state),
+                            metrics=ocp.args.JsonSave({
+                                'step': training_step_count, # Use training_step_count
+                                'policy_head_loss': float(policy_loss_val),
+                                'value_head_loss': float(value_loss_val)
+                            })
+                        )
                     )
+                    if logger and config.log_level >= DEBUG:
+                        logger.opt_print(f"Saved checkpoint for training_step {training_step_count} via manager to {managed_ckpt_dir}")
+                
+                latest_checkpointer.save(
+                    latest_ckpt_target_dir, # This is a directory
+                    args=ocp.args.PyTreeSave(item=variables), # Saves 'variables' pytree
+                    force=True # Overwrite if exists (it will be a new temp then rename)
                 )
                 if logger and config.log_level >= DEBUG:
-                    logger.opt_print(f"Saved checkpoint for training_step {training_step_count} via manager to {managed_ckpt_dir}")
-            
-            latest_checkpointer.save(
-                latest_ckpt_target_dir,
-                args=ocp.args.PyTreeSave(item=variables),
-                force=True
-            )
-            if logger and config.log_level >= DEBUG:
-                logger.opt_print(f"Saved atomic latest checkpoint (variables) for training_step {training_step_count} to {latest_ckpt_target_dir}")
-            save_path_for_broadcast = latest_ckpt_target_dir # This path is broadcast
-            
-        except Exception as e:
-            err_msg = f"Error saving checkpoint for training_step {training_step_count}: {e}"
+                    logger.opt_print(f"Saved atomic latest checkpoint (variables) for training_step {training_step_count} to {latest_ckpt_target_dir}")
+                # save_path_for_broadcast = latest_ckpt_target_dir # This path is broadcast (original comment)
+                
+            except Exception as e:
+                err_msg = f"Error saving checkpoint for training_step {training_step_count}: {e}"
+                if logger:
+                    logger.print(err_msg)
+                    logger.print(traceback.format_exc())
+                break # Break from the inner reuse loop on error
+            # ---- End Orbax Checkpointing ----
+
+            states_accumulated_since_last_train = 0
+            trajectories_accumulated_since_last_train = 0
+            time_of_last_train_step_or_start = time.time()
+
+            # Add a small sleep if this burst is purely on "old" data relative to the current outer loop iteration
+            # and we want to space out these rapid reuse steps.
+            if num_trajectories_this_iter == 0:
+                time.sleep(0.01) # Sleep 10ms to make reuse steps less back-to-back. Consider making configurable.
+
+          except AttributeError as e_attr: # Catch if TrainInputJAX.stack is missing or similar
+            error_msg = f"Learner: Error during training data preparation (possibly missing TrainInputJAX.stack): {e_attr}"
             if logger:
-                logger.print(err_msg)
-                logger.print(traceback.format_exc())
-        # ---- End Orbax Checkpointing ----
-
-      except AttributeError as e:
-        error_msg = f"Error during training data preparation (possibly missing TrainInputJAX.stack) for step {training_step_count}: {e}"
-        if logger: 
-          logger.print(error_msg)
-        current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan') 
-        training_step_count -=1 # Decrement as this training step failed before completion
+              logger.print(error_msg)
+              logger.print(traceback.format_exc()) # Print traceback for attribute errors
+            current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
+            break # Break from the inner reuse loop on error
+          except Exception as e_train: # Catch any other error during training
+            error_msg = f"Learner: Error during training step {training_step_count}: {e_train}"
+            if logger:
+              logger.print(error_msg)
+              logger.print(traceback.format_exc()) # Print traceback for training errors
+            current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
+            break # Break from the inner reuse loop on error
       
-      # ---- Data Logging after successful training step ----
-      now_after_train = time.time()
-      seconds_for_this_train_period = now_after_train - last_successful_train_time
-      last_successful_train_time = now_after_train
+      if actual_train_steps_this_burst > 0 and logger and config.log_level >= DEBUG:
+          logger.print(f"Learner: Completed training burst of {actual_train_steps_this_burst} steps (intended: {config.replay_buffer_reuse}). Current training_step_count: {training_step_count}")
 
-      if data_log:
-          metrics_to_log = {
-              "step": training_step_count, # This is the actual training step number
-              "total_states_seen_by_buffer": replay_buffer.total_seen,
-              "replay_buffer_size": len(replay_buffer),
-              "states_per_s_since_last_train": states_accumulated_since_last_train / seconds_for_this_train_period if seconds_for_this_train_period > 0 else 0,
-              "trajectories_per_s_since_last_train": trajectories_accumulated_since_last_train / seconds_for_this_train_period if seconds_for_this_train_period > 0 else 0,
-              "states_in_train_period": states_accumulated_since_last_train,
-              "trajectories_in_train_period": trajectories_accumulated_since_last_train,
-              "seconds_for_train_period": seconds_for_this_train_period,
-              "total_trajectories_global": total_trajectories, # Global count
-              "game_length": game_lengths.as_dict,
-              "game_length_hist": game_lengths_hist.data,
-              "outcomes": outcomes.data,
-              "value_accuracy": [v.as_dict for v in value_accuracies],
-              "value_prediction": [v.as_dict for v in value_predictions],
-              "eval": {
-                  "count": evals[0].total_seen if evals and evals[0] else 0,
-                  "results": [sum(e.data) / len(e.data) if len(e.data) > 0 else 0 for e in evals]
-              },
-              "loss": {
-                  "total": float(current_total_loss),
-                  "policy": float(current_policy_loss),
-                  "value": float(current_value_loss),
-              },
-          }
-          data_log.write(metrics_to_log)
-          # Reset accumulators for next training period
-          states_accumulated_since_last_train = 0
-          trajectories_accumulated_since_last_train = 0
-      
-      if save_path_for_broadcast:
-          broadcast_msg = f"Broadcasting checkpoint from training_step {training_step_count}: {save_path_for_broadcast}"
-          if logger and config.log_level >= DEBUG:
-            logger.opt_print(broadcast_msg) 
-          broadcast_fn(save_path_for_broadcast)
-
-    else: # Not enough data in replay buffer to train
+    else: # Not enough data in replay buffer for a training batch
       current_total_loss, current_policy_loss, current_value_loss = float('nan'), float('nan'), float('nan')
-      if logger and config.log_level >= DEBUG and loop_iteration % 200 == 1 : # Log less frequently if not training
-        logger.opt_print(f"Learner (loop iter {loop_iteration}, train steps {training_step_count}): Replay buffer not full enough. Size: {len(replay_buffer)}/{config.train_batch_size}. Waiting...")
-      time.sleep(0.1) # Yield CPU, wait for more data from actors
+      if logger and config.log_level >= TRACE: # TRACE level for this frequent message
+        logger.opt_print(f"Learner Loop Iter: {loop_iteration}, Replay buffer not full enough for training. Size: {len(replay_buffer)}/{config.train_batch_size}")
+      if num_trajectories_this_iter == 0 and not training_performed_this_iteration:
+          time.sleep(0.01) # Sleep 10ms to yield CPU
 
-    # Collect evaluation results (can happen regardless of training step)
-    for i, evac_queue in enumerate(evaluator_queues):
+    # Collect evaluation results (non-blocking)
+    for i, evac_queue in enumerate(evaluator_queues): 
         while True:
             try:
-                # Assuming evaluator puts (difficulty_level_idx, outcome_for_az_player)
-                # If only one evaluator, difficulty_level_idx might be 0 or not sent.
-                # For now, assume simple case: outcome is for AZ player, difficulty is implicit by queue index.
                 eval_outcome = evac_queue.get_nowait()
                 if isinstance(eval_outcome, tuple) and len(eval_outcome) == 2:
                     difficulty_idx, outcome = eval_outcome
                     if 0 <= difficulty_idx < len(evals):
                         evals[difficulty_idx].append(outcome)
-                elif isinstance(eval_outcome, (int, float)): # Simpler: evaluator sends just the outcome for its level
+                elif isinstance(eval_outcome, (int, float)): 
                     if 0 <= i < len(evals):
                          evals[i].append(eval_outcome)
-            except spawn.Empty: # Make sure spawn.Empty is the correct exception from the queue
+                # else:
+                #    if logger and config.log_level >= WARN: # Log if unexpected type from eval queue
+                #        logger.print(f"Learner: Received unexpected item from eval queue {i}: {type(eval_outcome)}")
+            except spawn.Empty: 
                 break
-            except Exception as e: # Catch other potential errors from queue processing
+            except Exception as e: 
                 if logger: 
-                  logger.print(f"Error processing evaluator queue {i}: {e}")
-                break # Avoid busy-looping on a consistently problematic queue
+                  logger.print(f"Learner: Error processing evaluator queue {i}: {e}")
+                break 
 
-    # Log to data_logger
-    if data_log:
+    # Log to data_logger (learner.jsonl)
+    # This logging happens if training was performed OR if it's a periodic stats log iteration
+    seconds_for_this_train_period = time.time() - time_of_last_train_step_or_start
+    if data_log and (training_performed_this_iteration or (loop_iteration - last_stats_log_iter >= DEFAULT_STATS_LOG_PERIOD) or loop_iteration == 1) :
         metrics_to_log = {
-            "step": training_step_count, # This is the actual training step number
+            "loop_iteration": loop_iteration,
+            "training_step": training_step_count,
             "total_states_seen_by_buffer": replay_buffer.total_seen,
             "replay_buffer_size": len(replay_buffer),
-            "states_per_s_since_last_train": states_accumulated_since_last_train / seconds_for_this_train_period if seconds_for_this_train_period > 0 else 0,
-            "trajectories_per_s_since_last_train": trajectories_accumulated_since_last_train / seconds_for_this_train_period if seconds_for_this_train_period > 0 else 0,
+            "states_per_s_loop_iter": num_states_this_iter / seconds_this_loop_iter if seconds_this_loop_iter > 0 else 0,
+            "trajectories_per_s_loop_iter": num_trajectories_this_iter / seconds_this_loop_iter if seconds_this_loop_iter > 0 else 0,
             "states_in_train_period": states_accumulated_since_last_train,
             "trajectories_in_train_period": trajectories_accumulated_since_last_train,
             "seconds_for_train_period": seconds_for_this_train_period,
@@ -850,40 +923,123 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             },
         }
         data_log.write(metrics_to_log)
+        last_stats_log_iter = loop_iteration # Reset for periodic logging
 
-    if logger and config.log_level >= INFO:
-        final_msg = f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] JAX Learner finished."
-        logger.print(final_msg)
+        # Also print a summary to console logger at INFO level for this data_log event
+        if logger and config.log_level >= INFO:
+            console_summary_msg = (
+                f"LoopIter: {loop_iteration}, TrainStep: {training_step_count}, "
+                f"BufSize: {len(replay_buffer)}, Loss: {current_total_loss:.3f}, "
+                f"ActorTraj/s (iter): {num_trajectories_this_iter / seconds_this_loop_iter:.1f}"
+            )
+            logger.print(console_summary_msg)
 
-    # Stop the inference servicer before exiting
-    if servicer:
-        servicer.stop()
+
+    # Console logging for overall progress (less frequent than DEBUG per-iteration logs)
+    # This part seems to have been for the TF version's step based on global states.
+    # The current loop is per "learner iteration".
+    # The current "step" that matches TF behavior is training_step_count.
+
+    # Example of more verbose per-iteration logging (if needed, enable with TRACE or higher DEBUG)
+    if logger and config.log_level >= DEBUG: # This is the primary per-iteration log block
+      # Condition for logging this detailed block:
+      # - Training was performed OR
+      # - New trajectories were received OR
+      # - It's the first iteration OR
+      # - It's a periodic iteration (e.g., every 200th)
+      log_this_iteration_details = (
+          training_performed_this_iteration or
+          num_trajectories_this_iter > 0 or
+          loop_iteration == 1 or
+          (loop_iteration % 200 == 1) # Log every 200 iterations, and on the first one.
+      )
+
+      if log_this_iteration_details:
+        log_message_timing = (
+            f"Loop Iter: {loop_iteration}, Train Steps: {training_step_count}, "
+            f"Iter Duration: {seconds_this_loop_iter:.3f}s, "
+            f"Data states/s in iter: {num_states_this_iter / seconds_this_loop_iter:.1f} (n={num_states_this_iter}), "
+            f"Traj/s in iter: {num_trajectories_this_iter / seconds_this_loop_iter:.1f} (n={num_trajectories_this_iter})"
+        )
+        log_message_buffer = f"Buffer size: {len(replay_buffer)}. Total states seen by buffer: {replay_buffer.total_seen}. Replay buffer reuse: {config.replay_buffer_reuse}" # Added reuse
+        
+        logger.print(f"--- Learner Loop Iteration {loop_iteration} (Train Step {training_step_count}) ---") # Start of iteration marker for DEBUG
+        logger.print(log_message_timing)
+        logger.print(log_message_buffer)
+        if not training_performed_this_iteration and len(replay_buffer) < config.train_batch_size :
+            logger.print(f"No training this iteration. Buffer: {len(replay_buffer)}/{config.train_batch_size}")
+        if num_trajectories_this_iter == 0:
+            logger.print("No new trajectories received this iteration.")
+
+        # --- [LEARNER_INFO] Average Inference Queue Size ---
+        if loop_iteration % STATS_LOG_INTERVAL == 0: # Check if it's time to log this specific average
+            if inference_queue_size_samples > 0:
+                avg_inf_q_size = accumulated_inference_queue_size / inference_queue_size_samples
+                logger.print(f"Avg Inference Queue Size (last {STATS_LOG_INTERVAL} iters): {avg_inf_q_size:.2f} (samples: {inference_queue_size_samples})")
+                accumulated_inference_queue_size = 0 # Reset for next interval
+                inference_queue_size_samples = 0 # Reset for next interval
+            else: # If it's time to log but no samples (e.g. qsize not impl or interval too short after reset)
+                logger.print(f"Avg Inference Queue Size (last {STATS_LOG_INTERVAL} iters): N/A (no samples or qsize not implemented)")
+        
+        logger.print(f"--- Learner Loop Iteration {loop_iteration} END ---") # End of iteration marker for DEBUG
+
+    if logger and config.log_level >= TRACE: logger.print("") # Add a newline for readability in FileLogger at TRACE
+
+    # Broadcast checkpoint path if a new one was saved (now done after training step)
+    # The variable save_path_for_broadcast is set within the training block.
+    # This broadcast_fn is not defined in this scope. It was part of old TF learner.
+    # For JAX, actors/evaluators typically load from a known checkpoint location.
+    # If broadcasting is still desired, broadcast_fn needs to be passed or handled differently.
+    # For now, commenting out as its original mechanism is not present.
+    # if save_path_for_broadcast: 
+    #     broadcast_msg = f"Broadcasting checkpoint: {save_path_for_broadcast}" 
+    #     if logger and config.log_level >= DEBUG:
+    #       logger.opt_print(broadcast_msg) 
+    #     # broadcast_fn(save_path_for_broadcast) # broadcast_fn is not available here
+  
+  if logger: # Log before the final "finished" message
+      logger.print(f"Learner: Exited main loop after {loop_iteration} iterations. Final training_step_count: {training_step_count}.")
+
+  # This is the "JAX Learner finished." message source
+  if logger and config.log_level >= INFO:
+    final_msg = f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] JAX Learner finished."
+    logger.print(final_msg)
+
+  # Stop the inference servicer before exiting
+  if servicer:
+    servicer.stop()
 
 def set_external_libraries_log_level(log_level):
     """Set logging level for Orbax, JAX, Flax, and absl based on internal log_level."""
-    level_map = {
-        0: logging.ERROR,   # ERROR
-        1: logging.WARNING, # WARN
-        2: logging.INFO,    # INFO
-        3: logging.DEBUG,   # DEBUG
-        4: logging.NOTSET,  # TRACE (or use DEBUG)
-    }
-    py_level = level_map.get(log_level, logging.INFO)
+    # Force external libraries to be less verbose, e.g., WARNING or ERROR
+    # This overrides the passed log_level for these specific libraries.
+    external_lib_py_level = logging.ERROR # Or logging.ERROR for even less
+
     for logger_name in [
         "orbax", "orbax.checkpoint", "jax", "flax", "absl", "absl.logging"
     ]:
-        logging.getLogger(logger_name).setLevel(py_level)
-    # Optionally set the root logger as well
-    logging.getLogger().setLevel(py_level)
-    # absl logging (sometimes not fully controlled by logging module)
-    if log_level == 0:
-        absl.logging.set_verbosity('error')
-    elif log_level == 1:
-        absl.logging.set_verbosity('warning')
-    elif log_level == 2:
+        logging.getLogger(logger_name).setLevel(external_lib_py_level)
+    
+    # Also set the root logger for absl to avoid it overriding the specific ones sometimes
+    # absl.logging.set_verbosity only affects absl's own messages if they don't go via python logging
+    if external_lib_py_level <= logging.INFO:
         absl.logging.set_verbosity('info')
+    elif external_lib_py_level <= logging.WARNING:
+        absl.logging.set_verbosity('warning')
     else:
-        absl.logging.set_verbosity('debug')
+        absl.logging.set_verbosity('error')
+
+    # Note: The original mapping based on log_level is removed to enforce a fixed
+    # higher level for these libraries.
+    # level_map = {
+    #     0: logging.ERROR,   # ERROR
+    #     1: logging.WARNING, # WARN
+    #     2: logging.INFO,    # INFO
+    #     3: logging.DEBUG,   # DEBUG
+    #     4: logging.NOTSET,  # TRACE (or use DEBUG)
+    # }
+    # py_level = level_map.get(log_level, logging.INFO)
+    # ... (old code that used py_level)
 
 
 # ---- Inference Servicer Components ----
@@ -939,7 +1095,16 @@ class BatchAssemblyThread(threading.Thread):
                 # A small positive timeout also prevents busy-waiting if timeout_for_get becomes zero.
                 timeout_for_get = max(0.001, timeout_for_get)
 
+                # --- [SERVDEB] ---
+                if self.logger and self.log_level >= TRACE: # TRACE for very frequent
+                    self.logger.print(f"[SERVDEB] BatchAssemblyThread: Attempting to get from request_queue with timeout {timeout_for_get:.3f}s. Current batch size: {len(current_batch_requests)}")
+
                 raw_request_tuple = self.request_queue.get(timeout=timeout_for_get)
+
+                # --- [SERVDEB] ---
+                if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
+                    self.logger.print(f"[SERVDEB] BatchAssemblyThread: Got item from request_queue. Item: {str(raw_request_tuple)[:100]}")
+
 
                 if raw_request_tuple == SHUTDOWN_SENTINEL:
                     if self.logger and self.log_level >= INFO:
@@ -997,6 +1162,9 @@ class BatchAssemblyThread(threading.Thread):
                 if self.logger and self.log_level >= TRACE: # TRACE for per-batch send
                     self.logger.print(f"BatchAssemblyThread: Sending batch of size {len(current_batch_requests)}")
                 try:
+                    # --- [SERVDEB] ---
+                    if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
+                         self.logger.print(f"[SERVDEB] BatchAssemblyThread: Putting batch of size {len(current_batch_requests)} onto ready_batch_queue.")
                     # Send a list of (InferenceRequest_obj, origin_idx) tuples
                     self.ready_batch_queue.put(list(current_batch_requests), timeout=1.0) # Use a timeout for putting
                 except std_queue.Full:
@@ -1055,9 +1223,15 @@ class InferenceExecutionThread(threading.Thread):
         
         while not self._stop_event.is_set():
             try:
+                # --- [SERVDEB] ---
+                if self.logger and self.log_level >= TRACE: # TRACE for very frequent
+                    self.logger.print("[SERVDEB] InferenceExecutionThread: Attempting to get from ready_batch_queue with timeout 0.1s.")
                 # Get a batch of requests (or SHUTDOWN_SENTINEL) from BatchAssemblyThread
                 # Use a timeout to periodically check the _stop_event
                 batch_data_from_assembler = self.ready_batch_queue.get(timeout=0.1) 
+                # --- [SERVDEB] ---
+                if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
+                    self.logger.print(f"[SERVDEB] InferenceExecutionThread: Got item from ready_batch_queue. Type: {type(batch_data_from_assembler)}, IsSentinel: {batch_data_from_assembler == SHUTDOWN_SENTINEL}")
             except std_queue.Empty:
                 continue # Timeout, check stop_event and loop again
 
@@ -1089,6 +1263,9 @@ class InferenceExecutionThread(threading.Thread):
             # Stack observations and masks into JAX arrays
             # Observations and legals_masks are expected to be NumPy arrays from RemoteEvaluator
             try:
+                # --- [SERVDEB] ---
+                if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
+                    self.logger.print(f"[SERVDEB] InferenceExecutionThread: Stacking batch data. Num items: {len(batched_observations_list)}")
                 obs_array_batch = jnp.asarray(np.stack(batched_observations_list))
                 legals_array_batch = jnp.asarray(np.stack(batched_legals_masks_list))
             except Exception as e: # pylint: disable=broad-except
@@ -1113,11 +1290,17 @@ class InferenceExecutionThread(threading.Thread):
                 current_vars = self.model_variables
             
             try:
+                # --- [SERVDEB] ---
+                if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
+                    self.logger.print(f"[SERVDEB] InferenceExecutionThread: Applying model. Batch obs shape: {obs_array_batch.shape}, legals shape: {legals_array_batch.shape}")
                 # model_apply_fn is the JITted function _batched_inference_fn_for_servicer,
                 # which expects (variables, obs_batch, legals_batch)
                 # and returns (policy_probs_batch, value_output_batch) where policy_probs are already softmaxed.
                 policy_probs_batch, value_output_batch = self.model_apply_fn(
                     current_vars, obs_array_batch, legals_array_batch) 
+                # --- [SERVDEB] ---
+                if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
+                    self.logger.print(f"[SERVDEB] InferenceExecutionThread: Model apply finished.")
                 
                 # Ensure results are NumPy arrays for sending via queue
                 policy_arrays_np = np.asarray(policy_probs_batch)
@@ -1153,6 +1336,9 @@ class InferenceExecutionThread(threading.Thread):
 
                 if self.logger and self.log_level >= 4: # TRACE
                     self.logger.print(f"InferenceExecutionThread: Sending response to client {origin_idx} for req {req_id}: {response_tuple}")
+                # --- [SERVDEB] ---
+                if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
+                    self.logger.print(f"[SERVDEB] InferenceExecutionThread: Sending response for req {req_id} to client queue {origin_idx}.")
 
                 try:
                     # Use origin_idx to get the correct response queue from all_client_response_queues
