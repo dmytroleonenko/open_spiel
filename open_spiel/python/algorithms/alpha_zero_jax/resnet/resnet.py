@@ -21,13 +21,14 @@ STAGE_SIZES = {
 
 class ResNetStem(nn.Module):
     conv_block_cls: ModuleDef = ConvBlock
+    n_hidden: int = 64
 
     @nn.compact
     def __call__(self, x, training=False):
-        return self.conv_block_cls(64,
+        return self.conv_block_cls(self.n_hidden,
                                    kernel_size=(7, 7),
                                    strides=(2, 2),
-                                   padding=[(3, 3), (3, 3)])(x)
+                                   padding=[(3, 3), (3, 3)])(x, training=training)
 
 
 class ResNetDStem(nn.Module):

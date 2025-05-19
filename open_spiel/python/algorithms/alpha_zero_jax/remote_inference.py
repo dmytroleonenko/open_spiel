@@ -11,6 +11,7 @@ import logging
 import collections
 import os
 import sys
+import math
 
 # Message type identifiers
 INFERENCE_REQ: str = "inference_req"
@@ -72,6 +73,18 @@ SHUTDOWN_SENTINEL = object()
 class ShutdownException(Exception):
     """Custom exception to signal graceful shutdown."""
     pass
+
+def _format_duration_s(duration: float) -> str:
+    """Format a duration in seconds to a human-readable string with appropriate units."""
+    ns = duration * 1e9
+    if ns < 1e3:
+        return f"{ns:.0f}ns"
+    elif ns < 1e6:
+        return f"{ns/1e3:.2f}us"
+    elif ns < 1e9:
+        return f"{ns/1e6:.2f}ms"
+    else:
+        return f"{ns/1e9:.2f}s"
 
 class RemoteEvaluator:
     """An MCTS Evaluator that sends inference requests to a remote service."""
@@ -142,6 +155,11 @@ class RemoteEvaluator:
         self._last_log_time = time.time()
         self._log_interval_seconds = 10
         self._inferences_since_last_log = 0
+
+        # Instrumentation: inference duration stats (30-second window)
+        self._inference_durations = []
+        self._stats_window_seconds = 30.0
+        self._stats_last_time = time.time()
 
         self._response_wait_timeout_seconds = 1000.0
         self._response_get_interval_seconds = 0.1
@@ -217,28 +235,53 @@ class RemoteEvaluator:
           
           self._cache.put(obs_key, (response.value, response.policy_probs))
           
+          # Update inference counts and timing
           if self._first_inference_time is None:
               self._first_inference_time = time.time()
           self._inference_count += 1
           self._inferences_since_last_log += 1
-          
+
+          # Logging for inference rate
           current_time = time.time()
           if current_time - self._last_log_time >= self._log_interval_seconds:
               elapsed_since_last_log = current_time - self._last_log_time
               if elapsed_since_last_log > 0:
                   inferences_per_sec_interval = self._inferences_since_last_log / elapsed_since_last_log
                   self.logger.debug(f"Actor {self._actor_id}: Inferences in last {elapsed_since_last_log:.2f}s: {self._inferences_since_last_log}, Rate: {inferences_per_sec_interval:.2f} inf/s")
-              
               if self._first_inference_time and (current_time - self._first_inference_time > 0):
                   overall_elapsed_time = current_time - self._first_inference_time
                   overall_inferences_per_sec = self._inference_count / overall_elapsed_time
                   self.logger.debug(f"Actor {self._actor_id}: Total inferences: {self._inference_count}, Overall Rate: {overall_inferences_per_sec:.2f} inf/s (since first inference)")
-
               self._last_log_time = current_time
               self._inferences_since_last_log = 0
               if self.logger.handlers:
                   self.logger.handlers[0].flush()
-              
+
+          # Record inference duration (wait time)
+          end_time = time.time()
+          duration = end_time - wait_start_time
+          self._inference_durations.append(duration)
+
+          # Log inference stats every stats window
+          now = time.time()
+          if now - self._stats_last_time >= self._stats_window_seconds:
+              durations = self._inference_durations
+              avg_dur = sum(durations) / len(durations)
+              min_dur = min(durations)
+              max_dur = max(durations)
+              var = sum((d - avg_dur) ** 2 for d in durations) / len(durations)
+              std_dur = math.sqrt(var)
+              avg_str = _format_duration_s(avg_dur)
+              min_str = _format_duration_s(min_dur)
+              max_str = _format_duration_s(max_dur)
+              std_str = _format_duration_s(std_dur)
+              self.logger.info(f"Actor {self._actor_id} inference stats {self._stats_window_seconds:.0f}s: avg {avg_str}, min {min_str}, max {max_str}, std {std_str}")
+              if self.logger.handlers:
+                  self.logger.handlers[0].flush()
+              # Reset stats window
+              self._inference_durations = []
+              self._stats_last_time = now
+
           return response.value, response.policy_probs
 
         except ShutdownException:

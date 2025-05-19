@@ -184,7 +184,7 @@ class AlphaZeroBot(mcts.MCTSBot):
         verbose=verbose,
         child_selection_fn=child_selection_fn,
         dirichlet_noise=dirichlet_noise_tuple,
-        dont_return_chance_node=dont_return_chance_node,
+        dont_return_chance_node=True,
     )
     # Explicitly set player_id for this bot instance.
     # pyspiel.Bot (superclass of MCTSBot) has a player_id attribute.

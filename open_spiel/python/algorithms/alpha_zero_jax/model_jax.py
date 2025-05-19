@@ -389,7 +389,7 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
       # The key change is to add `expected_input_shape=observation_shape` to all of them.
       # The following is a conceptual representation of how it would be added to one such case:
       if model_type == "resnet18":
-          stem_constructor = functools.partial(ResNetStem, n_hidden=64, conv_block_cls=ConvBlock)
+          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
           block_constructor = functools.partial(ResNetBlock, conv_block_cls=ConvBlock)
           depth_config = STAGE_SIZES[18]
           block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
@@ -417,13 +417,13 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
       # we add expected_input_shape=observation_shape to its arguments.
 
       elif model_type == "resnet34":
-          stem_constructor = functools.partial(ResNetStem, n_hidden=64, conv_block_cls=ConvBlock)
+          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
           block_constructor = functools.partial(ResNetBlock, conv_block_cls=ConvBlock)
           depth_config = STAGE_SIZES[34]
           block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
           model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
       elif model_type == "resnet50":
-          stem_constructor = functools.partial(ResNetStem, n_hidden=64, conv_block_cls=ConvBlock)
+          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
           block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock)
           depth_config = STAGE_SIZES[50]
           block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
@@ -528,39 +528,39 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
               )
           # --- End of generic "resnet" default logic ---
           elif model_type == "resnet18":
-              stem_constructor = functools.partial(ResNetStem, n_hidden=64, conv_block_cls=ConvBlock)
+              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
               block_constructor = functools.partial(ResNetBlock, conv_block_cls=ConvBlock)
               depth_config = STAGE_SIZES[18]
               block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
               model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
           elif model_type == "resnet34":
-              stem_constructor = functools.partial(ResNetStem, n_hidden=64, conv_block_cls=ConvBlock)
+              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
               block_constructor = functools.partial(ResNetBlock, conv_block_cls=ConvBlock)
               depth_config = STAGE_SIZES[34]
               block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
               model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
           elif model_type == "resnet50":
-              stem_constructor = functools.partial(ResNetStem, n_hidden=64, conv_block_cls=ConvBlock)
+              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
               block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock)
               depth_config = STAGE_SIZES[50]
               block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
               model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
           elif model_type == "resnet101":
-              stem_constructor = functools.partial(ResNetStem, n_hidden=64, conv_block_cls=ConvBlock)
+              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
               block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock, expansion=4)
               depth_config = STAGE_SIZES[101]
               block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
               final_block_kwargs = {"expansion": 4, **block_kwargs_override}
               model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=final_block_kwargs, expected_input_shape=observation_shape)
           elif model_type == "resnet152":
-              stem_constructor = functools.partial(ResNetStem, n_hidden=64, conv_block_cls=ConvBlock)
+              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
               block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock, expansion=4)
               depth_config = STAGE_SIZES[152]
               block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
               final_block_kwargs = {"expansion": 4, **block_kwargs_override}
               model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=final_block_kwargs, expected_input_shape=observation_shape)
           elif model_type == "resnet200":
-              stem_constructor = functools.partial(ResNetStem, n_hidden=64, conv_block_cls=ConvBlock)
+              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
               block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock, expansion=4)
               depth_config = STAGE_SIZES[200]
               block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
@@ -591,16 +591,21 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
 
           # ResNeXt Variants
           elif model_type == "resnext50": # ResNeXt-50 32x4d
-              stem_constructor = functools.partial(ResNetStem, n_hidden=64, conv_block_cls=ConvBlock)
+              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
               block_kwargs = {"groups": 32, "base_width": 4, "expansion": 4, **getattr(config, 'resnet_block_kwargs', {})}
               block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock)
               depth_config = STAGE_SIZES[50]
               model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs, expected_input_shape=observation_shape)
-          # ... (Continue for resnext101 with expected_input_shape)
+          elif model_type == "resnext101": # ResNeXt-101 32x8d
+              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
+              block_kwargs = {"groups": 32, "base_width": 8, "expansion": 4, **getattr(config, 'resnet_block_kwargs', {})}
+              block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock)
+              depth_config = STAGE_SIZES[101]
+              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs, expected_input_shape=observation_shape)
 
           # Wide ResNet Variants
           elif model_type == "wide_resnet50": # Wide ResNet-50-2
-              stem_constructor = functools.partial(ResNetStem, n_hidden=64, conv_block_cls=ConvBlock) # Stem width is still 64
+              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock) # Stem width is still 64
               # Width factor k=2 means hidden_sizes in ResNetBottleneckBlock are multiplied by k (implicitly handled if block_kwargs passes a width_factor or modified n_hidden sequence)
               # A common way is to make block_kwargs = {"expansion": 4, "width_per_group": 64 * 2} if base_width is used, or adjust n_hidden for blocks.
               # Assuming ResNetBottleneckBlock structure: first conv is width_per_group * groups, second is same, third is expansion * (that).
