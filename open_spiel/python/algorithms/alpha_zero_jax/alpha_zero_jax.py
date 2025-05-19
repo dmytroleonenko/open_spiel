@@ -393,19 +393,20 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
       initial_step = checkpoint_manager.latest_step()
       try:
           # Target for restore must match what was saved. Orbax saves the raw pytree.
-          # We are saving a dict: {'variables': variables, 'opt_state': opt_state}
-          target_to_restore_mngr = {'variables': variables, 'opt_state': opt_state}
+          # We are saving a dict: {'variables': variables, 'opt_state': opt_state, 'replay_buffer': replay_buffer}
+          # The replay_buffer is initialized before this block.
           restored_mngr_state = checkpoint_manager.restore(
               step=initial_step,
               args=ocp.args.Composite( # Use Composite to restore specific parts
                   variables=ocp.args.StandardRestore(variables),
-                  opt_state=ocp.args.StandardRestore(opt_state)
+                  opt_state=ocp.args.StandardRestore(opt_state),
+                  replay_buffer=ocp.args.StandardRestore(replay_buffer)
               )
-              # item=target_to_restore_mngr # Alternative if not using Composite args
           )
           if restored_mngr_state:
               variables = restored_mngr_state['variables']
               opt_state = restored_mngr_state['opt_state']
+              replay_buffer = restored_mngr_state['replay_buffer']
               if logger: logger.print(f"Learner restored periodic checkpoint from {managed_ckpt_dir} at step {initial_step}")
           else:
               if logger: logger.print(f"No periodic checkpoint found by manager at {managed_ckpt_dir} (step {initial_step}). Starting fresh.")
@@ -725,6 +726,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
                         args=ocp.args.Composite(
                             variables=ocp.args.StandardSave(variables),
                             opt_state=ocp.args.StandardSave(opt_state),
+                            replay_buffer=ocp.args.StandardSave(replay_buffer), # ADDED for replay_buffer
                             metrics=ocp.args.JsonSave({
                                 'step': training_step_count, # Use training_step_count
                                 'policy_head_loss': float(policy_loss_val),
