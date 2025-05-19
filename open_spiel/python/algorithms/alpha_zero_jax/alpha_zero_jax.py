@@ -1038,6 +1038,11 @@ class BatchAssemblyThread(threading.Thread):
                     self.total_wait_time_for_requests_sec += actual_wait_time
                     self.requests_processed_count += 1
 
+                # ---- START OF USER REQUESTED DEBUG CODE ----
+                if isinstance(raw_request_tuple, tuple) and len(raw_request_tuple) > 1 and raw_request_tuple[1] == 1000:
+                    print(f"ACTOR_ID_DEBUG: Raw tuple with actor_id 1000: {raw_request_tuple}")
+                # ---- END OF USER REQUESTED DEBUG CODE ----
+
                 # --- [SERVDEB] ---
                 if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
                     self.logger.print(f"[SERVDEB] BatchAssemblyThread: Got item from request_queue. Item: {str(raw_request_tuple)[:100]}")
