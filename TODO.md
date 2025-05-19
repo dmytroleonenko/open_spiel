@@ -501,8 +501,17 @@ We centralize all model initialization, inference, and TPU interactions in the m
         2.  **Update `RemoteEvaluator` Instantiation in `open_spiel/python/algorithms/alpha_zero_jax/actor_evaluator_logic.py`**:
             *   In the `actor` function, when `RemoteEvaluator` is created (around line 100, but this line number will change as the dummy actor is reverted), remove the `logger=logger` and `log_level=config.actor_verbosity` arguments from the constructor call.
     -   **Citation**: Current `RemoteEvaluator` implementation in [remote_inference.py](mdc:open_spiel/python/algorithms/alpha_zero_jax/remote_inference.py) and its usage in `actor_evaluator_logic.py`. This task addresses the user's request for separate log files for remote inference components.
-- [TODO] Conduct end-to-end testing on TPU to verify:
+- [DONE] Conduct end-to-end testing on TPU to verify:
   - Only one TPU initialization occurs (no XlaRuntimeError).
   - Batched inference requests are processed correctly and efficiently.
   - Actor processes generate trajectories in parallel with expected throughput.
   - Learner training and checkpointing operate as intended.
+
+## Phase 10: MCTS Enhancements for Chance Nodes and Async Search
+
+[DONE] [VERIFIED] 1. Fix chance-node evaluation crash:
+    * Set `dont_return_chance_node=True` in `AlphaZeroBot` (in actor_evaluator_logic.py) and `MCTSBot` constructors.
+    * Add a unit test to verify that no evaluator is ever called on a chance node.
+
+[DONE] [VERIFIED] 2. Integrate asynchronous MCTS:
+    * Import `

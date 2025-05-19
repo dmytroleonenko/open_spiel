@@ -140,6 +140,10 @@ class ConfigJAX(collections.namedtuple(
         "remote_evaluator_timeout_ms", # int: Timeout in milliseconds for remote evaluator queue operations.
         "inference_batch_timeout_ms", # float: Timeout in milliseconds for BatchAssemblyThread to form a batch.
         "inference_batch_size",     # int: Batch size for inference requests.
+        "async_mode",               # bool: Whether to use async MCTS within each actor.
+        "async_batch_size",         # int: Batch size for async MCTS leaf evaluations.
+        "async_virtual_loss",       # int: Virtual loss amount for async MCTS.
+        "async_timeout",            # float: Timeout (s) for async MCTS leaf evaluation futures.
     ])):                                 # Default for remote_evaluator_timeout_ms can be set at instantiation.
   """A config for the JAX AlphaZero model/experiment."""
   # To allow None defaults for Optional fields in namedtuple, provide them at instantiation.
@@ -306,8 +310,6 @@ def alpha_zero_jax(config: ConfigJAX):
 # learner(*, game, config, actor_queues, evaluator_queues, broadcast_fn, prng_key)
 # The logger for learner is created by its own @watcher decorator.
 
-# --- [AZ_JAX_DEBUG] --- Printing watcher object before learner def
-print(f"[AZ_JAX_DEBUG] Type of 'watcher' before learner def: {type(watcher)}, {watcher}. PID: {os.getpid() if 'os' in globals() else 'os not imported yet'}")
 
 @watcher
 def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,

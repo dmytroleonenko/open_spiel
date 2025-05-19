@@ -83,6 +83,12 @@ flags.DEFINE_integer("remote_evaluator_timeout_ms", 30000, "Timeout in milliseco
 flags.DEFINE_float("inference_batch_timeout_ms", 2.0, "Timeout in milliseconds for BatchAssemblyThread to form a batch.")
 flags.DEFINE_integer("inference_batch_size", 32, "Batch size for inference requests.")
 
+# Async MCTS flags
+flags.DEFINE_bool("async_mode", False, "Whether to use asynchronous MCTS within each actor.")
+flags.DEFINE_integer("async_batch_size", 16, "Batch size for async MCTS leaf evaluations.")
+flags.DEFINE_integer("async_virtual_loss", 10, "Virtual loss amount for async MCTS.")
+flags.DEFINE_float("async_timeout", 5.0, "Timeout (s) for async MCTS leaf evaluation futures.")
+
 # From TF AlphaZero, for game_specific_az_path
 flags.DEFINE_bool(
     "game_specific_az_path", True,
@@ -142,6 +148,11 @@ def main(argv):
       remote_evaluator_timeout_ms=FLAGS.remote_evaluator_timeout_ms,
       inference_batch_timeout_ms=FLAGS.inference_batch_timeout_ms,
       inference_batch_size=FLAGS.inference_batch_size,
+      # Async MCTS settings
+      async_mode=FLAGS.async_mode,
+      async_batch_size=FLAGS.async_batch_size,
+      async_virtual_loss=FLAGS.async_virtual_loss,
+      async_timeout=FLAGS.async_timeout,
   )
 
   # Set external library log levels to match config

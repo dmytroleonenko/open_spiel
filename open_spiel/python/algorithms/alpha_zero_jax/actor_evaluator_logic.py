@@ -30,6 +30,7 @@ import queue as std_queue # For specific exception types like Full/Empty
 from open_spiel.python.algorithms import mcts
 from open_spiel.python.utils import file_logger, spawn # spawn for ProcessQueue type hint
 from .remote_inference import RemoteEvaluator, SHUTDOWN_SENTINEL, ShutdownException
+from open_spiel.python.algorithms.async_mcts import MCTSBot as AsyncMCTSBot
 
 # Define debug level constants used by actor and evaluator
 # _ACTOR_DEBUG_LEVEL = 3 # No longer needed for RemoteEvaluator's debug_mode
@@ -190,10 +191,75 @@ class AlphaZeroBot(mcts.MCTSBot):
     # pyspiel.Bot (superclass of MCTSBot) has a player_id attribute.
     self.player_id = player_id
 
+  def step_with_policy(self, state):
+    """Shortcut chance nodes: sample and return their distribution without running MCTS."""
+    if state.is_chance_node():
+      outcomes = state.chance_outcomes()
+      if not outcomes:
+        return [], None
+      actions, probs = zip(*outcomes)
+      # Deterministically choose the highest-probability outcome
+      idx = int(np.argmax(probs)) if hasattr(np, 'argmax') else 0
+      action = actions[idx]
+      policy = list(outcomes)
+      return policy, action
+    return super().step_with_policy(state)
+
+
+class _AsyncRemoteEvaluatorAdapter:
+  """Adapter to wrap RemoteEvaluator for async MCTS."""
+  def __init__(self, remote_eval):
+    self._remote = remote_eval
+
+  def prior_and_value(self, state):
+    if state.is_chance_node():
+      return state.chance_outcomes(), np.array(state.returns(), dtype=np.float32)
+    if state.is_terminal():
+      returns = state.returns()
+      return [], np.array(returns, dtype=np.float32)
+    prior = self._remote.prior(state)
+    value = self._remote.evaluate(state)
+    return prior, value
+
 
 def _init_bot(config, game: pyspiel.Game, evaluator_: mcts.Evaluator,
               evaluation: bool, player_id_for_bot: int):
   """Initializes a bot for playing or evaluation."""
+  # Choose async or sync MCTS based on config
+  if getattr(config, "async_mode", False):
+    adapter = _AsyncRemoteEvaluatorAdapter(evaluator_)
+    bot = AsyncMCTSBot(
+        game=game,
+        uct_c=config.uct_c,
+        max_simulations=config.max_simulations,
+        evaluator=adapter,
+        solve=False,
+        verbose=config.log_level >= 4,
+        child_selection_fn=mcts.SearchNode.uct_value,
+        dirichlet_noise=(config.policy_epsilon, config.policy_alpha) if not evaluation else None,
+        dont_return_chance_node=True,
+        virtual_loss=getattr(config, "async_virtual_loss", 10),
+        batch_size=getattr(config, "async_batch_size", 16),
+        timeout=getattr(config, "async_timeout", 5.0),
+    )
+    bot.player_id = player_id_for_bot
+    # Wrap step_with_policy to shortcut chance nodes
+    original_step = bot.step_with_policy
+    def wrapped_step(state):
+      if state.is_chance_node():
+        outcomes = state.chance_outcomes()
+        if not outcomes:
+          return [], None
+        actions, probs = zip(*outcomes)
+        idx = int(np.argmax(probs)) if hasattr(np, 'argmax') else 0
+        action = actions[idx]
+        policy = list(outcomes)
+        return policy, action
+      return original_step(state)
+    bot.step_with_policy = wrapped_step
+    return bot
+
+  # Fallback to synchronous AlphaZeroBot
   return AlphaZeroBot(
       player_id=player_id_for_bot, # Pass player_id here
       game=game, # Pass game here
@@ -204,11 +270,9 @@ def _init_bot(config, game: pyspiel.Game, evaluator_: mcts.Evaluator,
       policy_epsilon=config.policy_epsilon,
       # For evaluation, we don't want noise. For self-play, we do.
       add_dirichlet_noise_for_bot=not evaluation,
-      # temperature, temperature_drop are handled by _play_game's action selection.
-      # MCTSBot itself doesn't use them directly for its tree search.
       solve=False, # Typically solve=False for AlphaZero training
       verbose=config.log_level >= 4 # TRACE level for bot verbosity
-      )
+  )
 
 
 def _play_game(logger, game_num: int, game: pyspiel.Game, bots: list,
