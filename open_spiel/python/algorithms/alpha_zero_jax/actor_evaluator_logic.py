@@ -448,31 +448,19 @@ def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
   np.random.seed(initial_seed)
 
   logger.print(f"INVESTIGATE_ACTOR_ID: Actor {num} is initializing RemoteEvaluator with actor_id: {num}")
-  remote_evaluator = RemoteEvaluator(
-      game=game,
-      actor_id=num,
-      inference_request_queue=inference_request_queue,
-      inference_response_queue=inference_response_queue,
-      queue_timeout_ms=config.remote_evaluator_timeout_ms,
-      log_level=config.log_level,
-      logger_prefix=f"ActorRemoteEval_{num}"
-  )
   actual_remote_evaluator = RemoteEvaluator(
       game=game, 
       actor_id=num, 
       inference_request_queue=inference_request_queue, 
       inference_response_queue=inference_response_queue, 
-      numeric_log_level=config.log_level, 
-      max_cache_size=config.evaluator_cache_size, 
+      numeric_log_level=config.log_level,
+      max_cache_size=config.evaluator_cache_size,
       log_path=config.path
   )
   actual_remote_evaluator.start_response_handler()
+  bot = _init_bot(config, game, actual_remote_evaluator, evaluation=False, player_id_for_bot=-1, actor_specific_logger=logger)
 
   try:
-    # Initialize the bot for self-play
-    # The actor_specific_logger passed to _init_bot can be the watcher's logger
-    bot = _init_bot(config, game, actual_remote_evaluator, evaluation=False, player_id_for_bot=-1, actor_specific_logger=logger)
-
     # Calculate temperature schedule
     for game_num in itertools.count(1): # Start game numbers from 1
       # Determine temperature for this game
