@@ -84,6 +84,11 @@ class BuildExt(build_ext):
         f"-DPython3_EXECUTABLE={sys.executable}",
         f"-DCMAKE_CXX_COMPILER={cxx}",
         f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extension_dir}",
+        "-DCMAKE_OSX_ARCHITECTURES=arm64",
+        "-DCMAKE_CXX_STANDARD=17",
+        "-DCMAKE_CXX_STANDARD_REQUIRED=ON",
+        f"-DCMAKE_OSX_SYSROOT={subprocess.check_output(['xcrun', '--show-sdk-path']).decode('utf-8').strip()}",
+        "-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0",
     ]
     if not os.path.exists(self.build_temp):
       os.makedirs(self.build_temp)

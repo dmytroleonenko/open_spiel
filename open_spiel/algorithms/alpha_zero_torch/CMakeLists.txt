@@ -16,7 +16,10 @@ if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
     vpnet.h
     vpnet.cc
   )
-  target_include_directories (alpha_zero_torch PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+  target_include_directories (alpha_zero_torch PUBLIC 
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/libnop/libnop/include
+  )
 
   add_executable(torch_model_test model_test.cc ${OPEN_SPIEL_OBJECTS}
                 $<TARGET_OBJECTS:alpha_zero_torch> $<TARGET_OBJECTS:tests>)
