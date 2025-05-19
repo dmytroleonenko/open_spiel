@@ -567,8 +567,8 @@ def evaluator(*, game: pyspiel.Game, config, logger, num: int, # config is Confi
             #   queue.put((i, traj.returns[0]))
             time.sleep(0.01) # Simulate some work
 
-            if actual_remote_evaluator_for_eval and actual_remote_evaluator_for_eval.should_stop_response_handler():
-                raise ShutdownException("Evaluator shutdown requested via actual_remote_evaluator_for_eval flag")
+            if actual_remote_evaluator_for_eval and actual_remote_evaluator_for_eval._shutdown_event.is_set():
+                raise ShutdownException("Evaluator shutdown requested via actual_remote_evaluator_for_eval shutdown_event")
         if game_num_eval_loop > 100: # Example short stop for testing
             logger.print(f"Evaluator {num} test loop limit reached.")
             break # Break from main loop
