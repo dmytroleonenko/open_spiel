@@ -12,6 +12,7 @@ import collections
 import os
 import sys
 import math
+import threading
 
 # Message type identifiers
 INFERENCE_REQ: str = "inference_req"
@@ -164,9 +165,114 @@ class RemoteEvaluator:
         self._response_wait_timeout_seconds = 1000.0
         self._response_get_interval_seconds = 0.1
 
+        # For handling concurrent requests within the same actor (e.g. async MCTS)
+        self._pending_requests_map = {}
+        self._map_lock = threading.Lock()
+        self._response_handler_thread = None
+        self._shutdown_event = threading.Event()
+
         self.logger.log(TRACE_LEVEL_NUM, f"Actor {self._actor_id} initialization complete.")
 
-    def _inference(self, state: "pyspiel.State") -> tuple[float, "_np.ndarray"]:  # type: ignore # pylint: disable=undefined-variable
+    def start_response_handler(self):
+        """Starts the dedicated response handler thread."""
+        if self._response_handler_thread is None:
+            self._shutdown_event.clear()
+            self._response_handler_thread = threading.Thread(
+                target=self._handle_responses_loop,
+                name=f"RemoteEvaluator-ResponseHandler-{self._actor_id}",
+                daemon=True)
+            self._response_handler_thread.start()
+            self.logger.info(f"Actor {self._actor_id}: Response handler thread started.")
+
+    def stop_response_handler(self):
+        """Stops the dedicated response handler thread."""
+        self.logger.info(f"Actor {self._actor_id}: Stopping response handler thread...")
+        self._shutdown_event.set()
+        try:
+            # Put a sentinel to unblock the queue.get() if it's waiting.
+            self._inference_response_queue.put(SHUTDOWN_SENTINEL, block=False, timeout=1.0)
+        except _std_queue.Full:
+            self.logger.warning(f"Actor {self._actor_id}: Response queue full when trying to put SHUTDOWN_SENTINEL.")
+        except Exception as e: # pylint: disable=broad-except
+            self.logger.error(f"Actor {self._actor_id}: Error putting SHUTDOWN_SENTINEL on response queue: {e}")
+
+        if self._response_handler_thread and self._response_handler_thread.is_alive():
+            self._response_handler_thread.join(timeout=5.0)
+            if self._response_handler_thread.is_alive():
+                self.logger.warning(f"Actor {self._actor_id}: Response handler thread did not terminate in time.")
+            else:
+                self.logger.info(f"Actor {self._actor_id}: Response handler thread stopped.")
+        self._response_handler_thread = None
+
+    def _handle_responses_loop(self):
+        """Loop to continuously get responses from the shared queue and dispatch them."""
+        self.logger.info(f"Actor {self._actor_id}: Response handler loop started.")
+        try:
+            while not self._shutdown_event.is_set():
+                try:
+                    response_tuple = self._inference_response_queue.get(block=True, timeout=0.1) # Short timeout to check shutdown_event
+                except _std_queue.Empty:
+                    continue # Timeout, check shutdown_event and loop again
+
+                if self._shutdown_event.is_set(): # Check again after get()
+                    self.logger.info(f"Actor {self._actor_id}: Shutdown event set, exiting response loop (after get).")
+                    # If we got a real message before shutdown, try to process it.
+                    if response_tuple is SHUTDOWN_SENTINEL and response_tuple is not None: # check for None, response_tuple could be None
+                         break 
+                    # if response_tuple is not None and response_tuple is not SHUTDOWN_SENTINEL:
+                    #     pass # process it below
+                    elif response_tuple is SHUTDOWN_SENTINEL: # it is SHUTDOWN_SENTINEL
+                        break # exit loop
+                    # else: response_tuple is None, this case should not happen with block=True and timeout
+                        # but if it does, it's safer to break
+                        # break
+
+                if response_tuple is SHUTDOWN_SENTINEL:
+                    self.logger.info(f"Actor {self._actor_id}: Received SHUTDOWN_SENTINEL in response handler loop. Exiting.")
+                    break
+
+                if not isinstance(response_tuple, tuple):
+                    self.logger.error(
+                        f"Actor {self._actor_id}: Response handler received non-tuple, non-sentinel message. "
+                        f"Type: {type(response_tuple)}, Value: {str(response_tuple)[:200]}. Discarding."
+                    )
+                    continue
+
+                try:
+                    response = InferenceResponse.from_tuple(response_tuple)
+                    self.logger.debug(f"Actor {self._actor_id}: Response handler received response for request_id: {response.request_id}")
+                except ValueError as e:
+                    self.logger.error(f"Actor {self._actor_id}: Response handler failed to deserialize response tuple {response_tuple}: {e}. Discarding.")
+                    continue
+
+                with self._map_lock:
+                    pending_item = self._pending_requests_map.pop(response.request_id, None)
+
+                if pending_item:
+                    event, response_data_holder = pending_item
+                    response_data_holder.append(response)
+                    event.set()
+                    self.logger.debug(f"Actor {self._actor_id}: Response handler processed and signalled for request_id: {response.request_id}")
+                else:
+                    # This can happen if the request timed out in _inference() and was removed from the map.
+                    self.logger.warning(
+                        f"Actor {self._actor_id}: Response handler received response for unknown or timed-out request_id: {response.request_id}. Discarding."
+                    )
+        except Exception as e: # pylint: disable=broad-except
+            self.logger.error(f"Actor {self._actor_id}: Exception in response handler loop: {e}\\n{traceback.format_exc()}")
+        finally:
+            self.logger.info(f"Actor {self._actor_id}: Response handler loop terminating. Cleaning up pending requests.")
+            # Post-loop cleanup: Signal any remaining waiters that we are shutting down.
+            with self._map_lock:
+                for request_id, (event, response_data_holder) in self._pending_requests_map.items():
+                    self.logger.warning(f"Actor {self._actor_id}: Forcing shutdown signal for pending request_id: {request_id} during cleanup.")
+                    # Add a marker to indicate shutdown, so _inference knows this isn't a real response.
+                    response_data_holder.append(SHUTDOWN_SENTINEL) 
+                    event.set()
+                self._pending_requests_map.clear()
+            self.logger.info(f"Actor {self._actor_id}: Response handler loop finished cleanup.")
+
+    def _inference(self, state: "pyspiel.State", mcts_search_timeout_sec: float) -> tuple[float, "_np.ndarray"]:  # type: ignore # pylint: disable=undefined-variable
         """Sends a state for inference and returns the value and policy."""
         obs_tensor = _np.asarray(state.observation_tensor())
         obs_key = obs_tensor.tobytes()
@@ -177,7 +283,13 @@ class RemoteEvaluator:
           return cached_result
 
         request_id = uuid4().hex
-        self.logger.debug(f"Actor {self._actor_id}: Cache miss. Sending inference request {request_id} for obs_key: {obs_key[:16].hex()}...")
+        event = threading.Event()
+        response_holder = []
+
+        with self._map_lock:
+            self._pending_requests_map[request_id] = (event, response_holder)
+
+        self.logger.debug(f"Actor {self._actor_id}: Cache miss. Sending inference request {request_id} for obs_key: {obs_key[:16].hex()}... Timeout: {mcts_search_timeout_sec}s")
 
         try:
           request = InferenceRequest(
@@ -191,129 +303,168 @@ class RemoteEvaluator:
           self.logger.error(f"Actor {self._actor_id}: Error putting request {request_id} on queue: {e}")
           raise
 
-        try:          
-          wait_start_time = time.time()
-          self.logger.debug(f"Actor {self._actor_id}: Entering wait loop for response to request {request_id}. Timeout: {self._response_wait_timeout_seconds}s, Interval: {self._response_get_interval_seconds}s")
-          while True:
-            if time.time() - wait_start_time > self._response_wait_timeout_seconds:
-              self.logger.error(f"Actor {self._actor_id}: Timeout waiting for response for request {request_id} after {self._response_wait_timeout_seconds}s.")
-              raise TimeoutError(f"Actor {self._actor_id}: Timeout waiting for response for request {request_id}")
+        # Wait for the response handler to signal completion
+        timed_out = not event.wait(timeout=mcts_search_timeout_sec)
 
-            try:
-              self.logger.log(TRACE_LEVEL_NUM, f"Actor {self._actor_id}: Attempting .get() on response queue for request {request_id}. Loop time elapsed: {time.time() - wait_start_time:.2f}s")
-              response_tuple = self._inference_response_queue.get(block=True, timeout=self._response_get_interval_seconds)
-              self.logger.log(TRACE_LEVEL_NUM, f"Actor {self._actor_id}: .get() returned for request {request_id}. Item type: {type(response_tuple)}, Item: {str(response_tuple)[:200]}")
-            except _std_queue.Empty:
-              self.logger.log(TRACE_LEVEL_NUM, f"Actor {self._actor_id}: Response queue empty (timeout {self._response_get_interval_seconds}s) while waiting for {request_id}, retrying. Overall wait time: {time.time() - wait_start_time:.2f}s")
-              continue
+        if timed_out:
+            with self._map_lock:
+                # Clean up the map entry if it still exists
+                self._pending_requests_map.pop(request_id, None)
+            self.logger.error(f"Actor {self._actor_id}: Timeout waiting for response event for request {request_id} after {mcts_search_timeout_sec}s.")
+            raise TimeoutError(f"Actor {self._actor_id}: Timeout waiting for response event for request {request_id}")
 
-            if not isinstance(response_tuple, tuple):
-              if response_tuple is SHUTDOWN_SENTINEL:
-                  self.logger.info(f"Actor {self._actor_id}: Received SHUTDOWN_SENTINEL from response queue while waiting for {request_id}. Propagating shutdown.")
-              else:
-                  self.logger.error(
-                      f"Actor {self._actor_id}: Received non-tuple, non-sentinel message from response queue while waiting for {request_id}. "
-                      f"Type: {type(response_tuple)}, Value: {str(response_tuple)[:200]}. Treating as shutdown."
-                  )
-              try:
-                  self._inference_response_queue.put(SHUTDOWN_SENTINEL, block=False)
-              except Exception as e_put:
-                   self.logger.warning(f"Actor {self._actor_id}: Error re-putting SHUTDOWN_SENTINEL on queue: {e_put}")
-              raise ShutdownException("Invalid (non-tuple) message received while waiting for inference response.")
+        # Event was set, response should be in response_holder
+        if not response_holder:
+            # This can happen if the response handler loop terminated and cleaned up, but the event was set.
+            self.logger.error(f"Actor {self._actor_id}: Event set for {request_id} but response_holder is empty. Assuming shutdown.")
+            raise ShutdownException(f"Event set for {request_id} but no response data, likely shutdown.")
 
-            self.logger.debug(f"Actor {self._actor_id}: Tuple message received from response queue: {response_tuple}. Attempting to deserialize for request {request_id}.")
-            response = InferenceResponse.from_tuple(response_tuple)
+        response_content = response_holder[0]
 
-            if response.request_id == request_id:
-              self.logger.debug(f"Actor {self._actor_id}: Received expected response for request {request_id}. Value: {response.value:.3f}")
-              break
-            else:
-              self.logger.warning(
-                  f"Actor {self._actor_id}: Received response for {response.request_id} while waiting for {request_id}. Discarding stale/unexpected response."
-              )
-              continue
-          
-          self._cache.put(obs_key, (response.value, response.policy_probs))
-          
-          # Update inference counts and timing
-          if self._first_inference_time is None:
-              self._first_inference_time = time.time()
-          self._inference_count += 1
-          self._inferences_since_last_log += 1
+        if response_content is SHUTDOWN_SENTINEL:
+            self.logger.warning(f"Actor {self._actor_id}: Received shutdown sentinel for request {request_id} via response_holder. Propagating shutdown.")
+            raise ShutdownException(f"Shutdown sentinel received for request {request_id}.")
 
-          # Logging for inference rate
-          current_time = time.time()
-          if current_time - self._last_log_time >= self._log_interval_seconds:
-              elapsed_since_last_log = current_time - self._last_log_time
-              if elapsed_since_last_log > 0:
-                  inferences_per_sec_interval = self._inferences_since_last_log / elapsed_since_last_log
-                  self.logger.debug(f"Actor {self._actor_id}: Inferences in last {elapsed_since_last_log:.2f}s: {self._inferences_since_last_log}, Rate: {inferences_per_sec_interval:.2f} inf/s")
-              if self._first_inference_time and (current_time - self._first_inference_time > 0):
-                  overall_elapsed_time = current_time - self._first_inference_time
-                  overall_inferences_per_sec = self._inference_count / overall_elapsed_time
-                  self.logger.debug(f"Actor {self._actor_id}: Total inferences: {self._inference_count}, Overall Rate: {overall_inferences_per_sec:.2f} inf/s (since first inference)")
-              self._last_log_time = current_time
-              self._inferences_since_last_log = 0
-              if self.logger.handlers:
-                  self.logger.handlers[0].flush()
+        if not isinstance(response_content, InferenceResponse):
+             self.logger.error(f"Actor {self._actor_id}: Invalid content in response_holder for {request_id}. Expected InferenceResponse, got {type(response_content)}. Assuming shutdown.")
+             raise ShutdownException(f"Invalid content in response_holder for {request_id}.")
 
-          # Record inference duration (wait time)
-          end_time = time.time()
-          duration = end_time - wait_start_time
-          self._inference_durations.append(duration)
+        response: InferenceResponse = response_content
+        self.logger.debug(f"Actor {self._actor_id}: Received expected response for request {request_id} via event. Value: {response.value:.3f}")
 
-          # Log inference stats every stats window
-          now = time.time()
-          if now - self._stats_last_time >= self._stats_window_seconds:
-              durations = self._inference_durations
-              avg_dur = sum(durations) / len(durations)
-              min_dur = min(durations)
-              max_dur = max(durations)
-              var = sum((d - avg_dur) ** 2 for d in durations) / len(durations)
-              std_dur = math.sqrt(var)
-              avg_str = _format_duration_s(avg_dur)
-              min_str = _format_duration_s(min_dur)
-              max_str = _format_duration_s(max_dur)
-              std_str = _format_duration_s(std_dur)
-              self.logger.info(f"Actor {self._actor_id} inference stats {self._stats_window_seconds:.0f}s: avg {avg_str}, min {min_str}, max {max_str}, std {std_str}")
-              if self.logger.handlers:
-                  self.logger.handlers[0].flush()
-              # Reset stats window
-              self._inference_durations = []
-              self._stats_last_time = now
+        self._cache.put(obs_key, (response.value, response.policy_probs))
 
-          return response.value, response.policy_probs
+        # Update inference counts and timing
+        if self._first_inference_time is None:
+            self._first_inference_time = time.time()
+        self._inference_count += 1
+        self._inferences_since_last_log += 1
 
-        except ShutdownException:
-            raise
-        except Exception as e:
-          self.logger.error(f"Actor {self._actor_id}: Error getting response for request {request_id} from queue: {e}")
-          raise
+        # Logging for inference rate
+        current_time = time.time()
+        if current_time - self._last_log_time >= self._log_interval_seconds:
+            elapsed_since_last_log = current_time - self._last_log_time
+            if elapsed_since_last_log > 0:
+                inferences_per_sec_interval = self._inferences_since_last_log / elapsed_since_last_log
+                self.logger.debug(f"Actor {self._actor_id}: Inferences in last {elapsed_since_last_log:.2f}s: {self._inferences_since_last_log}, Rate: {inferences_per_sec_interval:.2f} inf/s")
+            if self._first_inference_time and (current_time - self._first_inference_time > 0):
+                overall_elapsed_time = current_time - self._first_inference_time
+                overall_inferences_per_sec = self._inference_count / overall_elapsed_time
+                self.logger.debug(f"Actor {self._actor_id}: Total inferences: {self._inference_count}, Overall Rate: {overall_inferences_per_sec:.2f} inf/s (since first inference)")
+            self._last_log_time = current_time
+            self._inferences_since_last_log = 0
+            if self.logger.handlers:
+                self.logger.handlers[0].flush()
+
+        # Record inference duration (wait time)
+        end_time = time.time()
+        duration = end_time - request.request_time
+        self._inference_durations.append(duration)
+
+        # Log inference stats every stats window
+        now = time.time()
+        if now - self._stats_last_time >= self._stats_window_seconds:
+            durations = self._inference_durations
+            avg_dur = sum(durations) / len(durations)
+            min_dur = min(durations)
+            max_dur = max(durations)
+            var = sum((d - avg_dur) ** 2 for d in durations) / len(durations)
+            std_dur = math.sqrt(var)
+            avg_str = _format_duration_s(avg_dur)
+            min_str = _format_duration_s(min_dur)
+            max_str = _format_duration_s(max_dur)
+            std_str = _format_duration_s(std_dur)
+            self.logger.info(f"Actor {self._actor_id} inference stats {self._stats_window_seconds:.0f}s: avg {avg_str}, min {min_str}, max {max_str}, std {std_str}")
+            if self.logger.handlers:
+                self.logger.handlers[0].flush()
+            # Reset stats window
+            self._inference_durations = []
+            self._stats_last_time = now
+
+        return response.value, response.policy_probs
 
     def evaluate(self, state: "pyspiel.State"):  # type: ignore # pylint: disable=undefined-variable
-        """Returns a value for the given state."""
-        value, _ = self._inference(state)
-        return _np.array([value, -value])
+        self.logger.warning(
+            f"Actor {self._actor_id}: evaluate() called directly. This method is deprecated for RemoteEvaluator. "
+            f"Use prior_and_value() with an appropriate timeout instead."
+        )
+        # Provide a default timeout for legacy calls, though it might not be optimal.
+        # This maintains basic functionality but should be updated in calling code.
+        default_timeout = self._response_wait_timeout_seconds # Or some other reasonable default
+        try:
+            return self.prior_and_value(state, mcts_search_timeout_sec=default_timeout)
+        except TimeoutError:
+            self.logger.error(f"Actor {self._actor_id}: Timeout in legacy evaluate() call. Returning (None, None).")
+            return (None, None)
+        except ShutdownException:
+            self.logger.warning(f"Actor {self._actor_id}: Shutdown in legacy evaluate() call. Returning (None, None).")
+            return (None, None)
 
     def prior(self, state: "pyspiel.State"):  # type: ignore # pylint: disable=undefined-variable
-        """Returns a policy for the given state."""
-        if state.is_chance_node():
-            return state.chance_outcomes()
-        elif state.is_terminal():
-            return []
+        self.logger.warning(
+            f"Actor {self._actor_id}: prior() called directly. This method is deprecated for RemoteEvaluator. "
+            f"Use prior_and_value() with an appropriate timeout instead."
+        )
+        default_timeout = self._response_wait_timeout_seconds # Or some other reasonable default
+        try:
+            value, policy = self.prior_and_value(state, mcts_search_timeout_sec=default_timeout)
+            return policy
+        except TimeoutError:
+            self.logger.error(f"Actor {self._actor_id}: Timeout in legacy prior() call. Returning None for policy.")
+            return None
+        except ShutdownException:
+            self.logger.warning(f"Actor {self._actor_id}: Shutdown in legacy prior() call. Returning None for policy.")
+            return None
 
-        _, policy_probs = self._inference(state)
-        legal_actions = state.legal_actions()
-        
-        priors = []
-        for action in legal_actions:
-            if action < len(policy_probs):
-                priors.append((action, policy_probs[action]))
-            else:
-                self.logger.warning(f"Actor {self._actor_id}: Action {action} out of bounds for policy_probs (len {len(policy_probs)}). Assigning 0 prior.")
-                priors.append((action, 0.0))
-                
-        return priors
+    def prior_and_value(self, state: "pyspiel.State", mcts_search_timeout_sec: float) -> Tuple[Any, Any]: # type: ignore # pylint: disable=undefined-variable
+        """Computes the policy and value for the given state, with timeout."""
+        if self._numeric_log_level >= 3: # DEBUG or TRACE
+          self.logger.debug(
+              f"Actor {self._actor_id}: prior_and_value called for state of type {type(state)}. "
+              f"Player: {state.current_player() if not state.is_terminal() else 'Terminal'}, Timeout: {mcts_search_timeout_sec}s"
+          )
+
+        if state.is_chance_node():
+            self.logger.error(f"Actor {self._actor_id}: prior_and_value called on a chance node, which is not supported. State:\n{state}")
+            # This should ideally not happen if dont_return_chance_node=True is set in the bot.
+            return (None, None) # Or raise an error
+
+        if state.is_terminal():
+            self.logger.debug(f"Actor {self._actor_id}: prior_and_value called on a terminal node. Returning utilities.")
+            return (state.returns(), _np.zeros(self._game.num_distinct_actions()))
+
+        inference_start_time = time.time()
+        try:
+            value, policy_probs = self._inference(state, mcts_search_timeout_sec=mcts_search_timeout_sec)
+        except TimeoutError:
+            self.logger.error(f"Actor {self._actor_id}: Timeout in prior_and_value after {time.time() - inference_start_time:.2f}s. Returning (None, None).")
+            return (None, None)
+        except ShutdownException:
+            self.logger.warning(f"Actor {self._actor_id}: ShutdownException in prior_and_value. Returning (None, None).")
+            return (None, None)
+        except Exception as e: # pylint: disable=broad-except
+            self.logger.error(f"Actor {self._actor_id}: Unexpected error in _inference call: {e}\\n{traceback.format_exc()}")
+            return (None, None)
+
+        inference_duration_s = time.time() - inference_start_time
+        self._inference_durations.append(inference_duration_s)
+
+        # Periodically log inference duration stats
+        current_time = time.time()
+        if current_time - self._stats_last_time >= self._stats_window_seconds:
+            if self._inference_durations:
+                avg_duration = _format_duration_s(sum(self._inference_durations) / len(self._inference_durations))
+                min_duration = _format_duration_s(min(self._inference_durations))
+                max_duration = _format_duration_s(max(self._inference_durations))
+                p95_duration = _format_duration_s(_np.percentile(self._inference_durations, 95))
+                self.logger.debug(
+                    f"Actor {self._actor_id}: Inference duration stats (last {self._stats_window_seconds:.0f}s, {len(self._inference_durations)} samples): "
+                    f"Avg: {avg_duration}, Min: {min_duration}, Max: {max_duration}, p95: {p95_duration}"
+                )
+                self._inference_durations.clear()
+            self._stats_last_time = current_time
+
+        return value, policy_probs
 
     def cache_info(self):
         """Returns information about the cache."""

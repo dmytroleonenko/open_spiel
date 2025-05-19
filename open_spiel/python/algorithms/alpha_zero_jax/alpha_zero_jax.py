@@ -144,6 +144,7 @@ class ConfigJAX(collections.namedtuple(
         "async_batch_size",         # int: Batch size for async MCTS leaf evaluations.
         "async_virtual_loss",       # int: Virtual loss amount for async MCTS.
         "async_timeout",            # float: Timeout (s) for async MCTS leaf evaluation futures.
+        "console_summary_log_freq_steps", # int: Frequency (in training steps) to log console summary in learner.
     ])):                                 # Default for remote_evaluator_timeout_ms can be set at instantiation.
   """A config for the JAX AlphaZero model/experiment."""
   # To allow None defaults for Optional fields in namedtuple, provide them at instantiation.
@@ -588,6 +589,13 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
 
   if logger: logger.print(f"Learner starting. Initial training_step_count: {training_step_count}. Max steps: {config.max_steps}. Loop iterations will start from 1.")
 
+  # For periodic INFO level summary logging
+  last_summary_log_time = time.time()
+  SUMMARY_LOG_INTERVAL = 30.0  # Log summary every 30 seconds
+
+  # For console summary log based on training steps
+  last_console_summary_log_train_step = initial_step
+
   for current_loop_iteration_raw in itertools.count(1): # This is an infinite loop unless broken
     loop_iteration = current_loop_iteration_raw # Ensure it's used as 1-based
 
@@ -597,8 +605,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         accumulated_inference_queue_size += current_inf_q_size
         inference_queue_size_samples += 1
     except NotImplementedError: # qsize is not implemented on all platforms (e.g. macOS for mp.Queue)
-        if logger and config.log_level >= WARN and loop_iteration % DEFAULT_STATS_LOG_PERIOD == 0 : # Log once per period
-             logger.print(f"Learner: inference_request_queue.qsize() not implemented on this platform. Cannot log average inference queue size.")
+        pass
 
     if logger and config.log_level >= TRACE: # TRACE level for per-iteration start
         logger.print(f"Learner: Main loop iteration {loop_iteration} BEGIN.")
@@ -709,6 +716,32 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         if logger and config.log_level >= INFO: # Log this at INFO
             logger.print(f"Learner: Max training steps {config.max_steps} reached (current: {training_step_count}). Exiting learner main loop.")
         break # EXIT POINT for the main learner loop
+
+    # --- New Time-based Summary Logging Block ---
+    current_time_for_summary = time.time()
+    if current_time_for_summary - last_summary_log_time >= SUMMARY_LOG_INTERVAL:
+        servicer_stats = servicer.inference_stats() if servicer else {}
+        avg_inf_batch_size = servicer_stats.get('avg_execution_batch_size', 'N/A') # Use execution batch size
+        inf_states_per_sec = servicer_stats.get('inference_per_second', 'N/A')
+        avg_inf_time_ms = servicer_stats.get('avg_inference_time_ms_per_batch', 'N/A')
+        avg_wait_time_ms = servicer_stats.get('avg_wait_time_ms_for_request', 'N/A')
+        # Actor trajectories per second can be estimated from states_per_s_loop_iter and average game length
+        # This is a rough approximation based on recent loop iteration.
+        # A more accurate actor throughput would require actors to report trajectory counts over time.
+        avg_game_len = game_lengths.avg if game_lengths.num > 0 else 1 # Avoid division by zero
+        actor_traj_s_approx = (num_states_this_iter / seconds_this_loop_iter / avg_game_len) if seconds_this_loop_iter > 0 and avg_game_len > 0 else "N/A"
+
+        loss_val_for_summary = current_total_loss # Use the most recent loss from training step
+
+        if logger and config.log_level >= INFO:
+            logger.print(f"Summary: LoopIter: {loop_iteration}, TrainStep: {training_step_count}, "
+                         f"BufSize: {len(replay_buffer)}, Loss: {loss_val_for_summary:.3f}, "
+                         f"ActorTraj/s (approx): {actor_traj_s_approx if isinstance(actor_traj_s_approx, str) else actor_traj_s_approx:.2f}, "
+                         f"Inference(states/s): {inf_states_per_sec if isinstance(inf_states_per_sec, str) else inf_states_per_sec:.1f}, "
+                         f"AvgInfBatch: {avg_inf_batch_size if isinstance(avg_inf_batch_size, str) else avg_inf_batch_size:.1f}, "
+                         f"AvgInfTime(ms): {avg_inf_time_ms if isinstance(avg_inf_time_ms, str) else avg_inf_time_ms:.2f}, "
+                         f"AvgWaitTime(ms): {avg_wait_time_ms if isinstance(avg_wait_time_ms, str) else avg_wait_time_ms:.2f}")
+        last_summary_log_time = current_time_for_summary
 
     # --- Training Step ---
     training_performed_this_iteration = False
@@ -879,12 +912,20 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
 
         # Also print a summary to console logger at INFO level for this data_log event
         if logger and config.log_level >= INFO:
-            console_summary_msg = (
-                f"LoopIter: {loop_iteration}, TrainStep: {training_step_count}, "
-                f"BufSize: {len(replay_buffer)}, Loss: {current_total_loss:.3f}, "
-                f"ActorTraj/s (iter): {num_trajectories_this_iter / seconds_this_loop_iter:.1f}"
+            # Condition for logging the console summary based on training steps
+            ready_to_log_based_on_train_step = (
+                training_step_count == initial_step or # Log at the very first relevant step
+                (training_step_count - last_console_summary_log_train_step >= config.console_summary_log_freq_steps)
             )
-            logger.print(console_summary_msg)
+
+            if training_performed_this_iteration and ready_to_log_based_on_train_step and config.console_summary_log_freq_steps > 0:
+                console_summary_msg = (
+                    f"LoopIter: {loop_iteration}, TrainStep: {training_step_count}, "
+                    f"BufSize: {len(replay_buffer)}, Loss: {current_total_loss:.3f}, "
+                    f"ActorTraj/s (iter): {num_trajectories_this_iter / seconds_this_loop_iter:.1f}"
+                )
+                logger.print(console_summary_msg)
+                last_console_summary_log_train_step = training_step_count
 
 
     # Console logging for overall progress (less frequent than DEBUG per-iteration logs)
@@ -931,7 +972,8 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
                 accumulated_inference_queue_size = 0 # Reset for next interval
                 inference_queue_size_samples = 0 # Reset for next interval
             else: # If it's time to log but no samples (e.g. qsize not impl or interval too short after reset)
-                logger.print(f"Avg Inference Queue Size (last {STATS_LOG_INTERVAL} iters): N/A (no samples or qsize not implemented)")
+                # Removed the log message as requested by the user.
+                pass # Do nothing if qsize is not implemented or no samples
         
         logger.print(f"--- Learner Loop Iteration {loop_iteration} END ---") # End of iteration marker for DEBUG
 
@@ -1011,6 +1053,27 @@ class BatchAssemblyThread(threading.Thread):
         self._stop_event = threading.Event()
         self.logger = logger
         self.log_level = log_level
+        # Stats
+        self.stats_lock = threading.Lock()
+        self.batches_assembled_count = 0
+        self.requests_in_assembled_batches_count = 0
+        self.total_wait_time_for_requests_sec = 0.0
+        self.requests_processed_count = 0 # Total requests pulled from queue
+        self.start_time = time.time()
+
+    def get_stats(self):
+        with self.stats_lock:
+            uptime_sec = time.time() - self.start_time
+            avg_requests_per_batch = self.requests_in_assembled_batches_count / self.batches_assembled_count if self.batches_assembled_count > 0 else 0
+            # Note: avg_wait_time might be complex to calculate accurately here without timing each get()
+            # For now, it's a placeholder or needs more detailed timing.
+            return {
+                "batches_assembled": self.batches_assembled_count,
+                "requests_in_batches": self.requests_in_assembled_batches_count,
+                "avg_requests_per_assembled_batch": avg_requests_per_batch,
+                "total_requests_pulled": self.requests_processed_count,
+                "thread_uptime_sec": uptime_sec
+            }
 
     def stop(self):
         self._stop_event.set()
@@ -1051,7 +1114,12 @@ class BatchAssemblyThread(threading.Thread):
                 if self.logger and self.log_level >= TRACE: # TRACE for very frequent
                     self.logger.print(f"[SERVDEB] BatchAssemblyThread: Attempting to get from request_queue with timeout {timeout_for_get:.3f}s. Current batch size: {len(current_batch_requests)}")
 
+                wait_start_time = time.time()
                 raw_request_tuple = self.request_queue.get(timeout=timeout_for_get)
+                actual_wait_time = time.time() - wait_start_time
+                with self.stats_lock:
+                    self.total_wait_time_for_requests_sec += actual_wait_time
+                    self.requests_processed_count += 1
 
                 # --- [SERVDEB] ---
                 if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
@@ -1119,6 +1187,9 @@ class BatchAssemblyThread(threading.Thread):
                          self.logger.print(f"[SERVDEB] BatchAssemblyThread: Putting batch of size {len(current_batch_requests)} onto ready_batch_queue.")
                     # Send a list of (InferenceRequest_obj, origin_idx) tuples
                     self.ready_batch_queue.put(list(current_batch_requests), timeout=1.0) # Use a timeout for putting
+                    with self.stats_lock:
+                        self.batches_assembled_count += 1
+                        self.requests_in_assembled_batches_count += len(current_batch_requests)
                 except std_queue.Full:
                     if self.logger and self.log_level >= WARN:
                         self.logger.print("BatchAssemblyThread: ready_batch_queue is full. Batch dropped.")
@@ -1148,7 +1219,28 @@ class InferenceExecutionThread(threading.Thread):
         self._stop_event = threading.Event()
         self.logger = logger
         self.log_level = log_level
-        self._variables_lock = threading.Lock() 
+        self._variables_lock = threading.Lock()
+        # Stats
+        self.stats_lock = threading.Lock()
+        self.inference_batches_executed_count = 0
+        self.total_inferences_processed_count = 0 # Sum of batch sizes
+        self.total_model_inference_time_sec = 0.0
+        self.start_time = time.time()
+
+    def get_stats(self):
+        with self.stats_lock:
+            uptime_sec = time.time() - self.start_time
+            avg_inference_time_ms_per_batch = (self.total_model_inference_time_sec * 1000 / self.inference_batches_executed_count) if self.inference_batches_executed_count > 0 else 0
+            avg_states_per_second = (self.total_inferences_processed_count / uptime_sec) if uptime_sec > 0 else 0
+            avg_batch_size_inferred = self.total_inferences_processed_count / self.inference_batches_executed_count if self.inference_batches_executed_count > 0 else 0
+            return {
+                "inference_batches_executed": self.inference_batches_executed_count,
+                "total_inferences_processed": self.total_inferences_processed_count,
+                "avg_inference_time_ms_per_batch": avg_inference_time_ms_per_batch,
+                "avg_states_inferred_per_sec": avg_states_per_second,
+                "avg_actual_batch_size_inferred": avg_batch_size_inferred,
+                "thread_uptime_sec": uptime_sec
+            }
 
     def stop(self):
         self._stop_event.set()
@@ -1245,11 +1337,16 @@ class InferenceExecutionThread(threading.Thread):
                 # --- [SERVDEB] ---
                 if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
                     self.logger.print(f"[SERVDEB] InferenceExecutionThread: Applying model. Batch obs shape: {obs_array_batch.shape}, legals shape: {legals_array_batch.shape}")
-                # model_apply_fn is the JITted function _batched_inference_fn_for_servicer,
-                # which expects (variables, obs_batch, legals_batch)
-                # and returns (policy_probs_batch, value_output_batch) where policy_probs are already softmaxed.
+                
+                inference_start_time = time.time()
                 policy_probs_batch, value_output_batch = self.model_apply_fn(
                     current_vars, obs_array_batch, legals_array_batch) 
+                inference_duration_sec = time.time() - inference_start_time
+                with self.stats_lock:
+                    self.inference_batches_executed_count += 1
+                    self.total_inferences_processed_count += obs_array_batch.shape[0]
+                    self.total_model_inference_time_sec += inference_duration_sec
+
                 # --- [SERVDEB] ---
                 if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
                     self.logger.print(f"[SERVDEB] InferenceExecutionThread: Model apply finished.")
@@ -1402,5 +1499,54 @@ class InferenceServicer:
     def update_model_variables(self, new_variables):
         # Pass the update to the execution thread
         self.execution_thread.update_variables(new_variables)
+
+    def inference_stats(self):
+        """Collects and computes aggregated statistics from the assembler and executor threads."""
+        assembly_stats = self.assembly_thread.get_stats()
+        execution_stats = self.execution_thread.get_stats()
+
+        # Combine and derive further stats
+        # Ensure to handle potential division by zero if counts are zero.
+        total_requests_pulled = assembly_stats.get("total_requests_pulled", 0)
+        batches_assembled = assembly_stats.get("batches_assembled", 0)
+        
+        total_inferences_processed = execution_stats.get("total_inferences_processed", 0)
+        inference_batches_executed = execution_stats.get("inference_batches_executed", 0)
+        total_model_inference_time_sec = execution_stats.get("total_model_inference_time_sec", 0.0)
+        
+        # Average wait time for a request before being assembled into a batch
+        # This is a rough estimate based on total wait time / total requests seen by assembler.
+        # More accurate per-request wait time would require timing each request individually.
+        total_wait_time_for_requests_sec = assembly_stats.get("total_wait_time_for_requests_sec", 0.0)
+        avg_wait_time_ms = (total_wait_time_for_requests_sec * 1000 / total_requests_pulled) if total_requests_pulled > 0 else 0.0
+
+        # Average batch size (from assembler's perspective)
+        avg_assembled_batch_size = assembly_stats.get("avg_requests_per_assembled_batch", 0.0)
+        
+        # Average batch size (from executor's perspective - actual number of inferences in a batch)
+        avg_execution_batch_size = execution_stats.get("avg_actual_batch_size_inferred", 0.0)
+
+        # Inference throughput (states processed per second by the model)
+        # Use executor's uptime and total inferences for more accurate model throughput
+        executor_uptime_sec = execution_stats.get("thread_uptime_sec", 0.0)
+        inference_per_second = (total_inferences_processed / executor_uptime_sec) if executor_uptime_sec > 0 else 0.0
+        
+        # Average model inference time per batch (from executor)
+        avg_inference_time_ms_per_batch = execution_stats.get("avg_inference_time_ms_per_batch", 0.0)
+
+
+        return {
+            "total_requests_pulled_by_assembler": total_requests_pulled,
+            "batches_assembled": batches_assembled,
+            "avg_assembled_batch_size": avg_assembled_batch_size,
+            "total_inferences_processed_by_executor": total_inferences_processed,
+            "inference_batches_executed": inference_batches_executed,
+            "avg_execution_batch_size": avg_execution_batch_size,
+            "inference_per_second": inference_per_second, # states/sec processed by model
+            "avg_inference_time_ms_per_batch": avg_inference_time_ms_per_batch, # model execution time for a batch
+            "avg_wait_time_ms_for_request": avg_wait_time_ms, # Approximate time request waits in queue before assembly
+            "assembly_thread_stats": assembly_stats, # Raw stats from assembler
+            "execution_thread_stats": execution_stats, # Raw stats from executor
+        }
 
 # ---- END Inference Servicer Components ----

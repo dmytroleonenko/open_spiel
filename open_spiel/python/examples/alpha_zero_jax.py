@@ -89,6 +89,9 @@ flags.DEFINE_integer("async_batch_size", 16, "Batch size for async MCTS leaf eva
 flags.DEFINE_integer("async_virtual_loss", 10, "Virtual loss amount for async MCTS.")
 flags.DEFINE_float("async_timeout", 5.0, "Timeout (s) for async MCTS leaf evaluation futures.")
 
+# New flag for learner console summary frequency
+flags.DEFINE_integer("console_summary_log_freq_steps", 100, "Frequency (in training steps) for learner to log console summary.")
+
 # From TF AlphaZero, for game_specific_az_path
 flags.DEFINE_bool(
     "game_specific_az_path", True,
@@ -153,6 +156,8 @@ def main(argv):
       async_batch_size=FLAGS.async_batch_size,
       async_virtual_loss=FLAGS.async_virtual_loss,
       async_timeout=FLAGS.async_timeout,
+      # New config field for console summary frequency
+      console_summary_log_freq_steps=FLAGS.console_summary_log_freq_steps,
   )
 
   # Set external library log levels to match config

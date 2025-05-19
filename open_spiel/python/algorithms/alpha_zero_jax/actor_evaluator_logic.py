@@ -30,7 +30,7 @@ import queue as std_queue # For specific exception types like Full/Empty
 from open_spiel.python.algorithms import mcts
 from open_spiel.python.utils import file_logger, spawn # spawn for ProcessQueue type hint
 from .remote_inference import RemoteEvaluator, SHUTDOWN_SENTINEL, ShutdownException
-from open_spiel.python.algorithms.async_mcts import MCTSBot as AsyncMCTSBot
+from .alpha_zero_jax_async_mcts import AlphaZeroJaxAsyncMCTSBot
 
 # Define debug level constants used by actor and evaluator
 # _ACTOR_DEBUG_LEVEL = 3 # No longer needed for RemoteEvaluator's debug_mode
@@ -170,8 +170,7 @@ class AlphaZeroBot(mcts.MCTSBot):
                # temperature_drop: int, # pylint: disable=unused-argument
                solve: bool = True,
                verbose: bool = False,
-               child_selection_fn=mcts.SearchNode.uct_value,
-               dont_return_chance_node: bool = False):
+               child_selection_fn=mcts.SearchNode.uct_value):
 
     dirichlet_noise_tuple = (policy_epsilon,
                              policy_alpha) if add_dirichlet_noise_for_bot else None
@@ -192,17 +191,9 @@ class AlphaZeroBot(mcts.MCTSBot):
     self.player_id = player_id
 
   def step_with_policy(self, state):
-    """Shortcut chance nodes: sample and return their distribution without running MCTS."""
-    if state.is_chance_node():
-      outcomes = state.chance_outcomes()
-      if not outcomes:
-        return [], None
-      actions, probs = zip(*outcomes)
-      # Deterministically choose the highest-probability outcome
-      idx = int(np.argmax(probs)) if hasattr(np, 'argmax') else 0
-      action = actions[idx]
-      policy = list(outcomes)
-      return policy, action
+    """Returns policy and action from MCTS search."""
+    # Chance node handling is now done globally in _play_game
+    # and MCTSBot is initialized with dont_return_chance_node=True.
     return super().step_with_policy(state)
 
 
@@ -211,24 +202,65 @@ class _AsyncRemoteEvaluatorAdapter:
   def __init__(self, remote_eval):
     self._remote = remote_eval
 
-  def prior_and_value(self, state):
-    if state.is_chance_node():
-      return state.chance_outcomes(), np.array(state.returns(), dtype=np.float32)
-    if state.is_terminal():
-      returns = state.returns()
-      return [], np.array(returns, dtype=np.float32)
-    prior = self._remote.prior(state)
-    value = self._remote.evaluate(state)
-    return prior, value
+  def prior_and_value(self, state, mcts_search_timeout_sec: float):
+    """Passes through to RemoteEvaluator's prior_and_value with timeout."""
+    current_player = state.current_player()
+    num_players = self._remote._game.num_players() # Access game from the remote evaluator
+
+    raw_value, policy_probs = self._remote.prior_and_value(state, mcts_search_timeout_sec=mcts_search_timeout_sec)
+
+    if raw_value is None or policy_probs is None:
+        return [], np.zeros(num_players, dtype=np.float32) # Return empty prior and zero values for all players
+
+    # Convert policy_probs (np.ndarray) to list of (action, prob) tuples
+    if state.is_chance_node(): 
+        prior_tuples = state.chance_outcomes()
+        # Value should already be game returns for chance/terminal from RemoteEvaluator
+        # Ensure it's a numpy array if not already.
+        processed_value = np.array(raw_value, dtype=np.float32) if not isinstance(raw_value, np.ndarray) else raw_value
+    elif state.is_terminal(): 
+        prior_tuples = []
+        processed_value = np.array(raw_value, dtype=np.float32) if not isinstance(raw_value, np.ndarray) else raw_value
+    else:
+        legal_actions = state.legal_actions(current_player)
+        if not legal_actions: 
+            prior_tuples = []
+        else:
+            prior_tuples = []
+            for action in legal_actions:
+                if action < len(policy_probs):
+                    prior_tuples.append((action, policy_probs[action]))
+                else:
+                    prior_tuples.append((action, 0.0)) 
+        
+        # For non-terminal, non-chance nodes, raw_value is a scalar evaluation for the current player.
+        # We need to convert this to an array of returns for all players.
+        # Assuming 2-player zero-sum game for simplicity, current player gets raw_value, opponent gets -raw_value.
+        # For N-player games, this logic would need to be more sophisticated based on game type.
+        # For now, let's stick to 2-player zero-sum assumption as it's common for AlphaZero.
+        # If num_players is not 2, this might need adjustment.
+        processed_value = np.zeros(num_players, dtype=np.float32)
+        if num_players == 1: # Single player game
+            processed_value[current_player] = raw_value
+        elif num_players == 2: # Two player game
+            processed_value[current_player] = raw_value
+            processed_value[1 - current_player] = -raw_value # Opponent
+        else: # N-player, more complex - for now, just assign to current, others 0
+             # This is a simplification and might not be correct for all N-player games.
+            self._remote.logger.warning(f"Adapter: N-player game (N={num_players}) value assignment is simplified for player {current_player}.")
+            processed_value[current_player] = raw_value
+            # Other players get 0 or some neutral value. This depends on the game.
+
+    return prior_tuples, processed_value
 
 
 def _init_bot(config, game: pyspiel.Game, evaluator_: mcts.Evaluator,
-              evaluation: bool, player_id_for_bot: int):
+              evaluation: bool, player_id_for_bot: int, actor_specific_logger=None):
   """Initializes a bot for playing or evaluation."""
   # Choose async or sync MCTS based on config
   if getattr(config, "async_mode", False):
     adapter = _AsyncRemoteEvaluatorAdapter(evaluator_)
-    bot = AsyncMCTSBot(
+    bot = AlphaZeroJaxAsyncMCTSBot(
         game=game,
         uct_c=config.uct_c,
         max_simulations=config.max_simulations,
@@ -241,22 +273,10 @@ def _init_bot(config, game: pyspiel.Game, evaluator_: mcts.Evaluator,
         virtual_loss=getattr(config, "async_virtual_loss", 10),
         batch_size=getattr(config, "async_batch_size", 16),
         timeout=getattr(config, "async_timeout", 5.0),
+        actor_logger=actor_specific_logger,
+        numeric_log_level=config.log_level
     )
     bot.player_id = player_id_for_bot
-    # Wrap step_with_policy to shortcut chance nodes
-    original_step = bot.step_with_policy
-    def wrapped_step(state):
-      if state.is_chance_node():
-        outcomes = state.chance_outcomes()
-        if not outcomes:
-          return [], None
-        actions, probs = zip(*outcomes)
-        idx = int(np.argmax(probs)) if hasattr(np, 'argmax') else 0
-        action = actions[idx]
-        policy = list(outcomes)
-        return policy, action
-      return original_step(state)
-    bot.step_with_policy = wrapped_step
     return bot
 
   # Fallback to synchronous AlphaZeroBot
@@ -423,95 +443,94 @@ def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
           inference_response_queue # mp.Queue
           ):
   """An actor process that plays games and sends trajectories to the learner."""
-  # Determine if debug_mode should be enabled for RemoteEvaluator
-  # Based on config.log_level (DEBUG=3, TRACE=4)
-  # remote_evaluator_debug_mode = config.log_level >= 3 # DEBUG or TRACE # No longer needed
-
-  # Determine log_path for RemoteEvaluator
-  # The watcher for 'actor' creates logs in config.path/actor_NUM/
-  # For consistency, RemoteEvaluator could log there too, or directly in config.path
-  # Current RemoteEvaluator default is CWD. Let's make it explicit.
-  evaluator_log_path = os.path.join(config.path, f"actor_{num}_remote_eval")
-  # os.makedirs(evaluator_log_path, exist_ok=True) # Ensure dir exists
-
-  # Seed Python's random and NumPy for this actor process
+  # Note: logger here is the watcher's FileLogger instance.
+  logger.print(f"Actor {num} starting with PID {os.getpid()} and seed {initial_seed}")
+  # Explicitly seed the actor's random number generator for its operations.
   random.seed(initial_seed)
-  np_seed = random.randint(0, 2**31 - 1) # Generate a derived seed for NumPy
-  np.random.seed(np_seed)
-  if logger and config.log_level >= 3: # DEBUG
-    logger.print(f"Actor {num} started with initial_seed: {initial_seed}, numpy_seed: {np_seed}")
+  np.random.seed(initial_seed)
 
-
-  evaluator_ = RemoteEvaluator(
+  # Initialize the RemoteEvaluator for this actor
+  remote_evaluator = RemoteEvaluator(
       game=game,
-      actor_id=num,
+      actor_id=num, 
       inference_request_queue=inference_request_queue,
       inference_response_queue=inference_response_queue,
-      max_cache_size=config.evaluator_cache_size,
-      numeric_log_level=config.log_level, # CHANGED: Pass numeric_log_level from config
-      # debug_mode=remote_evaluator_debug_mode, # OLD: Pass debug_mode
-      log_path=evaluator_log_path # Pass the constructed log_path
+      numeric_log_level=config.log_level,
+      max_cache_size=config.evaluator_cache_size, # Using a common cache size config
+      log_path=config.path
   )
+  remote_evaluator.start_response_handler() # Start the handler thread
 
-  # Use player_id 0 for the bot in self-play, as it's from player 0's perspective.
-  # The actual current_player is handled by the game state.
-  bot = _init_bot(config, game, evaluator_, evaluation=False, player_id_for_bot=0)
+  try:
+    # Initialize the bot for self-play
+    # The actor_specific_logger passed to _init_bot can be the watcher's logger
+    bot = _init_bot(config, game, remote_evaluator, evaluation=False, player_id_for_bot=-1, actor_specific_logger=logger)
 
-  for game_num in itertools.count(1): # Start game numbers from 1
-    # Determine temperature for this game
-    # Original logic: temperature an MCTSBot parameter.
-    # Here, temperature is used for action selection *after* MCTS policy.
-    # It's not a direct parameter of MCTSBot search itself in this setup.
-    current_temperature = (
-        config.temperature if config.temperature_drop == 0 or game_num < config.temperature_drop else 0.)
-    
-    if logger and config.log_level >= 4: # TRACE
-        logger.print(f"Actor {num} Game {game_num}: Starting game with temperature {current_temperature}")
+    # Calculate temperature schedule
+    for game_num in itertools.count(1): # Start game numbers from 1
+      # Determine temperature for this game
+      # Original logic: temperature an MCTSBot parameter.
+      # Here, temperature is used for action selection *after* MCTS policy.
+      # It's not a direct parameter of MCTSBot search itself in this setup.
+      current_temperature = (
+          config.temperature if config.temperature_drop == 0 or game_num < config.temperature_drop else 0.)
+      
+      if logger and config.log_level >= 4: # TRACE
+          logger.print(f"Actor {num} Game {game_num}: Starting game with temperature {current_temperature}")
 
-    # Generate a unique seed for this game play based on the initial actor seed
-    # This ensures that if an actor restarts, it doesn't replay the exact same games
-    # if initial_seed was the same.
-    game_specific_numpy_seed = random.randint(0, 2**31 - 1)
+      # Generate a unique seed for this game play based on the initial actor seed
+      # This ensures that if an actor restarts, it doesn't replay the exact same games
+      # if initial_seed was the same.
+      game_specific_numpy_seed = random.randint(0, 2**31 - 1)
 
-    try:
-      trajectory = _play_game(
-          logger=logger, # Pass the actor's logger
-          game_num=game_num,
-          game=game,
-          bots=[bot, bot],  # Both sides are played by the same bot logic
-          temperature=current_temperature,
-          temperature_drop=config.temperature_drop, # Though not directly used by _play_game's temp logic
-          numpy_seed=game_specific_numpy_seed, # Pass the game-specific seed
-          log_level=config.log_level # Pass the main log_level
-          )
-      if trajectory:
-        # logger.print(f"Actor {num} Game {game_num} completed. Trajectory length: {len(trajectory.states)}")
-        queue.put(trajectory)
-      else: # Should not happen if _play_game returns a trajectory or raises
-        if logger and config.log_level >= 1: # WARN
-            logger.print(f"Actor {num} Game {game_num}: _play_game returned None or empty trajectory. Skipping.")
-    except ShutdownException:
-      if logger and config.log_level >= 2: # INFO
-        logger.print(f"Actor {num} received ShutdownException. Exiting play game loop.")
-      # Ensure the evaluator's resources are cleaned up if possible,
-      # though RemoteEvaluator itself doesn't have explicit close().
-      # The sentinel on its queue should handle its exit if it's blocked.
-      break # Exit the game playing loop
-    except Exception as e: # Catch other exceptions during game play
-      error_message = f"Actor {num} Game {game_num}: Exception during _play_game: {type(e).__name__} - {e}. Traceback: {traceback.format_exc()}"
-      if logger and config.log_level >= 0: # ERROR
-        logger.print(error_message)
-        if hasattr(logger, 'flush'): # Attempt to flush the logger
-            logger.flush()
-      print(error_message, file=sys.stderr) # Also print to stderr for immediate visibility
-      sys.stderr.flush() # Ensure stderr is flushed
-      break
+      try:
+        trajectory = _play_game(
+            logger=logger, # Pass the actor's logger
+            game_num=game_num,
+            game=game,
+            bots=[bot, bot],  # Both sides are played by the same bot logic
+            temperature=current_temperature,
+            temperature_drop=config.temperature_drop, # Though not directly used by _play_game's temp logic
+            numpy_seed=game_specific_numpy_seed, # Pass the game-specific seed
+            log_level=config.log_level # Pass the main log_level
+            )
+        if trajectory:
+          # logger.print(f"Actor {num} Game {game_num} completed. Trajectory length: {len(trajectory.states)}")
+          queue.put(trajectory)
+        else: # Should not happen if _play_game returns a trajectory or raises
+          if logger and config.log_level >= 1: # WARN
+              logger.print(f"Actor {num} Game {game_num}: _play_game returned None or empty trajectory. Skipping.")
+      except ShutdownException:
+        if logger and config.log_level >= 2: # INFO
+          logger.print(f"Actor {num} received ShutdownException. Exiting play game loop.")
+        # Ensure the evaluator's resources are cleaned up if possible,
+        # though RemoteEvaluator itself doesn't have explicit close().
+        # The sentinel on its queue should handle its exit if it's blocked.
+        break # Exit the game playing loop
+      except Exception as e: # Catch other exceptions during game play
+        error_message = f"Actor {num} Game {game_num}: Exception during _play_game: {type(e).__name__} - {e}. Traceback: {traceback.format_exc()}"
+        if logger and config.log_level >= 0: # ERROR
+          logger.print(error_message)
+          if hasattr(logger, 'flush'): # Attempt to flush the logger
+              logger.flush()
+        print(error_message, file=sys.stderr) # Also print to stderr for immediate visibility
+        sys.stderr.flush() # Ensure stderr is flushed
+        break
 
-  if logger and config.log_level >= 2: # INFO
-    logger.print(f"Actor {num} finished {game_num -1} games.")
-  # Signal to learner that this actor is done (e.g. by closing queue or sending sentinel)
-  # The current setup relies on process join in the main script.
-  # If queue needs explicit close or sentinel, add here.
+    logger.print(f"Actor {num} played {game_num -1} games, {game_num -1} trajectories.")
+
+  except ShutdownException:
+    logger.print(f"Actor {num} received ShutdownException. Exiting gracefully.")
+  except Exception as e: # pylint: disable=broad-except
+    logger.error(f"Actor {num} encountered an unhandled exception: {type(e).__name__}: {e}")
+    logger.error(traceback.format_exc())
+    # Potentially re-raise or handle to ensure process terminates if supervisor expects it.
+  finally:
+    logger.print(f"Actor {num} stopping...")
+    if remote_evaluator: # Ensure it was initialized
+        remote_evaluator.stop_response_handler()
+    # Any other cleanup specific to the actor
+    logger.print(f"Actor {num} has stopped.")
 
 
 @watcher
@@ -520,114 +539,103 @@ def evaluator(*, game: pyspiel.Game, config, logger, num: int, # config is Confi
                 inference_request_queue, # mp.Queue
                 inference_response_queue # mp.Queue
                 ):
-  """An evaluator process that plays games against a fixed set of MCTS search counts."""
-  np.random.seed(initial_seed)
+  """An evaluator process that evaluates the model against a baseline."""
+  logger.print(f"Evaluator {num} starting with PID {os.getpid()} and seed {initial_seed}")
   random.seed(initial_seed)
+  np.random.seed(initial_seed)
 
-  # Determine log_path for RemoteEvaluator for evaluators
-  evaluator_log_path_for_eval_process = os.path.join(config.path, f"evaluator_{num}_remote_eval")
-  # os.makedirs(evaluator_log_path_for_eval_process, exist_ok=True) # Ensure dir exists
-
-  if logger is None:
-      logger = file_logger.FileLogger(config.path, f"evaluator_{num}", not config.quiet)
-  
-  logger.print(f"Evaluator {num} started with initial_seed: {initial_seed}")
-
-  # Initialize RemoteEvaluator for this evaluator process
-  az_evaluator = RemoteEvaluator(
+  # Initialize the RemoteEvaluator for this evaluator process
+  remote_evaluator = RemoteEvaluator(
       game=game,
-      actor_id=num, # Use the actor/evaluator number as its ID
+      actor_id=1000 + num, # Use a different ID range for evaluators to distinguish logs
       inference_request_queue=inference_request_queue,
       inference_response_queue=inference_response_queue,
-      max_cache_size=config.evaluator_cache_size,
-      numeric_log_level=config.log_level, # CHANGED: Pass numeric_log_level from config
-      # debug_mode=(getattr(config, 'evaluator_verbosity', config.log_level) >= _EVALUATOR_DEBUG_LEVEL), # OLD: Pass debug_mode
-      log_path=evaluator_log_path_for_eval_process # Pass the constructed log_path
+      numeric_log_level=config.log_level,
+      max_cache_size=config.evaluator_cache_size, # Using a common cache size config
+      log_path=config.path
   )
+  remote_evaluator.start_response_handler() # Start the handler thread
 
-  # Create bots with different MCTS budgets for evaluation
-  eval_bots_configs = []
-  for i in range(config.eval_levels):
-    simulations = config.max_simulations // (2**(config.eval_levels - 1 - i))
-    if simulations == 0: simulations = 1 # Ensure at least 1 simulation
-    
-    # Bot for player 0 (the agent being evaluated)
-    # Evaluation bots do not use Dirichlet noise.
-    bot0_eval_config = config._replace(max_simulations=simulations)
-    bot0 = _init_bot(bot0_eval_config, game, az_evaluator, True, 0) # player_id 0
-    
-    # Bot for player 1 (opponent, also uses the agent's policy but potentially different MCTS budget)
-    # Typically, for evaluation, both players use the same policy but might have symmetric MCTS settings.
-    # Here, we assume a symmetric setup where the opponent is also an AZ bot with the same (potentially reduced) MCTS count.
-    bot1_eval_config = config._replace(max_simulations=simulations) 
-    bot1 = _init_bot(bot1_eval_config, game, az_evaluator, True, 1) # player_id 1
-    
-    eval_bots_configs.append({
-        "simulations": simulations,
-        "bots": [bot0, bot1] # Assuming a 2-player game
-    })
+  model_player_id = 0
+  baseline_player_id = 1
 
-  game_num_iterator = itertools.count(start=num, step=config.evaluators)
-  
   try:
-    while True:
-      try:
-        game_num = next(game_num_iterator)
-        numpy_seed_for_game = initial_seed + game_num # Unique seed for this game
+    # Initialize the bot for the model being evaluated
+    # The actor_specific_logger can be the watcher's logger
+    model_bot = _init_bot(config, game, remote_evaluator, evaluation=True, player_id_for_bot=model_player_id, actor_specific_logger=logger)
 
-        for bot_config_info in eval_bots_configs:
-            simulations = bot_config_info["simulations"]
-            current_eval_bots = bot_config_info["bots"]
-            
-            if config.log_level >= 2: # INFO
-                logger.print(f"Evaluator {num} playing game {game_num} with {simulations} simulations.")
+    # Initialize a baseline bot (e.g., a random player or a simpler MCTS)
+    # Create bots with different MCTS budgets for evaluation
+    eval_bots_configs = []
+    for i in range(config.eval_levels):
+      simulations = config.max_simulations // (2**(config.eval_levels - 1 - i))
+      if simulations == 0: simulations = 1 # Ensure at least 1 simulation
+      
+      # Bot for player 0 (the agent being evaluated)
+      # Evaluation bots do not use Dirichlet noise.
+      bot0_eval_config = config._replace(max_simulations=simulations)
+      bot0 = _init_bot(bot0_eval_config, game, remote_evaluator, True, 0, actor_specific_logger=logger) # player_id 0
+      
+      # Bot for player 1 (opponent, also uses the agent's policy but potentially different MCTS budget)
+      # Typically, for evaluation, both players use the same policy but might have symmetric MCTS settings.
+      # Here, we assume a symmetric setup where the opponent is also an AZ bot with the same (potentially reduced) MCTS count.
+      bot1_eval_config = config._replace(max_simulations=simulations) 
+      bot1 = _init_bot(bot1_eval_config, game, remote_evaluator, True, 1, actor_specific_logger=logger) # player_id 1
+      
+      eval_bots_configs.append({
+          "simulations": simulations,
+          "bots": [bot0, bot1] # Assuming a 2-player game
+      })
 
-            trajectory = _play_game(
-                logger,
-                game_num, # Pass actual game_num for logging
-                game,
-                current_eval_bots,
-                temperature=0,  # Evaluation is deterministic, so temperature is 0
-                temperature_drop=0, # Not relevant if temperature is 0
-                numpy_seed=numpy_seed_for_game,
-                log_level=config.log_level)
-            
-            if trajectory is None or not trajectory.states:
-                logger.print(f"Evaluator {num} game {game_num} with {simulations} sims: Trajectory empty, skipping.")
-                continue
+    game_num_iterator = itertools.count(start=num, step=config.evaluators)
+    
+    for game_num in game_num_iterator:
+      numpy_seed_for_game = initial_seed + game_num # Unique seed for this game
 
-            game_returns = trajectory.returns 
-            
-            outcome_player0 = 0
-            if game_returns[0] > game_returns[1]: # P0 won
-                outcome_player0 = 1
-            elif game_returns[0] < game_returns[1]: # P0 lost
-                outcome_player0 = -1
-                
-            eval_result = (len(trajectory.states), outcome_player0, simulations)
-            
-            if config.log_level >= 2: # INFO
-                logger.print(f"Evaluator {num} game {game_num} with {simulations} sims: result {eval_result}")
-            queue.put(eval_result)
+      for bot_config_info in eval_bots_configs:
+          simulations = bot_config_info["simulations"]
+          current_eval_bots = bot_config_info["bots"]
+          
+          if config.log_level >= 2: # INFO
+              logger.print(f"Evaluator {num} playing game {game_num} with {simulations} simulations.")
 
-      except (TimeoutError, std_queue.Full, std_queue.Empty) as e_transient: # Catch specific transient errors
-        if logger:
-            logger.print(f"Evaluator {num} caught transient error in main loop: {type(e_transient).__name__}: {e_transient}. Continuing.")
-        time.sleep(1)  # Brief pause before continuing the loop
-        continue
-      # More critical errors within the loop will fall through to the outer Exception handler.
+          trajectory = _play_game(
+              logger,
+              game_num, # Pass actual game_num for logging
+              game,
+              current_eval_bots,
+              temperature=0,  # Evaluation is deterministic, so temperature is 0
+              temperature_drop=0, # Not relevant if temperature is 0
+              numpy_seed=numpy_seed_for_game,
+              log_level=config.log_level)
+          
+          if trajectory is None or not trajectory.states:
+              logger.print(f"Evaluator {num} game {game_num} with {simulations} sims: Trajectory empty, skipping.")
+              continue
+
+          game_returns = trajectory.returns 
+          
+          outcome_player0 = 0
+          if game_returns[0] > game_returns[1]: # P0 won
+              outcome_player0 = 1
+          elif game_returns[0] < game_returns[1]: # P0 lost
+              outcome_player0 = -1
+              
+          eval_result = (len(trajectory.states), outcome_player0, simulations)
+          
+          if config.log_level >= 2: # INFO
+              logger.print(f"Evaluator {num} game {game_num} with {simulations} sims: result {eval_result}")
+          queue.put(eval_result)
+
+    logger.print(f"Evaluator {num} finished: {game_num -1} evals, {game_num -1} trajectories.")
 
   except ShutdownException:
-    logger.print(f"Evaluator {num} received shutdown signal. Exiting.")
+    logger.print(f"Evaluator {num} received ShutdownException. Exiting gracefully.")
   except Exception as e: # pylint: disable=broad-except
-    logger.print(f"Evaluator {num} caught unhandled error: {e}\n{traceback.format_exc()}")
+    logger.error(f"Evaluator {num} encountered an unhandled exception: {type(e).__name__}: {e}")
+    logger.error(traceback.format_exc())
   finally:
-    # Similar to actor, best-effort signal.
-    try:
-        # The tuple structure here was: (SHUTDOWN_SENTINEL, unique_evaluator_id, None, None, None)
-        # unique_evaluator_id = config.actors + num
-        # Removing to avoid deserialization errors.
-        pass 
-    except Exception: # pylint: disable=broad-except
-        pass
-    logger.print(f"Evaluator {num} finished.") 
+    logger.print(f"Evaluator {num} stopping...")
+    if remote_evaluator: # Ensure it was initialized
+        remote_evaluator.stop_response_handler()
+    logger.print(f"Evaluator {num} has stopped.") 
