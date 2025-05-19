@@ -57,30 +57,15 @@ TRACE = 4
 def watcher(fn):
     @functools.wraps(fn)
     def _watcher_wrapper(*args, **kwargs):
-        # --- [WATCHER_DEBUG] ---
-        print(f"[WATCHER_DEBUG] Watcher for {fn.__name__ if fn else 'None (fn is None)'} called. fn is: {fn}. PID: {os.getpid()}")
-        if 'config' in kwargs and hasattr(kwargs['config'], 'path'):
-            print(f"[WATCHER_DEBUG] Watcher for {fn.__name__ if fn else 'None (fn is None)'}: config.path is '{kwargs['config'].path}'. PID: {os.getpid()}")
-        else:
-            print(f"[WATCHER_DEBUG] Watcher for {fn.__name__ if fn else 'None (fn is None)'}: config or config.path not in kwargs. PID: {os.getpid()}")
-
         logger = None
         # Attempt to get logger from kwargs, similar to original base_watcher
         if 'logger' in kwargs and kwargs['logger'] is not None:
             logger = kwargs['logger']
         elif 'config' in kwargs and hasattr(kwargs['config'], 'path') and kwargs['config'].path:
-            # --- [WATCHER_DEBUG] Temporarily use a fixed name for the log directory for learner's watcher
             dir_name_for_log = fn.__name__ if fn.__name__ == "learner" else "unknown_watched_function"
-            if fn.__name__ != "learner":
-                print(f"[WATCHER_DEBUG] WARNING: fn.__name__ is '{fn.__name__}', not 'learner'. Using '{dir_name_for_log}' for log dir. PID: {os.getpid()}")
-            # log_dir = os.path.join(kwargs['config'].path, fn.__name__)
-            log_dir = os.path.join(kwargs['config'].path, "learner") # DIAGNOSTIC: Hardcode for learner's watcher
-            print(f"[WATCHER_DEBUG] Watcher for {fn.__name__ if fn else 'None'}: Using hardcoded log_dir: '{log_dir}'. PID: {os.getpid()}")
-
+            log_dir = os.path.join(kwargs['config'].path, "learner")
             os.makedirs(log_dir, exist_ok=True)
-            # Use a more specific log name if num is available, common for actor/evaluator
             log_num_suffix = f"_{kwargs['num']}" if 'num' in kwargs else ""
-            # Determine also_to_stdout based on config.quiet, if config is available
             should_also_print_to_stdout = not kwargs['config'].quiet if 'config' in kwargs and hasattr(kwargs['config'], 'quiet') else True
             logger = file_logger.FileLogger(log_dir, f"{fn.__name__}{log_num_suffix}_log", also_to_stdout=should_also_print_to_stdout)
         else: # Fallback to a basic print if no logger can be configured
@@ -108,11 +93,8 @@ def watcher(fn):
             else: # Fallback print if logger failed or is None
                 print(f"--- FALLBACK WATCHER EXCEPTION PRINT FOR {fn.__name__} ---")
                 print(f"{fn.__name__}_watcher: A BaseException occurred in {fn.__name__}:\n{traceback.format_exc()}")
-            # Decide if to re-raise or handle. For critical errors, process might need to stop.
-            # For now, let it propagate if it's very critical, or absorb if it's for managed shutdown.
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
                 raise # Re-raise critical exit exceptions
-            # Otherwise, the process might terminate here after logging.
         finally:
             if logger and hasattr(logger, 'print'):
                 logger.print(f"{fn.__name__} (watched): Finished execution (normally or after exception).")
@@ -167,17 +149,10 @@ class ConfigJAX(collections.namedtuple(
 
 def alpha_zero_jax(config: ConfigJAX):
     """Main entry point for JAX AlphaZero."""
-    # --- [AZ_JAX_DEBUG] ---
-    print(f"[AZ_JAX_DEBUG] alpha_zero_jax started. PID: {os.getpid()}")
     import pyspiel  # Ensure pyspiel is imported in this scope
     main_key = jax.random.PRNGKey(config.master_seed)
-    # Python and NumPy random seeds are set globally for the main process if needed,
-    # but actor/evaluator subprocesses will get their own dedicated integer seeds.
     random.seed(config.master_seed) 
     np.random.seed(config.master_seed) # Seed NumPy for main process
-
-    # --- [AZ_JAX_DEBUG] ---
-    print(f"[AZ_JAX_DEBUG] Config path is: {config.path}. PID: {os.getpid()}")
     os.makedirs(config.path, exist_ok=True)
     main_log_directory = config.path 
     main_log_name = "main_alpha_zero_jax" 
@@ -186,30 +161,13 @@ def alpha_zero_jax(config: ConfigJAX):
     if not config.quiet and config.log_level >= INFO:
         print(f"Main process logging to: {actual_log_file_path}")
     game = pyspiel.load_game(config.game)
-
-    # --- [AZ_JAX_DEBUG] Game Details --- 
-    print(f"[AZ_JAX_DEBUG] Game: {config.game}")
-    print(f"[AZ_JAX_DEBUG] Observation Tensor Shape: {game.observation_tensor_shape()}")
-    print(f"[AZ_JAX_DEBUG] Observation Tensor Layout: {game.observation_tensor_layout()}")
-    print(f"[AZ_JAX_DEBUG] Num Distinct Actions: {game.num_distinct_actions()}")
-    # --- End Game Details ---
-
-    # Populate config with game-specific details if not already done (e.g. by a launcher script)
-    # This is crucial for model initialization.
     config_updates = {}
     if config.observation_shape is None or not config.observation_shape:
         config_updates["observation_shape"] = tuple(game.observation_tensor_shape())
     if config.output_size is None or config.output_size == 0:
         config_updates["output_size"] = game.num_distinct_actions()
-    
     if config_updates:
         config = config._replace(**config_updates)
-        # --- [AZ_JAX_DEBUG] Config Updated ---
-        print(f"[AZ_JAX_DEBUG] Config updated with game details: observation_shape={config.observation_shape}, output_size={config.output_size}")
-    else:
-        # --- [AZ_JAX_DEBUG] Config Unchanged ---
-        print(f"[AZ_JAX_DEBUG] Config already had game details: observation_shape={config.observation_shape}, output_size={config.output_size}")
-
     servicer_key, spawn_key = jax.random.split(main_key)
     inference_model, inference_variables = model_jax.init_flax_model_and_variables(
         servicer_key, config, game)
@@ -217,20 +175,14 @@ def alpha_zero_jax(config: ConfigJAX):
     learner_key = process_keys[0]
     actor_seed_keys = process_keys[1 : 1 + config.actors]
     evaluator_seed_keys = process_keys[1 + config.actors : 1 + config.actors + config.evaluators]
-
     actor_initial_seeds = [jax.random.randint(key, (), 0, 2**31 - 1).item() for key in actor_seed_keys]
     evaluator_initial_seeds = [jax.random.randint(key, (), 0, 2**31 - 1).item() for key in evaluator_seed_keys]
-
-    # Create a consolidated list of response queues for remote inference
     total_remote_clients = config.actors + config.evaluators
     all_client_response_queues = [mp.Queue() for _ in range(total_remote_clients)]
-
-    # Initialize inference_request_queue and lists for processes and their queues
     inference_request_queue = mp.Queue()
     processes = []
     actor_process_queues = []
     evaluator_process_queues = []
-
     if config.log_level >= INFO:
         main_process_logger.print(f"Starting {config.actors} actors...")
     for i in range(config.actors):
@@ -252,7 +204,7 @@ def alpha_zero_jax(config: ConfigJAX):
             "game": game,
             "config": config,
             "num": i,
-            "initial_seed": evaluator_initial_seeds[i], # CORRECTED: Was evaluator_keys[i]
+            "initial_seed": evaluator_initial_seeds[i],
             "inference_request_queue": inference_request_queue,
             "inference_response_queue": all_client_response_queues[config.actors + i]
         }
@@ -266,17 +218,13 @@ def alpha_zero_jax(config: ConfigJAX):
         "evaluator_queues": evaluator_process_queues,
         "prng_key": learner_key,
         "inference_request_queue": inference_request_queue,
-        # "actor_inference_response_queues": actor_inference_response_queues, # Old, now consolidated
-        "all_client_response_queues": all_client_response_queues, # New consolidated list
-        "initial_flax_model": inference_model,      # Pass the centrally initialized model
-        "initial_variables": inference_variables   # Pass the centrally initialized variables
+        "all_client_response_queues": all_client_response_queues,
+        "initial_flax_model": inference_model,
+        "initial_variables": inference_variables
     }
     if config.log_level >= INFO:
         main_process_logger.print("Starting Learner in main process...")
     try:
-        # --- [AZ_JAX_DEBUG] ---
-        print(f"[AZ_JAX_DEBUG] About to call learner. PID: {os.getpid()}")
-        # Call learner directly with unpacked kwargs for clarity
         learner(
             game=learner_kwargs["game"],
             config=learner_kwargs["config"],
@@ -284,27 +232,17 @@ def alpha_zero_jax(config: ConfigJAX):
             evaluator_queues=learner_kwargs["evaluator_queues"],
             prng_key=learner_kwargs["prng_key"],
             inference_request_queue=learner_kwargs["inference_request_queue"],
-            # "actor_inference_response_queues": learner_kwargs["actor_inference_response_queues"], # Old
-            all_client_response_queues=learner_kwargs["all_client_response_queues"], # New
+            all_client_response_queues=learner_kwargs["all_client_response_queues"],
             initial_flax_model=learner_kwargs["initial_flax_model"],
             initial_variables=learner_kwargs["initial_variables"]
         )
-        # --- [AZ_JAX_DEBUG] ---
-        print(f"[AZ_JAX_DEBUG] Learner call finished (no top-level exception). PID: {os.getpid()}")
     except (KeyboardInterrupt, EOFError) as e:
-        # --- [AZ_JAX_DEBUG] ---
-        print(f"[AZ_JAX_DEBUG] Learner call caught {type(e).__name__}. PID: {os.getpid()}")
         if config.log_level >= INFO:
             main_process_logger.print(f"Caught {type(e).__name__}, stopping AlphaZero JAX.")
-    except Exception as e_learner_call: # Catch any other exception from learner call itself or watcher
-        # --- [AZ_JAX_DEBUG] ---
-        print(f"[AZ_JAX_DEBUG] Learner call caught generic Exception: {type(e_learner_call)} - {e_learner_call}. PID: {os.getpid()}")
-        print(f"[AZ_JAX_DEBUG] Traceback: {traceback.format_exc()}") # Print traceback here
-        if config.log_level >= ERROR: # Use ERROR level for unexpected exceptions
+    except Exception as e_learner_call:
+        if config.log_level >= ERROR:
              main_process_logger.print(f"Generic exception during learner execution: {type(e_learner_call)} - {e_learner_call}\n{traceback.format_exc()}")
     finally:
-        # --- [AZ_JAX_DEBUG] ---
-        print(f"[AZ_JAX_DEBUG] Entering finally block for learner call. PID: {os.getpid()}")
         if config.log_level >= INFO:
             main_process_logger.print("AlphaZero JAX stopping. Signaling actors and evaluators to exit.")
         for proc in processes:
@@ -377,8 +315,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             evaluator_queues: list[spawn._ProcessQueue], 
             prng_key: jax.random.PRNGKey,
             inference_request_queue: mp.Queue, 
-            # actor_inference_response_queues: list[mp.Queue], # Old
-            all_client_response_queues: list[mp.Queue], # New
+            all_client_response_queues: list[mp.Queue],
             initial_flax_model, initial_variables): 
   """A learner that consumes actor trajectories and evaluator results, and updates the model."""
   # Start Python allocation tracing and RSS monitoring
@@ -583,8 +520,6 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         (policy_logits, value_preds) = preds_and_state
         updated_model_state = None
 
-      # DEBUG PRINTS START
-
       policy_loss_ce = optax.safe_softmax_cross_entropy(logits=policy_logits, labels=batch_policy_targets)
 
       has_at_least_one_legal_action = jnp.any(batch_legals_masks, axis=1)
@@ -593,24 +528,16 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
       num_valid_policy_samples = jnp.sum(has_at_least_one_legal_action)
       policy_loss = jnp.sum(policy_loss_final_contrib) / jnp.maximum(num_valid_policy_samples, 1.0)
 
-      # DEBUG PRINTS START
-      # jax.debug.print("policy_loss (masked_and_averaged): {x}", x=policy_loss)
-      # DEBUG PRINTS END
 
       value_loss = optax.squared_error(
           predictions=jnp.squeeze(value_preds, axis=-1),
           targets=jnp.squeeze(batch_value_targets, axis=-1)
       )
       value_loss = jnp.mean(value_loss)
-      
-      # DEBUG PRINTS START
-      # jax.debug.print("value_loss: {x}", x=value_loss)
-      # DEBUG PRINTS END
+
       
       total_loss = policy_loss + value_loss
-      # DEBUG PRINTS START
-      # jax.debug.print("total_loss: {x}", x=total_loss)
-      # DEBUG PRINTS END
+
       return total_loss, (updated_model_state, policy_loss, value_loss)
 
     (loss_val, (new_model_state, p_loss, v_loss)), grads = jax.value_and_grad(
@@ -624,10 +551,6 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
     if new_model_state and 'batch_stats' in new_model_state:
         new_variables['batch_stats'] = new_model_state['batch_stats']
     
-    # Debug prints for variable and opt_state contents (can be removed after verification)
-    # jax.debug.print("--- train_step_fn OUTPUT: new_variables PyTree structure ---")
-    # ... (existing debug prints for variables and opt_state)
-          
     return new_variables, new_opt_state, loss_val, p_loss, v_loss
 
   # ---- Main Learner Loop ----
