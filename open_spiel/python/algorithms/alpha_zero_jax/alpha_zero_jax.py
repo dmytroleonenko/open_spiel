@@ -1049,38 +1049,11 @@ class BatchAssemblyThread(threading.Thread):
                     self.ready_batch_queue.put(SHUTDOWN_SENTINEL) 
                     break 
 
-                if self.logger and self.log_level >= TRACE: # TRACE for raw tuple
-                    self.logger.print(f"BatchAssemblyThread: Received raw_request_tuple: {raw_request_tuple}")
+                if self.logger and self.log_level >= 4: # TRACE
+                    self.logger.print(f"BatchAssemblyThread: Received raw request: {raw_request_tuple}")
 
                 try:
-                    # ---- INVESTIGATION LOGGING (Conditional) ----
-                    log_condition_met = False
-                    raw_actor_id_for_condition = -1 # Default if not a valid tuple
-
-                    if isinstance(raw_request_tuple, tuple) and len(raw_request_tuple) > 2:
-                        # Assuming actor_id is the 3rd element (index 2)
-                        # Format: (INFERENCE_REQ, req_id, actor_id, obs, legals, time)
-                        if isinstance(raw_request_tuple[2], int):
-                             raw_actor_id_for_condition = raw_request_tuple[2]
-                        if raw_actor_id_for_condition > 100: # Condition for logging
-                            log_condition_met = True
-                            if self.logger and self.log_level >= WARN: # Log suspicious raw tuples as WARNING
-                                self.logger.print(f"INVESTIGATE_ACTOR_ID_LEARNER (CONDITIONAL): Suspicious actor_id in raw_request_tuple. Actor_id from tuple (index 2): {raw_actor_id_for_condition}. Full tuple: {raw_request_tuple}")
-                        elif self.logger and self.log_level >= TRACE: # TRACE for normal raw tuples
-                            self.logger.print(f"BatchAssemblyThread: Received raw_request_tuple (actor_id {raw_actor_id_for_condition}): {raw_request_tuple}")
-                    elif self.logger and self.log_level >= WARN: # Log if not a tuple or too short as WARNING
-                        self.logger.print(f"INVESTIGATE_ACTOR_ID_LEARNER (CONDITIONAL): Received raw_request_tuple, but it's not a valid tuple or too short. Tuple: {raw_request_tuple}")
-                        log_condition_met = True # Log deserialization attempt if tuple was bad
-                    
                     inference_request_obj = InferenceRequest.from_tuple(raw_request_tuple)
-                    
-                    # Log deserialized info if initial raw actor_id was suspicious OR if deserialized actor_id is suspicious
-                    if log_condition_met or (isinstance(inference_request_obj.actor_id, int) and inference_request_obj.actor_id > 100):
-                        if self.logger and self.log_level >= WARN: # Log suspicious deserialized objects as WARNING
-                            self.logger.print(f"INVESTIGATE_ACTOR_ID_LEARNER (CONDITIONAL): Deserialized InferenceRequest. Object actor_id: {inference_request_obj.actor_id}, request_id: {inference_request_obj.request_id}. Raw tuple actor_id was: {raw_actor_id_for_condition}")
-                    elif self.logger and self.log_level >= DEBUG: # DEBUG for normal deserialized objects
-                        self.logger.print(f"BatchAssemblyThread: Deserialized InferenceRequest. actor_id: {inference_request_obj.actor_id}, request_id: {inference_request_obj.request_id}")
-                        
                 except ValueError as e:
                     if self.logger and self.log_level >= WARN:
                         self.logger.print(f"BatchAssemblyThread: Error deserializing request: {e}. Skipping request: {raw_request_tuple}")
