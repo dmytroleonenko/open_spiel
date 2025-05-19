@@ -1038,10 +1038,11 @@ class BatchAssemblyThread(threading.Thread):
                     self.total_wait_time_for_requests_sec += actual_wait_time
                     self.requests_processed_count += 1
 
-                # ---- START OF USER REQUESTED DEBUG CODE ----
-                if isinstance(raw_request_tuple, tuple) and len(raw_request_tuple) > 1 and raw_request_tuple[1] == 1000:
-                    print(f"ACTOR_ID_DEBUG: Raw tuple with actor_id 1000: {raw_request_tuple}")
-                # ---- END OF USER REQUESTED DEBUG CODE ----
+                # ---- START OF CORRECTED DEBUG CODE ----
+                if isinstance(raw_request_tuple, tuple) and len(raw_request_tuple) > 2 and isinstance(raw_request_tuple[2], int) and raw_request_tuple[2] >= 1000:
+                    # raw_request_tuple is (INFERENCE_REQ, request_id, actor_id, observation, legals_mask, request_time)
+                    print(f"ACTOR_ID_DEBUG: Raw tuple from evaluator. Type: {raw_request_tuple[0]}, Req_ID: {raw_request_tuple[1]}, Actor_ID: {raw_request_tuple[2]}")
+                # ---- END OF CORRECTED DEBUG CODE ----
 
                 # --- [SERVDEB] ---
                 if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
@@ -1065,7 +1066,20 @@ class BatchAssemblyThread(threading.Thread):
                     continue # Skip this malformed request
 
                 # The actor_id from the deserialized request is the index for all_client_response_queues
-                origin_response_queue_idx = inference_request_obj.actor_id 
+                # origin_response_queue_idx = inference_request_obj.actor_id # OLD INCORRECT LINE
+                req_actor_id = inference_request_obj.actor_id
+                if req_actor_id >= 1000: # It's an evaluator
+                    # self.num_actors is config.actors
+                    evaluator_num_relative = req_actor_id - 1000
+                    origin_response_queue_idx = self.num_actors + evaluator_num_relative
+                else: # It's an actor
+                    origin_response_queue_idx = req_actor_id
+                
+                # ---- START OF DEBUG FOR MAPPED INDEX ----
+                if req_actor_id >=1000:
+                    print(f"ACTOR_ID_DEBUG: Evaluator req_actor_id={req_actor_id} mapped to origin_response_queue_idx={origin_response_queue_idx}. self.num_actors={self.num_actors}")
+                # ---- END OF DEBUG FOR MAPPED INDEX ----
+
                 current_batch_requests.append((inference_request_obj, origin_response_queue_idx))
 
                 # If this is the first request in a new batch, reset the assembly start time
