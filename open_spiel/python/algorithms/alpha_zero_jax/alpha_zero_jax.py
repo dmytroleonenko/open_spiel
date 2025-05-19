@@ -1027,9 +1027,6 @@ class BatchAssemblyThread(threading.Thread):
                 # A small positive timeout also prevents busy-waiting if timeout_for_get becomes zero.
                 timeout_for_get = max(0.001, timeout_for_get)
 
-                # --- [SERVDEB] ---
-                if self.logger and self.log_level >= TRACE: # TRACE for very frequent
-                    self.logger.print(f"[SERVDEB] BatchAssemblyThread: Attempting to get from request_queue with timeout {timeout_for_get:.3f}s. Current batch size: {len(current_batch_requests)}")
 
                 wait_start_time = time.time()
                 raw_request_tuple = self.request_queue.get(timeout=timeout_for_get)
@@ -1038,15 +1035,6 @@ class BatchAssemblyThread(threading.Thread):
                     self.total_wait_time_for_requests_sec += actual_wait_time
                     self.requests_processed_count += 1
 
-                # ---- START OF CORRECTED DEBUG CODE ----
-                if isinstance(raw_request_tuple, tuple) and len(raw_request_tuple) > 2 and isinstance(raw_request_tuple[2], int) and raw_request_tuple[2] >= 1000:
-                    # raw_request_tuple is (INFERENCE_REQ, request_id, actor_id, observation, legals_mask, request_time)
-                    print(f"ACTOR_ID_DEBUG: Raw tuple from evaluator. Type: {raw_request_tuple[0]}, Req_ID: {raw_request_tuple[1]}, Actor_ID: {raw_request_tuple[2]}")
-                # ---- END OF CORRECTED DEBUG CODE ----
-
-                # --- [SERVDEB] ---
-                if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
-                    self.logger.print(f"[SERVDEB] BatchAssemblyThread: Got item from request_queue. Item: {str(raw_request_tuple)[:100]}")
 
 
                 if raw_request_tuple == SHUTDOWN_SENTINEL:
@@ -1075,11 +1063,6 @@ class BatchAssemblyThread(threading.Thread):
                 else: # It's an actor
                     origin_response_queue_idx = req_actor_id
                 
-                # ---- START OF DEBUG FOR MAPPED INDEX ----
-                if req_actor_id >=1000:
-                    print(f"ACTOR_ID_DEBUG: Evaluator req_actor_id={req_actor_id} mapped to origin_response_queue_idx={origin_response_queue_idx}. self.num_actors={self.num_actors}")
-                # ---- END OF DEBUG FOR MAPPED INDEX ----
-
                 current_batch_requests.append((inference_request_obj, origin_response_queue_idx))
 
                 # If this is the first request in a new batch, reset the assembly start time
@@ -1118,9 +1101,6 @@ class BatchAssemblyThread(threading.Thread):
                 if self.logger and self.log_level >= TRACE: # TRACE for per-batch send
                     self.logger.print(f"BatchAssemblyThread: Sending batch of size {len(current_batch_requests)}")
                 try:
-                    # --- [SERVDEB] ---
-                    if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
-                         self.logger.print(f"[SERVDEB] BatchAssemblyThread: Putting batch of size {len(current_batch_requests)} onto ready_batch_queue.")
                     # Send a list of (InferenceRequest_obj, origin_idx) tuples
                     self.ready_batch_queue.put(list(current_batch_requests), timeout=1.0) # Use a timeout for putting
                     with self.stats_lock:
@@ -1203,15 +1183,9 @@ class InferenceExecutionThread(threading.Thread):
         
         while not self._stop_event.is_set():
             try:
-                # --- [SERVDEB] ---
-                if self.logger and self.log_level >= TRACE: # TRACE for very frequent
-                    self.logger.print("[SERVDEB] InferenceExecutionThread: Attempting to get from ready_batch_queue with timeout 0.1s.")
                 # Get a batch of requests (or SHUTDOWN_SENTINEL) from BatchAssemblyThread
                 # Use a timeout to periodically check the _stop_event
                 batch_data_from_assembler = self.ready_batch_queue.get(timeout=0.1) 
-                # --- [SERVDEB] ---
-                if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
-                    self.logger.print(f"[SERVDEB] InferenceExecutionThread: Got item from ready_batch_queue. Type: {type(batch_data_from_assembler)}, IsSentinel: {batch_data_from_assembler == SHUTDOWN_SENTINEL}")
             except std_queue.Empty:
                 continue # Timeout, check stop_event and loop again
 
@@ -1243,9 +1217,6 @@ class InferenceExecutionThread(threading.Thread):
             # Stack observations and masks into JAX arrays
             # Observations and legals_masks are expected to be NumPy arrays from RemoteEvaluator
             try:
-                # --- [SERVDEB] ---
-                if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
-                    self.logger.print(f"[SERVDEB] InferenceExecutionThread: Stacking batch data. Num items: {len(batched_observations_list)}")
                 obs_array_batch = jnp.asarray(np.stack(batched_observations_list))
                 legals_array_batch = jnp.asarray(np.stack(batched_legals_masks_list))
             except Exception as e: # pylint: disable=broad-except
@@ -1270,9 +1241,6 @@ class InferenceExecutionThread(threading.Thread):
                 current_vars = self.model_variables
             
             try:
-                # --- [SERVDEB] ---
-                if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
-                    self.logger.print(f"[SERVDEB] InferenceExecutionThread: Applying model. Batch obs shape: {obs_array_batch.shape}, legals shape: {legals_array_batch.shape}")
                 
                 inference_start_time = time.time()
                 policy_probs_batch, value_output_batch = self.model_apply_fn(
@@ -1283,9 +1251,6 @@ class InferenceExecutionThread(threading.Thread):
                     self.total_inferences_processed_count += obs_array_batch.shape[0]
                     self.total_model_inference_time_sec += inference_duration_sec
 
-                # --- [SERVDEB] ---
-                if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
-                    self.logger.print(f"[SERVDEB] InferenceExecutionThread: Model apply finished.")
                 
                 # Ensure results are NumPy arrays for sending via queue
                 policy_arrays_np = np.asarray(policy_probs_batch)
@@ -1321,9 +1286,6 @@ class InferenceExecutionThread(threading.Thread):
 
                 if self.logger and self.log_level >= 4: # TRACE
                     self.logger.print(f"InferenceExecutionThread: Sending response to client {origin_idx} for req {req_id}: {response_tuple}")
-                # --- [SERVDEB] ---
-                if self.logger and self.log_level >= TRACE: # Changed from DEBUG to TRACE
-                    self.logger.print(f"[SERVDEB] InferenceExecutionThread: Sending response for req {req_id} to client queue {origin_idx}.")
 
                 try:
                     # Use origin_idx to get the correct response queue from all_client_response_queues
