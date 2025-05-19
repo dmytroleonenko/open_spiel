@@ -46,11 +46,11 @@ INFO = 2
 DEBUG = 3
 TRACE = 4
 # Log-level meanings:
-#   ERROR: Only critical errors and experiment-ending events.
-#   WARN:  Warnings about recoverable issues or unexpected states.
-#   INFO:  High-level experiment progress, start/stop, per-episode summaries.
+#   ERROR: Critical errors and experiment-ending events.
+#   WARN:  Recoverable issues or unexpected states.
+#   INFO:  High-level experiment progress (start/stop, episode summaries).
 #   DEBUG: Per-step training summaries, checkpointing, detailed diagnostics.
-#   TRACE: Extremely verbose, per-move or per-action logs (rarely used).
+#   TRACE: Extremely verbose, per-move or per-action logs.
 # All logging output in this file should be gated by these levels, and no print() should appear unless guarded by log_level >= DEBUG or higher.
 
 # Custom watcher that catches BaseException
@@ -146,9 +146,8 @@ class ConfigJAX(collections.namedtuple(
         "async_timeout",            # float: Timeout (s) for async MCTS leaf evaluation futures.
         "console_summary_log_freq_steps", # int: Frequency (in training steps) to log console summary in learner.
     ])):                                 # Default for remote_evaluator_timeout_ms can be set at instantiation.
-  """A config for the JAX AlphaZero model/experiment."""
-  # To allow None defaults for Optional fields in namedtuple, provide them at instantiation.
-  # Default values for new optional fields can be handled in the main script creating the ConfigJAX instance.
+  """Configuration for the JAX AlphaZero model and experiment."""
+  # Default values for optional fields are handled where ConfigJAX is instantiated.
   pass
 
 
@@ -260,58 +259,6 @@ def alpha_zero_jax(config: ConfigJAX):
             main_process_logger.print("AlphaZero JAX run completed.")
 
 
-# Entry point for the script (if run directly)
-# This requires absl.app and absl.flags, similar to alpha_zero.py
-# For now, this function `alpha_zero_jax` can be called from another script.
-# Example: 
-# if __name__ == '__main__':
-#   from absl import app
-#   from absl import flags
-#   # Define flags for ConfigJAX fields
-#   FLAGS = flags.FLAGS
-#   flags.DEFINE_string("game", "tic_tac_toe", "Name of the game.")
-#   flags.DEFINE_string("path", "/tmp/az_jax_test", "Path for logs and checkpoints.")
-#   # ... other flags ...
-#   flags.DEFINE_integer("master_seed", 42, "Master PRNG seed.")
-
-#   def main(argv):
-#     del argv # Unused.
-#     config = ConfigJAX(
-#         game=FLAGS.game,
-#         path=FLAGS.path,
-#         # ... populate from other flags ...
-#         master_seed=FLAGS.master_seed,
-#         # Sensible defaults for other fields for testing:
-#         learning_rate=0.001, weight_decay=0.0001, train_batch_size=128,
-#         replay_buffer_size=10000, replay_buffer_reuse=4, max_steps=100,
-#         checkpoint_freq=10, actors=1, evaluators=1, evaluation_window=100,
-#         eval_levels=1, uct_c=1.414, max_simulations=50, policy_alpha=0.3,
-#         policy_epsilon=0.25, temperature=1.0, temperature_drop=10,
-#         nn_model="mlp", nn_width=64, nn_depth=2,
-#         observation_shape=[], output_size=0, # Will be filled by game
-#         quiet=False
-#     )
-#     alpha_zero_jax(config)
-
-#   app.run(main)
-
-
-# Ensure all necessary imports are at the top of the file.
-# Missing imports that might be needed based on the code above:
-# import sys
-# import datetime
-# import tempfile
-# import json (already there from model_jax likely, but ensure it's accessible)
-# file_logger was imported as `from open_spiel.python.utils import spawn, file_logger`
-# spawn was imported too.
-
-
-# The learner function is defined below this in the actual file.
-# Make sure its signature matches what's called by alpha_zero_jax:
-# learner(*, game, config, actor_queues, evaluator_queues, broadcast_fn, prng_key)
-# The logger for learner is created by its own @watcher decorator.
-
-
 @watcher
 def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             actor_queues: list[spawn._ProcessQueue], 
@@ -343,8 +290,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
 
   replay_buffer = Buffer(config.replay_buffer_size)
   
-  # ---- JIT Warmup for Inference Function ----
-  # Define the inference function to be JITted (same as used by InferenceServicer)
+  # JIT Warmup for Inference Function
   @jax.jit
   def _batched_inference_fn_for_warmup(model_vars, obs_batch, legals_batch):
       policy_logits, value_preds = initial_flax_model.apply(
@@ -380,9 +326,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         logger.print(traceback.format_exc())
   # ---- End JIT Warmup ----
 
-  # Initialize the InferenceServicer
-  # Pass the already JITted function (_batched_inference_fn_for_warmup) or redefine it for clarity
-  # For clarity, let's redefine the one passed to servicer, ensuring it's the same logic.
+  # JITted inference function for the servicer
   @jax.jit
   def _batched_inference_fn_for_servicer(model_vars, obs_batch, legals_batch):
       policy_logits, value_preds = initial_flax_model.apply(
@@ -410,16 +354,13 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   servicer.start()
   logger.print("Learner: InferenceServicer started.")
 
-  # ---- Orbax Checkpointing Setup ----
-  # Directory for periodic, managed checkpoints
+  # Orbax Checkpointing Setup
   managed_ckpt_dir = os.path.join(config.path, "checkpoints_jax_managed")
-
-  # Directory for the single 'latest' checkpoint (atomically updated)
   latest_ckpt_target_dir = os.path.join(config.path, "checkpoints_jax_latest_atomic") 
 
   if logger and config.log_level >= INFO:
       logger.print(f"Managed checkpoints will be saved to: {managed_ckpt_dir}")
-      logger.print(f"Latest checkpoint (atomic via temp + rename) will be at: {latest_ckpt_target_dir}")
+      logger.print(f"Latest checkpoint will be at: {latest_ckpt_target_dir}")
 
   # For periodic checkpoints
   mngr_options = ocp.CheckpointManagerOptions(
@@ -556,32 +497,26 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
     
     return new_variables, new_opt_state, loss_val, p_loss, v_loss
 
-  # ---- Main Learner Loop ----
   last_time = time.time()
-  start_time = last_time  # Global start time for throughput stats
+  start_time = last_time # For throughput stats
   total_trajectories = 0
   
-  # Counters for this learner instance
-  training_step_count = initial_step # Start from restored step
-  loop_iteration = 0 # Will be 1-based in the loop
+  training_step_count = initial_step
+  loop_iteration = 0
 
-  # For periodic stats logging within the learner, independent of training steps
-  DEFAULT_STATS_LOG_PERIOD = 1000 # Log general stats every X loop iterations if no training
+  DEFAULT_STATS_LOG_PERIOD = 1000
   last_stats_log_iter = 0
-  STATS_LOG_INTERVAL = 1000 # Interval for logging average inference queue size
+  STATS_LOG_INTERVAL = 1000
 
-  # For calculating states/s specifically for periods between training
   states_accumulated_since_last_train = 0
   trajectories_accumulated_since_last_train = 0
-  time_of_last_train_step_or_start = time.time() # Initialize here
+  time_of_last_train_step_or_start = time.time()
 
-  # For calculating average inference queue size
   accumulated_inference_queue_size = 0
   inference_queue_size_samples = 0
 
-  # For periodic rate logging
   last_rate_log_time = time.time()
-  RATE_LOG_INTERVAL = 30.0  # Log rates every 30 seconds
+  RATE_LOG_INTERVAL = 30.0
   states_since_last_rate_log = 0
   training_steps_since_last_rate_log = 0
 
@@ -589,17 +524,15 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
 
   if logger: logger.print(f"Learner starting. Initial training_step_count: {training_step_count}. Max steps: {config.max_steps}. Loop iterations will start from 1.")
 
-  # For periodic INFO level summary logging
   last_summary_log_time = time.time()
-  SUMMARY_LOG_INTERVAL = 30.0  # Log summary every 30 seconds
+  SUMMARY_LOG_INTERVAL = 30.0
 
-  # For console summary log based on training steps
   last_console_summary_log_train_step = initial_step
 
-  for current_loop_iteration_raw in itertools.count(1): # This is an infinite loop unless broken
-    loop_iteration = current_loop_iteration_raw # Ensure it's used as 1-based
+  for current_loop_iteration_raw in itertools.count(1):
+    loop_iteration = current_loop_iteration_raw
 
-    # --- Accumulate inference queue size for averaging ---
+    # Accumulate inference queue size for averaging
     try:
         current_inf_q_size = inference_request_queue.qsize()
         accumulated_inference_queue_size += current_inf_q_size
@@ -607,18 +540,16 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
     except NotImplementedError: # qsize is not implemented on all platforms (e.g. macOS for mp.Queue)
         pass
 
-    if logger and config.log_level >= TRACE: # TRACE level for per-iteration start
+    if logger and config.log_level >= TRACE:
         logger.print(f"Learner: Main loop iteration {loop_iteration} BEGIN.")
 
-    # ---- Data Collection ----
-    # (Code for collecting trajectories from actor_queues)
-    # ... (existing trajectory collection logic) ...
+    # Collect trajectories from actor_queues
     num_states_this_iter = 0
     num_trajectories_this_iter = 0
     trajectories_to_process = []
-    # Drain all available trajectories from actor queues to avoid backlog
-    if not actor_queues: # Check if actor_queues is empty or None
-        if logger and config.log_level >= WARN: # Changed to WARN as this is problematic
+    # Drain actor queues to avoid backlog
+    if not actor_queues:
+        if logger and config.log_level >= WARN:
             logger.print("Learner: No actor queues configured or list is empty. Cannot collect trajectories. Waiting briefly.")
         time.sleep(1) # Prevent busy loop if no actors
 
@@ -692,7 +623,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             replay_buffer.append(train_input)
     # --- End Data Collection ---
 
-    # --- Periodic Rate Logging (every 30 seconds) ---
+    # Periodic Rate Logging
     current_time = time.time()
     if current_time - last_rate_log_time >= RATE_LOG_INTERVAL:
         elapsed = current_time - last_rate_log_time
@@ -706,18 +637,18 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         training_steps_since_last_rate_log = 0
         last_rate_log_time = current_time
 
-    # --- Periodic General Logging (not tied to training step) ---
+    # Periodic General Logging
     now_for_general_log = time.time()
-    seconds_this_loop_iter = now_for_general_log - last_time # last_time is for loop iteration timing
+    seconds_this_loop_iter = now_for_general_log - last_time
     last_time = now_for_general_log
     
-    # --- Max Steps Check ---
+    # Max Steps Check
     if config.max_steps > 0 and training_step_count >= config.max_steps:
         if logger and config.log_level >= INFO: # Log this at INFO
             logger.print(f"Learner: Max training steps {config.max_steps} reached (current: {training_step_count}). Exiting learner main loop.")
         break # EXIT POINT for the main learner loop
 
-    # --- New Time-based Summary Logging Block ---
+    # New Time-based Summary Logging Block
     current_time_for_summary = time.time()
     if current_time_for_summary - last_summary_log_time >= SUMMARY_LOG_INTERVAL:
         servicer_stats = servicer.inference_stats() if servicer else {}
@@ -785,7 +716,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             if logger and config.log_level >= DEBUG: # This log might be very verbose if reuse > 1
               logger.print(loss_log_msg)
             
-            # ---- Orbax Checkpointing: Save (based on training_step_count) ----
+            # Orbax Checkpointing: Save
             save_target_pytree = {'variables': variables, 'opt_state': opt_state}
             try:
                 if checkpoint_manager.should_save(training_step_count): # Use training_step_count
@@ -928,18 +859,8 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
                 last_console_summary_log_train_step = training_step_count
 
 
-    # Console logging for overall progress (less frequent than DEBUG per-iteration logs)
-    # This part seems to have been for the TF version's step based on global states.
-    # The current loop is per "learner iteration".
-    # The current "step" that matches TF behavior is training_step_count.
-
-    # Example of more verbose per-iteration logging (if needed, enable with TRACE or higher DEBUG)
-    if logger and config.log_level >= DEBUG: # This is the primary per-iteration log block
-      # Condition for logging this detailed block:
-      # - Training was performed OR
-      # - New trajectories were received OR
-      # - It's the first iteration OR
-      # - It's a periodic iteration (e.g., every 200th)
+    # Per-iteration DEBUG logging block
+    if logger and config.log_level >= DEBUG:
       log_this_iteration_details = (
           training_performed_this_iteration or
           num_trajectories_this_iter > 0 or
@@ -1004,10 +925,8 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
     servicer.stop()
 
 def set_external_libraries_log_level(log_level):
-    """Set logging level for Orbax, JAX, Flax, and absl based on internal log_level."""
-    # Force external libraries to be less verbose, e.g., WARNING or ERROR
-    # This overrides the passed log_level for these specific libraries.
-    external_lib_py_level = logging.ERROR # Or logging.ERROR for even less
+    """Set logging level for external libraries (Orbax, JAX, Flax, absl)."""
+    external_lib_py_level = logging.ERROR # Enforce ERROR for external libraries to reduce verbosity.
 
     for logger_name in [
         "orbax", "orbax.checkpoint", "jax", "flax", "absl", "absl.logging"
@@ -1036,8 +955,7 @@ def set_external_libraries_log_level(log_level):
     # ... (old code that used py_level)
 
 
-# ---- Inference Servicer Components ----
-# Based on the plan in TODO.md, Section 9.
+# Inference Servicer Components
 
 class BatchAssemblyThread(threading.Thread):
     def __init__(self, request_queue: mp.Queue,
@@ -1065,8 +983,7 @@ class BatchAssemblyThread(threading.Thread):
         with self.stats_lock:
             uptime_sec = time.time() - self.start_time
             avg_requests_per_batch = self.requests_in_assembled_batches_count / self.batches_assembled_count if self.batches_assembled_count > 0 else 0
-            # Note: avg_wait_time might be complex to calculate accurately here without timing each get()
-            # For now, it's a placeholder or needs more detailed timing.
+            # Note: avg_wait_time is an approximation based on total wait time.
             return {
                 "batches_assembled": self.batches_assembled_count,
                 "requests_in_batches": self.requests_in_assembled_batches_count,

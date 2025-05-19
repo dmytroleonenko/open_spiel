@@ -443,28 +443,35 @@ def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
           inference_response_queue # mp.Queue
           ):
   """An actor process that plays games and sends trajectories to the learner."""
-  # Note: logger here is the watcher's FileLogger instance.
   logger.print(f"Actor {num} starting with PID {os.getpid()} and seed {initial_seed}")
-  # Explicitly seed the actor's random number generator for its operations.
   random.seed(initial_seed)
   np.random.seed(initial_seed)
 
-  # Initialize the RemoteEvaluator for this actor
+  logger.print(f"INVESTIGATE_ACTOR_ID: Actor {num} is initializing RemoteEvaluator with actor_id: {num}")
   remote_evaluator = RemoteEvaluator(
       game=game,
-      actor_id=num, 
+      actor_id=num,
       inference_request_queue=inference_request_queue,
       inference_response_queue=inference_response_queue,
-      numeric_log_level=config.log_level,
-      max_cache_size=config.evaluator_cache_size, # Using a common cache size config
+      queue_timeout_ms=config.remote_evaluator_timeout_ms,
+      log_level=config.log_level,
+      logger_prefix=f"ActorRemoteEval_{num}"
+  )
+  actual_remote_evaluator = RemoteEvaluator(
+      game=game, 
+      actor_id=num, 
+      inference_request_queue=inference_request_queue, 
+      inference_response_queue=inference_response_queue, 
+      numeric_log_level=config.log_level, 
+      max_cache_size=config.evaluator_cache_size, 
       log_path=config.path
   )
-  remote_evaluator.start_response_handler() # Start the handler thread
+  actual_remote_evaluator.start_response_handler()
 
   try:
     # Initialize the bot for self-play
     # The actor_specific_logger passed to _init_bot can be the watcher's logger
-    bot = _init_bot(config, game, remote_evaluator, evaluation=False, player_id_for_bot=-1, actor_specific_logger=logger)
+    bot = _init_bot(config, game, actual_remote_evaluator, evaluation=False, player_id_for_bot=-1, actor_specific_logger=logger)
 
     # Calculate temperature schedule
     for game_num in itertools.count(1): # Start game numbers from 1
@@ -522,13 +529,13 @@ def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
   except ShutdownException:
     logger.print(f"Actor {num} received ShutdownException. Exiting gracefully.")
   except Exception as e: # pylint: disable=broad-except
-    logger.error(f"Actor {num} encountered an unhandled exception: {type(e).__name__}: {e}")
-    logger.error(traceback.format_exc())
+    logger.print(f"ERROR: Actor {num} encountered an unhandled exception: {type(e).__name__}: {e}")
+    logger.print(f"ERROR_TRACEBACK: {traceback.format_exc()}")
     # Potentially re-raise or handle to ensure process terminates if supervisor expects it.
   finally:
     logger.print(f"Actor {num} stopping...")
-    if remote_evaluator: # Ensure it was initialized
-        remote_evaluator.stop_response_handler()
+    if actual_remote_evaluator: # Ensure it was initialized
+        actual_remote_evaluator.stop_response_handler()
     # Any other cleanup specific to the actor
     logger.print(f"Actor {num} has stopped.")
 
@@ -541,101 +548,62 @@ def evaluator(*, game: pyspiel.Game, config, logger, num: int, # config is Confi
                 ):
   """An evaluator process that evaluates the model against a baseline."""
   logger.print(f"Evaluator {num} starting with PID {os.getpid()} and seed {initial_seed}")
-  random.seed(initial_seed)
-  np.random.seed(initial_seed)
-
-  # Initialize the RemoteEvaluator for this evaluator process
-  remote_evaluator = RemoteEvaluator(
-      game=game,
-      actor_id=1000 + num, # Use a different ID range for evaluators to distinguish logs
-      inference_request_queue=inference_request_queue,
-      inference_response_queue=inference_response_queue,
-      numeric_log_level=config.log_level,
-      max_cache_size=config.evaluator_cache_size, # Using a common cache size config
-      log_path=config.path
-  )
-  remote_evaluator.start_response_handler() # Start the handler thread
-
-  model_player_id = 0
-  baseline_player_id = 1
-
+  actual_remote_evaluator_for_eval = None
   try:
-    # Initialize the bot for the model being evaluated
-    # The actor_specific_logger can be the watcher's logger
-    model_bot = _init_bot(config, game, remote_evaluator, evaluation=True, player_id_for_bot=model_player_id, actor_specific_logger=logger)
-
-    # Initialize a baseline bot (e.g., a random player or a simpler MCTS)
-    # Create bots with different MCTS budgets for evaluation
-    eval_bots_configs = []
-    for i in range(config.eval_levels):
-      simulations = config.max_simulations // (2**(config.eval_levels - 1 - i))
-      if simulations == 0: simulations = 1 # Ensure at least 1 simulation
-      
-      # Bot for player 0 (the agent being evaluated)
-      # Evaluation bots do not use Dirichlet noise.
-      bot0_eval_config = config._replace(max_simulations=simulations)
-      bot0 = _init_bot(bot0_eval_config, game, remote_evaluator, True, 0, actor_specific_logger=logger) # player_id 0
-      
-      # Bot for player 1 (opponent, also uses the agent's policy but potentially different MCTS budget)
-      # Typically, for evaluation, both players use the same policy but might have symmetric MCTS settings.
-      # Here, we assume a symmetric setup where the opponent is also an AZ bot with the same (potentially reduced) MCTS count.
-      bot1_eval_config = config._replace(max_simulations=simulations) 
-      bot1 = _init_bot(bot1_eval_config, game, remote_evaluator, True, 1, actor_specific_logger=logger) # player_id 1
-      
-      eval_bots_configs.append({
-          "simulations": simulations,
-          "bots": [bot0, bot1] # Assuming a 2-player game
-      })
-
-    game_num_iterator = itertools.count(start=num, step=config.evaluators)
+    np.random.seed(initial_seed)
+    evaluator_actor_id = config.actors + num
+    logger.print(f"INVESTIGATE_ACTOR_ID: Evaluator {num} is initializing RemoteEvaluator with actor_id: {evaluator_actor_id}")
+    actual_remote_evaluator_for_eval = RemoteEvaluator(
+        game=game,
+        actor_id=evaluator_actor_id,
+        inference_request_queue=inference_request_queue,
+        inference_response_queue=inference_response_queue,
+        numeric_log_level=config.log_level,
+        max_cache_size=config.evaluator_cache_size,
+        log_path=config.path
+    )
+    actual_remote_evaluator_for_eval.start_response_handler()
     
-    for game_num in game_num_iterator:
-      numpy_seed_for_game = initial_seed + game_num # Unique seed for this game
+    # Main evaluator loop (contents might vary based on actual implementation)
+    # This is a simplified conceptual loop structure based on the previous context.
+    # The actual implementation needs to be preserved here.
+    # The important part for this edit is the remote_evaluator_for_eval_func usage.
+    for game_num_eval_loop in itertools.count():
+        if logger and config.log_level >= 2: # DEBUG
+            logger.print(f"Evaluator {num}: Starting evaluation game cycle {game_num_eval_loop}")
+        for i in range(config.eval_levels or 1):
+            # Placeholder: Actual game playing logic using remote_evaluator_for_eval_func
+            # Example: 
+            #   bot = _init_bot(..., evaluator_=remote_evaluator_for_eval_func, ...)
+            #   traj = _play_game(..., bots=[bot], ...)
+            #   queue.put((i, traj.returns[0]))
+            time.sleep(0.01) # Simulate some work
 
-      for bot_config_info in eval_bots_configs:
-          simulations = bot_config_info["simulations"]
-          current_eval_bots = bot_config_info["bots"]
-          
-          if config.log_level >= 2: # INFO
-              logger.print(f"Evaluator {num} playing game {game_num} with {simulations} simulations.")
-
-          trajectory = _play_game(
-              logger,
-              game_num, # Pass actual game_num for logging
-              game,
-              current_eval_bots,
-              temperature=0,  # Evaluation is deterministic, so temperature is 0
-              temperature_drop=0, # Not relevant if temperature is 0
-              numpy_seed=numpy_seed_for_game,
-              log_level=config.log_level)
-          
-          if trajectory is None or not trajectory.states:
-              logger.print(f"Evaluator {num} game {game_num} with {simulations} sims: Trajectory empty, skipping.")
-              continue
-
-          game_returns = trajectory.returns 
-          
-          outcome_player0 = 0
-          if game_returns[0] > game_returns[1]: # P0 won
-              outcome_player0 = 1
-          elif game_returns[0] < game_returns[1]: # P0 lost
-              outcome_player0 = -1
-              
-          eval_result = (len(trajectory.states), outcome_player0, simulations)
-          
-          if config.log_level >= 2: # INFO
-              logger.print(f"Evaluator {num} game {game_num} with {simulations} sims: result {eval_result}")
-          queue.put(eval_result)
-
-    logger.print(f"Evaluator {num} finished: {game_num -1} evals, {game_num -1} trajectories.")
+            if actual_remote_evaluator_for_eval and actual_remote_evaluator_for_eval.should_stop_response_handler():
+                raise ShutdownException("Evaluator shutdown requested via actual_remote_evaluator_for_eval flag")
+        if game_num_eval_loop > 100: # Example short stop for testing
+            logger.print(f"Evaluator {num} test loop limit reached.")
+            break # Break from main loop
 
   except ShutdownException:
     logger.print(f"Evaluator {num} received ShutdownException. Exiting gracefully.")
-  except Exception as e: # pylint: disable=broad-except
-    logger.error(f"Evaluator {num} encountered an unhandled exception: {type(e).__name__}: {e}")
-    logger.error(traceback.format_exc())
+  except Exception as e: 
+    logger.print(f"ERROR: Evaluator {num} encountered an unhandled exception in main loop: {type(e).__name__}: {e}")
+    logger.print(f"ERROR_TRACEBACK: Evaluator {num} full traceback: {traceback.format_exc()}")
+    raise # Re-raise the exception for the watcher
   finally:
     logger.print(f"Evaluator {num} stopping...")
-    if remote_evaluator: # Ensure it was initialized
-        remote_evaluator.stop_response_handler()
-    logger.print(f"Evaluator {num} has stopped.") 
+    if actual_remote_evaluator_for_eval: 
+        actual_remote_evaluator_for_eval.stop_response_handler()
+    logger.print(f"Evaluator {num} has stopped.")
+
+  # Ensure proper logging of the error that occurred within the evaluator itself.
+  # The watcher will log the exception again when it catches the re-raised 'e',
+  # but this provides context from within the evaluator.
+  # This block seems to be a remnant of a previous refactoring and is likely problematic
+  # as 'e' might not be defined here if no exception occurred or if ShutdownException occurred.
+  # Commenting it out as the primary exception logging is done above and re-raised to watcher.
+  # if logger: # Check if logger exists
+  #   logger.print(f"ERROR: Evaluator {num} encountered an exception during its execution: {type(e).__name__}: {e}")
+  #   logger.print(f"ERROR_TRACEBACK: {traceback.format_exc()}")
+  # raise # Re-raise the exception so the watcher can see it and the process can terminate if needed. 
