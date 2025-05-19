@@ -392,24 +392,46 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   if checkpoint_manager.latest_step() is not None:
       initial_step = checkpoint_manager.latest_step()
       try:
-          # Target for restore must match what was saved. Orbax saves the raw pytree.
-          # We are saving a dict: {'variables': variables, 'opt_state': opt_state, 'replay_buffer': replay_buffer}
-          # The replay_buffer is initialized before this block.
+          # Target for restore: variables, opt_state, and replay_buffer components
+          # The replay_buffer is initialized before this block as an empty Buffer.
           restored_mngr_state = checkpoint_manager.restore(
               step=initial_step,
-              args=ocp.args.Composite( # Use Composite to restore specific parts
+              args=ocp.args.Composite(
                   variables=ocp.args.StandardRestore(variables),
                   opt_state=ocp.args.StandardRestore(opt_state),
-                  replay_buffer=ocp.args.StandardRestore(replay_buffer)
+                  replay_buffer_data_dicts=ocp.args.StandardRestore(), # Expecting list of dicts
+                  replay_buffer_max_size=ocp.args.JsonRestore(),
+                  replay_buffer_total_seen=ocp.args.JsonRestore()
               )
           )
           if restored_mngr_state:
               variables = restored_mngr_state['variables']
               opt_state = restored_mngr_state['opt_state']
-              replay_buffer = restored_mngr_state['replay_buffer']
-              if logger: logger.print(f"Learner restored periodic checkpoint from {managed_ckpt_dir} at step {initial_step}")
+              
+              # Reconstruct replay_buffer
+              rb_max_size = restored_mngr_state['replay_buffer_max_size']
+              rb_total_seen = restored_mngr_state['replay_buffer_total_seen']
+              restored_list_of_dicts = restored_mngr_state['replay_buffer_data_dicts']
+              
+              reconstructed_train_inputs = []
+              if restored_list_of_dicts: # Check if it's not None or empty
+                  for d in restored_list_of_dicts:
+                      # Ensure all fields are present in d or handle missing fields if necessary
+                      reconstructed_train_inputs.append(model_jax.TrainInputJAX(
+                          observation=d['observation'],
+                          legals_mask=d['legals_mask'],
+                          policy_target=d['policy_target'],
+                          value_target=d['value_target']
+                      ))
+              
+              replay_buffer = Buffer(rb_max_size) # Create new buffer instance
+              if reconstructed_train_inputs:
+                  replay_buffer.extend(reconstructed_train_inputs) # Use extend to populate
+              replay_buffer.total_seen = rb_total_seen
+              
+              if logger: logger.print(f"Learner restored periodic checkpoint from {managed_ckpt_dir} at step {initial_step} (Replay buffer size: {len(replay_buffer)})")
           else:
-              if logger: logger.print(f"No periodic checkpoint found by manager at {managed_ckpt_dir} (step {initial_step}). Starting fresh.")
+              if logger: logger.print(f"No periodic checkpoint found by manager at {managed_ckpt_dir} (step {initial_step}). Starting fresh replay buffer.")
               initial_step = 0 # Reset step if restore failed
       except Exception as e:
           if logger:
@@ -721,12 +743,24 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             save_target_pytree = {'variables': variables, 'opt_state': opt_state}
             try:
                 if checkpoint_manager.should_save(training_step_count): # Use training_step_count
+                    # Prepare replay_buffer components for saving
+                    # Convert TrainInputJAX objects to dictionaries for robust serialization
+                    data_to_save_as_dicts = [ti._asdict() for ti in replay_buffer.data]
+
+                    replay_buffer_components_to_save = {
+                        'data_dicts': data_to_save_as_dicts,
+                        'max_size': replay_buffer.max_size,
+                        'total_seen': replay_buffer.total_seen
+                    }
+
                     checkpoint_manager.save(
                         training_step_count, # Use training_step_count
                         args=ocp.args.Composite(
                             variables=ocp.args.StandardSave(variables),
                             opt_state=ocp.args.StandardSave(opt_state),
-                            replay_buffer=ocp.args.StandardSave(replay_buffer), # ADDED for replay_buffer
+                            replay_buffer_data_dicts=ocp.args.StandardSave(replay_buffer_components_to_save['data_dicts']),
+                            replay_buffer_max_size=ocp.args.JsonSave(replay_buffer_components_to_save['max_size']),
+                            replay_buffer_total_seen=ocp.args.JsonSave(replay_buffer_components_to_save['total_seen']),
                             metrics=ocp.args.JsonSave({
                                 'step': training_step_count, # Use training_step_count
                                 'policy_head_loss': float(policy_loss_val),
