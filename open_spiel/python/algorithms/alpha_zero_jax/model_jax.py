@@ -178,19 +178,39 @@ class ResNet_JAX(nn.Module):
 
     for i, num_blocks_in_stage in enumerate(self.nn_depth_config):
       for j in range(num_blocks_in_stage):
-        strides = (1, 1)
+        block_strides = (1, 1) # Default strides
         if j == 0 and i > 0:  
-          strides = (2, 2)
-          current_n_hidden *= 2
+          # Only attempt to downsample if spatial dimensions are greater than 1x1
+          if x.shape[1] > 1 or x.shape[2] > 1:
+            block_strides = (2, 2) # Downsample at the start of a new stage (except the first)
+            current_n_hidden *= 2
+          else:
+            # If already 1x1, do not downsample further, but still increase channels if it's a new stage conceptually
+            current_n_hidden *= 2 
+            # block_strides remains (1,1)
         
-        # Combine n_hidden, strides with other block_kwargs
+        # Initialize block parameters
         current_block_params = {
-            'n_hidden': current_n_hidden, 
-            'strides': strides,
             **effective_block_kwargs
         }
+        
+        block_func_to_check = self.block_constructor
+        if isinstance(self.block_constructor, functools.partial):
+            block_func_to_check = self.block_constructor.func
+        
+        # Corrected logic to add n_hidden and strides for all relevant ResNet block types
+        # All standard blocks (ResNetBlock, ResNetBottleneckBlock) and their derivatives
+        # (ResNetDBlock, ResNetDBottleneckBlock, ResNeStBottleneckBlock) require 'n_hidden' and 'strides'.
+        if issubclass(block_func_to_check, (ResNetBlock, ResNetBottleneckBlock)) or \
+           block_func_to_check in (ResNetDBlock, ResNetDBottleneckBlock): # DBlock/DBottleneckBlock define n_hidden/strides directly
+            current_block_params['n_hidden'] = current_n_hidden
+            current_block_params['strides'] = block_strides
+        
         block = self.block_constructor(**current_block_params)
         x = block(x, training=training) 
+
+    # DEBUG: Print shape of x before policy/value heads
+    # jax.debug.print("ResNet_JAX: Shape of x before policy/value heads: {x_shape}", x_shape=x.shape)
 
     # TF-style Policy Head for ResNet
     ph = nn.Conv(features=2, kernel_size=(1,1), padding='SAME', name="policy_head_conv1x1")(x)
@@ -366,7 +386,7 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
 
       # The original code has a large conditional block here for specific ResNet types.
       # That block instantiates ResNet_JAX with specific parameters.
-      # The key change is to add `expected_input_shape=observation_shape` to all those ResNet_JAX instantiations.
+      # The key change is to add `expected_input_shape=observation_shape` to all of them.
       # The following is a conceptual representation of how it would be added to one such case:
       if model_type == "resnet18":
           stem_constructor = functools.partial(ResNetStem, n_hidden=64, conv_block_cls=ConvBlock)
@@ -598,14 +618,18 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
           # ResNeSt Variants
           elif model_type == "resnest50fast":
               stem_constructor = functools.partial(ResNetDStem, stem_width=32, conv_block_cls=ConvBlock)
-              _block_kwargs = {"radix": 1, "groups": 1, "base_width": 64, "expansion": 4, **getattr(config, 'resnet_block_kwargs', {})}
-              block_constructor = functools.partial(ResNeStBottleneckBlock, splat_conv_cls=SplAtConv2d)
+              _block_kwargs = {"radix": 1, "groups": 1, "base_width": 64, "expansion": 4, 
+                               "conv_block_cls": ConvBlock, # Ensure conv_block_cls is provided
+                               **getattr(config, 'resnet_block_kwargs', {})}
+              block_constructor = functools.partial(ResNeStBottleneckBlock)
               depth_config = STAGE_SIZES[50]
               model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=_block_kwargs, expected_input_shape=observation_shape)
           elif model_type == "resnest50":
               stem_constructor = functools.partial(ResNetDStem, stem_width=64, conv_block_cls=ConvBlock)
-              _block_kwargs = {"radix": 2, "groups": 1, "base_width": 64, "avg_pool_first": False, "expansion": 4, **getattr(config, 'resnet_block_kwargs', {})}
-              block_constructor = functools.partial(ResNeStBottleneckBlock, splat_conv_cls=SplAtConv2d)
+              _block_kwargs = {"radix": 2, "groups": 1, "base_width": 64, "avg_pool_first": False, "expansion": 4, 
+                               "conv_block_cls": ConvBlock, # Ensure conv_block_cls is provided
+                               **getattr(config, 'resnet_block_kwargs', {})}
+              block_constructor = functools.partial(ResNeStBottleneckBlock)
               depth_config = STAGE_SIZES[50]
               model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=_block_kwargs, expected_input_shape=observation_shape)
           # ... (Continue for resnest101 etc. with expected_input_shape)

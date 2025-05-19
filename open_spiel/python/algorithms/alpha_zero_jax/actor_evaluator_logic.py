@@ -21,6 +21,7 @@ import random
 import time
 import traceback
 import os
+import sys
 
 import numpy as np
 import pyspiel
@@ -433,10 +434,13 @@ def actor(*, game: pyspiel.Game, config, logger, num: int, # config is ConfigJAX
       # The sentinel on its queue should handle its exit if it's blocked.
       break # Exit the game playing loop
     except Exception as e: # Catch other exceptions during game play
+      error_message = f"Actor {num} Game {game_num}: Exception during _play_game: {type(e).__name__} - {e}. Traceback: {traceback.format_exc()}"
       if logger and config.log_level >= 0: # ERROR
-        logger.print(f"Actor {num} Game {game_num}: Exception during _play_game: {type(e).__name__} - {e}. Traceback: {traceback.format_exc()}")
-      # Depending on severity, might break or continue to next game.
-      # For now, let's break on any error to avoid spamming.
+        logger.print(error_message)
+        if hasattr(logger, 'flush'): # Attempt to flush the logger
+            logger.flush()
+      print(error_message, file=sys.stderr) # Also print to stderr for immediate visibility
+      sys.stderr.flush() # Ensure stderr is flushed
       break
 
   if logger and config.log_level >= 2: # INFO

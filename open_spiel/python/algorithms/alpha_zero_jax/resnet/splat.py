@@ -26,15 +26,15 @@ class SplAtConv2d(nn.Module):
     reduction_factor: int = 4
 
     conv_block_cls: ModuleDef = ConvBlock
-    cardinality: int = groups
 
     # Match extra bias here:
     # github.com/zhanghang1989/ResNeSt/blob/master/resnest/torch/splat.py#L39
     match_reference: bool = False
 
     @nn.compact
-    def __call__(self, x):
-        inter_channels = max(x.shape[-1] * self.radix // self.reduction_factor, 32)
+    def __call__(self, x, training: bool = False):
+        cardinality = self.groups
+        inter_channels = max(self.channels * self.radix // self.reduction_factor, 32)
 
         conv_block = self.conv_block_cls(self.channels * self.radix,
                                          kernel_size=self.kernel_size,
@@ -42,7 +42,7 @@ class SplAtConv2d(nn.Module):
                                          groups=self.groups * self.radix,
                                          padding=self.padding)
         conv_cls = conv_block.conv_cls  # type: ignore
-        x = conv_block(x)
+        x = conv_block(x, training=training)
 
         if self.radix > 1:
             # torch split takes split_size: int(rchannel//self.radix)
@@ -58,14 +58,14 @@ class SplAtConv2d(nn.Module):
         # github.com/zhanghang1989/ResNeSt/issues/125
         gap = self.conv_block_cls(inter_channels,
                                   kernel_size=(1, 1),
-                                  groups=self.cardinality,
-                                  force_conv_bias=self.match_reference)(gap)
+                                  groups=cardinality,
+                                  force_conv_bias=self.match_reference)(gap, training=training)
 
         attn = conv_cls(self.channels * self.radix,
                         kernel_size=(1, 1),
-                        feature_group_count=self.cardinality)(gap)  # n x 1 x 1 x c
+                        feature_group_count=cardinality)(gap)  # n x 1 x 1 x c
         attn = attn.reshape((x.shape[0], -1))
-        attn = rsoftmax(attn, self.radix, self.cardinality)
+        attn = rsoftmax(attn, self.radix, cardinality)
         attn = attn.reshape((x.shape[0], 1, 1, -1))
 
         if self.radix > 1:

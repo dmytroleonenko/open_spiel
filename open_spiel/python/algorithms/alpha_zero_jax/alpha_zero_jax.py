@@ -382,6 +382,9 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             initial_flax_model, initial_variables): 
   """A learner that consumes actor trajectories and evaluator results, and updates the model."""
   # Start Python allocation tracing and RSS monitoring
+  if logger and config.log_level >= DEBUG: # DEBUG log for train_batch_size
+    logger.print(f"[LEARNER_CONFIG_DEBUG] train_batch_size: {config.train_batch_size}")
+
   if logger and config.log_level >= DEBUG:
     logger.print(f"JAX Learner started with PRNG key: {prng_key}")
     logger.print(f"Learner using game: {game}, config: {config}") # Log basic info
@@ -419,7 +422,7 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   dummy_observation_shape = game.observation_tensor_shape()
   dummy_output_size = game.num_distinct_actions()
   dummy_obs_batch = jnp.zeros((1,) + tuple(dummy_observation_shape), dtype=jnp.float32)
-  dummy_legals_batch = jnp.zeros((1, dummy_output_size), dtype=jnp.bool_)
+  dummy_legals_batch = jnp.ones((1, dummy_output_size), dtype=jnp.bool_) # Changed from jnp.zeros to jnp.ones
 
   if logger and config.log_level >= INFO:
       logger.print(f"Learner: Warming up JIT for inference function with dummy_obs_batch shape: {dummy_obs_batch.shape}, dummy_legals_batch shape: {dummy_legals_batch.shape}...")
@@ -580,14 +583,9 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
         (policy_logits, value_preds) = preds_and_state
         updated_model_state = None
 
+      # DEBUG PRINTS START
+
       policy_loss_ce = optax.safe_softmax_cross_entropy(logits=policy_logits, labels=batch_policy_targets)
-      
-      # Debug prints for policy loss (can be removed after verification)
-      # jax.debug.print("--- train_step_fn DEBUG: policy_loss_ce (raw_values): {vals}", vals=policy_loss_ce)
-      # jax.debug.print("--- train_step_fn DEBUG: policy_loss_ce stats: shape={s}, min={min_val}, max={max_val}, mean={mean_val}, NaNs={nans}, Infs={infs}",
-      #                 s=policy_loss_ce.shape, min_val=jnp.min(policy_loss_ce), max_val=jnp.max(policy_loss_ce),
-      #                 mean_val=jnp.mean(policy_loss_ce),
-      #                 nans=jnp.sum(jnp.isnan(policy_loss_ce)), infs=jnp.sum(jnp.isinf(policy_loss_ce)))
 
       has_at_least_one_legal_action = jnp.any(batch_legals_masks, axis=1)
       policy_loss_final_contrib = jnp.where(has_at_least_one_legal_action, policy_loss_ce, 0.0)
@@ -595,13 +593,24 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
       num_valid_policy_samples = jnp.sum(has_at_least_one_legal_action)
       policy_loss = jnp.sum(policy_loss_final_contrib) / jnp.maximum(num_valid_policy_samples, 1.0)
 
+      # DEBUG PRINTS START
+      # jax.debug.print("policy_loss (masked_and_averaged): {x}", x=policy_loss)
+      # DEBUG PRINTS END
+
       value_loss = optax.squared_error(
           predictions=jnp.squeeze(value_preds, axis=-1),
           targets=jnp.squeeze(batch_value_targets, axis=-1)
       )
       value_loss = jnp.mean(value_loss)
       
+      # DEBUG PRINTS START
+      # jax.debug.print("value_loss: {x}", x=value_loss)
+      # DEBUG PRINTS END
+      
       total_loss = policy_loss + value_loss
+      # DEBUG PRINTS START
+      # jax.debug.print("total_loss: {x}", x=total_loss)
+      # DEBUG PRINTS END
       return total_loss, (updated_model_state, policy_loss, value_loss)
 
     (loss_val, (new_model_state, p_loss, v_loss)), grads = jax.value_and_grad(

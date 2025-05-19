@@ -26,6 +26,7 @@ import multiprocessing as mp
 from absl import app
 from absl import flags
 import pyspiel
+import jax
 
 from open_spiel.python.algorithms.alpha_zero_jax import alpha_zero_jax as alpha_zero_jax_lib # Renamed to avoid clash
 from open_spiel.python.algorithms.alpha_zero_jax.alpha_zero_jax import ConfigJAX
@@ -99,6 +100,9 @@ LOG_LEVELS = {
 
 def main(argv):
   del argv # Unused
+  import jax # Add JAX import
+  jax.config.update("jax_debug_nans", True) # Enable NaN debugging
+
   config = ConfigJAX(
       game=FLAGS.game,
       path=FLAGS.path,
