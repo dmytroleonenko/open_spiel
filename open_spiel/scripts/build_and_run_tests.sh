@@ -200,6 +200,15 @@ else
         -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
         ../open_spiel
 
+  # Determine build command (Ninja or Make)
+  BUILD_COMMAND="make"
+  if [ -f "build.ninja" ]; then
+    echo "Ninja build file found. Using ninja for building."
+    BUILD_COMMAND="ninja"
+  else
+    echo "No build.ninja file found. Using make for building."
+  fi
+
   if [ "$ARG_test_only" != "all" ]
   then
     # Check for building and running a specific test.
@@ -207,16 +216,16 @@ else
     echo "Build and testing only $ARG_test_only"
     if [[ $ARG_test_only == python_* ]]; then
       echo "Building pyspiel"
-      make -j$MAKE_NUM_PROCS pyspiel
+      ${BUILD_COMMAND} -j$MAKE_NUM_PROCS pyspiel
     elif [[ $ARG_test_only == julia_test ]]; then
       echo "Building Julia API"
-      make -j$MAKE_NUM_PROCS spieljl
+      ${BUILD_COMMAND} -j$MAKE_NUM_PROCS spieljl
     elif [[ $ARG_test_only == gospiel_test ]]; then
       echo "Building Go API"
-      make -j$MAKE_NUM_PROCS gospiel
+      ${BUILD_COMMAND} -j$MAKE_NUM_PROCS gospiel
     else
       echo "Building everything"
-      make -j$MAKE_NUM_PROCS
+      ${BUILD_COMMAND} -j$MAKE_NUM_PROCS
     fi
 
     if [[ $ARG_build_only == "true" ]]; then
@@ -231,7 +240,7 @@ else
   else
     # Make everything
     echo "Building project"
-    make -j$MAKE_NUM_PROCS
+    ${BUILD_COMMAND} -j$MAKE_NUM_PROCS
 
     if [[ $ARG_build_only == "true" ]]; then
       echo -e "\033[32m*** Skipping runing tests as build_only is ${ARG_build_only} \e[0m"

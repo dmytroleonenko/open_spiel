@@ -71,3 +71,4 @@ pyvenv.cfg
 gdb_commands.txt
 node_modules/
 gmon.out
+*.dylib
