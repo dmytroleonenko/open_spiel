@@ -21,6 +21,7 @@ import absl.logging
 import multiprocessing as mp  # For remote inference service queue
 import queue as std_queue # For robust exception handling in BatchAssemblyThread (Reviewer Task 4)
 import threading # For InferenceServicer threads
+from functools import partial
 
 from . import model_jax
 from . import evaluator_jax # For AlphaZeroEvaluatorJAX (though less used by actors now)
@@ -145,6 +146,13 @@ class ConfigJAX(collections.namedtuple(
         "async_virtual_loss",       # int: Virtual loss amount for async MCTS.
         "async_timeout",            # float: Timeout (s) for async MCTS leaf evaluation futures.
         "console_summary_log_freq_steps", # int: Frequency (in training steps) to log console summary in learner.
+        "model_spatial_dims",     # Optional[Tuple[int, ...]]: For models that split flat input, e.g., (Length, Channels) for 1D spatial part.
+        "use_transformer_head",   # bool: Whether to enable the transformer head for compatible models (e.g. ResNeSt1D50_AZ)
+        # LR Schedule related fields
+        "lr_schedule",            # str: Type of learning rate schedule (e.g., "constant", "warmup_cosine_decay").
+        "peak_lr",                # float: Peak learning rate for schedules.
+        "end_lr",                 # float: End learning rate for decay schedules.
+        "warmup_steps",           # int: Number of warmup steps for LR schedules.
     ])):                                 # Default for remote_evaluator_timeout_ms can be set at instantiation.
   """Configuration for the JAX AlphaZero model and experiment."""
   # Default values for optional fields are handled where ConfigJAX is instantiated.
@@ -285,36 +293,120 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   # Initialize model and optimizer
   flax_model = initial_flax_model
   variables = initial_variables
-  optimizer = optax.adamw(learning_rate=config.learning_rate, weight_decay=config.weight_decay)
+
+  # Learning Rate Schedule and Optimizer
+  if config.lr_schedule == "warmup_cosine_decay":
+    if logger and config.log_level >= INFO:
+        logger.print(f"Using warmup_cosine_decay schedule: peak_lr={config.peak_lr}, end_lr={config.end_lr}, warmup_steps={config.warmup_steps}, total_decay_steps={config.max_steps - config.warmup_steps}")
+    
+    decay_steps = config.max_steps - config.warmup_steps
+    if decay_steps <= 0:
+        if logger and config.log_level >= WARN:
+            logger.print(f"Warning: decay_steps ({decay_steps}) is not positive. max_steps ({config.max_steps}) should be greater than warmup_steps ({config.warmup_steps}). Adjusting decay_steps to 1 to avoid error.")
+        decay_steps = 1 # Avoid error in optax schedule if decay_steps is not positive
+
+    schedule_fn = optax.warmup_cosine_decay_schedule(
+        init_value=0.0, # Start from 0 for warmup
+        peak_value=config.peak_lr,
+        warmup_steps=config.warmup_steps,
+        decay_steps=decay_steps,
+        end_value=config.end_lr
+    )
+    optimizer = optax.adamw(learning_rate=schedule_fn, weight_decay=config.weight_decay)
+  else: # Default to constant learning rate
+    if logger and config.log_level >= INFO:
+        logger.print(f"Using constant learning rate: {config.learning_rate}")
+    optimizer = optax.adamw(learning_rate=config.learning_rate, weight_decay=config.weight_decay)
+  
   opt_state = optimizer.init(variables['params'])
 
   replay_buffer = Buffer(config.replay_buffer_size)
   
   # JIT Warmup for Inference Function
-  @jax.jit
-  def _batched_inference_fn_for_warmup(model_vars, obs_batch, legals_batch):
-      policy_logits, value_preds = initial_flax_model.apply(
-          model_vars, 
+  @partial(jax.jit, static_argnames=['game_name', 'nn_model_name', 'use_transformer_head_for_warmup']) # Added use_transformer_head_for_warmup
+  def _batched_inference_fn_for_warmup(model_vars, obs_batch, legals_batch, game_name, nn_model_name, use_transformer_head_for_warmup, dummy_global_features_for_warmup=None):
+      # Potentially reshape input if it's backgammon and the 1D model is used
+      # current_obs_batch = obs_batch # Start with original
+      # if game_name == "backgammon" and nn_model_name == "resnest1d50_az":
+      #     if logger and config.log_level >= TRACE:
+      #         logger.opt_print(f"_batched_inference_fn_for_warmup: Reshaping for {game_name} & {nn_model_name}")
+      #     current_obs_batch = reshape_backgammon_input_for_model(obs_batch)
+      # else:
+      #     if logger and config.log_level >= TRACE:
+      #         logger.opt_print(f"_batched_inference_fn_for_warmup: No reshape for {game_name} & {nn_model_name}")
+      # No longer needed, model wrapper handles its input.
+      
+      apply_kwargs = {'training': False, 'legals_mask': legals_batch}
+      if nn_model_name == "resnest1d50_az" and use_transformer_head_for_warmup:
+          if dummy_global_features_for_warmup is None:
+              # This case should ideally be avoided by passing actual dummy global features if required
+              # For safety, if somehow called without it when expected, ResNet will raise its own error.
+              pass # Or raise an error here if dummy_global_features_for_warmup is strictly needed for this path
+          apply_kwargs['global_features'] = dummy_global_features_for_warmup
+
+      policy_logits, value_output = flax_model.apply(
+          {"params": model_vars["params"], "batch_stats": model_vars["batch_stats"]},
           obs_batch, 
-          legals_mask=legals_batch,
-          training=False, 
-          mutable=False
-      )
-      policy_probs = jax.nn.softmax(policy_logits, axis=-1)
-      return policy_probs, value_preds
+          **apply_kwargs
+          )
+      return policy_logits, value_output
 
   # Create dummy data for warmup
   # game object is available here in learner
-  dummy_observation_shape = game.observation_tensor_shape()
+  raw_game_observation_shape = game.observation_tensor_shape()
   dummy_output_size = game.num_distinct_actions()
-  dummy_obs_batch = jnp.zeros((1,) + tuple(dummy_observation_shape), dtype=jnp.float32)
-  dummy_legals_batch = jnp.ones((1, dummy_output_size), dtype=jnp.bool_) # Changed from jnp.zeros to jnp.ones
+
+  if config.nn_model == "resnest1d50_az":
+    # This model expects a specific spatial input shape for 'x'
+    dummy_obs_batch_shape = (1, 24, 8)  # Batch, Length, Channels
+  else:
+    # Default for other models: use game's observation tensor shape
+    dummy_obs_batch_shape = (1,) + tuple(raw_game_observation_shape)
+  dummy_obs_batch = jnp.zeros(dummy_obs_batch_shape, dtype=jnp.float32)
+  dummy_legals_batch = jnp.ones((1, dummy_output_size), dtype=jnp.bool_)
+
+  # Prepare args for warmup call, including dummy global features if needed
+  warmup_call_args = [initial_variables, dummy_obs_batch, dummy_legals_batch, config.game, config.nn_model, config.use_transformer_head]
+  if config.nn_model == "resnest1d50_az" and config.use_transformer_head:
+      # Calculate global features for warmup consistent with model_jax.py and actor logic.
+      initial_state_for_warmup = game.new_initial_state()
+      
+      # Handle initial chance node for warmup observation tensor
+      _state_for_warmup_obs = initial_state_for_warmup.clone()
+      if _state_for_warmup_obs.is_chance_node():
+          if not _state_for_warmup_obs.legal_actions():
+              raise RuntimeError(
+                  f"Initial chance node for game {game.get_type().short_name} (warmup) "
+                  "has no legal actions. Cannot determine observation tensor shape."
+              )
+          _state_for_warmup_obs.apply_action(_state_for_warmup_obs.legal_actions()[0])
+
+      if hasattr(game, "state_to_feature_array"):
+          feature_vector_warmup = game.state_to_feature_array(_state_for_warmup_obs) # Use the potentially advanced state
+      else:
+          feature_vector_warmup = _state_for_warmup_obs.observation_tensor() # Use the potentially advanced state
+      
+      feature_vector_np_warmup = np.array(feature_vector_warmup, dtype=np.float32).flatten()
+      total_flat_obs_features_for_warmup = feature_vector_np_warmup.shape[0]
+      
+      fixed_spatial_dims_for_warmup = (24, 8)
+      num_spatial_flat_for_warmup = fixed_spatial_dims_for_warmup[0] * fixed_spatial_dims_for_warmup[1]
+      num_global_features_for_warmup = total_flat_obs_features_for_warmup - num_spatial_flat_for_warmup
+      
+      if num_global_features_for_warmup < 0: num_global_features_for_warmup = 0
+      
+      current_dummy_global_features_for_warmup = jnp.zeros((dummy_obs_batch.shape[0], num_global_features_for_warmup), dtype=jnp.float32)
+      warmup_call_args.append(current_dummy_global_features_for_warmup)
+  else:
+      # Ensure the function signature is matched if global features are not needed
+      warmup_call_args.append(None) 
 
   if logger and config.log_level >= INFO:
       logger.print(f"Learner: Warming up JIT for inference function with dummy_obs_batch shape: {dummy_obs_batch.shape}, dummy_legals_batch shape: {dummy_legals_batch.shape}...")
   warmup_start_time = time.time()
   try:
-    _ = _batched_inference_fn_for_warmup(variables, dummy_obs_batch, dummy_legals_batch)
+    # _ = _batched_inference_fn_for_warmup(variables, dummy_obs_batch, dummy_legals_batch, config.game, config.nn_model) # Old call
+    _ = _batched_inference_fn_for_warmup(*warmup_call_args) # New call with potentially global features
     # Optionally, block until compilation is done if JAX JIT is async by default in some setups.
     # For most cases, the first call will block until compilation finishes.
     # You could use .block_until_ready() on the result if needed, e.g. _[0].block_until_ready()
@@ -327,22 +419,41 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   # ---- End JIT Warmup ----
 
   # JITted inference function for the servicer
-  @jax.jit
-  def _batched_inference_fn_for_servicer(model_vars, obs_batch, legals_batch):
-      policy_logits, value_preds = initial_flax_model.apply(
-          model_vars, 
-          obs_batch, 
-          legals_mask=legals_batch,
-          training=False, 
-          mutable=False
+  @partial(jax.jit, static_argnames=['game_name', 'nn_model_name', 'use_transformer_head_for_servicer']) # Added use_transformer_head_for_servicer
+  def _batched_inference_fn_for_servicer(model_vars, obs_batch, legals_batch, game_name, nn_model_name, use_transformer_head_for_servicer):
+      current_obs_for_apply = obs_batch
+      apply_kwargs = {'training': False, 'legals_mask': legals_batch}
+
+      if nn_model_name == "resnest1d50_az":
+          spatial_dims_for_model = (24, 8)  # (Length, Channels)
+          num_spatial_flat = spatial_dims_for_model[0] * spatial_dims_for_model[1]
+          
+          batch_size = obs_batch.shape[0]
+          total_flat_features = obs_batch.shape[1]
+
+          x_spatial = obs_batch[:, :num_spatial_flat].reshape((batch_size,) + spatial_dims_for_model)
+          current_obs_for_apply = x_spatial
+
+          if use_transformer_head_for_servicer:
+              num_global_features = total_flat_features - num_spatial_flat
+              if num_global_features > 0:
+                  x_global = obs_batch[:, num_spatial_flat:]
+                  apply_kwargs['global_features'] = x_global
+              else:
+                  # ResNet will error if global_features are required but not provided sufficient ones
+                  apply_kwargs['global_features'] = None 
+      
+      policy_logits, value_output = flax_model.apply(
+          {"params": model_vars["params"], "batch_stats": model_vars["batch_stats"]},
+          current_obs_for_apply, 
+          **apply_kwargs
       )
-      policy_probs = jax.nn.softmax(policy_logits, axis=-1)
-      return policy_probs, value_preds
+      return policy_logits, value_output
 
   servicer = InferenceServicer(
       request_queue=inference_request_queue,
       all_client_response_queues=all_client_response_queues,
-      model_apply_fn=_batched_inference_fn_for_servicer, # Pass the new JITted function
+      model_apply_fn=lambda mv, ob, lb: _batched_inference_fn_for_servicer(mv, ob, lb, config.game, config.nn_model, config.use_transformer_head), 
       initial_model_variables=initial_variables, # Pass the initial variables
       max_batch_size=config.inference_batch_size, # Use the new config field for inference batch size
       batch_timeout_ms=config.inference_batch_timeout_ms, # Use the new config field
@@ -462,9 +573,20 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
   evals = [Buffer(config.evaluation_window) for _ in range(config.eval_levels or 1)]
 
   # JIT compile the training step function
-  @jax.jit
-  def train_step_fn(current_variables, current_opt_state, batch_observations, batch_legals_masks, batch_policy_targets, batch_value_targets):
+  @partial(jax.jit, static_argnames=['game_name', 'nn_model_name'])
+  def train_step_fn(current_variables, current_opt_state, batch_observations, batch_legals_masks, batch_policy_targets, batch_value_targets, game_name, nn_model_name):
     # Defines the loss function and computes gradients.
+
+    # Potentially reshape input if it's backgammon and the 1D model is used
+    # current_batch_observations = batch_observations # Start with original
+    # if game_name == "backgammon" and nn_model_name == "resnest1d50_az":
+    #     if logger and config.log_level >= TRACE:
+    #         logger.opt_print(f"train_step_fn: Reshaping for {game_name} & {nn_model_name}")
+    #     current_batch_observations = reshape_backgammon_input_for_model(batch_observations)
+    # else:
+    #     if logger and config.log_level >= TRACE:
+    #         logger.opt_print(f"train_step_fn: No reshape for {game_name} & {nn_model_name}")
+    # No longer needed, model wrapper handles its input.
 
     def loss_and_grad_inner_fn(params):
       apply_vars = {'params': params}
@@ -722,7 +844,8 @@ def learner(*, game: pyspiel.Game, config: ConfigJAX, logger,
             batch_value_jnp = jnp.array(stacked_input.value_target, dtype=jnp.float32)
             
             variables, opt_state, total_loss_val, policy_loss_val, value_loss_val = train_step_fn(
-                variables, opt_state, batch_obs_jnp, batch_legals_jnp, batch_policy_jnp, batch_value_jnp
+                variables, opt_state, batch_obs_jnp, batch_legals_jnp, batch_policy_jnp, batch_value_jnp,
+                config.game, config.nn_model # Pass game name and model name for reshaping
             )
             
             training_step_count += 1 # Increment after successful training step

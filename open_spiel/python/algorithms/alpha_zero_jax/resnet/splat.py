@@ -10,6 +10,7 @@ def rsoftmax(x, radix, cardinality):
     # (batch_size, features) -> (batch_size, features)
     batch = x.shape[0]
     if radix > 1:
+        assert x.shape[-1] % (radix * cardinality) == 0, f"Input features {x.shape[-1]} not divisible by radix*cardinality ({radix*cardinality})"
         x = x.reshape((batch, cardinality, radix, -1)).swapaxes(1, 2)
         return nn.softmax(x, axis=1).reshape((batch, -1))
     else:

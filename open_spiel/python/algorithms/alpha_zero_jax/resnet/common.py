@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Tuple, Union, Literal
 
 import flax
 import flax.linen as nn
@@ -11,28 +11,55 @@ InitFn = Callable[[Any, Iterable[int], Any], Any]
 
 class ConvBlock(nn.Module):
     n_filters: int
-    kernel_size: Tuple[int, int] = (3, 3)
-    strides: Tuple[int, int] = (1, 1)
+    kernel_size: Union[int, Tuple[int, int]]
+    strides: Union[int, Tuple[int, int]] = 1
+    dim: Literal[1, 2] = 2
     activation: Callable = nn.relu
-    padding: Union[str, Iterable[Tuple[int, int]]] = ((0, 0), (0, 0))
+    padding: Union[str, Iterable[Tuple[int, int]], Iterable[Tuple[int]]] = "SAME"
     is_last: bool = False
     groups: int = 1
     kernel_init: InitFn = nn.initializers.kaiming_normal()
     bias_init: InitFn = nn.initializers.zeros
 
     conv_cls: ModuleDef = nn.Conv
-    norm_cls: Optional[ModuleDef] = partial(nn.BatchNorm, momentum=0.9)
+    norm_cls: Optional[ModuleDef] = partial(nn.BatchNorm, momentum=0.95)
 
     force_conv_bias: bool = False
 
     @nn.compact
-    def __call__(self, x, training: bool = True):
+    def __call__(self, x, training: bool):
+        _kernel_size = (self.kernel_size,) if self.dim == 1 and isinstance(self.kernel_size, int) else self.kernel_size
+        _strides = (self.strides,) if self.dim == 1 and isinstance(self.strides, int) else self.strides
+        
+        _padding = self.padding
+        if self.dim == 1:
+            if isinstance(self.padding, str):
+                # 'SAME' or 'VALID' are fine as is for 1D
+                _padding = self.padding
+            elif isinstance(self.padding, tuple) and len(self.padding) == 1 and \
+                 isinstance(self.padding[0], tuple) and len(self.padding[0]) == 2 and \
+                 isinstance(self.padding[0][0], int) and isinstance(self.padding[0][1], int):
+                # Already in correct format like ((low, high),)
+                _padding = self.padding
+            elif isinstance(self.padding, list) and len(self.padding) == 1 and \
+                 isinstance(self.padding[0], tuple) and len(self.padding[0]) == 2 and \
+                 isinstance(self.padding[0][0], int) and isinstance(self.padding[0][1], int):
+                # Convert [(low, high)] to ((low, high),)
+                _padding = tuple(self.padding)
+            else:
+                raise ValueError(
+                    f"Unsupported padding format for 1D convolution in ConvBlock: {self.padding}. "
+                    f"Expected 'SAME', 'VALID', or a sequence like ((pad_lo, pad_hi),) or [(pad_lo, pad_hi)]."
+                )
+
+        # For self.dim == 2, self.padding is assumed to be correctly formatted (string or sequence of 2 tuples)
+
         x = self.conv_cls(
-            self.n_filters,
-            self.kernel_size,
-            self.strides,
+            features=self.n_filters,
+            kernel_size=_kernel_size,
+            strides=_strides,
             use_bias=(not self.norm_cls or self.force_conv_bias),
-            padding=self.padding,
+            padding=_padding,
             feature_group_count=self.groups,
             kernel_init=self.kernel_init,
             bias_init=self.bias_init,
@@ -40,7 +67,6 @@ class ConvBlock(nn.Module):
         if self.norm_cls:
             scale_init = (nn.initializers.zeros
                           if self.is_last else nn.initializers.ones)
-            mutable = self.is_mutable_collection('batch_stats')
             x = self.norm_cls(use_running_average=not training, scale_init=scale_init)(x)
 
         if not self.is_last:

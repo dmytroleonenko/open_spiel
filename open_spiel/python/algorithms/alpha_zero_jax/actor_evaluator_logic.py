@@ -22,6 +22,8 @@ import time
 import traceback
 import os
 import sys
+import concurrent.futures
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pyspiel
@@ -231,25 +233,73 @@ class _AsyncRemoteEvaluatorAdapter:
                 if action < len(policy_probs):
                     prior_tuples.append((action, policy_probs[action]))
                 else:
-                    prior_tuples.append((action, 0.0)) 
+                    # This case should ideally not happen if policy_probs covers all legal actions.
+                    # Log a warning or handle as appropriate if it does.
+                    prior_tuples.append((action, 0.0)) # Default to 0 prob if action index out of bounds
         
-        # For non-terminal, non-chance nodes, raw_value is a scalar evaluation for the current player.
-        # We need to convert this to an array of returns for all players.
-        # Assuming 2-player zero-sum game for simplicity, current player gets raw_value, opponent gets -raw_value.
-        # For N-player games, this logic would need to be more sophisticated based on game type.
-        # For now, let's stick to 2-player zero-sum assumption as it's common for AlphaZero.
-        # If num_players is not 2, this might need adjustment.
-        processed_value = np.zeros(num_players, dtype=np.float32)
-        if num_players == 1: # Single player game
-            processed_value[current_player] = raw_value
-        elif num_players == 2: # Two player game
-            processed_value[current_player] = raw_value
-            processed_value[1 - current_player] = -raw_value # Opponent
-        else: # N-player, more complex - for now, just assign to current, others 0
-             # This is a simplification and might not be correct for all N-player games.
-            self._remote.logger.warning(f"Adapter: N-player game (N={num_players}) value assignment is simplified for player {current_player}.")
-            processed_value[current_player] = raw_value
-            # Other players get 0 or some neutral value. This depends on the game.
+        processed_value = np.zeros(num_players, dtype=np.float32) # Default value
+        current_player_val_set = False # Flag to track if a value was successfully processed
+
+        if isinstance(raw_value, np.ndarray):
+            if raw_value.size == 1:  # If it's a single-element array (could be 0-d or 1-d)
+                scalar_val = raw_value.item() # This should now be safe
+                processed_value[current_player] = scalar_val
+                if num_players == 2:
+                    processed_value[1 - current_player] = -scalar_val
+                # For N>2 players and scalar input, other players' values remain 0.
+                current_player_val_set = True
+            elif raw_value.ndim == 1 and raw_value.size == num_players:  # Assumed per-player utilities
+                if hasattr(self._remote, 'logger') and self._remote.logger:
+                    logger_obj = self._remote.logger
+                    msg = f"Adapter: raw_value (shape {raw_value.shape}) used as per-player utilities."
+                    if hasattr(logger_obj, 'print'):
+                        logger_obj.print(msg, min_level=2) # INFO for FileLogger
+                    else:
+                        logger_obj.info(msg) # Standard logger
+                processed_value = raw_value.astype(np.float32)
+                current_player_val_set = True # Values for all players are set
+            else:  # Unexpected np.ndarray shape/size
+                if hasattr(self._remote, 'logger') and self._remote.logger:
+                    logger_obj = self._remote.logger
+                    msg = f"Adapter ERROR: raw_value (np.ndarray) has unhandled shape {raw_value.shape} or size {raw_value.size}. Num_players: {num_players}. Using zeros."
+                    if hasattr(logger_obj, 'print'):
+                        logger_obj.print(msg, min_level=0) # ERROR for FileLogger
+                    else:
+                        logger_obj.error(msg) # Standard logger
+                # processed_value remains zeros, current_player_val_set remains False
+        elif isinstance(raw_value, (float, int)):  # Python scalar
+            if hasattr(self._remote, 'logger') and self._remote.logger:
+                 logger_obj = self._remote.logger
+                 msg = f"Adapter WARNING: raw_value is Python scalar {raw_value}. Converting."
+                 if hasattr(logger_obj, 'print'):
+                     logger_obj.print(msg, min_level=1) # WARNING for FileLogger
+                 else:
+                     logger_obj.warning(msg) # Standard logger
+            scalar_val = float(raw_value)
+            processed_value[current_player] = scalar_val
+            if num_players == 2:
+                processed_value[1 - current_player] = -scalar_val
+            current_player_val_set = True
+        elif isinstance(raw_value, (list, tuple)) and len(raw_value) == num_players: # List/tuple of per-player values
+            if hasattr(self._remote, 'logger') and self._remote.logger:
+                 logger_obj = self._remote.logger
+                 msg = f"Adapter INFO: raw_value is list/tuple, size {len(raw_value)}. Converting."
+                 if hasattr(logger_obj, 'print'):
+                     logger_obj.print(msg, min_level=2) # INFO for FileLogger
+                 else:
+                     logger_obj.info(msg) # Standard logger
+            processed_value = np.array(raw_value, dtype=np.float32)
+            current_player_val_set = True
+        
+        if not current_player_val_set: # If none of the above conditions handled it
+            if hasattr(self._remote, 'logger') and self._remote.logger:
+                 logger_obj = self._remote.logger
+                 msg = f"Adapter ERROR: raw_value type {type(raw_value)} or format unhandled. raw_value: {str(raw_value)[:100]}. Using zeros."
+                 if hasattr(logger_obj, 'print'):
+                     logger_obj.print(msg, min_level=0) # ERROR for FileLogger
+                 else:
+                     logger_obj.error(msg) # Standard logger
+            # processed_value remains zeros as initialized
 
     return prior_tuples, processed_value
 

@@ -44,7 +44,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
-from typing import Optional, Callable, Mapping
+from typing import Optional, Callable, Mapping, Tuple
 import functools # Added for partial
 import sys # For getattr(sys.modules[__name__], ...) if used, or a local dict is safer
 
@@ -58,7 +58,7 @@ from open_spiel.python.algorithms.alpha_zero_jax.resnet import (
     ResNeStBottleneckBlock # Added ResNeSt variant
 )
 from open_spiel.python.algorithms.alpha_zero_jax.resnet.common import ConvBlock # Used by Conv2D_JAX
-from open_spiel.python.algorithms.alpha_zero_jax.resnet.resnet import STAGE_SIZES # For ResNet variants
+from open_spiel.python.algorithms.alpha_zero_jax.resnet.resnet import STAGE_SIZES, ResNeSt1D50_AZ, ResNet # Import ResNet
 from open_spiel.python.algorithms.alpha_zero_jax.resnet.splat import SplAtConv2d # For ResNeSt
 
 
@@ -114,7 +114,7 @@ class ResNet_JAX(nn.Module):
   output_size: int # Number of actions for policy head
   expected_input_shape: tuple[int, ...] # Added: e.g., (H, W, C) for the game's observations
   block_kwargs: Optional[Mapping] = None # For expansion, groups, base_width
-  norm_cls: Callable[..., nn.Module] = functools.partial(nn.BatchNorm, use_running_average=None, momentum=0.9)
+  norm_cls: Callable[..., nn.Module] = functools.partial(nn.BatchNorm, use_running_average=None, momentum=0.95)
 
   """A JAX-based ResNet model for AlphaZero.
 
@@ -261,7 +261,9 @@ class Conv2D_JAX(nn.Module):
                                kernel_size=(3, 3),
                                strides=(1, 1),
           padding="SAME",
-          name=f"torso_conv_block_{i}")(torso_output, training=training)
+          name=f"torso_conv_block_{i}",
+          dim=2 # Explicitly 2D for Conv2D_JAX
+          )(torso_output, training=training)
 
     # Flatten the output for the dense layers
     flat_x = torso_output.reshape((torso_output.shape[0], -1)) # More robust flattening
@@ -294,6 +296,73 @@ class Conv2D_JAX(nn.Module):
     value_output = jnp.tanh(value_output)
 
     return (policy_logits, value_output)
+
+class SpatialGlobal1DResNetTransformer(nn.Module):
+  """Wrapper for a 1D ResNet+Transformer core model (e.g., ResNeSt1D50_AZ)
+  that splits a flat input observation tensor into spatial and global features.
+  The spatial features are reshaped according to spatial_dims.
+  """
+  output_size: int # Number of distinct actions
+  num_total_observation_features: int # Total number of features in the flat observation vector
+  spatial_dims: Tuple[int, ...] # Desired shape of the spatial part, e.g., (Length, Channels) = (24, 8)
+  use_transformer_head: bool = False
+
+  @nn.compact
+  def __call__(self, x: jax.Array, training: bool, legals_mask: Optional[jax.Array] = None):
+    # x is expected to be flat: (Batch, num_total_observation_features), e.g., (B, 200)
+    
+    num_spatial_flat = int(np.prod(self.spatial_dims))
+    num_global_features = self.num_total_observation_features - num_spatial_flat
+
+    if num_global_features < 0:
+        raise ValueError(
+            f"Total features ({self.num_total_observation_features}) is less than "
+            f"required spatial features ({num_spatial_flat} from spatial_dims {self.spatial_dims}). "
+            "Check observation_shape and spatial_dims."
+        )
+    
+    if x.shape[1] != self.num_total_observation_features:
+        raise ValueError(
+            f"Input feature dimension ({x.shape[1]}) does not match "
+            f"num_total_observation_features ({self.num_total_observation_features})."
+        )
+
+    # Reshape input features
+    x_spatial = x[:, :num_spatial_flat].reshape((-1,) + self.spatial_dims)
+    
+    x_global: Optional[jax.Array] = None
+    if num_global_features > 0:
+        x_global = x[:, num_spatial_flat:]
+    elif num_global_features == 0:
+        # If no global features are expected/provided, pass None to the core model.
+        # The core ResNet model's __call__ handles global_features=None.
+        x_global = None 
+        # If the core model strictly requires global features when use_transformer_head=True,
+        # this could be an issue. ResNet raises ValueError if use_transformer_head and global_features is None.
+        # For now, assume if num_global_features is 0, the user intends no global features for the transformer.
+        # A more robust ResNet might make global_features truly optional for the transformer part.
+    
+    # Filter out use_transformer_head from ResNeSt1D50_AZ.keywords if it exists,
+    # to allow explicit override by self.use_transformer_head.
+    core_model_base_keywords = {
+        k: v for k, v in ResNeSt1D50_AZ.keywords.items() if k != 'use_transformer_head'
+    }
+
+    core_model = ResNet(
+        **core_model_base_keywords, # Use filtered keywords
+        output_size=self.output_size,   # Override output_size
+        use_transformer_head=self.use_transformer_head # Explicitly use the wrapper's setting
+    )
+
+    # Call the core model with reshaped spatial and global features
+    policy_logits, value_output = core_model(
+        x_spatial, 
+        training=training, 
+        legals_mask=legals_mask, 
+        global_features=x_global
+    )
+    
+    return policy_logits, value_output
 
 # Import for ConfigJAX and pyspiel.Game will be handled by the calling script.
 # For now, assume they are available in the scope or passed correctly.
@@ -339,309 +408,217 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
                        nn_depth=config.nn_depth,
                          output_size=output_size,
                        expected_input_shape=observation_shape)
-  elif model_type.startswith("resnet") or model_type.startswith("resnext") or model_type.startswith("wide_resnet") or model_type.startswith("resnest"):
-    # All ResNet-family models will use ResNet_JAX and need expected_input_shape
-    if model_type == "resnet": # Generic ResNet
-      # Determine stem_constructor and block_constructor based on config or defaults
-      # (Existing logic for this is complex and assumed to be below, this is just for structure)
-      # For simplicity, assume these are resolved later or use a placeholder logic
+  elif model_type == "spatial_global_1dresnet_transformer":
+    if not hasattr(config, 'model_spatial_dims') or not config.model_spatial_dims:
+        # This model type requires model_spatial_dims to be explicitly set by the user.
+        raise ValueError("model_spatial_dims must be provided in config for 'spatial_global_1dresnet_transformer'. Example: --model_spatial_dims=24,8")
+    
+    num_total_features = int(np.prod(observation_shape)) # Total features from flat game observation
+    
+    # Ensure config.model_spatial_dims is correctly parsed (e.g., from a comma-separated string list flag)
+    # The example script alpha_zero_jax.py already parses FLAGS.model_spatial_dims into a tuple of ints.
+    # So, config.model_spatial_dims should already be a tuple of ints here.
+    spatial_dims_from_config = config.model_spatial_dims 
+    if not isinstance(spatial_dims_from_config, tuple) or not all(isinstance(dim, int) for dim in spatial_dims_from_config):
+        raise ValueError(f"config.model_spatial_dims is not a tuple of integers. Got: {spatial_dims_from_config}. Ensure it's correctly parsed from flags (e.g. '24,8').")
+
+    # The use_transformer_head flag is also expected to be in the config.
+    # The example script alpha_zero_jax.py sets config.use_transformer_head from FLAGS.use_transformer_head.
+    if not hasattr(config, 'use_transformer_head'):
+        # Defaulting here, but ideally, it should always be present in the config if this model is chosen.
+        print("Warning: config.use_transformer_head not found for spatial_global_1dresnet_transformer. Defaulting to True.")
+        use_transformer_head_for_model = True 
+    else:
+        use_transformer_head_for_model = config.use_transformer_head
+
+    model = SpatialGlobal1DResNetTransformer(
+        output_size=output_size,
+        num_total_observation_features=num_total_features,
+        spatial_dims=spatial_dims_from_config,
+        use_transformer_head=use_transformer_head_for_model 
+    )
+  elif model_type.startswith("resnet") or model_type.startswith("resnext") or model_type.startswith("wide_resnet") or model_type.startswith("resnest") or model_type == "resnest1d50_az":
+    if model_type == "resnest1d50_az":
+        # This model expects pre-processed (B, 24, 8) spatial input and optional (B, G) global features.
+        # If used directly (not via wrapper), the caller must provide correctly shaped input.
+        # For general AlphaZero framework, using the wrapper `SpatialGlobal1DResNetTransformer` is preferred for games with flat observations.
+        print(f"Warning: Using 'resnest1d50_az' directly. Ensure input is correctly shaped (spatial + global). Consider 'spatial_global_1dresnet_transformer' for games with flat input to be split.")
+        
+        # Filter out use_transformer_head from ResNeSt1D50_AZ.keywords
+        # to allow explicit override by config.use_transformer_head.
+        resnest1d50_az_base_keywords = {
+            k: v for k, v in ResNeSt1D50_AZ.keywords.items() if k != 'use_transformer_head'
+        }
+
+        model = ResNet(
+            **resnest1d50_az_base_keywords, # Use filtered keywords
+            output_size=output_size,   # Override output_size
+            use_transformer_head=config.use_transformer_head # Override use_transformer_head based on config
+        )
+    elif model_type == "resnet": # Generic 2D ResNet from ResNet_JAX
       stem_callable_name = getattr(config, 'resnet_stem_callable_name', "ResNetStem")
       block_callable_name = getattr(config, 'resnet_block_callable_name', "ResNetBlock")
       stem_kwargs = getattr(config, 'resnet_stem_kwargs', {})
       block_kwargs_from_config = getattr(config, 'resnet_block_kwargs', {})
-
-      # Default to AlphaGo Zero-like configuration if specific resnet_* fields are not set
-      if not hasattr(config, 'resnet_depth_config') or not config.resnet_depth_config:
-          # AGZ: 256 filters, 20 blocks.
-          # For ResNet_JAX, nn_width is base filters (e.g., 64), nn_depth_config is stage sizes.
-          # We need a mapping from nn_depth (e.g., 20 blocks) to nn_depth_config.
-          # Example: if nn_depth = 20, make it like [X,X,X,X] where sum of X's is ~20/N_blocks_per_ResNetBlock
-          # This part might need more careful translation from old default behavior.
-          # For now, let's assume nn_width is the primary filter control for the default,
-          # and nn_depth_config would be derived if not provided.
-          # This part of the logic is complex and handled later in the original file.
-          # The key is to pass observation_shape.
-
-          # Simplified: if config.resnet_depth_config is missing, it will be populated by later logic.
-          pass # Later logic handles creating the default ResNet based on nn_width/nn_depth
-
-
+      
       resolved_stem_constructor = resolve_callable(stem_callable_name, stem_kwargs)
-      resolved_block_constructor = resolve_callable(block_callable_name, {}) # block_kwargs applied inside ResNet_JAX
+      resolved_block_constructor = resolve_callable(block_callable_name, {}) 
 
       model = ResNet_JAX(
           stem_constructor=resolved_stem_constructor,
           block_constructor=resolved_block_constructor,
-          nn_width=config.nn_width, # This is base filters, e.g. 64
-          nn_depth_config=config.resnet_depth_config if hasattr(config, 'resnet_depth_config') and config.resnet_depth_config else [2, 2, 2, 2], # Placeholder, original code has complex default logic
+          nn_width=config.nn_width, 
+          nn_depth_config=config.resnet_depth_config if hasattr(config, 'resnet_depth_config') and config.resnet_depth_config else [2, 2, 2, 2], 
                          output_size=output_size,
           block_kwargs=block_kwargs_from_config,
-          expected_input_shape=observation_shape
+          expected_input_shape=observation_shape # ResNet_JAX (2D) uses this for NCHW -> NHWC if needed
       )
-    else: # Specific named ResNet variants (resnet18, resnet50, resnest50fast etc.)
-      # This logic below already exists and correctly sets up stem, block, depth_config.
-      # We just need to add expected_input_shape to the ResNet_JAX call.
-      # The existing complex switch-case for specific ResNet types will remain,
-      # and each will instantiate ResNet_JAX. We ensure expected_input_shape is passed there.
+    else: # Specific named 2D ResNet variants (resnet18, resnet50, resnest50fast etc.)
+      _nn_width = config.nn_width 
+      _nn_depth = config.nn_depth 
+      is_generic_resnet = model_type == "resnet"
+      has_specific_depth_config = hasattr(config, 'resnet_depth_config') and config.resnet_depth_config
 
-      # The original code has a large conditional block here for specific ResNet types.
-      # That block instantiates ResNet_JAX with specific parameters.
-      # The key change is to add `expected_input_shape=observation_shape` to all of them.
-      # The following is a conceptual representation of how it would be added to one such case:
-      if model_type == "resnet18":
-          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
-          block_constructor = functools.partial(ResNetBlock, conv_block_cls=ConvBlock)
-          depth_config = STAGE_SIZES[18]
-          block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
+      if is_generic_resnet and not has_specific_depth_config:
+          _nn_width_for_model = 64 
+          num_blocks = _nn_depth
+          if num_blocks == 20: 
+              depth_config_default = [2, 2, 2, 2] 
+              if _nn_width == 256: 
+                  block_callable_name_default = "ResNetBottleneckBlock"
+                  block_kwargs_default = {"expansion": 4}
+              else: 
+                  block_callable_name_default = "ResNetBlock"
+                  depth_config_default = [5,5,5,5] 
+                  block_kwargs_default = {}
+          elif num_blocks == 40: 
+              depth_config_default = [3,3,3,3] 
+              block_callable_name_default = "ResNetBottleneckBlock"
+              block_kwargs_default = {"expansion": 4}
+
+          else: 
+              depth_config_default = [2,2,2,2] 
+              block_callable_name_default = "ResNetBlock"
+              block_kwargs_default = {}
+
+          _resnet_depth_config = getattr(config, 'resnet_depth_config', depth_config_default)
+          _resnet_stem_callable_name = getattr(config, 'resnet_stem_callable_name', "ResNetStem")
+          _resnet_stem_kwargs = getattr(config, 'resnet_stem_kwargs', {"n_hidden": _nn_width_for_model})
+          _resnet_block_callable_name = getattr(config, 'resnet_block_callable_name', block_callable_name_default)
+          _resnet_block_kwargs = {**block_kwargs_default, **getattr(config, 'resnet_block_kwargs', {})}
+
+          stem_constructor = resolve_callable(_resnet_stem_callable_name, _resnet_stem_kwargs)
+          block_constructor = resolve_callable(_resnet_block_callable_name, {}) 
 
           model = ResNet_JAX(
               stem_constructor=stem_constructor,
               block_constructor=block_constructor,
-              nn_width=64, # ResNet18 base
-              nn_depth_config=depth_config,
+              nn_width=_nn_width_for_model,
+              nn_depth_config=_resnet_depth_config,
                          output_size=output_size,
-              block_kwargs=block_kwargs_override,
-              expected_input_shape=observation_shape # ADDED
+              block_kwargs=_resnet_block_kwargs,
+              expected_input_shape=observation_shape 
           )
-      # ... many other elif for other ResNet types ...
-      # The edit will need to carefully go through ALL ResNet_JAX instantiations.
-      # For brevity, the full replication of all ResNet types is omitted here,
-      # but the principle is to add `expected_input_shape=observation_shape` to each.
-
-      # Due to the complexity of modifying EACH ResNet variant instantiation within this diff,
-      # I will apply the change to the generic "resnet" case and one specific example ("resnet18").
-      # The actual application should cover all ResNet_JAX instantiations.
-
-      # --- Start of existing ResNet variant specific logic (simplified) ---
-      # This part of the code is quite long. The core idea is that ANY time ResNet_JAX(...) is called,
-      # we add expected_input_shape=observation_shape to its arguments.
-
+      elif model_type == "resnet18":
+          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock, dim=2)
+          block_constructor = functools.partial(ResNetBlock, conv_block_cls=ConvBlock, dim=2)
+          depth_config = STAGE_SIZES[18]
+          block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
+          model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
       elif model_type == "resnet34":
-          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
-          block_constructor = functools.partial(ResNetBlock, conv_block_cls=ConvBlock)
+          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock, dim=2)
+          block_constructor = functools.partial(ResNetBlock, conv_block_cls=ConvBlock, dim=2)
           depth_config = STAGE_SIZES[34]
           block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
           model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
       elif model_type == "resnet50":
-          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
-          block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock)
+          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock, dim=2)
+          block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock, dim=2)
           depth_config = STAGE_SIZES[50]
           block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
           model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
-      # ... (and so on for all ResNet variants: resnet101, resnet152, resnet200, resnet_d*, resnext*, wide_resnet*, resnest*)
-      # The key is to add expected_input_shape=observation_shape to all of them.
-
-      # --- Fallback for unhandled specific resnets to generic, or error ---
-      else: # This 'else' corresponds to the outer 'if model_type.startswith("resnet") ...'
-          # If it's a "resnetXXX" not explicitly handled, it might fall into generic "resnet" logic
-          # OR it might be an error. The original code has detailed handling.
-          # For the purpose of this edit, we assume the model variable will be assigned correctly.
-          # The critical change is ensuring 'expected_input_shape' is passed if ResNet_JAX is used.
-          # If a specific resnet variant was missed above, it should be added with expected_input_shape.
-          # This section needs to be carefully merged with the existing extensive 'if/elif' block.
-          # The provided snippet for init_flax_model_and_variables is a high-level structure.
-          # The actual file has a very long if/elif chain for all ResNet types.
-          # The change `expected_input_shape=observation_shape` must be applied to *every*
-          # `ResNet_JAX(...)` call within that chain.
-
-          # Placeholder: In a real edit, I'd find every ResNet_JAX call and add the arg.
-          # For now, this simplified structure just illustrates where the changes go.
-          # The edit I'm proposing will need to be carefully applied to the full init function.
-          # To be more concrete, here's how I'd modify the large if/else block:
-          # Replace: ResNet_JAX(...)
-          # With:    ResNet_JAX(..., expected_input_shape=observation_shape)
-
-          # The full diff for init_flax_model_and_variables will be larger and more complex.
-          # The current tool call will attempt to apply this logic.
-          # If it struggles with the full init_flax_model_and_variables, we might need to break it down.
-          # For now, let's assume the following diff captures the intent for ResNet_JAX calls.
-
-          # --- Start: Generated section to ensure all ResNet_JAX calls get expected_input_shape ---
-          # This section is a placeholder for the edits to the *actual*
-          # long if/elif block in `init_flax_model_and_variables`.
-          # The principle is: find each `ResNet_JAX(` and add `expected_input_shape=observation_shape,`
-          # to its arguments.
-
-          # Example of how the ResNet variant handling should be modified:
-          # (Original code for ResNet variants is complex, this is a simplified example)
-          _nn_width = config.nn_width # Default, might be overridden by specific models
-          _nn_depth = config.nn_depth # Default
-
-          # Default to AlphaGo Zero-like configuration if specific resnet_* fields are not set
-          # and we are in the generic "resnet" case.
-          is_generic_resnet = model_type == "resnet"
-          has_specific_depth_config = hasattr(config, 'resnet_depth_config') and config.resnet_depth_config
-
-          if is_generic_resnet and not has_specific_depth_config:
-              # AlphaGo Zero: 20 blocks, 256 filters. OpenSpiel TF: nn_depth=20, nn_width=256
-              # ResNet_JAX nn_width is base filters (e.g., 64 for ResNet18/34/50)
-              # ResNet_JAX nn_depth_config is stage sizes.
-              # If nn_width=256 for generic resnet, assume it's filter count for blocks, not base for stem.
-              # This requires a specific ResNetBlock that takes 256 filters directly,
-              # or nn_width for ResNet_JAX should be set to a stem width (e.g. 64)
-              # and block_kwargs should specify expansion to reach 256.
-              # For simplicity, let's assume nn_width is base filters and depth maps to stages.
-              _nn_width_for_model = 64 # A common base for ResNets
-              num_blocks = _nn_depth
-              if num_blocks == 20: # ~ResNet20, e.g. 4 stages of 5 BottleNeck blocks or similar
-                  depth_config_default = [2, 2, 2, 2] # Placeholder for a 20-layer like config
-                  if _nn_width == 256: # If user specified 256 for generic resnet
-                      # Assume this means 256 filters in blocks, so use bottleneck with expansion
-                      block_callable_name_default = "ResNetBottleneckBlock"
-                      # For ResNetBottleneckBlock, n_hidden is input to stage, output is n_hidden * expansion
-                      # If we want 256 filters, and base is 64, expansion is 4.
-                      block_kwargs_default = {"expansion": 4}
-                  else: # Assume nn_width is for ResNetBlock directly (no expansion)
-                      block_callable_name_default = "ResNetBlock"
-                      depth_config_default = [5,5,5,5] # e.g. 4 stages of 5 ResNetBlocks
-                      block_kwargs_default = {}
-              elif num_blocks == 40: # ~ResNet40
-                  depth_config_default = [3,3,3,3] # Placeholder
-                  # Similar logic for block_callable and block_kwargs based on _nn_width
-                  block_callable_name_default = "ResNetBottleneckBlock"
-                  block_kwargs_default = {"expansion": 4}
-
-              else: # Default for other depths
-                  depth_config_default = [2,2,2,2] # Small default
-                  block_callable_name_default = "ResNetBlock"
-                  block_kwargs_default = {}
-                  # If specific depth configs are expected for other nn_depth values, add them.
-
-              _resnet_depth_config = getattr(config, 'resnet_depth_config', depth_config_default)
-              _resnet_stem_callable_name = getattr(config, 'resnet_stem_callable_name', "ResNetStem")
-              _resnet_stem_kwargs = getattr(config, 'resnet_stem_kwargs', {"n_hidden": _nn_width_for_model})
-              _resnet_block_callable_name = getattr(config, 'resnet_block_callable_name', block_callable_name_default)
-              _resnet_block_kwargs = {**block_kwargs_default, **getattr(config, 'resnet_block_kwargs', {})}
-
-
-              stem_constructor = resolve_callable(_resnet_stem_callable_name, _resnet_stem_kwargs)
-              block_constructor = resolve_callable(_resnet_block_callable_name, {}) # kwargs passed in ResNet_JAX
-
-              model = ResNet_JAX(
-                  stem_constructor=stem_constructor,
-                  block_constructor=block_constructor,
-                  nn_width=_nn_width_for_model,
-                  nn_depth_config=_resnet_depth_config,
-                         output_size=output_size,
-                  block_kwargs=_resnet_block_kwargs,
-                  expected_input_shape=observation_shape # ADDED
-              )
-          # --- End of generic "resnet" default logic ---
-          elif model_type == "resnet18":
-              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
-              block_constructor = functools.partial(ResNetBlock, conv_block_cls=ConvBlock)
-              depth_config = STAGE_SIZES[18]
-              block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
-          elif model_type == "resnet34":
-              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
-              block_constructor = functools.partial(ResNetBlock, conv_block_cls=ConvBlock)
-              depth_config = STAGE_SIZES[34]
-              block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
-          elif model_type == "resnet50":
-              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
-              block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock)
-              depth_config = STAGE_SIZES[50]
-              block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
-          elif model_type == "resnet101":
-              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
-              block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock, expansion=4)
-              depth_config = STAGE_SIZES[101]
-              block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
-              final_block_kwargs = {"expansion": 4, **block_kwargs_override}
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=final_block_kwargs, expected_input_shape=observation_shape)
-          elif model_type == "resnet152":
-              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
-              block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock, expansion=4)
-              depth_config = STAGE_SIZES[152]
-              block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
-              final_block_kwargs = {"expansion": 4, **block_kwargs_override}
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=final_block_kwargs, expected_input_shape=observation_shape)
-          elif model_type == "resnet200":
-              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
-              block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock, expansion=4)
-              depth_config = STAGE_SIZES[200]
-              block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
-              final_block_kwargs = {"expansion": 4, **block_kwargs_override}
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=final_block_kwargs, expected_input_shape=observation_shape)
-
-          # ResNet-D Variants
-          elif model_type == "resnet_d18":
-              stem_constructor = functools.partial(ResNetDStem, stem_width=64, conv_block_cls=ConvBlock)
-              block_constructor = functools.partial(ResNetDBlock, conv_block_cls=ConvBlock)
-              depth_config = STAGE_SIZES[18]
-              block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
-          elif model_type == "resnet_d34":
-              stem_constructor = functools.partial(ResNetDStem, stem_width=64, conv_block_cls=ConvBlock)
-              block_constructor = functools.partial(ResNetDBlock, conv_block_cls=ConvBlock)
-              depth_config = STAGE_SIZES[34]
-              block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
-          elif model_type == "resnet_d50":
-              stem_constructor = functools.partial(ResNetDStem, stem_width=64, conv_block_cls=ConvBlock)
-              block_constructor = functools.partial(ResNetDBottleneckBlock, conv_block_cls=ConvBlock, expansion=4)
-              depth_config = STAGE_SIZES[50]
-              block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
-              final_block_kwargs = {"expansion": 4, **block_kwargs_override}
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=final_block_kwargs, expected_input_shape=observation_shape)
-          # ... (Continue for resnet_d101, resnet_d152, resnet_d200 with expected_input_shape)
-
-          # ResNeXt Variants
-          elif model_type == "resnext50": # ResNeXt-50 32x4d
-              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
-              block_kwargs = {"groups": 32, "base_width": 4, "expansion": 4, **getattr(config, 'resnet_block_kwargs', {})}
-              block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock)
-              depth_config = STAGE_SIZES[50]
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs, expected_input_shape=observation_shape)
-          elif model_type == "resnext101": # ResNeXt-101 32x8d
-              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock)
-              block_kwargs = {"groups": 32, "base_width": 8, "expansion": 4, **getattr(config, 'resnet_block_kwargs', {})}
-              block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock)
-              depth_config = STAGE_SIZES[101]
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs, expected_input_shape=observation_shape)
-
-          # Wide ResNet Variants
-          elif model_type == "wide_resnet50": # Wide ResNet-50-2
-              stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock) # Stem width is still 64
-              # Width factor k=2 means hidden_sizes in ResNetBottleneckBlock are multiplied by k (implicitly handled if block_kwargs passes a width_factor or modified n_hidden sequence)
-              # A common way is to make block_kwargs = {"expansion": 4, "width_per_group": 64 * 2} if base_width is used, or adjust n_hidden for blocks.
-              # Assuming ResNetBottleneckBlock structure: first conv is width_per_group * groups, second is same, third is expansion * (that).
-              # For Wide ResNet-50-2, it's standard ResNet-50 but channels in blocks are doubled.
-              # So, if ResNet-50 base is 64, bottleneck is 64->64->256. Wide becomes 128->128->512 (for the first block in stage)
-              # Our ResNet_JAX current_n_hidden logic handles stage-wise filter increases based on nn_width.
-              # So, nn_width=128 (for 64*2) might be enough if block handles its internal widths relative to n_hidden.
-              _block_kwargs = {"expansion": 4, **getattr(config, 'resnet_block_kwargs', {})} # Standard expansion
-              _nn_width_for_wide = 128 # Double the base width
-              block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock)
-              depth_config = STAGE_SIZES[50]
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=_nn_width_for_wide, nn_depth_config=depth_config, output_size=output_size, block_kwargs=_block_kwargs, expected_input_shape=observation_shape)
-          # ... (Continue for wide_resnet101 with expected_input_shape)
-
-          # ResNeSt Variants
-          elif model_type == "resnest50fast":
-              stem_constructor = functools.partial(ResNetDStem, stem_width=32, conv_block_cls=ConvBlock)
-              _block_kwargs = {"radix": 1, "groups": 1, "base_width": 64, "expansion": 4, 
-                               "conv_block_cls": ConvBlock, # Ensure conv_block_cls is provided
+      elif model_type == "resnet101":
+          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock, dim=2)
+          block_constructor_base = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock, dim=2)
+          depth_config = STAGE_SIZES[101]
+          block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
+          final_block_kwargs = {"expansion": 4, **block_kwargs_override}
+          block_constructor = functools.partial(block_constructor_base, **final_block_kwargs) # Apply expansion to partial
+          model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=final_block_kwargs, expected_input_shape=observation_shape)
+      elif model_type == "resnet152":
+          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock, dim=2)
+          block_constructor_base = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock, dim=2)
+          depth_config = STAGE_SIZES[152]
+          block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
+          final_block_kwargs = {"expansion": 4, **block_kwargs_override}
+          block_constructor = functools.partial(block_constructor_base, **final_block_kwargs)
+          model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=final_block_kwargs, expected_input_shape=observation_shape)
+      elif model_type == "resnet200":
+          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock, dim=2)
+          block_constructor_base = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock, dim=2)
+          depth_config = STAGE_SIZES[200]
+          block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
+          final_block_kwargs = {"expansion": 4, **block_kwargs_override}
+          block_constructor = functools.partial(block_constructor_base, **final_block_kwargs)
+          model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=final_block_kwargs, expected_input_shape=observation_shape)
+      elif model_type == "resnet_d18":
+          stem_constructor = functools.partial(ResNetDStem, stem_width=64, conv_block_cls=ConvBlock, dim=2)
+          block_constructor = functools.partial(ResNetDBlock, conv_block_cls=ConvBlock, dim=2)
+          depth_config = STAGE_SIZES[18]
+          block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
+          model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
+      elif model_type == "resnet_d34":
+          stem_constructor = functools.partial(ResNetDStem, stem_width=64, conv_block_cls=ConvBlock, dim=2)
+          block_constructor = functools.partial(ResNetDBlock, conv_block_cls=ConvBlock, dim=2)
+          depth_config = STAGE_SIZES[34]
+          block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
+          model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=block_kwargs_override, expected_input_shape=observation_shape)
+      elif model_type == "resnet_d50":
+          stem_constructor = functools.partial(ResNetDStem, stem_width=64, conv_block_cls=ConvBlock, dim=2)
+          block_constructor_base = functools.partial(ResNetDBottleneckBlock, conv_block_cls=ConvBlock, dim=2)
+          depth_config = STAGE_SIZES[50]
+          block_kwargs_override = getattr(config, 'resnet_block_kwargs', {})
+          final_block_kwargs = {"expansion": 4, **block_kwargs_override}
+          block_constructor = functools.partial(block_constructor_base, **final_block_kwargs)
+          model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=final_block_kwargs, expected_input_shape=observation_shape)
+      elif model_type == "resnext50": 
+          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock, dim=2)
+          _block_kwargs = {"groups": 32, "base_width": 4, "expansion": 4, **getattr(config, 'resnet_block_kwargs', {})}
+          block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock, dim=2, **_block_kwargs)
+          depth_config = STAGE_SIZES[50]
+          model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=_block_kwargs, expected_input_shape=observation_shape)
+      elif model_type == "resnext101": 
+          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock, dim=2)
+          _block_kwargs = {"groups": 32, "base_width": 8, "expansion": 4, **getattr(config, 'resnet_block_kwargs', {})}
+          block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock, dim=2, **_block_kwargs)
+          depth_config = STAGE_SIZES[101]
+          model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=_block_kwargs, expected_input_shape=observation_shape)
+      elif model_type == "wide_resnet50": 
+          stem_constructor = functools.partial(ResNetStem, conv_block_cls=ConvBlock, dim=2)
+          _block_kwargs = {"expansion": 4, **getattr(config, 'resnet_block_kwargs', {})}
+          _nn_width_for_wide = 128 
+          block_constructor = functools.partial(ResNetBottleneckBlock, conv_block_cls=ConvBlock, dim=2, **_block_kwargs)
+          depth_config = STAGE_SIZES[50]
+          model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=_nn_width_for_wide, nn_depth_config=depth_config, output_size=output_size, block_kwargs=_block_kwargs, expected_input_shape=observation_shape)
+      elif model_type == "resnest50fast":
+          stem_constructor = functools.partial(ResNetDStem, stem_width=32, conv_block_cls=ConvBlock, dim=2)
+          _block_kwargs = {"radix": 1, "groups": 1, "base_width": 64, "expansion": 4, 
+                               "conv_block_cls": ConvBlock, 
                                **getattr(config, 'resnet_block_kwargs', {})}
-              block_constructor = functools.partial(ResNeStBottleneckBlock)
-              depth_config = STAGE_SIZES[50]
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=_block_kwargs, expected_input_shape=observation_shape)
-          elif model_type == "resnest50":
-              stem_constructor = functools.partial(ResNetDStem, stem_width=64, conv_block_cls=ConvBlock)
-              _block_kwargs = {"radix": 2, "groups": 1, "base_width": 64, "avg_pool_first": False, "expansion": 4, 
-                               "conv_block_cls": ConvBlock, # Ensure conv_block_cls is provided
+          # ResNeStBottleneckBlock needs dim=2 for this 2D variant
+          block_constructor = functools.partial(ResNeStBottleneckBlock, dim=2, **_block_kwargs) 
+          depth_config = STAGE_SIZES[50]
+          model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=_block_kwargs, expected_input_shape=observation_shape)
+      elif model_type == "resnest50":
+          stem_constructor = functools.partial(ResNetDStem, stem_width=64, conv_block_cls=ConvBlock, dim=2)
+          _block_kwargs = {"radix": 2, "groups": 1, "base_width": 64, "avg_pool_first": False, "expansion": 4, 
+                               "conv_block_cls": ConvBlock, 
                                **getattr(config, 'resnet_block_kwargs', {})}
-              block_constructor = functools.partial(ResNeStBottleneckBlock)
-              depth_config = STAGE_SIZES[50]
-              model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=_block_kwargs, expected_input_shape=observation_shape)
-          # ... (Continue for resnest101 etc. with expected_input_shape)
-
-          else:
-              raise ValueError(f"Unsupported model type: {config.nn_model}")
-          # --- End: Generated section to ensure all ResNet_JAX calls get expected_input_shape ---
+          block_constructor = functools.partial(ResNeStBottleneckBlock, dim=2, **_block_kwargs)
+          depth_config = STAGE_SIZES[50]
+          model = ResNet_JAX(stem_constructor=stem_constructor, block_constructor=block_constructor, nn_width=64, nn_depth_config=depth_config, output_size=output_size, block_kwargs=_block_kwargs, expected_input_shape=observation_shape)
+      else:
+          raise ValueError(f"Unsupported ResNet-family model type: {config.nn_model}")
   else:
     raise ValueError(f"Unsupported model type: {config.nn_model}")
 
@@ -652,6 +629,32 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
   # model.init expects (Batch, ...features...)
   dummy_input_shape = (1,) + tuple(observation_shape)
   dummy_input = jnp.zeros(dummy_input_shape, dtype=jnp.float32)
+
+  # --- Special handling for resnest1d50_az dummy input --- 
+  # This special handling for 'resnest1d50_az' direct use might still be needed if someone uses it directly.
+  # However, for 'spatial_global_1dresnet_transformer', the dummy_input should be the flat observation_shape based.
+  if model_type == "resnest1d50_az": 
+      # The ResNeSt1D50_AZ model instance expects (B, 24, 8) for spatial features if used directly.
+      # This path is less common if the SpatialGlobal1DResNetTransformer wrapper is used.
+      # For init, we only need to satisfy the `x` (spatial) part.
+      # However, ResNet will raise ValueError if use_transformer_head=True and global_features not passed, even for init.
+      # This makes direct init of ResNeSt1D50_AZ problematic.
+      dummy_input_spatial_shape = (1, 24, 8) # Default for direct use, might need to be configurable or error.
+      dummy_global_features_shape = (1, 8) # A guess, if globals are 8. This is problematic.
+      
+      print(f"Warning: Initializing 'resnest1d50_az' directly. Dummy spatial input set to {dummy_input_spatial_shape}. "
+            "Direct init is problematic if its Transformer head requires global features. "
+            "Use 'spatial_global_1dresnet_transformer' wrapper instead.")
+      
+      # To attempt init, we'd need to pass global_features too if transformer is on.
+      # This is a hack and shows why the wrapper is better.
+      # variables = model.init(key, dummy_input_spatial, training=True, global_features=dummy_global_features)
+      # For now, let it use the default dummy_input (which is flat) and it will likely fail if global_features are required.
+      # Or, use the specific spatial dummy input, which also might fail for the same reason if global is needed.
+      # The code below will use the `dummy_input` which is flat from `observation_shape` which is incorrect for direct ResNeSt1D50_AZ.
+      # Let's set dummy_input to spatial here, and accept init might fail due to missing globals for transformer.
+      dummy_input = jnp.zeros(dummy_input_spatial_shape, dtype=jnp.float32)
+
 
   # Pass legals_mask only if the model's __call__ accepts it.
   # For init, a dummy legals_mask is needed if the model's __call__ signature requires it,
@@ -667,7 +670,66 @@ def init_flax_model_and_variables(key: jax.random.PRNGKey, config, game): # conf
   # Check if model has batch_stats (i.e., uses BatchNorm)
   # This is a bit indirect. A better way would be for models to declare if they use batch_stats.
   # For now, assume MLP, Conv2D, ResNet *can* have BatchNorm.
-  variables = model.init(key, dummy_input, training=True) # Use training=True for init if BN is present
+  init_args = (dummy_input,)
+  init_kwargs = {'training': True}
+
+  if model_type == "resnest1d50_az":
+      dummy_input_spatial_shape = (1, 24, 8) # Batch size 1, 24 length, 8 channels
+      current_dummy_input_for_init = jnp.zeros(dummy_input_spatial_shape, dtype=jnp.float32)
+      init_args = (current_dummy_input_for_init,) # Override init_args for 'x'
+
+      if config.use_transformer_head:
+          # Calculate global features based on the actual feature vector length that actors would send.
+          initial_state = game.new_initial_state()
+          # Check for an optional game-specific method to get a feature array.
+          # This allows a game to define a custom transformation of its state
+          # into a flat feature vector, potentially differing from the standard
+          # observation_tensor(). It provides flexibility for games to tailor
+          # their input to models that might expect a specific feature layout
+          # (e.g., a combination of spatial and global features for resnest1d50_az).
+          if hasattr(game, "state_to_feature_array"):
+              feature_vector = game.state_to_feature_array(initial_state)
+          else:
+              # Fallback to the standard OpenSpiel way of getting the observation tensor.
+              # If the initial state is a chance node (e.g., dice roll in backgammon),
+              # we need to advance it to a player's turn before getting the observation tensor.
+              _state_for_obs = initial_state.clone()
+              if _state_for_obs.is_chance_node():
+                  # For games like backgammon, the initial state is a chance node (dice roll).
+                  # We must apply a chance outcome to reach a player decision node
+                  # before an observation tensor can be meaningfully extracted for that player.
+                  # Taking the first legal action from the chance node is a common way to proceed.
+                  if not _state_for_obs.legal_actions():
+                      # This should ideally not happen for a valid game's initial chance node.
+                      raise RuntimeError(
+                          f"Initial chance node for game {game.get_type().short_name} "
+                          "has no legal actions. Cannot determine observation tensor shape."
+                      )
+                  _state_for_obs.apply_action(_state_for_obs.legal_actions()[0])
+              feature_vector = _state_for_obs.observation_tensor()
+          
+          feature_vector_np = np.array(feature_vector, dtype=np.float32).flatten()
+          total_flat_obs_features = feature_vector_np.shape[0]
+
+          fixed_spatial_dims = (24, 8)
+          num_spatial_flat_for_model = fixed_spatial_dims[0] * fixed_spatial_dims[1] # 192
+          
+          num_global_features_for_init = total_flat_obs_features - num_spatial_flat_for_model
+          
+          if num_global_features_for_init < 0:
+              print(f"Warning: Calculated num_global_features_for_init is {num_global_features_for_init} for resnest1d50_az. Using 0. Check total features ({total_flat_obs_features}) from state_to_feature_array and model's spatial assumption ({num_spatial_flat_for_model}).")
+              num_global_features_for_init = 0
+          
+          # # if logger and config.log_level >= DEBUG: # Assuming logger and config are available in this scope or passed
+          # #       logger.print(f"ResNeSt1D50_AZ init: total_flat_obs_features={total_flat_obs_features}, num_spatial_flat_for_model={num_spatial_flat_for_model}, num_global_features_for_init={num_global_features_for_init}")
+
+          dummy_global_features_for_init = jnp.zeros((current_dummy_input_for_init.shape[0], num_global_features_for_init), dtype=jnp.float32)
+          init_kwargs['global_features'] = dummy_global_features_for_init
+  # For spatial_global_1dresnet_transformer, its __call__ handles splitting the flat dummy_input,
+  # so it doesn't need global_features passed directly to its own init() call.
+  # The `dummy_input` used for it will be the standard flat one.
+
+  variables = model.init(key, *init_args, **init_kwargs)
 
   return model, variables 
 

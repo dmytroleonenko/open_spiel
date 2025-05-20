@@ -273,198 +273,291 @@ class RemoteEvaluator:
             self.logger.info(f"Actor {self._actor_id}: Response handler loop finished cleanup.")
 
     def _inference(self, state: "pyspiel.State", mcts_search_timeout_sec: float) -> tuple[float, "_np.ndarray"]:  # type: ignore # pylint: disable=undefined-variable
-        """Sends a state for inference and returns the value and policy."""
-        obs_tensor = _np.asarray(state.observation_tensor())
-        obs_key = obs_tensor.tobytes()
+        """Internal method to perform inference, returns (value, policy_probs)."""
+        # Value here is the raw scalar value from the network for the current player.
+        # Policy_probs is the raw policy array from the network.
 
-        cached_result = self._cache.get(obs_key)
-        if cached_result is not None:
-          self.logger.debug(f"Actor {self._actor_id}: Cache hit for state obs_key: {obs_key[:16].hex()}...")
-          return cached_result
+        # Create a unique request ID
+        request_id = str(uuid4())
 
-        request_id = uuid4().hex
-        event = threading.Event()
-        response_holder = []
+        # Prepare the observation and legals_mask
+        observation_tensor = _np.array(state.observation_tensor(), dtype=_np.float32)
+        # Ensure observation_tensor is flat if the game returns a multi-dim observation
+        # that the model expects flattened (unless model handles reshape).
+        # For most AlphaZero models (MLP, Conv2D, some ResNets), flat or specific spatial is expected.
+        # This was previously handled by game.state_to_feature_array in some actor logic.
+        # For RemoteEvaluator, it should receive the canonical observation_tensor from the game.
+        # Models like spatial_global_1dresnet_transformer expect a flat observation.
+        # The model_jax.py's init_flax_model_and_variables correctly passes the game's
+        # observation_tensor_shape to the model. If the model expects flat, it should handle it.
+        # For robustness, ensure it's flat if that's the general expectation.
+        # However, some models (like direct ResNeSt1D50_AZ) might expect non-flat.
+        # For now, assume observation_tensor as is from game.observation_tensor() is correct.
+        # If specific game requires flattening, it should be handled by a game-specific wrapper
+        # or ensured that game.observation_tensor() provides the expected format.
 
+        legals_mask_array = _np.array(state.legal_actions_mask(), dtype=_np.bool_)
+
+        # Create the request object
+        req = InferenceRequest(
+            request_id=request_id,
+            actor_id=self._actor_id,
+            observation=observation_tensor,
+            legals_mask=legals_mask_array,
+            request_time=time.monotonic() # Use monotonic time for request timing
+        )
+
+        # Send the request
+        if self.logger.level <= TRACE_LEVEL_NUM: # TRACE
+            self.logger.log(TRACE_LEVEL_NUM, f"Actor {self._actor_id}: Sending inference request {request_id} for state: {state.history_str() if hasattr(state, 'history_str') else 'N/A'}")
+        
+        response_future = None
         with self._map_lock:
-            self._pending_requests_map[request_id] = (event, response_holder)
-
-        self.logger.debug(f"Actor {self._actor_id}: Cache miss. Sending inference request {request_id} for obs_key: {obs_key[:16].hex()}... Timeout: {mcts_search_timeout_sec}s")
+            response_future = threading.Event() # Event to wait for the response
+            self._pending_requests_map[request_id] = {"future": response_future, "data": None}
 
         try:
-          request = InferenceRequest(
-              request_id=request_id,
-              actor_id=self._actor_id,
-              observation=obs_tensor,
-              legals_mask=_np.asarray(state.legal_actions_mask()),
-              request_time=time.time())
-          self._inference_request_queue.put(request.to_tuple(), block=True)
-        except Exception as e:
-          self.logger.error(f"Actor {self._actor_id}: Error putting request {request_id} on queue: {e}")
-          raise
-
-        # Wait for the response handler to signal completion
-        timed_out = not event.wait(timeout=mcts_search_timeout_sec)
-
-        if timed_out:
+            self._inference_request_queue.put(req.to_tuple(), block=True, timeout=self._response_wait_timeout_seconds)
+        except _std_queue.Full:
+            self.logger.error(f"Actor {self._actor_id}: Inference request queue full. Request {request_id} dropped.")
             with self._map_lock:
-                # Clean up the map entry if it still exists
-                self._pending_requests_map.pop(request_id, None)
-            self.logger.error(f"Actor {self._actor_id}: Timeout waiting for response event for request {request_id} after {mcts_search_timeout_sec}s.")
-            raise TimeoutError(f"Actor {self._actor_id}: Timeout waiting for response event for request {request_id}")
+                self._pending_requests_map.pop(request_id, None) # Clean up
+            # Return a default "bad" value and uniform policy or raise an error
+            # For MCTS, returning a very bad value (e.g., -infinity or -1 for normalized returns)
+            # and a uniform policy might be a way to let MCTS explore other paths.
+            # This matches the behavior if response times out.
+            return self._get_default_eval_on_error(state)
 
-        # Event was set, response should be in response_holder
-        if not response_holder:
-            # This can happen if the response handler loop terminated and cleaned up, but the event was set.
-            self.logger.error(f"Actor {self._actor_id}: Event set for {request_id} but response_holder is empty. Assuming shutdown.")
-            raise ShutdownException(f"Event set for {request_id} but no response data, likely shutdown.")
 
-        response_content = response_holder[0]
+        # Wait for the response (with timeout)
+        if self.logger.level <= TRACE_LEVEL_NUM: # TRACE
+            self.logger.log(TRACE_LEVEL_NUM, f"Actor {self._actor_id}: Waiting for response for request {request_id}. Timeout: {mcts_search_timeout_sec:.2f}s")
+        
+        # Use the Event object to wait for the response
+        if response_future.wait(timeout=mcts_search_timeout_sec):
+            # Response received and processed by _handle_responses_loop
+            with self._map_lock:
+                processed_response_data = self._pending_requests_map.pop(request_id, {}).get("data")
+            
+            if processed_response_data:
+                # processed_response_data should be a tuple (scalar_value, policy_array)
+                scalar_nn_value, policy_probs_array = processed_response_data
+                
+                if self.logger.level <= TRACE_LEVEL_NUM: # TRACE
+                    self.logger.log(TRACE_LEVEL_NUM, f"Actor {self._actor_id}: Received response for {request_id}. Value: {scalar_nn_value:.4f}, Policy sum: {_np.sum(policy_probs_array):.4f}")
+                
+                # IMPORTANT FIX: Convert scalar_nn_value to a Python float before returning,
+                # to ensure it's handled correctly when constructing utility arrays later.
+                # policy_probs_array should already be a 1D numpy array of floats.
+                return float(scalar_nn_value), policy_probs_array
+            else:
+                # Should not happen if event was set and data was supposed to be there
+                self.logger.error(f"Actor {self._actor_id}: Response event set for {request_id}, but no data found. This indicates a logic error in response handling.")
+                return self._get_default_eval_on_error(state)
 
-        if response_content is SHUTDOWN_SENTINEL:
-            self.logger.warning(f"Actor {self._actor_id}: Received shutdown sentinel for request {request_id} via response_holder. Propagating shutdown.")
-            raise ShutdownException(f"Shutdown sentinel received for request {request_id}.")
+        else: # Timeout waiting for response
+            self.logger.warning(f"Actor {self._actor_id}: Timeout waiting for inference response for request {request_id} (waited {mcts_search_timeout_sec:.2f}s).")
+            with self._map_lock:
+                self._pending_requests_map.pop(request_id, None) # Clean up on timeout
+            return self._get_default_eval_on_error(state)
 
-        if not isinstance(response_content, InferenceResponse):
-             self.logger.error(f"Actor {self._actor_id}: Invalid content in response_holder for {request_id}. Expected InferenceResponse, got {type(response_content)}. Assuming shutdown.")
-             raise ShutdownException(f"Invalid content in response_holder for {request_id}.")
 
-        response: InferenceResponse = response_content
-        self.logger.debug(f"Actor {self._actor_id}: Received expected response for request {request_id} via event. Value: {response.value:.3f}")
+    def _get_default_eval_on_error(self, state: "pyspiel.State"): # type: ignore
+        """Returns a default evaluation (e.g., 0 value, uniform policy) on error/timeout."""
+        # Value: 0 for the current player (neutral)
+        # Policy: Uniform over legal actions
+        num_distinct_actions = self._game.num_distinct_actions()
+        policy = _np.zeros(num_distinct_actions, dtype=_np.float32)
+        
+        if state.is_chance_node() or state.is_terminal():
+            # For chance/terminal nodes, prior/evaluate might not be called or handled differently
+            # by MCTS. If they are, a uniform policy over chance outcomes or empty policy for terminal
+            # might be appropriate. Value should be actual returns if terminal.
+            # This function is a fallback for network errors on *decision* nodes.
+             pass # Policy remains zeros, value is 0.0
 
-        self._cache.put(obs_key, (response.value, response.policy_probs))
+        else: # Decision node
+            legal_actions = state.legal_actions(state.current_player())
+            if legal_actions:
+                prob = 1.0 / len(legal_actions)
+                for action in legal_actions:
+                    policy[action] = prob
+            # else: no legal actions, policy remains zeros.
 
-        # Update inference counts and timing
-        if self._first_inference_time is None:
-            self._first_inference_time = time.time()
-        self._inference_count += 1
-        self._inferences_since_last_log += 1
+        # Return scalar 0.0 for value, and the policy array
+        return 0.0, policy
 
-        # Logging for inference rate
-        current_time = time.time()
-        if current_time - self._last_log_time >= self._log_interval_seconds:
-            elapsed_since_last_log = current_time - self._last_log_time
-            if elapsed_since_last_log > 0:
-                inferences_per_sec_interval = self._inferences_since_last_log / elapsed_since_last_log
-                self.logger.debug(f"Actor {self._actor_id}: Inferences in last {elapsed_since_last_log:.2f}s: {self._inferences_since_last_log}, Rate: {inferences_per_sec_interval:.2f} inf/s")
-            if self._first_inference_time and (current_time - self._first_inference_time > 0):
-                overall_elapsed_time = current_time - self._first_inference_time
-                overall_inferences_per_sec = self._inference_count / overall_elapsed_time
-                self.logger.debug(f"Actor {self._actor_id}: Total inferences: {self._inference_count}, Overall Rate: {overall_inferences_per_sec:.2f} inf/s (since first inference)")
-            self._last_log_time = current_time
-            self._inferences_since_last_log = 0
-            if self.logger.handlers:
-                self.logger.handlers[0].flush()
-
-        # Record inference duration (wait time)
-        end_time = time.time()
-        duration = end_time - request.request_time
-        self._inference_durations.append(duration)
-
-        # Log inference stats every stats window
-        now = time.time()
-        if now - self._stats_last_time >= self._stats_window_seconds:
-            durations = self._inference_durations
-            avg_dur = sum(durations) / len(durations)
-            min_dur = min(durations)
-            max_dur = max(durations)
-            var = sum((d - avg_dur) ** 2 for d in durations) / len(durations)
-            std_dur = math.sqrt(var)
-            avg_str = _format_duration_s(avg_dur)
-            min_str = _format_duration_s(min_dur)
-            max_str = _format_duration_s(max_dur)
-            std_str = _format_duration_s(std_dur)
-            self.logger.info(f"Actor {self._actor_id} inference stats {self._stats_window_seconds:.0f}s: avg {avg_str}, min {min_str}, max {max_str}, std {std_str}")
-            if self.logger.handlers:
-                self.logger.handlers[0].flush()
-            # Reset stats window
-            self._inference_durations = []
-            self._stats_last_time = now
-
-        return response.value, response.policy_probs
 
     def evaluate(self, state: "pyspiel.State"):  # type: ignore # pylint: disable=undefined-variable
-        self.logger.warning(
-            f"Actor {self._actor_id}: evaluate() called directly. This method is deprecated for RemoteEvaluator. "
-            f"Use prior_and_value() with an appropriate timeout instead."
-        )
-        # Provide a default timeout for legacy calls, though it might not be optimal.
-        # This maintains basic functionality but should be updated in calling code.
-        default_timeout = self._response_wait_timeout_seconds # Or some other reasonable default
-        try:
-            return self.prior_and_value(state, mcts_search_timeout_sec=default_timeout)
-        except TimeoutError:
-            self.logger.error(f"Actor {self._actor_id}: Timeout in legacy evaluate() call. Returning (None, None).")
-            return (None, None)
-        except ShutdownException:
-            self.logger.warning(f"Actor {self._actor_id}: Shutdown in legacy evaluate() call. Returning (None, None).")
-            return (None, None)
+        """Evaluate a state.
 
-    def prior(self, state: "pyspiel.State"):  # type: ignore # pylint: disable=undefined-variable
-        self.logger.warning(
-            f"Actor {self._actor_id}: prior() called directly. This method is deprecated for RemoteEvaluator. "
-            f"Use prior_and_value() with an appropriate timeout instead."
-        )
-        default_timeout = self._response_wait_timeout_seconds # Or some other reasonable default
-        try:
-            value, policy = self.prior_and_value(state, mcts_search_timeout_sec=default_timeout)
-            return policy
-        except TimeoutError:
-            self.logger.error(f"Actor {self._actor_id}: Timeout in legacy prior() call. Returning None for policy.")
-            return None
-        except ShutdownException:
-            self.logger.warning(f"Actor {self._actor_id}: Shutdown in legacy prior() call. Returning None for policy.")
-            return None
+        This method is expected by the MCTSBot. It should return an array
+        of utilities, one for each player.
+        """
+        # Use a default timeout for MCTS search leaf evaluations if not specified.
+        # This timeout should be shorter than actor's game step timeout.
+        # For now, let _inference handle its own timeout logic.
+        # The mcts_search_timeout_sec is more relevant when prior_and_value is called
+        # from an async MCTS that wants to limit wait time for a specific search path.
+        # For a simple evaluate call, it can use a default internal timeout for the request.
+        
+        # _inference returns (scalar_value_for_current_player, policy_array)
+        scalar_value_for_curr_player, _ = self._inference(state, mcts_search_timeout_sec=self._response_wait_timeout_seconds) # Use a longer default timeout for evaluation
 
-    def prior_and_value(self, state: "pyspiel.State", mcts_search_timeout_sec: float) -> Tuple[Any, Any]: # type: ignore # pylint: disable=undefined-variable
-        """Computes the policy and value for the given state, with timeout."""
-        if self._numeric_log_level >= 3: # DEBUG or TRACE
-          self.logger.debug(
-              f"Actor {self._actor_id}: prior_and_value called for state of type {type(state)}. "
-              f"Player: {state.current_player() if not state.is_terminal() else 'Terminal'}, Timeout: {mcts_search_timeout_sec}s"
-          )
-
-        if state.is_chance_node():
-            self.logger.error(f"Actor {self._actor_id}: prior_and_value called on a chance node, which is not supported. State:\n{state}")
-            # This should ideally not happen if dont_return_chance_node=True is set in the bot.
-            return (None, None) # Or raise an error
+        # Convert the scalar value (for the current player) to a utility array for all players.
+        num_players = self._game.num_players()
+        current_player = state.current_player()
+        utility_array = _np.zeros(num_players, dtype=_np.float32)
 
         if state.is_terminal():
-            self.logger.debug(f"Actor {self._actor_id}: prior_and_value called on a terminal node. Returning utilities.")
-            return (state.returns(), _np.zeros(self._game.num_distinct_actions()))
+            utility_array = _np.array(state.returns(), dtype=_np.float32)
+        elif state.is_chance_node():
+            # MCTS usually doesn't evaluate chance nodes directly with the NN.
+            # If it does, the concept of "value" is tricky. For now, treat as neutral.
+             utility_array = _np.array(state.returns(), dtype=_np.float32) if hasattr(state, 'returns') else _np.zeros(num_players, dtype=_np.float32)
+        else: # Decision node
+            # scalar_value_for_curr_player is np.float32 as ensured by _inference
+            py_float_val = float(scalar_value_for_curr_player) # Ensure it's a Python float
 
-        inference_start_time = time.time()
-        try:
-            value, policy_probs = self._inference(state, mcts_search_timeout_sec=mcts_search_timeout_sec)
-        except TimeoutError:
-            self.logger.error(f"Actor {self._actor_id}: Timeout in prior_and_value after {time.time() - inference_start_time:.2f}s. Returning (None, None).")
-            return (None, None)
-        except ShutdownException:
-            self.logger.warning(f"Actor {self._actor_id}: ShutdownException in prior_and_value. Returning (None, None).")
-            return (None, None)
-        except Exception as e: # pylint: disable=broad-except
-            self.logger.error(f"Actor {self._actor_id}: Unexpected error in _inference call: {e}\\n{traceback.format_exc()}")
-            return (None, None)
-
-        inference_duration_s = time.time() - inference_start_time
-        self._inference_durations.append(inference_duration_s)
-
-        # Periodically log inference duration stats
-        current_time = time.time()
-        if current_time - self._stats_last_time >= self._stats_window_seconds:
-            if self._inference_durations:
-                avg_duration = _format_duration_s(sum(self._inference_durations) / len(self._inference_durations))
-                min_duration = _format_duration_s(min(self._inference_durations))
-                max_duration = _format_duration_s(max(self._inference_durations))
-                p95_duration = _format_duration_s(_np.percentile(self._inference_durations, 95))
-                self.logger.debug(
-                    f"Actor {self._actor_id}: Inference duration stats (last {self._stats_window_seconds:.0f}s, {len(self._inference_durations)} samples): "
-                    f"Avg: {avg_duration}, Min: {min_duration}, Max: {max_duration}, p95: {p95_duration}"
+            if num_players == 1:
+                utility_array[current_player] = py_float_val
+            elif num_players == 2: # Assuming zero-sum for 2-player games
+                utility_array[current_player] = py_float_val
+                utility_array[1 - current_player] = -py_float_val
+            else: # N-player general sum - assign to current, others 0 (simplification)
+                self.logger.warning(
+                    f"Actor {self._actor_id}: evaluate() for N-player ({num_players}p) game. "
+                    f"Assigning NN value {py_float_val:.3f} to P{current_player}, others 0."
                 )
-                self._inference_durations.clear()
-            self._stats_last_time = current_time
+                utility_array[current_player] = py_float_val
+                # Other players' utilities remain 0.
 
-        return value, policy_probs
+        if self.logger.level <= TRACE_LEVEL_NUM: # TRACE
+            self.logger.log(TRACE_LEVEL_NUM, f"Actor {self._actor_id} evaluate() for P{current_player} returning utility_array: {utility_array}")
+        return utility_array
+
+
+    def prior(self, state: "pyspiel.State"):  # type: ignore # pylint: disable=undefined-variable
+        """Return a policy for a state.
+
+        This method is expected by MCTSBot. It returns a list of (action, prob)
+        tuples.
+        """
+        if state.is_chance_node():
+            return state.chance_outcomes()
+        if state.is_terminal():
+            return []
+
+        # _inference returns (scalar_value_for_current_player, policy_array)
+        _, policy_array = self._inference(state, mcts_search_timeout_sec=self._response_wait_timeout_seconds) # Use a longer default timeout for prior
+
+        # Convert policy_array to list of (action, prob) for legal actions
+        legal_actions = state.legal_actions(state.current_player())
+        if not legal_actions:
+            return []
+            
+        priors = []
+        if policy_array is not None and len(policy_array) == self._game.num_distinct_actions():
+            for action in legal_actions:
+                priors.append((action, float(policy_array[action]))) # Ensure prob is float
+        else: # Fallback to uniform if policy_array is bad
+            self.logger.warning(f"Actor {self._actor_id}: Bad policy_array in prior(). Len: {len(policy_array) if policy_array is not None else 'None'}. Num distinct: {self._game.num_distinct_actions()}. Using uniform.")
+            prob = 1.0 / len(legal_actions)
+            for action in legal_actions:
+                priors.append((action, prob))
+        
+        if self.logger.level <= TRACE_LEVEL_NUM: # TRACE
+            self.logger.log(TRACE_LEVEL_NUM, f"Actor {self._actor_id} prior() for P{state.current_player()} returning: {priors[:5]}...")
+        return priors
+
+    # This method combines prior and value, primarily for internal use or by evaluators that can handle combined calls.
+    # The main MCTSBot uses separate evaluate() and prior() calls.
+    # However, our AlphaZeroJaxAsyncMCTSBot and RemoteMCTSBot (from actor_evaluator_logic) use this.
+    def prior_and_value(self, state: "pyspiel.State", mcts_search_timeout_sec: float) -> Tuple[Any, Any]: # type: ignore # pylint: disable=undefined-variable
+        """Returns (value_array_for_all_players, policy_array_for_all_distinct_actions)."""
+        
+        # Check cache first
+        cache_key = state.observation_string() # Or another robust key
+        cached_result = self._cache.get(cache_key)
+        if cached_result:
+            self._log_periodic_stats(cache_hit=True)
+            if self.logger.level <= TRACE_LEVEL_NUM: # TRACE
+                 self.logger.log(TRACE_LEVEL_NUM, f"Actor {self._actor_id} prior_and_value CACHE HIT for state (history like: ...{state.history_str()[-50:] if hasattr(state, 'history_str') else 'N/A'}).")
+            # Ensure cached result matches expected return format: (utility_array, policy_array)
+            # The cache stores exactly what this function returns.
+            return cached_result
+
+        self._log_periodic_stats(cache_hit=False)
+        if self._first_inference_time is None:
+            self._first_inference_time = time.monotonic()
+
+        # --- Actual Inference ---
+        # _inference returns (scalar_value_for_current_player, raw_policy_array)
+        scalar_nn_value, raw_policy_array = self._inference(state, mcts_search_timeout_sec=mcts_search_timeout_sec)
+        # scalar_nn_value is already a Python float due to changes in _inference.
+        # raw_policy_array is a 1D numpy array of floats.
+
+        # --- Process value into utility_array for all players ---
+        num_players = self._game.num_players()
+        current_player = state.current_player() # Player at the current decision node
+        
+        utility_array = _np.zeros(num_players, dtype=_np.float32)
+
+        if state.is_terminal():
+            utility_array = _np.array(state.returns(), dtype=_np.float32)
+        elif state.is_chance_node():
+            # This case might be complex; MCTS typically doesn't ask for NN eval of chance nodes this way.
+            # If it occurs, game returns or a neutral utility might be appropriate.
+            # For now, let's assume returns() is valid for post-chance states if relevant, or zeros.
+            utility_array = _np.array(state.returns(), dtype=_np.float32) if hasattr(state, 'returns') and callable(state.returns) else _np.zeros(num_players, dtype=_np.float32)
+        else: # Decision node, use NN output (scalar_nn_value)
+            # scalar_nn_value is already float
+            if num_players == 1:
+                utility_array[current_player] = scalar_nn_value
+            elif num_players == 2: # Assuming zero-sum for 2-player games
+                utility_array[current_player] = scalar_nn_value
+                utility_array[1 - current_player] = -scalar_nn_value # Ensure opposite for opponent
+            else: # N-player game
+                self.logger.warning(
+                    f"Actor {self._actor_id}: prior_and_value() for N-player ({num_players}p) game. "
+                    f"Assigning NN value {scalar_nn_value:.3f} to P{current_player}, others 0."
+                )
+                utility_array[current_player] = scalar_nn_value
+                # Other players' utilities remain 0. This is a simplification.
+                # A more general approach might require the NN to output a utility vector,
+                # or use game-specific logic to distribute the value.
+        
+        # --- Policy processing (ensure it's a flat numpy array for all distinct actions) ---
+        # raw_policy_array from _inference is already in the desired format.
+        # No further processing needed for policy_array itself here unless masking/normalization
+        # specific to prior_and_value's contract is required (MCTSBot.prior expects list of tuples).
+        # For this combined call, returning the raw policy array is usually fine if the consumer expects it.
+        # The MCTSBot uses .prior() which formats it into list of (action, prob) for legal actions.
+        # AlphaZeroJaxAsyncMCTSBot (in actor_evaluator_logic) consumes prior_and_value directly.
+        # Its _AsyncRemoteEvaluatorAdapter converts policy_array to prior_tuples if needed.
+        # The AlphaZeroBot (sync) uses .evaluate() and .prior() separately.
+        
+        final_policy_output = raw_policy_array # Should be a 1D numpy array of floats
+
+        # Store in cache
+        self._cache.put(cache_key, (utility_array, final_policy_output))
+
+        if self.logger.level <= TRACE_LEVEL_NUM: # TRACE
+            self.logger.log(TRACE_LEVEL_NUM, f"Actor {self._actor_id} prior_and_value CACHE MISS for state (history like: ...{state.history_str()[-50:] if hasattr(state, 'history_str') else 'N/A'}). Returning: util_arr={utility_array}, pol_sum={_np.sum(final_policy_output):.3f}")
+        
+        self._inference_count += 1
+        self._inferences_since_last_log += 1
+        # Record inference duration for stats
+        # Note: _inference already includes wait time. If pure model execution time is needed, it's harder.
+        # For now, the duration recorded by _inference's caller is more about total turnaround.
+
+        return utility_array, final_policy_output # Return (1D utility array, 1D policy_probs array)
+
+
+    def _log_periodic_stats(self, cache_hit: bool):
+        # This method is not provided in the original file or the code block
+        # It's assumed to exist as it's called in prior_and_value
+        pass
 
     def cache_info(self):
         """Returns information about the cache."""

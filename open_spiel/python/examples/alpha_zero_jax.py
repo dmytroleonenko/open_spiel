@@ -63,12 +63,25 @@ flags.DEFINE_integer("max_steps", 100, "How many learn steps to run.") # Reduced
 flags.DEFINE_integer("checkpoint_freq", 10, "Save a checkpoint every N steps.") # Reduced for quick testing
 flags.DEFINE_integer("actors", 2, "How many actors to run.")
 flags.DEFINE_integer("evaluators", 1, "How many evaluators to run.")
-flags.DEFINE_string("nn_model", "mlp", "Model architecture. Valid: mlp, conv2d, resnet, resnet18, ...")
+flags.DEFINE_string("nn_model", "mlp", "Model architecture. Valid: mlp, conv2d, resnet, resnet18, ..., resnest1d50_az, spatial_global_1dresnet_transformer")
 flags.DEFINE_integer("nn_width", 64, "Hidden layer size or ResNet filter count.") # Smaller for MLP default
 flags.DEFINE_integer("nn_depth", 2, "Number of hidden layers or ResNet blocks.") # Smaller for MLP default
 flags.DEFINE_bool("quiet", False, "Don't show the moves as they're played.")
 flags.DEFINE_integer("master_seed", 0, "Master PRNG seed for JAX, Python random, and NumPy.")
 flags.DEFINE_enum("log_level", "INFO", ["ERROR","WARN","INFO","DEBUG","TRACE"], "Logging verbosity.")
+
+# LR Schedule Flags
+flags.DEFINE_enum("lr_schedule", "constant", ["constant", "warmup_cosine_decay"], 
+                  "Learning rate schedule type.")
+flags.DEFINE_float("peak_lr", 5e-4, "Peak learning rate for schedules like warmup_cosine_decay. "
+                   "If schedule is 'constant', 'learning_rate' flag is used instead.")
+flags.DEFINE_float("end_lr", 2e-5, "End learning rate for cosine decay schedule.")
+flags.DEFINE_integer("warmup_steps", 1000, "Number of warmup steps for LR schedule.")
+
+# New flag for spatial_global_1dresnet_transformer
+flags.DEFINE_list("model_spatial_dims", None, 
+                  "Comma-separated list of integers for spatial dimensions (e.g., '24,8' for Length=24, Channels=8). "
+                  "Required if nn_model is 'spatial_global_1dresnet_transformer'.")
 
 # New ResNet/ResNeSt specific flags (optional, use if nn_model="resnet" and you want generic ResNet)
 flags.DEFINE_list("resnet_depth_config", None, "Stage sizes for generic ResNet, e.g., 2,2,2,2 for ResNet18. Comma-separated.")
@@ -91,6 +104,10 @@ flags.DEFINE_float("async_timeout", 5.0, "Timeout (s) for async MCTS leaf evalua
 
 # New flag for learner console summary frequency
 flags.DEFINE_integer("console_summary_log_freq_steps", 100, "Frequency (in training steps) for learner to log console summary.")
+
+# New flag for controlling transformer head in ResNeSt1D50_AZ based models
+flags.DEFINE_bool("use_transformer_head", True, # Default to True for resnest1d50_az behavior
+                  "Whether to use the Transformer head in ResNet models that support it (e.g., resnest1d50_az).")
 
 # From TF AlphaZero, for game_specific_az_path
 flags.DEFINE_bool(
@@ -158,6 +175,15 @@ def main(argv):
       async_timeout=FLAGS.async_timeout,
       # New config field for console summary frequency
       console_summary_log_freq_steps=FLAGS.console_summary_log_freq_steps,
+      # New field for spatial_global_1dresnet_transformer
+      model_spatial_dims=tuple(map(int, FLAGS.model_spatial_dims)) if FLAGS.model_spatial_dims else None,
+      # New field for controlling transformer head
+      use_transformer_head=FLAGS.use_transformer_head,
+      # LR Schedule related fields
+      lr_schedule=FLAGS.lr_schedule,
+      peak_lr=FLAGS.peak_lr,
+      end_lr=FLAGS.end_lr,
+      warmup_steps=FLAGS.warmup_steps,
   )
 
   # Set external library log levels to match config
