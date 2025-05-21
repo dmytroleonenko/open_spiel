@@ -118,29 +118,31 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
 
 ### Phase 2: Distributed Training and Data Generation (adapting `EfficientZeroV2`'s distributed setup)
 
-**Goal:** Scale using JAX's distributed capabilities, following TDD and aiming for 100% coverage. Reference `@EfficientZeroV2/ez/train.py` for overall distributed orchestration.
+**Note:** Phase 2 tasks are now **deferred** until single-device training (Phase 1) is complete. We will revisit distributed training once local training is fully implemented.
+
+**Goal (Deferred):** Scale using JAX's distributed capabilities after Phase 1 progress.
 (Test execution command: `source venv/bin/activate && python -m pytest path/to/your_test_file.py`)
 
-[TODO] 11. **Distributed Replay Buffer (Reverb Server):**
+[DEFERRED] 11. **Distributed Replay Buffer (Reverb Server):**
     *   **TDD:** Tests for client-server interaction with Reverb. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_distributed_replay_buffer.py`)
     *   Set up Reverb server accessible by multiple processes (targeting Linux environment).
 
-[TODO] 12. **Distributed Data Generation (Actors - JAX processes):**
+[DEFERRED] 12. **Distributed Data Generation (Actors - JAX processes):**
     *   **TDD:** Tests for actor process initialization, model loading from shared storage, and writing to distributed Reverb. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/self_play/test_distributed_actor.py`)
     *   (Reference: `@EfficientZeroV2/ez/worker/actor_worker.py` and related files for actor logic).
     *   Actors as independent JAX processes, poll S3/shared storage for Orbax checkpoints, load model, run self-play, write to Reverb.
 
-[TODO] 13. **Distributed Training (Learner - `pjit`):**
+[DEFERRED] 13. **Distributed Training (Learner - `pjit`):**
     *   **TDD:** Tests for `pjit` sharding, distributed checkpointing, and correct gradient aggregation across devices. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/training/test_distributed_trainer.py`)
     *   (Reference: `@EfficientZeroV2/ez/agents/base.py` DDP setup, `EfficientZeroV2/ez/train.py` DDP orchestration).
     *   Modify `open_spiel/python/algorithms/muzero_jax/training/trainer.py`. Use `pjit` for data/model parallelism. Define mesh, sharding for `nnx.State` and data.
     *   Distributed Orbax checkpointing to S3.
 
-[TODO] 14. **JAX Profiler Integration:**
+[DEFERRED] 14. **JAX Profiler Integration:**
     *   **TDD:** (Difficult to TDD directly, but ensure profiler calls are in place and can be activated).
     *   Add hooks for `jax.profiler`.
 
-[PARTIALLY DONE] 15. **Gradient Accumulation & Optimal Batch Sizing Script:**
+[DEFERRED] 15. **Gradient Accumulation & Optimal Batch Sizing Script:**
     *   **TDD:** Write Pytest tests for each function in the script (`find_max_batch`, `estimate_grad_var`, `sweep_accum`) using a mock JAX/NNX model and synthetic data. Tests should cover both `float32` and `bfloat16` data types. (Test execution after `pip install -e .`: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/utils/test_batch_optimizer.py`)
     *   The script is located at `open_spiel/python/algorithms/muzero_jax/utils/batch_optimizer.py`.
     *   Ensure `init_params` initializes Flax NNX model, `forward_and_backward` uses `nnx.value_and_grad`, `flatten_grads` handles `nnx.State`.
@@ -148,11 +150,11 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
     *   **Note:** `sweep_accum` currently runs its core logic in op-by-op mode to avoid JAX tracer issues; JIT for its internal step was removed. Tests for `main_batch_optimizer_workflow` are currently skipped and need implementation, including mixed precision aspects.
     *   **Status:** Script structure and core logic exist. Placeholder model (`SimpleNNXModel`) is used. Needs to be connected to the actual MuZero NNX model once developed (see [TODO] 2). Tests for the script itself need to be written/completed to ensure its own correctness with the mock model.
 
-[TODO] 16. **Resilience and Fault Tolerance (Basic):**
+[DEFERRED] 16. **Resilience and Fault Tolerance (Basic):**
     *   **TDD:** Tests for restarting actors/learner from checkpoints. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_resilience.py`)
     *   Ensure frequent checkpointing. Actors/learner can restart from latest checkpoint.
 
-[TODO] 17. **Phase 2 Coverage Check:**
+[DEFERRED] 17. **Phase 2 Coverage Check:**
     *   Run `coverage report run -m pytest` and `coverage report report` to ensure >95% coverage for distributed components and batch optimizer script. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/`)
 
 ---

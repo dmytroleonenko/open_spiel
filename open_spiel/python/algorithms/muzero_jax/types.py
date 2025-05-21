@@ -1,4 +1,4 @@
-from typing import Protocol, Tuple, Any
+from typing import Tuple, Any
 import chex
 import dataclasses
 
@@ -9,8 +9,8 @@ class ModelOutput:
     policy_logits: chex.Array
     value: chex.Array
 
-class MuZeroModel(Protocol):
-    """Protocol for a MuZero model usable by MCTS."""
+class MuZeroModel:
+    """Stub implementation of MuZeroModel for testing and MCTS integration."""
 
     def initial_inference(
         self,
@@ -19,7 +19,7 @@ class MuZeroModel(Protocol):
         training: bool = False
     ) -> ModelOutput:
         """Generates initial hidden state, value, policy logits, and reward."""
-        ...
+        return Ellipsis
 
     def recurrent_inference(
         self,
@@ -29,4 +29,4 @@ class MuZeroModel(Protocol):
         training: bool = False
     ) -> ModelOutput:
         """Generates next hidden state, value, policy logits, and reward from current state and action."""
-        ... 
+        return Ellipsis 
