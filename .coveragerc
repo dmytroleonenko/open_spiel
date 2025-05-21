@@ -1,0 +1,4 @@
+[report]
+exclude_lines =
+    ^\s*\.\.\.\s*$
+    ^.*pragma: no cover.*$ 

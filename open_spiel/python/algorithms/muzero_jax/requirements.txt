@@ -1,0 +1,14 @@
+jax[cpu]>=0.4.20 # CPU version for broader compatibility, can be changed to jax[cuda] or jax[tpu]
+flax>=0.8.2      # For Flax NNX and core components
+optax>=0.2.2       # Optimizer library
+orbax-checkpoint>=0.4.6 # For saving and loading checkpoints
+dm-reverb-nightly>=0.12.0 # Replay buffer, using nightly for latest features, can pin to a stable version later
+pytest>=7.0.0      # For testing
+coverage>=6.0      # For test coverage reporting
+hydra-core>=1.3    # For configuration management
+wandb>=0.15        # For experiment tracking
+
+# OpenSpiel is assumed to be installed in the environment already (part of the broader project)
+# For specific GPU/TPU, ensure correct JAX installation, e.g.:
+# pip install -U "jax[cuda11_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+# Check JAX documentation for the latest installation instructions for your hardware. 
