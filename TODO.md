@@ -73,12 +73,50 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
             *   If game indicates a chance node, MCTS samples an outcome (OpenSpiel AlphaZero style) or represents chance nodes explicitly.
         *   The current MCTS implementation is Python-loop based and not yet JIT-compiled. [TODO - Refactor for JIT in Task 3a]
 
-[TODO] 3a. **Refactor MCTS for JIT Compilation:**
-    *   **TDD:** Adapt existing MCTS tests or create new ones to verify JIT-compiled MCTS behavior.
-    *   Refactor `open_spiel/python/algorithms/muzero_jax/mcts/core.py` to be JIT-compatible.
-        *   This will likely involve transforming the main `run_mcts` loop and related functions into a functional style suitable for `@jax.jit`, potentially using `jax.lax.fori_loop` or similar constructs.
-        *   Ensure all internal state updates are handled in a JAX-friendly manner.
-    *   Verify that the JIT-compiled MCTS passes all tests and achieves expected performance gains.
+[TODO] 3a. **Refactor MCTS for JIT Compilation (Task Breakdown):**
+    *   **Overall TDD:** Adapt existing MCTS tests or create new ones incrementally as each sub-component below is refactored and becomes JIT-compatible. The goal is to verify behavior against the original or achieve equivalent functionality.
+    *   **[DONE] 3a.1. Define JAX-Compatible MCTS State:**
+        *   **TDD:** (Conceptual) Design a PyTree structure to hold all MCTS tree data (node visits, rewards, priors, hidden states, parent/child relationships, etc.) using JAX arrays with a predefined maximum number of nodes.
+        *   Create `open_spiel/python/algorithms/muzero_jax/mcts/mcts_state.py` to define this structure (e.g., a `MCTSState` dataclass).
+    *   **[DONE] 3a.2. Initialize MCTS State for a Search:**
+        *   **TDD:** Test the function that takes an initial observation/root state and prepares the initial `MCTSState` for the `jax.lax.fori_loop`.
+        *   Implement a function (e.g., `prepare_initial_mcts_state`) in `open_spiel/python/algorithms/muzero_jax/mcts/core_jax.py` (new file for JIT MCTS logic). This includes calling `initial_inference` on the model.
+    *   **[DONE] 3a.3. Refactor Selection Logic (`_select_child`):**
+        *   **TDD:** Test the JIT-compatible selection function.
+        *   Implement a pure function in `core_jax.py` that takes the current `MCTSState`, a node index, and `MinMaxStats` (as part of `MCTSState` or passed separately), and returns the selected child index and action. This will involve calculating UCB scores using array operations.
+    *   **[DONE] 3a.4. Refactor Expansion Logic (`_expand_node`):**
+        *   **TDD:** Test the JIT-compatible expansion function.
+        *   Implement a pure function in `core_jax.py` that takes `MCTSState`, a leaf node index, its hidden state, policy logits, value from the network, and legal actions. It should update the `MCTSState` by adding new children nodes (populating their priors, actions, parent links) and marking the leaf as expanded. This will involve dynamic updates to the JAX arrays representing the tree, carefully managing indices for new nodes.
+    *   **3a.5. Refactor Backup Logic (`_backup`):**
+        *   **TDD:** Test the JIT-compatible backup function.
+        *   Implement a pure function in `core_jax.py` that takes `MCTSState`, a search path (represented by indices), and a leaf value. It updates `visit_count`, `value_sum` for nodes in the path and updates `MinMaxStats` (functionally).
+    *   **3a.6. Implement JIT-able Simulation Step:**
+        *   **TDD:** Test one full simulation step (select, expand/simulate, backup).
+        *   In `core_jax.py`, create a function for a single simulation iteration. This function will:
+            *   Start from the root (index 0).
+            *   Loop (or recurse functionally) for tree traversal: Select child until a leaf node is reached.
+            *   If the leaf is not yet expanded:
+                *   Call the model's `recurrent_inference` (if not root) or use initial inference results.
+                *   Expand the node using the JIT-compatible expansion logic.
+                *   The value for backup is the network's value prediction.
+            *   If the leaf is already expanded:
+                *   The value for backup is its stored network-predicted value.
+            *   Perform backup using the JIT-compatible backup logic.
+            *   Return the updated `MCTSState`.
+    *   **3a.7. Implement Main JIT MCTS Loop (`run_mcts_jax`):**
+        *   **TDD:** Test the full `run_mcts_jax` function.
+        *   In `core_jax.py`, create `run_mcts_jax(key, initial_mcts_state, model_params, config)`:
+            *   Use `jax.lax.fori_loop` for `num_simulations`.
+            *   The loop body will call the JIT-able simulation step.
+            *   Handle Dirichlet noise addition at the root (functionally, likely modifying root children priors in `MCTSState` after initial expansion).
+            *   Return the final `MCTSState` and derived policy (e.g., visit counts of root's children).
+    *   **3a.8. Integrate `run_mcts_jax` into `MCTS` class:**
+        *   Modify `open_spiel/python/algorithms/muzero_jax/mcts/core.py`.
+        *   The `MCTS.run_mcts` method will prepare the JAX-compatible inputs, call the JIT-compiled `@jax.jit def run_mcts_jax(...)`, and then convert the resulting JAX state back into the `Node` structure if needed for compatibility with existing tests/API, or update tests to work with the JAX state directly.
+        *   Alternatively, provide a new JIT-specific entry point in the `MCTS` class.
+    *   **3a.9. Verification and Performance:**
+        *   Ensure the JIT-compiled MCTS passes all adapted/new tests.
+        *   Profile to confirm performance gains.
 
 [TODO] 4.  **Game Wrapper for OpenSpiel (JAX):**
     *   **TDD:** Write Pytest tests for all wrapper methods against a known OpenSpiel game. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/envs/test_game_wrapper.py`)
