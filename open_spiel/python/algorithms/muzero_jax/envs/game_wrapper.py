@@ -28,7 +28,10 @@ class GameWrapper:
 
     def step(self, action: int) -> tuple[list, list, bool]:
         """Apply action to the environment and return (observation, rewards, done)."""
-        self._state.apply_action(action)
+        try:
+            self._state.apply_action(action)
+        except Exception as e:
+            raise RuntimeError(f"Error applying action {action}: {e}")
 
         done = self._state.is_terminal()
 

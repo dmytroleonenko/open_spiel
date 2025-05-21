@@ -28,13 +28,13 @@
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_bots.h"
 #include "open_spiel/spiel_utils.h"
-#include "pybind11/include/pybind11/cast.h"
-#include "pybind11/include/pybind11/detail/common.h"
-#include "pybind11/include/pybind11/detail/descr.h"
-#include "pybind11/include/pybind11/functional.h"  // IWYU pragma: keep
-#include "pybind11/include/pybind11/numpy.h"  // IWYU pragma: keep
-#include "pybind11/include/pybind11/pybind11.h"
-#include "pybind11/include/pybind11/stl.h"  // IWYU pragma: keep
+#include "pybind11/cast.h"
+#include "pybind11/detail/common.h"
+#include "pybind11/detail/descr.h"
+#include "pybind11/functional.h"  // IWYU pragma: keep
+#include "pybind11/numpy.h"  // IWYU pragma: keep
+#include "pybind11/pybind11.h"
+#include "pybind11/stl.h"  // IWYU pragma: keep
 
 namespace open_spiel {
 

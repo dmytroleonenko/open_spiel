@@ -25,7 +25,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
 (Test execution command: `source venv/bin/activate && python -m pytest path/to/your_test_file.py`)
 
 [DONE] 1.  **Setup JAX/Flax Environment & Dependencies:**
-    *   Install JAX, Flax (NNX), Optax, Orbax, Reverb, Pytest, Coverage, Hydra, WandB.
+    *   Install JAX, Flax (NNX), Optax, Orbax, Flashbax, Pytest, Coverage, Hydra, WandB.
     *   Create `requirements.txt` for the JAX project.
     *   Set up basic project structure (e.g., `open_spiel/python/algorithms/muzero_jax/`, `open_spiel/python/algorithms/muzero_jax/models`, `open_spiel/python/algorithms/muzero_jax/mcts`, `open_spiel/python/algorithms/muzero_jax/replay_buffer`, `open_spiel/python/algorithms/muzero_jax/self_play`, `open_spiel/python/algorithms/muzero_jax/training`, `open_spiel/python/algorithms/muzero_jax/utils`, `open_spiel/python/algorithms/muzero_jax/envs`, `open_spiel/python/algorithms/muzero_jax/tests/`).
     *   Configure `pytest.ini` if needed.
@@ -69,14 +69,15 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
     *   Provide methods: `reset()`, `step(action)`, `legal_actions()`, `current_observation()`, `num_distinct_actions()`, `is_chance_node()`, `chance_outcomes()`.
     *   Ensure observations/actions are JAX-compatible.
 
-[TODO] 5.  **Replay Buffer (Reverb):**
-    *   **TDD:** Write Pytest tests for adding trajectories and sampling batches with correct structure and data types. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_replay_buffer.py`)
-    *   Create `open_spiel/python/algorithms/muzero_jax/replay_buffer.py`.
-    *   (Reference: `@EfficientZeroV2/ez/data/replay_buffer.py`, `@EfficientZeroV2/ez/data/trajectory.py`)
-    *   Use `dm-reverb`. Define Reverb table schema based on `EfficientZeroV2`.
-    *   Implement `add_trajectory` and `sample_batch`.
-    *   Integrate prioritized experience replay.
-    *   **macOS Development Note:** For local development on macOS (Phase 1), aim to use `dm-reverb` with an in-process server/local table. If full `dm-reverb` installation or functionality is problematic, a simplified Python/NumPy-based in-memory replay buffer (mimicking the required API) may be implemented as a temporary substitute for local testing. The full distributed Reverb server in Phase 2 will target a Linux environment.
+[DONE] 5.  **Replay Buffer (Flashbax):**
+    *   **TDD:** Write Pytest tests for Flashbax buffer classes (FlatBuffer, TrajectoryBuffer, PrioritisedFlatBuffer) and Vault-based persistence. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_replay_buffer.py`)
+    *   Create `open_spiel/python/algorithms/muzero_jax/replay_buffer.py` wrapping Flashbax buffers.
+    *   (Reference: Flashbax FlatBuffer, TrajectoryBuffer, PrioritisedFlatBuffer, Vault for disk persistence: https://instadeepai.github.io/flashbax/)
+    *   Use Flashbax APIs (`make_flat_buffer`, `make_trajectory_buffer`, `make_prioritised_flat_buffer`) to manage in-memory buffers.
+    *   Implement `add_trajectory` and `sample_batch` by delegating to the underlying Flashbax buffer methods.
+    *   Integrate prioritized experience replay using Flashbax's prioritised buffers.
+    *   Use Vault for persistence when needed (e.g., `Buffer.vault` backed on disk).
+    *   **Tests:** Add tests for buffer functionality and Vault persistence (empty samples, negative batch size, disk-backed loading).
 
 [TODO] 6.  **Training Loop (JAX):**
     *   **TDD:** Write Pytest tests for loss components and the overall training step function, verifying gradient computation and parameter updates on mock data. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/training/test_trainer.py`)
@@ -98,11 +99,11 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
     *   **TDD:** Write Pytest tests for the actor loop, ensuring correct interaction with MCTS, game wrapper, and trajectory generation. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/self_play/test_actor.py`)
     *   Create `open_spiel/python/algorithms/muzero_jax/self_play/actor.py`.
     *   (Reference: `@EfficientZeroV2/ez/worker/actor_worker.py`, `@EfficientZeroV2/ez/worker/self_play_worker.py`)
-    *   **Actor Loop:** Load model, play games with MCTS, store trajectories, compute targets, add to Reverb.
+    *   **Actor Loop:** Load model, play games with MCTS, store trajectories, compute targets, add to Flashbax.
 
 [TODO] 8.  **Main Orchestration Script (`run_muzero_jax.py`):**
-    *   **TDD:** Write integration tests for the local setup (actor, learner, reverb communication). (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_run_muzero_jax.py`)
-    *   Initialize Reverb (local), start actor(s) (local), start training.
+    *   **TDD:** Write integration tests for the local setup (actor, learner, Flashbax buffer communication). (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_run_muzero_jax.py`)
+    *   Initialize Flashbax buffers (in-memory and Vault persistence), start actor(s) (local), start training.
     *   Manage configuration using Hydra (inspired by `@EfficientZeroV2/ez/train.py`).
     *   Integrate WandB for experiment tracking.
 
@@ -112,7 +113,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
 
 [TODO] 10. **Initial Testing & Debugging & Coverage Check:**
     *   Use simple OpenSpiel game (e.g., CartPole, TicTacToe).
-    *   Run `coverage report run -m pytest` and `coverage report report` to ensure >95% coverage for Phase 1 components before proceeding. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/`)
+    *   Run `source venv/bin/activate && coverage report run -m pytestopen_spiel/python/algorithms/muzero_jax/tests/` and `coverage report report` to ensure >95% coverage for Phase 1 components before proceeding. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/`)
 
 ---
 
@@ -123,14 +124,13 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
 **Goal (Deferred):** Scale using JAX's distributed capabilities after Phase 1 progress.
 (Test execution command: `source venv/bin/activate && python -m pytest path/to/your_test_file.py`)
 
-[DEFERRED] 11. **Distributed Replay Buffer (Reverb Server):**
-    *   **TDD:** Tests for client-server interaction with Reverb. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_distributed_replay_buffer.py`)
-    *   Set up Reverb server accessible by multiple processes (targeting Linux environment).
+[DEFERRED] 11. **Distributed Replay Buffer (Flashbax Vault):**
+    *   **TDD:** Write tests for Flashbax Vault in distributed scenarios. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_distributed_replay_buffer.py`)
+    *   Set up Flashbax Vault with disk-backed store accessible by multiple processes.
 
 [DEFERRED] 12. **Distributed Data Generation (Actors - JAX processes):**
-    *   **TDD:** Tests for actor process initialization, model loading from shared storage, and writing to distributed Reverb. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/self_play/test_distributed_actor.py`)
-    *   (Reference: `@EfficientZeroV2/ez/worker/actor_worker.py` and related files for actor logic).
-    *   Actors as independent JAX processes, poll S3/shared storage for Orbax checkpoints, load model, run self-play, write to Reverb.
+    *   **TDD:** Write tests for actor processes writing to Flashbax Vault. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/self_play/test_distributed_actor.py`)
+    *   Actors as independent JAX processes poll for new Vault entries, run self-play, and write trajectories to Flashbax Vault.
 
 [DEFERRED] 13. **Distributed Training (Learner - `pjit`):**
     *   **TDD:** Tests for `pjit` sharding, distributed checkpointing, and correct gradient aggregation across devices. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/training/test_distributed_trainer.py`)
@@ -176,7 +176,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
     *   **Location:** All wrapper code lives under `open_spiel/python/algorithms/muzero_jax/mcts/mctx_wrapper.py`; tests under `open_spiel/python/algorithms/muzero_jax/tests/test_stochastic_mcts.py`.
 
 [TODO] 19. **Reanalyze Implementation (EfficientZeroV2 style):**
-    *   **TDD:** Tests for reanalyze worker logic, target updates in Reverb, and interaction with main training loop. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_reanalyze.py`)
+    *   **TDD:** Tests for reanalyze worker logic, target updates in Flashbax, and interaction with main training loop. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_reanalyze.py`)
     *   (Reference: `@EfficientZeroV2/ez/worker/reanalyze_worker.py`, `ez/agents/base.py` reanalyze intervals).
     *   Adapt `EfficientZeroV2`'s reanalyze mechanism.
 
