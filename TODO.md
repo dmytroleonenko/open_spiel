@@ -60,63 +60,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   Provide `init` and `apply` methods. The `apply` method should allow flexible calling of individual components.
     *   Helper layers (`DownSample`, `conv3x3`, `ResidualBlock`, `FCResidualBlock`, `MLP`) are implemented in `layers.py` and tested in `test_layers.py`. [DONE]
 
-[DONE] 3.  **Implement MCTS (JAX):**
-    *   **TDD:** Write Pytest tests for node structure, UCB calculation, tree traversal, expansion, and backup logic before implementation. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_mcts.py`)
-    *   Created `open_spiel/python/algorithms/muzero_jax/mcts/core.py` and `open_spiel/python/algorithms/muzero_jax/mcts/node.py`.
-    *   (Reference: `@EfficientZeroV2/ez/mcts/mcts.py` (and related files in that dir), with stochastic adaptations from `@Stochastic-muzero/monte_carlo_tree_search.py` or OpenSpiel AlphaZero).
-    *   **Node Structure:** JAX-compatible `Node` class implemented in `node.py`.
-    *   **UCB Calculation:** Use `EfficientZeroV2`'s UCB formula and MinMax stats normalization. Implemented in `core.py`.
-    *   **Search Loop (`run_mcts`):**
-        *   Selection, Expansion & Simulation (using model components `h, g, f`, reward_head), Backup. Implemented in `core.py` (initial Python-loop based version).
-        *   Integrate Dirichlet noise at the root. Implemented in `core.py`.
-        *   **Stochastic Environment Handling:** (Trivial integration, primary logic from reference)
-            *   If game indicates a chance node, MCTS samples an outcome (OpenSpiel AlphaZero style) or represents chance nodes explicitly.
-        *   The current MCTS implementation is Python-loop based and not yet JIT-compiled. [TODO - Refactor for JIT in Task 3a]
-
-[TODO] 3a. **Refactor MCTS for JIT Compilation (Task Breakdown):**
-    *   **Overall TDD:** Adapt existing MCTS tests or create new ones incrementally as each sub-component below is refactored and becomes JIT-compatible. The goal is to verify behavior against the original or achieve equivalent functionality.
-    *   **[DONE] 3a.1. Define JAX-Compatible MCTS State:**
-        *   **TDD:** (Conceptual) Design a PyTree structure to hold all MCTS tree data (node visits, rewards, priors, hidden states, parent/child relationships, etc.) using JAX arrays with a predefined maximum number of nodes.
-        *   Create `open_spiel/python/algorithms/muzero_jax/mcts/mcts_state.py` to define this structure (e.g., a `MCTSState` dataclass).
-    *   **[DONE] 3a.2. Initialize MCTS State for a Search:**
-        *   **TDD:** Test the function that takes an initial observation/root state and prepares the initial `MCTSState` for the `jax.lax.fori_loop`.
-        *   Implement a function (e.g., `prepare_initial_mcts_state`) in `open_spiel/python/algorithms/muzero_jax/mcts/core_jax.py` (new file for JIT MCTS logic). This includes calling `initial_inference` on the model.
-    *   **[DONE] 3a.3. Refactor Selection Logic (`_select_child`):**
-        *   **TDD:** Test the JIT-compatible selection function.
-        *   Implement a pure function in `core_jax.py` that takes the current `MCTSState`, a node index, and `MinMaxStats` (as part of `MCTSState` or passed separately), and returns the selected child index and action. This will involve calculating UCB scores using array operations.
-    *   **[DONE] 3a.4. Refactor Expansion Logic (`_expand_node`):**
-        *   **TDD:** Test the JIT-compatible expansion function.
-        *   Implement a pure function in `core_jax.py` that takes `MCTSState`, a leaf node index, its hidden state, policy logits, value from the network, and legal actions. It should update the `MCTSState` by adding new children nodes (populating their priors, actions, parent links) and marking the leaf as expanded. This will involve dynamic updates to the JAX arrays representing the tree, carefully managing indices for new nodes.
-    *   **3a.5. Refactor Backup Logic (`_backup`):**
-        *   **TDD:** Test the JIT-compatible backup function.
-        *   Implement a pure function in `core_jax.py` that takes `MCTSState`, a search path (represented by indices), and a leaf value. It updates `visit_count`, `value_sum` for nodes in the path and updates `MinMaxStats` (functionally).
-    *   **3a.6. Implement JIT-able Simulation Step:**
-        *   **TDD:** Test one full simulation step (select, expand/simulate, backup).
-        *   In `core_jax.py`, create a function for a single simulation iteration. This function will:
-            *   Start from the root (index 0).
-            *   Loop (or recurse functionally) for tree traversal: Select child until a leaf node is reached.
-            *   If the leaf is not yet expanded:
-                *   Call the model's `recurrent_inference` (if not root) or use initial inference results.
-                *   Expand the node using the JIT-compatible expansion logic.
-                *   The value for backup is the network's value prediction.
-            *   If the leaf is already expanded:
-                *   The value for backup is its stored network-predicted value.
-            *   Perform backup using the JIT-compatible backup logic.
-            *   Return the updated `MCTSState`.
-    *   **3a.7. Implement Main JIT MCTS Loop (`run_mcts_jax`):**
-        *   **TDD:** Test the full `run_mcts_jax` function.
-        *   In `core_jax.py`, create `run_mcts_jax(key, initial_mcts_state, model_params, config)`:
-            *   Use `jax.lax.fori_loop` for `num_simulations`.
-            *   The loop body will call the JIT-able simulation step.
-            *   Handle Dirichlet noise addition at the root (functionally, likely modifying root children priors in `MCTSState` after initial expansion).
-            *   Return the final `MCTSState` and derived policy (e.g., visit counts of root's children).
-    *   **3a.8. Integrate `run_mcts_jax` into `MCTS` class:**
-        *   Modify `open_spiel/python/algorithms/muzero_jax/mcts/core.py`.
-        *   The `MCTS.run_mcts` method will prepare the JAX-compatible inputs, call the JIT-compiled `@jax.jit def run_mcts_jax(...)`, and then convert the resulting JAX state back into the `Node` structure if needed for compatibility with existing tests/API, or update tests to work with the JAX state directly.
-        *   Alternatively, provide a new JIT-specific entry point in the `MCTS` class.
-    *   **3a.9. Verification and Performance:**
-        *   Ensure the JIT-compiled MCTS passes all adapted/new tests.
-        *   Profile to confirm performance gains.
+*The MCTS implementation is now delegated to the [`mctx`](https://github.com/deepmind/mctx) package's GumbelMuZero routines. We no longer maintain a custom JAX MCTS; instead, we wrap and call `mctx.gumbel_muzero_policy`, benefiting from its fully JIT-compatible, GPU-native implementation and comprehensive tests.*
 
 [TODO] 4.  **Game Wrapper for OpenSpiel (JAX):**
     *   **TDD:** Write Pytest tests for all wrapper methods against a known OpenSpiel game. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/envs/test_game_wrapper.py`)
@@ -219,8 +163,15 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
 (Test execution command: `source venv/bin/activate && python -m pytest path/to/your_test_file.py`)
 
 [TODO] 18. **Stochastic Environment Handling - Refined:**
-    *   **TDD:** Specific tests for MCTS behavior with OpenSpiel games that have explicit chance nodes. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_stochastic_mcts.py`)
-    *   Thoroughly test MCTS interaction. Ensure consistency if dynamics model learns implicit stochasticity.
+    *   **Integration Point:** Implement a thin wrapper around `mctx.gumbel_muzero_policy` in `open_spiel/python/algorithms/muzero_jax/mcts/mctx_wrapper.py` that:
+        - Pads the root `prior_logits` with `-inf` entries for chance outcomes and wraps `root.embedding` in `StochasticRecurrentState`.
+        - Builds a `recurrent_fn` via `_make_stochastic_recurrent_fn(decision_recurrent_fn, chance_recurrent_fn, num_actions, num_chance_outcomes)`.
+        - Calls `gumbel_muzero_policy` unmodified, passing in the stochastic recurrent function.
+    *   **TDD:** Write Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/test_stochastic_mcts.py` that:
+        - Instantiate the wrapper with mock `decision_recurrent_fn` and `chance_recurrent_fn` on a simple OpenSpiel chance-node game.
+        - Verify correct action selection, visit counts, and embedding alternation for both decision and chance nodes.
+        - Ensure deterministic behavior when seeding the RNG and correct handling of invalid actions.
+    *   **Location:** All wrapper code lives under `open_spiel/python/algorithms/muzero_jax/mcts/mctx_wrapper.py`; tests under `open_spiel/python/algorithms/muzero_jax/tests/test_stochastic_mcts.py`.
 
 [TODO] 19. **Reanalyze Implementation (EfficientZeroV2 style):**
     *   **TDD:** Tests for reanalyze worker logic, target updates in Reverb, and interaction with main training loop. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_reanalyze.py`)

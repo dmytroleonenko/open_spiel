@@ -1,4 +1,3 @@
-from .core import MinMaxStats, MCTSConfig, MCTS
-from .node import Node
- 
-__all__ = ["MinMaxStats", "MCTSConfig", "MCTS", "Node"] 
+from .mctx_wrapper import MCTS
+
+__all__ = ["MCTS"] 
