@@ -160,24 +160,26 @@ class DynamicsNetwork(nnx.Module):
                 x = block(x, training=training)
             next_hidden_state = x
             return next_hidden_state
-        else: # Flat observations
+        else:  # Flat observations
+            # Validate hidden_state dimensions for flat observations
+            if hidden_state.ndim != 2:
+                raise TypeError(f"Expected hidden_state with ndim=2 for flat observations, got ndim={hidden_state.ndim}")
+            # Handle actions
             if not self.config.is_continuous:
-                action_one_hot = jax.nn.one_hot(action.squeeze(), num_classes=self.config.num_actions)
+                # Discrete actions: allow scalar or batch of scalars
+                squeezed_action = action.squeeze()
+                action_one_hot = jax.nn.one_hot(squeezed_action, num_classes=self.config.num_actions)
             else:
-                action_one_hot = action # Assume action is already correctly formatted for continuous
-            
-            # Ensure action_one_hot is 2D: (batch, action_dim)
+                # Continuous actions should be provided already in correct shape (batch, action_dim)
+                action_one_hot = action
+            # Validate action_one_hot dimensions
+            if action_one_hot.ndim not in (1, 2):
+                raise TypeError(f"Expected action_one_hot with ndim 1 or 2 for flat observations, got ndim={action_one_hot.ndim}") # pragma: no cover
             if action_one_hot.ndim == 1:
-                 action_one_hot = jnp.expand_dims(action_one_hot, axis=0)
-            elif action_one_hot.ndim > 2 :  # pragma: no cover  # Squeeze if action was e.g. (B, 1) for discrete case
-                action_one_hot = action_one_hot.squeeze(axis=1) if action_one_hot.shape[1] == 1 else action_one_hot  # pragma: no cover
-
-            # Ensure hidden_state is 2D: (batch, num_channels)
-            current_hidden_state_flat = hidden_state
-            if current_hidden_state_flat.ndim > 2:
-                current_hidden_state_flat = current_hidden_state_flat.reshape((current_hidden_state_flat.shape[0], -1))
-
-            dynamics_input = jnp.concatenate([current_hidden_state_flat, action_one_hot], axis=-1)
+                # Expand batch dimension
+                action_one_hot = jnp.expand_dims(action_one_hot, axis=0)
+            # Now both hidden_state and action_one_hot are 2D: (batch, features)
+            dynamics_input = jnp.concatenate([hidden_state, action_one_hot], axis=-1)
             return self.mlp(dynamics_input, training=training)
 
 

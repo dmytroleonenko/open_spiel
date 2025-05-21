@@ -62,7 +62,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
 
 *The MCTS implementation is now delegated to the [`mctx`](https://github.com/deepmind/mctx) package's GumbelMuZero routines. We no longer maintain a custom JAX MCTS; instead, we wrap and call `mctx.gumbel_muzero_policy`, benefiting from its fully JIT-compatible, GPU-native implementation and comprehensive tests.*
 
-[TODO] 4.  **Game Wrapper for OpenSpiel (JAX):**
+[DONE] 4.  **Game Wrapper for OpenSpiel (JAX):**
     *   **TDD:** Write Pytest tests for all wrapper methods against a known OpenSpiel game. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/envs/test_game_wrapper.py`)
     *   Create `open_spiel/python/algorithms/muzero_jax/envs/game_wrapper.py`.
     *   Wrap an OpenSpiel game (`pyspiel.Game`).

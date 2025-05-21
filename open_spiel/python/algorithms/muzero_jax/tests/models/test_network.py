@@ -199,6 +199,22 @@ def test_prediction_network(config_fixture_name, request, rngs):
     expected_value_shape = (batch_size, config.value_support_size) if config.value_support_size > 0 else (batch_size,)
     assert value.shape == expected_value_shape
 
+def test_prediction_network_flat_categorical_support(flat_obs_config, categorical_support_config, rngs):
+    # Test flat observations branch with categorical value support
+    config = categorical_support_config
+    config.use_image_observation = False
+    config.observation_shape = config.observation_shape_flat
+    # Ensure flat observation branch is used
+    assert not config.use_image_observation
+    pred_net = muzero_network_lib.PredictionNetwork(config, rngs=rngs)
+    batch_size = 3
+    dummy_hidden = jnp.ones((batch_size, config.num_channels))
+    policy_logits, value = pred_net(dummy_hidden, training=False)
+    # policy logits shape
+    assert policy_logits.shape == (batch_size, config.num_actions)
+    # value shape should match categorical support size
+    assert value.shape == (batch_size, config.value_support_size)
+
 # RewardNetwork Tests
 @pytest.mark.parametrize("config_fixture_name", ["flat_obs_config", "image_obs_config", "categorical_support_config"])
 def test_reward_network(config_fixture_name, request, rngs):
