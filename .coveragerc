@@ -1,4 +1,8 @@
 [report]
 exclude_lines =
     ^\s*\.\.\.\s*$
-    ^.*pragma: no cover.*$ 
+    ^.*pragma: no cover.*$
+
+[run]
+omit =
+    open_spiel/python/algorithms/muzero_jax/tests/**/*.py

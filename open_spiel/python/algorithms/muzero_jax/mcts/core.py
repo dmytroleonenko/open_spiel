@@ -68,7 +68,15 @@ class MCTS:
 
     def _ucb_score(self, parent: Node, child: Node, min_max_stats: MinMaxStats) -> float:
         """Calculates the PUCT score for a child node based on EfficientZeroV2's formula."""
-        q_sa = child.reward_from_parent_action + self.config.discount * child.get_q_value()
+        if child.visit_count == 0:
+            # For unvisited children, use q_init.
+            # The reward_from_parent_action is not yet known or is implicitly part of q_init's interpretation.
+            # EfficientZeroV2 directly uses q_init as the q_value here.
+            q_sa = self.config.q_init
+        else:
+            # For visited children, use the backed-up Q-value.
+            q_sa = child.reward_from_parent_action + self.config.discount * child.get_q_value()
+        
         normalized_q_sa = min_max_stats.normalize(q_sa)
         pb_c = jnp.log((parent.visit_count + self.config.c_base + 1) / self.config.c_base) + self.config.c_init
         exploration_bonus = child.prior * pb_c * (jnp.sqrt(parent.visit_count) / (child.visit_count + 1))
@@ -110,7 +118,9 @@ class MCTS:
         policy_probs = jax.nn.softmax(policy_logits)
 
         for action in range(self.config.num_actions):
-            if legal_actions_mask is not None and not legal_actions_mask[action]:
+            # Conditionally apply legal_actions_mask
+            use_mask = self.config.mask_illegal_actions and legal_actions_mask is not None
+            if use_mask and not legal_actions_mask[action]: # type: ignore
                 continue
 
             child_prior = policy_probs[action].item()
@@ -189,46 +199,51 @@ class MCTS:
         # The reward is the reward obtained by transitioning to this first (root) state.
         # As MCTS starts from a state, this reward is typically 0 or not directly used for root prior.
         initial_key, expansion_key = jax.random.split(key)
-        root_hidden_state_batched, root_value_batched, root_policy_logits_batched, root_reward_batched = \
-            self.model.initial_inference(root_state_for_model, initial_key)
+        # Protocol: hidden_state, reward, policy_logits, value
+        root_hidden_state_batched, root_reward_batched, root_policy_logits_batched, root_value_batched = \
+            self.model.initial_inference(root_state_for_model, initial_key, training=False) # Assuming MCTS is for eval
 
         # Ensure outputs are unbatched if model returned a batch of 1
         root_policy_logits = root_policy_logits_batched.squeeze(axis=0) if root_policy_logits_batched.ndim > 1 and root_policy_logits_batched.shape[0] == 1 else root_policy_logits_batched
         root_value = root_value_batched.squeeze(axis=0) if root_value_batched.ndim > 0 and root_value_batched.shape[0] == 1 else root_value_batched
         root_hidden_state = root_hidden_state_batched.squeeze(axis=0) if root_hidden_state_batched.ndim > 1 and root_hidden_state_batched.shape[0] == 1 else root_hidden_state_batched
-
-        # The root_node.value_from_net should store the scalar value from the model.
-        root_node.value_from_net = root_value.item() # Ensure it's a Python scalar
+        # root_reward is also scalar, handle similarly if needed, though not directly used for root expansion logic here
+        # root_reward_scalar = root_reward_batched.item() if root_reward_batched.ndim == 0 else root_reward_batched[0].item()
 
         # Store the hidden state in the root node as it's now known from initial_inference
         root_node.hidden_state = root_hidden_state
         # Also store the policy logits used for expansion (after potential noise)
         # This will be updated after noise application if any
-        root_node.policy_logits = root_policy_logits
+        # The policy_logits on the node should be the raw network output for reference/debugging.
+        # The actual priors for children will be derived from this and potentially noise.
+        root_node.policy_logits = root_policy_logits # Store raw network policy logits
 
         # Expand the root node with its policy and value
+        # The value_from_network for the root node is root_value.item()
         self._expand_node(
             root_node,
-            root_node.hidden_state,
-            root_node.policy_logits,
-            root_node.value_from_net,
+            root_node.hidden_state, # Already set
+            root_policy_logits,     # Use raw logits for expansion, noise applied to child priors later
+            root_value.item(),      # Pass the scalar value from network for the root
             legal_actions_mask
         )
         # Add Dirichlet noise to root policy priors if configured (after children are created)
-        if self.config.dirichlet_alpha > 0:  # pragma: no cover
+        if self.config.dirichlet_alpha > 0:
             key, noise_key = jax.random.split(key)
             num_valid_children = sum(
                 1 for action_idx in root_node.children
-                if (legal_actions_mask is None or legal_actions_mask[action_idx])
+                # Conditionally apply legal_actions_mask
+                if not (self.config.mask_illegal_actions and legal_actions_mask is not None) or legal_actions_mask[action_idx] # type: ignore
             )
-            if num_valid_children > 0:  # pragma: no cover
+            if num_valid_children > 0:
                 dirichlet_noise = jax.random.dirichlet(
-                    noise_key,  # pragma: no cover
+                    noise_key,
                     alpha=jnp.full(num_valid_children, self.config.dirichlet_alpha)
                 )
                 noise_idx = 0
                 for action, child in root_node.children.items():
-                    if legal_actions_mask is None or legal_actions_mask[action]:
+                    # Conditionally apply legal_actions_mask
+                    if not (self.config.mask_illegal_actions and legal_actions_mask is not None) or legal_actions_mask[action]: # type: ignore
                         child.prior = (
                             (1 - self.config.dirichlet_exploration_fraction) * child.prior
                             + self.config.dirichlet_exploration_fraction * dirichlet_noise[noise_idx]
@@ -240,13 +255,18 @@ class MCTS:
             key, loop_key = jax.random.split(key)
             current_node = root_node
             search_path = [current_node]
+            current_depth = 0 # Root is at depth 0
 
             while current_node.is_expanded():
+                # Max depth check
+                if self.config.max_depth is not None and current_depth >= self.config.max_depth:
+                    break # Stop deepening this path
+
                 current_node = self._select_child(current_node, min_max_stats, key=loop_key)
                 search_path.append(current_node)
+                current_depth += 1 # Increment depth after moving to child
             
             # If search_path has only one element (root), it means we couldn't select a child (e.g. root not expanded or no valid children)
-            # In this case, the leaf is the root itself. Its value is already known from the initial prediction.
             if len(search_path) == 1: # current_node is still root_node
                 leaf_value_scalar = root_node.value_from_network # Use root's network value
                 # No recurrent inference needed, and backup is just for the root itself if it was chosen as leaf.
@@ -271,17 +291,20 @@ class MCTS:
             else:
                 parent_hidden_state_for_model = parent_hidden_state_unbatched # Assume already (1, ...)
             
-            action_array = jnp.array([current_node.action])
-            if action_array.ndim == 0: # Ensure action is at least 1D for model
+            # Prepare action array: start as 0D array and expand to 1D
+            action_array = jnp.array(current_node.action)
+            if action_array.ndim == 0:  # Ensure action is at least 1D for model
                 action_array = jnp.expand_dims(action_array, axis=0)
 
             # Get a new key for this recurrent inference step
             current_key, loop_key = jax.random.split(loop_key) # Update loop_key for next iteration/use
 
-            leaf_hidden_state_batched, leaf_value_net_batched, leaf_policy_logits_batched, leaf_reward_batched = self.model.recurrent_inference(
+            # Protocol: next_hidden_state, reward, policy_logits, value
+            leaf_hidden_state_batched, leaf_reward_batched, leaf_policy_logits_batched, leaf_value_net_batched = self.model.recurrent_inference(
                 parent_hidden_state_for_model,
                 action_array,
-                current_key # Pass the PRNG key
+                current_key, # Pass the PRNG key.
+                training=False # Assuming MCTS is for eval
             )
 
             # Unbatch hidden_state only if batch dimension is 1
@@ -309,15 +332,28 @@ class MCTS:
         visit_counts = jnp.zeros(self.config.num_actions)
         if root_node.children:
             for action, child in root_node.children.items():
-                if legal_actions_mask is None or legal_actions_mask[action]:
+                if legal_actions_mask is None or legal_actions_mask[action]: # Check against mask if applicable
                      visit_counts = visit_counts.at[action].set(child.visit_count)
         
         if jnp.sum(visit_counts) > 0:
-            final_policy = visit_counts / jnp.sum(visit_counts)
-        else:
-            if legal_actions_mask is not None:
-                num_legal = jnp.sum(legal_actions_mask)
-                final_policy = jnp.where(legal_actions_mask, 1.0/num_legal, 0.0) if num_legal > 0 else jnp.ones(self.config.num_actions) / self.config.num_actions
+            if self.config.temperature == 0: # Select action with max visits
+                action = jnp.argmax(visit_counts)
+                final_policy = jnp.zeros_like(visit_counts).at[action].set(1.0)
             else:
+                # Apply temperature
+                temp_scaled_visits = visit_counts**(1.0 / self.config.temperature)
+                final_policy = temp_scaled_visits / jnp.sum(temp_scaled_visits)
+        else: # No visits or all visits are zero
+            # Fallback to uniform policy over legal actions or all actions
+            # Conditionally apply legal_actions_mask
+            current_legal_actions_mask = legal_actions_mask if self.config.mask_illegal_actions else None
+            if current_legal_actions_mask is not None:
+                num_legal = jnp.sum(current_legal_actions_mask)
+                if num_legal > 0:
+                    final_policy = jnp.where(current_legal_actions_mask, 1.0 / num_legal, 0.0)
+                else: # No legal actions
+                    # Or all zeros, depending on desired behavior for terminal. Uniform for now.
+                    final_policy = jnp.ones(self.config.num_actions) / self.config.num_actions
+            else: # No mask, or mask_illegal_actions is False, uniform over all
                 final_policy = jnp.ones(self.config.num_actions) / self.config.num_actions
         return final_policy, root_node

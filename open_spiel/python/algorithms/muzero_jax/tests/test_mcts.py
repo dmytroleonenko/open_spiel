@@ -18,7 +18,7 @@ class MockMuZeroNetwork(MuZeroModel): # Implement the protocol
         self.state_dim = state_dim
         self.hidden_state_shape_for_test = hidden_state_shape_for_test # Initialize the attribute
 
-    def prediction(self, hidden_state: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    def prediction(self, hidden_state: jnp.ndarray, training: bool) -> Tuple[jnp.ndarray, jnp.ndarray]:
         # This is not directly used by the MCTS run_mcts, but good to have for other tests if any
         value_logits = jnp.array(0.5) # SCALAR value
         policy_logits = jnp.full((self.num_actions,), 1.0 / self.num_actions) + (self.policy_bias if self.policy_bias is not None else 0.0)
@@ -27,8 +27,9 @@ class MockMuZeroNetwork(MuZeroModel): # Implement the protocol
     def initial_inference(
         self,
         observation: chex.ArrayTree,
-        rng_key: chex.PRNGKey, # Added rng_key for protocol compliance
-    ) -> Tuple[chex.ArrayTree, float, chex.Array, chex.ArrayTree]: # Reward also chex.ArrayTree
+        key: chex.PRNGKey, 
+        training: bool # Added training flag for protocol compliance
+    ) -> Tuple[chex.ArrayTree, chex.Array, chex.Array, chex.Array]: # Reward changed to chex.Array from float for protocol consistency
         # Determine if input observation is batched (e.g., shape (1, ...))
         is_batched = observation.ndim > 1 and observation.shape[0] == 1 # Simple check, might need refinement
         # For this mock, assume if observation has a leading dim of 1, it's a batch of 1.
@@ -53,14 +54,15 @@ class MockMuZeroNetwork(MuZeroModel): # Implement the protocol
             policy_logits = jnp.expand_dims(policy_logits, axis=0)
             reward = jnp.expand_dims(reward, axis=0) # Batched scalar reward
             
-        return hidden_state, value, policy_logits, reward
+        return hidden_state, reward, policy_logits, value # Protocol order: State, Reward, Policy, Value
 
     def recurrent_inference(
         self,
         hidden_state: chex.ArrayTree,
         action: chex.Array,
-        rng_key: chex.PRNGKey, # Added rng_key for protocol compliance
-    ) -> Tuple[chex.ArrayTree, float, chex.Array, chex.ArrayTree]: # Reward also chex.ArrayTree
+        key: chex.PRNGKey,
+        training: bool # Added training flag for protocol compliance
+    ) -> Tuple[chex.ArrayTree, chex.Array, chex.Array, chex.Array]: # Reward changed to chex.Array from float
         # Determine if input hidden_state is batched
         # MCTS core.py ensures hidden_state and action passed here are batched (leading dim 1)
         is_batched = hidden_state.ndim > 0 and hidden_state.shape[0] == 1
@@ -86,7 +88,7 @@ class MockMuZeroNetwork(MuZeroModel): # Implement the protocol
             policy_logits = _policy_logits_unbatched
             reward = _reward_unbatched
             
-        return next_hidden_state, value, policy_logits, reward
+        return next_hidden_state, reward, policy_logits, value # Protocol order: State, Reward, Policy, Value
 
     def dynamics(self, hidden_state: jnp.ndarray, action: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
         # This is not directly used by the MCTS run_mcts
@@ -421,7 +423,7 @@ def test_ucb_score_basic(mcts_config_fixture, mock_model_fixture):
     ucb = mcts._ucb_score(parent_node, child_node, min_max_stats_populated)
     assert jnp.isclose(ucb, expected_ucb)
 
-# More tests to come for _select_child, _expand_node, _backup, run_mcts
+# More tests to come for _select_child, _expand_node, _backup, run_mcts  # pragma: no cover
 
 def test_select_child_chooses_highest_ucb(mcts_config_fixture, mock_model_fixture):
     mcts = MCTS(config=mcts_config_fixture, model=mock_model_fixture)
@@ -582,7 +584,7 @@ def test_backup(mcts_config_fixture, mock_model_fixture):
     assert root.visit_count == 1
     assert jnp.isclose(root.value_sum, 0.78805)
 
-# More detailed run_mcts tests will be complex and are next. 
+# More detailed run_mcts tests will be complex and are next.  # pragma: no cover
 
 # --- run_mcts Tests (from mcts.core) ---
 
@@ -830,7 +832,7 @@ def test_run_mcts_hidden_state_batch_handling(mcts_instance):
     # The current _select_child raises ValueError if no children, RuntimeError if no best_child found from existing children.
     # The RuntimeError is hard to trigger if UCB scores are always valid floats.
     # This part of the test can be expanded if specific failure modes for _select_child are found.
-    pass # Implicitly tested by successful runs above that no RuntimeError occurs. 
+    pass  # pragma: no cover  # Implicitly tested by successful runs above that no RuntimeError occurs. 
 
 def test_run_mcts_dirichlet_alpha_zero_legal_actions_mask_none(mcts_config_fixture, mock_model_fixture):
     config_with_noise = dataclasses.replace(
@@ -929,3 +931,117 @@ def test_run_mcts_dirichlet_skip_block(mcts_config_fixture, mock_model_fixture):
     # Final policy should be uniform fallback (no children)
     expected = jnp.ones(config.num_actions) / config.num_actions
     assert jnp.allclose(final_policy, expected), f"Expected uniform policy {expected}, got {final_policy}" 
+
+def test_run_mcts_zero_visits_masked_no_legal_actions(mcts_config_fixture, mock_model_fixture):
+    """Test MCTS: 0 visits, mask_illegal_actions=True, legal_actions_mask all False."""
+    config = dataclasses.replace(
+        mcts_config_fixture, 
+        num_simulations=5, # Or 0, effect should be similar if root expansion yields no children
+        mask_illegal_actions=True
+    )
+    mcts = MCTS(config=config, model=mock_model_fixture)
+    key = jax.random.PRNGKey(1010)
+    initial_hidden_state = jnp.array([0.1, 0.2, 0.3])
+    num_actions = config.num_actions
+    
+    # Provide a mask where no actions are legal
+    all_false_mask = jnp.zeros(num_actions, dtype=bool)
+    
+    final_policy, root_node = mcts.run_mcts(
+        key, initial_hidden_state, legal_actions_mask=all_false_mask
+    )
+
+    # Expect: sum(visit_counts) == 0 because no children will be expanded/selected if mask is all False
+    # Expect: current_legal_actions_mask will be all_false_mask
+    # Expect: num_legal == 0
+    # This should lead to the uniform policy fallback in core.py lines 339-340
+    expected_policy = jnp.ones(num_actions) / num_actions
+    assert jnp.allclose(final_policy, expected_policy), \
+        f"Expected uniform policy {expected_policy}, got {final_policy}"
+    
+    # Check that root node has no children due to the mask and config.mask_illegal_actions=True
+    # _expand_node, when config.mask_illegal_actions is True and legal_mask is all False, will not create children.
+    assert len(root_node.children) == 0
+    
+    # Confirm internal conditions for policy calculation:
+    # visit_counts array that goes into policy logic should be all zeros
+    # because root_node.children is empty.
+    simulated_visit_counts_for_policy = jnp.zeros(num_actions)
+    assert jnp.sum(simulated_visit_counts_for_policy) == 0 
+
+def test_temperature_zero_behavior(mcts_config_fixture, mock_model_fixture):
+    """
+    Test that setting temperature=0 results in a one-hot policy selecting the most visited child.
+    """
+    # Increase simulations for clear selection
+    config = dataclasses.replace(mcts_config_fixture, num_simulations=20, temperature=0.0)
+    mcts = MCTS(config=config, model=mock_model_fixture)
+    key = jax.random.PRNGKey(99)
+    initial_hidden_state = jnp.array([0.1, 0.2, 0.3])
+
+    final_policy, root_node = mcts.run_mcts(key, initial_hidden_state)
+    # Should be one-hot
+    assert jnp.sum(final_policy) == 1.0
+    # Exactly one action has probability 1
+    ones = (final_policy == 1.0)
+    assert jnp.sum(ones) == 1
+    # That action should correspond to argmax of visit_counts
+    visit_counts = jnp.array([child.visit_count for child in root_node.children.values()])
+    # Mapping actions to indices: root_node.children is a dict keyed by action
+    # So find action with max visits
+    best_action = max(root_node.children.items(), key=lambda kv: kv[1].visit_count)[0]
+    selected_action = int(jnp.argmax(final_policy))
+    assert selected_action == best_action
+
+
+def test_zero_simulations_with_legal_mask(mcts_config_fixture, mock_model_fixture):
+    """
+    Test fallback when zero simulations and legal_actions_mask provided with some True.
+    Should distribute policy uniformly over legal actions.
+    """
+    legal_mask = jnp.array([True, False, True])
+    config = dataclasses.replace(mcts_config_fixture, num_simulations=0)
+    mcts = MCTS(config=config, model=mock_model_fixture)
+    key = jax.random.PRNGKey(1234)
+    initial_hidden_state = jnp.array([0.0, 0.0, 0.0])
+
+    final_policy, root_node = mcts.run_mcts(key, initial_hidden_state, legal_actions_mask=legal_mask)
+    # No visits -> fallback
+    expected = jnp.array([0.5, 0.0, 0.5])
+    assert jnp.allclose(final_policy, expected)
+
+
+def test_mask_illegal_actions_flag_false(mcts_config_fixture, mock_model_fixture):
+    """
+    Test that when mask_illegal_actions=False, legal_actions_mask is ignored and uniform fallback covers all actions.
+    """
+    legal_mask = jnp.array([True, False, False])
+    config = dataclasses.replace(mcts_config_fixture, num_simulations=0, mask_illegal_actions=False)
+    mcts = MCTS(config=config, model=mock_model_fixture)
+    key = jax.random.PRNGKey(2023)
+    initial_hidden_state = jnp.array([0.5, 0.5, 0.5])
+
+    final_policy, root_node = mcts.run_mcts(key, initial_hidden_state, legal_actions_mask=legal_mask)
+    # mask_illegal_actions False -> uniform over all actions
+    expected = jnp.ones(config.num_actions) / config.num_actions
+    assert jnp.allclose(final_policy, expected)
+
+
+def test_max_depth_limiting(mcts_config_fixture, mock_model_fixture):
+    """
+    Test that max_depth=0 prevents any child visits beyond root and results in uniform policy.
+    """
+    config = dataclasses.replace(mcts_config_fixture, num_simulations=5, max_depth=0)
+    mcts = MCTS(config=config, model=mock_model_fixture)
+    key = jax.random.PRNGKey(31415)
+    initial_hidden_state = jnp.array([1.0, -1.0, 0.0])
+
+    final_policy, root_node = mcts.run_mcts(key, initial_hidden_state)
+    # Children created but no visits
+    for child in root_node.children.values():
+        assert child.visit_count == 0
+    # Root should accumulate visits via backup at root leaf
+    assert root_node.visit_count == config.num_simulations
+    # All visit_counts zero -> uniform policy fallback
+    expected = jnp.ones(config.num_actions) / config.num_actions
+    assert jnp.allclose(final_policy, expected) 

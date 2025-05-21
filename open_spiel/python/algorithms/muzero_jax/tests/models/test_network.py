@@ -162,6 +162,22 @@ def test_dynamics_network_flat_exotic_shapes(flat_obs_config, rngs):
     with pytest.raises(TypeError):
         _ = dyn_net(dummy_hidden_state, dummy_action, training=True)
 
+# Add test to cover action_one_hot.ndim == 1 branch in flat DynamicsNetwork
+def test_dynamics_network_flat_scalar_action(flat_obs_config, rngs):
+    """
+    Test flat continuous dynamics with a scalar action (0D array) to cover expanding 1D action_one_hot.
+    """
+    config = flat_obs_config
+    config.is_continuous = False
+    dyn_net = muzero_network_lib.DynamicsNetwork(config, rngs=rngs)
+    # Hidden state with explicit batch dimension
+    hidden_state = jnp.ones((1, config.num_channels))
+    # Scalar action (0D array)
+    action = jnp.array(2, dtype=jnp.int32)
+    # This should hit the action_one_hot.ndim == 1 branch and expand to (1, num_actions)
+    next_hidden_state = dyn_net(hidden_state, action, training=True)
+    assert next_hidden_state.shape == (1, config.num_channels)
+
 # PredictionNetwork Tests
 @pytest.mark.parametrize("config_fixture_name", ["flat_obs_config", "image_obs_config", "categorical_support_config"])
 def test_prediction_network(config_fixture_name, request, rngs):

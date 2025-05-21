@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
 from open_spiel.python.algorithms.muzero_jax.models.layers import conv3x3, ResidualBlock, FCResidualBlock, MLP
+from open_spiel.python.algorithms.muzero_jax.models.network import DownSample
 
 @pytest.fixture
 def rngs():
@@ -186,3 +187,21 @@ def test_mlp_custom_activations(rngs):
     assert jnp.all(output >= -1) and jnp.all(output <= 1)
 
 # TODO: Add tests for mlp function/class once implemented 
+
+# Add test for DownSample
+def test_downsample_output_shape_and_mode(rngs):
+    """
+    Test DownSample on image inputs, covering both training and evaluation modes.
+    """
+    in_channels = 3
+    out_channels = 8  # Must be divisible by 2 for simplified downsample
+    ds = DownSample(in_channels, out_channels, rngs=rngs)
+    # Input size divisible by 4 to allow two stride-2 downsamples
+    dummy_input = jnp.ones((1, 64, 64, in_channels))
+    # Training mode
+    out_train = ds(dummy_input, training=True)
+    # Expect two stride-2 downsamples: 64 -> 32 -> 16, channels -> out_channels
+    assert out_train.shape == (1, 16, 16, out_channels)
+    # Evaluation mode
+    out_eval = ds(dummy_input, training=False)
+    assert out_eval.shape == (1, 16, 16, out_channels) 
