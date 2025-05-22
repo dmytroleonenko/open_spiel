@@ -1,4 +1,8 @@
+import jax
+import jax.numpy as jnp
 import pytest
+import pyspiel # Required for pyspiel.Game
+from open_spiel.python.algorithms.muzero_jax.envs.game_wrapper import GameWrapper # Added import
 """Removed the unconditional skip so that game wrapper tests execute when pyspiel is available."""
 
 

@@ -187,76 +187,64 @@ class PredictionNetwork(nnx.Module):
     """Prediction Network (f) for policy and value - Flax NNX."""
     def __init__(self, config, *, rngs: nnx.Rngs):
         self.config = config
-        # Common trunk for policy and value (if image-based)
         if self.config.use_image_observation:
             self.resblocks = [
                 ResidualBlock(self.config.num_channels, self.config.num_channels, 
                               rngs=nnx.Rngs(params=rngs.params(), dropout=rngs.dropout())) 
                 for i in range(self.config.prediction_num_blocks)
             ]
-            # Policy head
-            self.policy_conv = nnx.Conv(self.config.num_channels, self.config.num_channels, kernel_size=(1,1), rngs=rngs) # Reduced channels in EZv2, map to num_channels for now
+            self.policy_conv = nnx.Conv(self.config.num_channels, self.config.num_channels, kernel_size=(1,1), rngs=rngs)
             self.policy_bn = nnx.BatchNorm(self.config.num_channels, use_running_average=True, rngs=rngs)
-            # Flatten size needs to be computed based on output of convs, e.g., H*W*C'
-            # Assuming H, W are known (e.g., 6x6 for 96x96 input with 4x downsampling in repr)
-            # This needs to be configurable or dynamically calculated.
-            # For example, if representation outputs 6x6xnum_channels:
             flatten_size_policy = self.config.spatial_extents[0] * self.config.spatial_extents[1] * self.config.num_channels
             self.policy_fc = MLP(flatten_size_policy, self.config.fc_prediction_layers, self.config.num_actions, rngs=rngs)
 
-            # Value head (similar structure)
-            self.value_conv = nnx.Conv(self.config.num_channels, 1, kernel_size=(1,1), rngs=rngs) # EZv2 uses 1 filter for scalar, support_size for categorical
+            self.value_conv = nnx.Conv(self.config.num_channels, 1, kernel_size=(1,1), rngs=rngs)
             self.value_bn = nnx.BatchNorm(1, use_running_average=True, rngs=rngs)
-            flatten_size_value = self.config.spatial_extents[0] * self.config.spatial_extents[1] * 1 # *1 because 1 filter from value_conv
-            
+            flatten_size_value = self.config.spatial_extents[0] * self.config.spatial_extents[1] * 1
             value_output_dim = self.config.value_support_size if self.config.value_support_size > 0 else 1
             self.value_fc = MLP(flatten_size_value, self.config.fc_prediction_layers, value_output_dim, rngs=rngs)
-
         else: # Flat observations
-            # For flat observations, the hidden state is already 1D (batch, num_channels)
-            # We can directly apply MLPs for policy and value heads.
-            # Policy head
             policy_rngs = nnx.Rngs(params=rngs.params(), dropout=rngs.dropout())
             self.policy_fc = MLP(input_size=self.config.num_channels,
                                  hidden_sizes=self.config.fc_prediction_layers,
                                  output_size=self.config.num_actions,
                                  rngs=policy_rngs)
-            
-            # Value head
             value_output_dim = self.config.value_support_size if self.config.value_support_size > 0 else 1
             value_rngs = nnx.Rngs(params=rngs.params(), dropout=rngs.dropout())
             self.value_fc = MLP(input_size=self.config.num_channels,
-                                hidden_sizes=self.config.fc_prediction_layers, # Can use same or different FC layers
+                                hidden_sizes=self.config.fc_prediction_layers, 
                                 output_size=value_output_dim,
                                 rngs=value_rngs)
 
     def __call__(self, hidden_state: jax.Array, training: bool) -> tuple[jax.Array, jax.Array]:
         if self.config.use_image_observation:
-            # Common trunk
-            x = hidden_state
+            x_trunk = hidden_state
             for block in self.resblocks:
-                x = block(x, training=training)
+                x_trunk = block(x_trunk, training=training)
             
             # Policy head
-            policy_x = self.policy_conv(x)
+            policy_x = self.policy_conv(x_trunk)
             policy_x = self.policy_bn(policy_x, use_running_average=not training)
             policy_x = nnx.relu(policy_x)
-            policy_x = policy_x.reshape((policy_x.shape[0], -1)) # Flatten
+            print(f"PredictionNetwork policy_x before reshape: {policy_x.shape}")
+            policy_x = policy_x.reshape((policy_x.shape[0], -1))
+            print(f"PredictionNetwork policy_x after reshape (input to MLP): {policy_x.shape}")
             policy_logits = self.policy_fc(policy_x, training=training)
 
             # Value head
-            value_x = self.value_conv(x)
+            value_x = self.value_conv(x_trunk)
             value_x = self.value_bn(value_x, use_running_average=not training)
             value_x = nnx.relu(value_x)
-            value_x = value_x.reshape((value_x.shape[0], -1)) # Flatten
+            print(f"PredictionNetwork value_x before reshape: {value_x.shape}")
+            value_x = value_x.reshape((value_x.shape[0], -1))
+            print(f"PredictionNetwork value_x after reshape (input to MLP): {value_x.shape}")
             value = self.value_fc(value_x, training=training)
-        else: # Flat observations
-            # No shared trunk of ResBlocks typically for flat, hidden_state is the input to MLPs
+        else: 
             policy_logits = self.policy_fc(hidden_state, training=training)
             value = self.value_fc(hidden_state, training=training)
 
-        if self.config.value_support_size == 0: # Scalar value
-            value = jnp.squeeze(value, axis=-1) # Ensure (batch_size,)
+        if self.config.value_support_size == 0: 
+            value = jnp.squeeze(value, axis=-1) 
 
         return policy_logits, value
 
@@ -267,14 +255,13 @@ class RewardNetwork(nnx.Module):
         output_dim = self.config.reward_support_size if self.config.reward_support_size > 0 else 1
         
         if self.config.use_image_observation:
-            # Similar to value head in PredictionNetwork for image obs
             self.conv = nnx.Conv(self.config.num_channels, 1, kernel_size=(1,1), rngs=rngs) 
             self.bn = nnx.BatchNorm(1, use_running_average=True, rngs=rngs)
-            flatten_size = self.config.spatial_extents[0] * self.config.spatial_extents[1] * 1
-            self.fc = MLP(flatten_size, self.config.fc_prediction_layers, output_dim, rngs=rngs) # Using fc_prediction_layers for consistency
-        else: # Flat observations
+            flatten_size = self.config.spatial_extents[0] * self.config.spatial_extents[1] * 1 
+            self.fc = MLP(flatten_size, self.config.fc_prediction_layers, output_dim, rngs=rngs) 
+        else: 
             self.fc = MLP(input_size=self.config.num_channels,
-                          hidden_sizes=self.config.fc_prediction_layers, # Reusing for consistency
+                          hidden_sizes=self.config.fc_prediction_layers, 
                           output_size=output_dim,
                           rngs=rngs)
 
@@ -283,66 +270,141 @@ class RewardNetwork(nnx.Module):
             x = self.conv(hidden_state)
             x = self.bn(x, use_running_average=not training)
             x = nnx.relu(x)
-            x = x.reshape((x.shape[0], -1)) # Flatten
-            reward = self.fc(x, training=training)
+            print(f"RewardNetwork x before reshape: {x.shape}")
+            x_reshaped = x.reshape((x.shape[0], -1))
+            print(f"RewardNetwork x after reshape (input to MLP): {x_reshaped.shape}")
+            reward = self.fc(x_reshaped, training=training)
         else:
             reward = self.fc(hidden_state, training=training)
 
-        if self.config.reward_support_size == 0: # Scalar reward
-            reward = jnp.squeeze(reward, axis=-1) # Ensure (batch_size,)
+        if self.config.reward_support_size == 0: 
+            reward = jnp.squeeze(reward, axis=-1) 
         return reward
+
+class ProjectionNetwork(nnx.Module):
+    """Projects hidden state for self-supervised learning."""
+
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, *, rngs: nnx.Rngs):
+        self.input_dim = input_dim
+        self.dense1 = nnx.Linear(input_dim, hidden_dim, rngs=rngs)
+        self.bn1 = nnx.BatchNorm(hidden_dim, use_running_average=True, rngs=rngs) 
+        self.dense2 = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
+        self.bn2 = nnx.BatchNorm(hidden_dim, use_running_average=True, rngs=rngs)
+        self.dense3 = nnx.Linear(hidden_dim, output_dim, rngs=rngs)
+        self.bn3 = nnx.BatchNorm(output_dim, use_running_average=True, rngs=rngs)
+
+    def __call__(self, x: jnp.ndarray, training: bool):
+        if x.ndim > 2: 
+            x = x.reshape((x.shape[0], -1))
+        
+        if x.shape[-1] != self.input_dim:
+            raise ValueError(f"ProjectionNetwork input_dim {self.input_dim} does not match input shape {x.shape}") # pragma: no cover
+
+        x = self.dense1(x)
+        x = self.bn1(x, use_running_average=not training)
+        x = nnx.relu(x)
+        x = self.dense2(x)
+        x = self.bn2(x, use_running_average=not training)
+        x = nnx.relu(x)
+        x = self.dense3(x)
+        x = self.bn3(x, use_running_average=not training)
+        return x
+
+class ProjectionHeadNetwork(nnx.Module):
+    """Head for the projection network, used in self-supervised learning."""
+
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, *, rngs: nnx.Rngs):
+        self.dense1 = nnx.Linear(input_dim, hidden_dim, rngs=rngs)
+        self.bn1 = nnx.BatchNorm(hidden_dim, use_running_average=True, rngs=rngs)
+        self.dense2 = nnx.Linear(hidden_dim, output_dim, rngs=rngs)
+
+    def __call__(self, x: jnp.ndarray, training: bool):
+        x = self.dense1(x)
+        x = self.bn1(x, use_running_average=not training)
+        x = nnx.relu(x)
+        x = self.dense2(x)
+        return x
 
 class MuZeroNetwork(nnx.Module):
     """Combined MuZero Network (Flax NNX)."""
-    def __init__(self, config, *, rngs: nnx.Rngs):
+    def __init__(self, 
+                 representation_network_def: Callable[..., RepresentationNetwork],
+                 dynamics_network_def: Callable[..., DynamicsNetwork],
+                 prediction_network_def: Callable[..., PredictionNetwork],
+                 reward_network_def: Callable[..., RewardNetwork],
+                 projection_network_def: Callable[..., ProjectionNetwork] | None, # Optional
+                 config, # General config object for sub-networks and MuZero itself
+                 *, rngs: nnx.Rngs):
+        super().__init__()
         self.config = config
+
+        initial_rngs_obj = rngs 
+        params_jax_key = initial_rngs_obj.params.key.value
         
-        # Obtain individual JAX keys from the streams for each sub-network
-        # by calling the streams. Each call to a stream (e.g., rngs.params()) 
-        # advances it and returns a new unique JAX PRNGKey.
-        self.representation_net = RepresentationNetwork(
-            config, rngs=nnx.Rngs(params=rngs.params(), dropout=rngs.dropout())
-        )
-        self.dynamics_net = DynamicsNetwork(
-            config, rngs=nnx.Rngs(params=rngs.params(), dropout=rngs.dropout())
-        )
-        self.prediction_net = PredictionNetwork(
-            config, rngs=nnx.Rngs(params=rngs.params(), dropout=rngs.dropout())
-        )
-        self.reward_net = RewardNetwork(
-            config, rngs=nnx.Rngs(params=rngs.params(), dropout=rngs.dropout())
-        )
+        if hasattr(initial_rngs_obj, 'dropout') and initial_rngs_obj.dropout is not None:
+            dropout_jax_key = initial_rngs_obj.dropout.key.value
+        else:
+            # If 'dropout' is not present, create a new JAX key for it by splitting the original params_jax_key,
+            # but keep the original params_jax_key for the 'params' stream.
+            _, dropout_specific_key = jax.random.split(params_jax_key) 
+            dropout_jax_key = dropout_specific_key
+
+        submodule_rngs = nnx.Rngs(params=params_jax_key, dropout=dropout_jax_key)
+
+        self.representation_network = representation_network_def(config, rngs=submodule_rngs)
+        self.dynamics_network = dynamics_network_def(config, rngs=submodule_rngs)
+        self.prediction_network = prediction_network_def(config, rngs=submodule_rngs)
+        self.reward_network = reward_network_def(config, rngs=submodule_rngs)
+        
+        if config.use_projection and projection_network_def is not None:
+            # The projection_network_def lambda expects (config, *, rngs_lambda) in tests
+            # submodule_rngs is already correctly formatted.
+            self.projection_network = projection_network_def(config, rngs_lambda=submodule_rngs)
+        else:
+            self.projection_network = None
 
     def representation(self, observation: jax.Array, training: bool) -> jax.Array:
-        return self.representation_net(observation, training=training)
+        return self.representation_network(observation, training=training)
 
     def dynamics(self, hidden_state: jax.Array, action: jax.Array, training: bool) -> tuple[jax.Array, jax.Array]:
         """Predicts next hidden state and reward."""
-        next_hidden_state = self.dynamics_net(hidden_state, action, training=training)
-        # Reward is predicted from the *next* hidden state
-        reward = self.reward_net(next_hidden_state, training=training)
+        next_hidden_state = self.dynamics_network(hidden_state, action, training=training)
+        reward = self.reward_network(next_hidden_state, training=training)
         return next_hidden_state, reward
 
     def prediction(self, hidden_state: jax.Array, training: bool) -> tuple[jax.Array, jax.Array]:
-        return self.prediction_net(hidden_state, training=training)
+        return self.prediction_network(hidden_state, training=training)
 
-    def initial_inference(self, observation: jax.Array, training: bool = False) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    def initial_inference(self, observation: jax.Array, training: bool = False) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array | None]:
         """Representation + Prediction + Reward for the first step."""
         hidden_state = self.representation(observation, training=training)
-        # In initial inference, reward is usually considered 0 as no action has been taken to produce it.
-        # Or, some variants predict reward from the initial hidden_state.
-        # EfficientZeroV2's diagram implies reward is part of dynamics output g(s,a) -> s', r
-        # but their model's support_to_scalar(reward_logits) is often called on hidden_state after dynamics.
-        # Let's predict reward from the initial hidden state for consistency with recurrent_inference expecting reward from s'.
-        reward = self.reward_net(hidden_state, training=training)
+        reward = self.reward_network(hidden_state, training=training)
         policy_logits, value = self.prediction(hidden_state, training=training)
-        return hidden_state, reward, value, policy_logits
+        
+        projected_output = None
+        if self.projection_network:
+            proj_input = hidden_state
+            if proj_input.ndim > 2: # Image case, e.g. (B, H, W, C)
+                proj_input = jnp.mean(proj_input, axis=tuple(range(1, proj_input.ndim -1))) # Global average pool to (B, C)
+            projected_state = self.projection_network(proj_input, training=training)
+            projected_output = projected_state
+            
+        return hidden_state, reward, value, policy_logits, projected_output
 
-    def recurrent_inference(self, hidden_state: jax.Array, action: jax.Array, training: bool = False) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    def recurrent_inference(self, hidden_state: jax.Array, action: jax.Array, training: bool = False) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array | None]:
         """Dynamics + Prediction + Reward for subsequent steps."""
         next_hidden_state, reward = self.dynamics(hidden_state, action, training=training)
         policy_logits, value = self.prediction(next_hidden_state, training=training)
-        return next_hidden_state, reward, value, policy_logits
+
+        projected_output = None
+        if self.projection_network:
+            proj_input = next_hidden_state
+            if proj_input.ndim > 2: # Image case
+                proj_input = jnp.mean(proj_input, axis=tuple(range(1, proj_input.ndim -1)))
+            projected_state = self.projection_network(proj_input, training=training)
+            projected_output = projected_state
+
+        return next_hidden_state, reward, value, policy_logits, projected_output
 
 # TODO: Implement supporting NNX Modules like ResNetBlock, DownSample, SupportNetwork, ProjectionNetwork etc.
 # based on EfficientZeroV2/ez/agents/models/layer.py, adapting to Flax NNX conventions.

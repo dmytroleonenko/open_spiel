@@ -52,7 +52,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   Input: Hidden State (Tensor).
         *   Output: Reward (Scalar or Categorical Distribution).
         *   Implement based on `EfficientZeroV2`'s approach (e.g., `SupportNetwork`).
-    *   **(Optional) Self-Supervised Projection Heads:** (Based on `EfficientZeroV2`'s `ProjectionNetwork`) [TODO - Defer to Phase 3 or if specifically requested earlier]
+    *   **(Optional) Self-Supervised Projection Heads:** (Based on `EfficientZeroV2`'s `ProjectionNetwork`) [DONE]
         *   Input: Hidden State (Tensor).
         *   Output: Projected representation (Tensor).
         *   **Completion Criteria:**
@@ -84,39 +84,39 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
     *   Use Vault for persistence when needed (e.g., `Buffer.vault` backed on disk).
     *   **Tests:** Add tests for buffer functionality and Vault persistence (empty samples, negative batch size, disk-backed loading).
 
-[TODO] 6.  **Training Loop (JAX):**
-    *   **TDD:** Write Pytest tests for loss components and the overall training step function, verifying gradient computation and parameter updates on mock data. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/training/test_trainer.py`)
-    *   Create `open_spiel/python/algorithms/muzero_jax/training/trainer.py`.
-    *   (Reference: `@EfficientZeroV2/ez/agents/base.py` (especially `update_weights` method), `@EfficientZeroV2/ez/utils/loss.py`)
+[DONE] 6.  **Training Loop (JAX):**
+    *   **TDD:** Write Pytest tests for loss components and the overall training step function, verifying gradient computation and parameter updates on mock data. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/training/test_trainer.py`) [DONE]
+    *   Create `open_spiel/python/algorithms/muzero_jax/training/trainer.py`. [DONE]
+    *   (Reference: `@EfficientZeroV2/ez/agents/base.py` (especially `update_weights` method), `@EfficientZeroV2/ez/utils/loss.py`) [DONE]
     *   **Loss Function (MuZero specific, with `EfficientZeroV2` additions):** [DONE]
         *   Policy, Value, Reward losses. [DONE]
-        *   (Optional) Consistency/Self-Supervised Loss (from `EfficientZeroV2`). [TODO]
+        *   (Optional) Consistency/Self-Supervised Loss (from `EfficientZeroV2`). [DONE]
         *   L2 regularization. [DONE]
-    *   **Training Step Function (`@jax.jit`):** [TODO]
-        *   Input: Model `nnx.State`, Optax `optimizer_state`, batch.
-        *   Unroll model, calculate losses, compute gradients, update parameters.
-        *   Output: New model `nnx.State`, new `optimizer_state`, metrics.
-    *   **Main Training Orchestration:** (Inspired by `@EfficientZeroV2/ez/agents/base.py`'s `train` method`) [TODO]
-        *   This component is the **Learner**. Its role is to: Initialize model, optimizer. Loop: Sample batches of trajectories *from* the Replay Buffer, execute the `train_step` function to update network parameters, log metrics (using WandB), and manage checkpointing of the model and optimizer states.
-        *   Manage target network updates (EMA or periodic copy, per `EfficientZeroV2`).
-    *   **Completion Criteria:**
-        *   The `open_spiel/python/algorithms/muzero_jax/training/trainer.py` file is created and contains the complete training loop logic (Learner).
-        *   **Loss Function:**
-            *   Policy, value, and reward loss components are implemented, configurable, and correctly calculate losses based on model outputs and targets.
-            *   (Optional, if projection heads from Task 2's optional part or a later task are included) Consistency/Self-Supervised Loss is implemented and integrated.
-            *   L2 regularization is implemented and correctly applied.
-        *   **Training Step Function:**
-            *   A JIT-compiled training step function (`train_step`) is implemented that takes the model state, optimizer state, and a batch of data as input.
-            *   `train_step` correctly unrolls the MuZero model (representation, dynamics, prediction, reward) for the required number of steps.
-            *   `train_step` correctly calculates all specified loss components.
-            *   `train_step` computes gradients of the total loss with respect to model parameters.
-            *   `train_step` updates model parameters using the specified Optax optimizer.
-            *   `train_step` returns the updated model state, optimizer state, and a dictionary of relevant training metrics (e.g., individual losses, total loss, gradient norm).
-        *   **Main Training Orchestration:**
-            *   A main training function/class orchestrates the training process: initializes the model and optimizer, iteratively samples batches from the replay buffer, calls the `train_step` function, logs metrics (e.g., to WandB), and handles checkpointing.
-            *   Target network updates (e.g., EMA or periodic hard copy) are implemented and correctly managed.
-        *   All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/training/test_trainer.py` (covering loss components, `train_step`, and orchestration logic with mock data and models) pass (100%).
-        *   100% code coverage for `trainer.py` is achieved and verified.
+    *   **Training Step Function (`@jax.jit`):** [DONE]
+        *   Input: Model `nnx.State`, Optax `optimizer_state`, batch. [DONE]
+        *   Unroll model, calculate losses, compute gradients, update parameters. [DONE]
+        *   Output: New model `nnx.State`, new `optimizer_state`, metrics. [DONE]
+    *   **Main Training Orchestration:** (Inspired by `@EfficientZeroV2/ez/agents/base.py`'s `train` method`) [DONE]
+        *   This component is the **Learner**. Its role is to: Initialize model, optimizer. Loop: Sample batches of trajectories *from* the Replay Buffer, execute the `train_step` function to update network parameters, log metrics (using WandB), and manage checkpointing of the model and optimizer states. [DONE]
+        *   Manage target network updates (EMA or periodic copy, per `EfficientZeroV2`). [DONE]
+    *   **Completion Criteria:** [DONE]
+        *   The `open_spiel/python/algorithms/muzero_jax/training/trainer.py` file is created and contains the complete training loop logic (Learner). [DONE]
+        *   **Loss Function:** [DONE]
+            *   Policy, value, and reward loss components are implemented, configurable, and correctly calculate losses based on model outputs and targets. [DONE]
+            *   (Optional, if projection heads from Task 2's optional part or a later task are included) Consistency/Self-Supervised Loss is implemented and integrated. [DONE]
+            *   L2 regularization is implemented and correctly applied. [DONE]
+        *   **Training Step Function:** [DONE]
+            *   A JIT-compiled training step function (`train_step`) is implemented that takes the model state, optimizer state, and a batch of data as input. [DONE]
+            *   `train_step` correctly unrolls the MuZero model (representation, dynamics, prediction, reward) for the required number of steps. [DONE]
+            *   `train_step` correctly calculates all specified loss components. [DONE]
+            *   `train_step` computes gradients of the total loss with respect to model parameters. [DONE]
+            *   `train_step` updates model parameters using the specified Optax optimizer. [DONE]
+            *   `train_step` returns the updated model state, optimizer state, and a dictionary of relevant training metrics (e.g., individual losses, total loss, gradient norm). [DONE]
+        *   **Main Training Orchestration:** [DONE]
+            *   A main training function/class orchestrates the training process: initializes the model and optimizer, iteratively samples batches from the replay buffer, calls the `train_step` function, logs metrics (e.g., to WandB), and handles checkpointing. [DONE]
+            *   Target network updates (e.g., EMA or periodic hard copy) are implemented and correctly managed. [DONE]
+        *   All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/training/test_trainer.py` (covering loss components, `train_step`, and orchestration logic with mock data and models) pass (100%). [DONE]
+        *   100% code coverage for `trainer.py` is achieved and verified. [DONE]
 
 [TODO] 6.1.  **Connect Batch Optimizer Hooks to MuZeroNetwork:**
     *   Implement `init_muzero_model_and_params` to initialize the actual `MuZeroNetwork` (using `nnx.Rngs`).
@@ -166,7 +166,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   All Pytest integration tests in `open_spiel/python/algorithms/muzero_jax/tests/test_run_muzero_jax.py` (covering the setup and basic interaction of actor, learner, and buffer in a local environment) pass (100%).
         *   100% code coverage for `run_muzero_jax.py` (excluding Hydra boilerplate if extensive, focusing on core orchestration logic) is achieved and verified.
 
-[TODO] 9.  **Checkpointing (Orbax):**
+[DONE] 9.  **Checkpointing (Orbax):**
     *   **TDD:** Write Pytest tests for saving and loading model state and optimizer state. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/utils/test_checkpointing.py`)
     *   Integrate Orbax for saving/loading Flax NNX `State` and Optax `optimizer_state`.
     *   **Completion Criteria:**
