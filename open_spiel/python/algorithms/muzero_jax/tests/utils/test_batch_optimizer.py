@@ -4,6 +4,7 @@ import jax.numpy as jnp
 from flax import nnx
 from unittest.mock import patch, MagicMock
 from functools import partial
+import runpy
 
 # Attempt to import the module to be tested
 from open_spiel.python.algorithms.muzero_jax.utils import batch_optimizer
@@ -500,64 +501,195 @@ def test_sweep_accum(mock_get_memory, mock_perf_counter, dummy_rng, mock_model_i
     )
     assert len(results_zero_b) == 0
 
-# Placeholder - needs significant mocking of sub-functions
-# @patch.object(batch_optimizer, 'find_max_batch')
-# @patch.object(batch_optimizer, 'estimate_grad_var')
-# @patch.object(batch_optimizer, 'sweep_accum')
-# def test_main_batch_optimizer_workflow(mock_sweep, mock_est_var, mock_find_max, dummy_rng, dtype):
-#     if batch_optimizer is None:
-#         pytest.skip("batch_optimizer module not yet created")
+    # Updated assertion: ensure mem_used_bytes matches mocked value
+    assert results[0]['mem_used_bytes'] == 1024*1024*100
+    assert results[1]['mem_used_bytes'] == 1024*1024*100
 
-#     # Mock return values
-#     mock_find_max.return_value = 64 # B_max
-#     mock_est_var.return_value = 0.01 # some variance
-#     mock_sweep.return_value = [{'K': 1, 'effective_B': 64, 'time_s': 0.1, 'throughput': 640, 'mem_used_bytes':0}]
+# Test early break in sweep_accum when memory usage exceeds threshold
+@patch('time.perf_counter')
+@patch.object(batch_optimizer, 'get_device_memory_usage')
+def test_sweep_accum_threshold(mock_get_memory, mock_perf_counter, dummy_rng, mock_model_instance, sample_data_shape, sample_target_shape, dtype):
+    # Mock time.perf_counter for K=1 and K=2
+    mock_perf_counter.side_effect = [0.0, 0.1, 0.1, 0.3]
+    # Mock get_device_memory_usage: initial and then during loop
+    mock_get_memory.side_effect = [(10, 100), (100, 100)]
+    results = batch_optimizer.sweep_accum(
+        model_instance=mock_model_instance,
+        forward_backward_fn=forward_backward_for_test,
+        input_data_shape=sample_data_shape,
+        target_data_shape=sample_target_shape,
+        rng_key=dummy_rng,
+        local_batch_size_B=1,
+        max_accum_K=3,
+        dtype=dtype
+    )
+    # Should include K=1 and K=2 only, breaking at K=2
+    assert len(results) == 2
+    assert results[0]['K'] == 1
+    assert results[1]['K'] == 2
 
-#     input_shape = (10,)
-#     target_shape = (5,)
+# Test flatten_grads_nnx with empty pytree
+def test_flatten_grads_nnx_empty():
+    arr = batch_optimizer.flatten_grads_nnx(())
+    assert isinstance(arr, jax.Array)
+    assert arr.shape == (0,)
+    assert arr.dtype == jnp.float32
 
-#     # Have to provide real functions here, even if sub-components are mocked
-#     # The model_init_fn and forward_backward_fn are still called by main_batch_optimizer_workflow
-#     # to initialize the model instance that is then passed to the (mocked) sub-functions.
-    
-#     def _init_fn(key): return init_mock_model_for_test(key, din=input_shape[0], dout=target_shape[0])
-    
-#     batch_optimizer.main_batch_optimizer_workflow(
-#         model_init_fn=_init_fn,
-#         forward_backward_fn=forward_backward_for_test, # This will be used by the non-mocked parts
-#         input_data_shape=input_shape,
-#         target_data_shape=target_shape,
-#         rng_seed=0,
-#         start_batch_size_B_max=8,
-#         limit_batch_size_B_max=128,
-#         max_accum_steps_K=2,
-#         dtype=dtype
-#     )
-    
-#     mock_find_max.assert_called_once()
-#     # estimate_grad_var might be called multiple times, check at least once
-#     assert mock_est_var.call_count > 0 
-#     mock_sweep.assert_called_once()
+# Test find_max_batch when start_B > limit_B
+@pytest.mark.parametrize('dtype', [jnp.float32, jnp.bfloat16])
+def test_find_max_batch_start_greater_than_limit(dummy_rng, dtype):
+    # Case: start_B fits, should return limit_B
+    hook_fit = mockable_forward_backward_for_find_max_batch_test(100)
+    max_B = batch_optimizer.find_max_batch(
+        model_init_fn=lambda key: init_mock_model_for_test(key, din=10, dout=5),
+        forward_backward_fn=hook_fit,
+        input_data_shape=(10,),
+        target_data_shape=(5,),
+        rng_key=dummy_rng,
+        start_B=16,
+        limit_B=8,
+        max_trials_exp_search=5,
+        dtype=dtype
+    )
+    assert max_B == 8
 
-#     # Test B_max = 0 path
-#     mock_find_max.reset_mock()
-#     mock_est_var.reset_mock()
-#     mock_sweep.reset_mock()
-#     mock_find_max.return_value = 0 # B_max is 0
+    # Case: start_B fails, fallback to B=1
+    hook_fail = mockable_forward_backward_for_find_max_batch_test(2)
+    max_B2 = batch_optimizer.find_max_batch(
+        model_init_fn=lambda key: init_mock_model_for_test(key, din=10, dout=5),
+        forward_backward_fn=hook_fail,
+        input_data_shape=(10,),
+        target_data_shape=(5,),
+        rng_key=dummy_rng,
+        start_B=16,
+        limit_B=8,
+        max_trials_exp_search=5,
+        dtype=dtype
+    )
+    assert max_B2 == 1
 
-#     batch_optimizer.main_batch_optimizer_workflow(
-#         model_init_fn=_init_fn,
-#         forward_backward_fn=forward_backward_for_test,
-#         input_data_shape=input_shape,
-#         target_data_shape=target_shape,
-#         rng_seed=0,
-#         dtype=dtype
-#     )
-#     mock_find_max.assert_called_once()
-#     mock_est_var.assert_not_called()
-#     mock_sweep.assert_not_called()
+# Test find_max_batch and estimate_grad_var with target_data_shape=None
+@pytest.mark.parametrize('dtype', [jnp.float32, jnp.bfloat16])
+def test_find_estimate_no_target(dummy_rng, mock_model_instance, sample_data_shape, dtype):
+    # find_max_batch with no targets
+    hook = mockable_forward_backward_for_find_max_batch_test(100)
+    max_B = batch_optimizer.find_max_batch(
+        model_init_fn=lambda key: init_mock_model_for_test(key, din=sample_data_shape[0], dout=2),
+        forward_backward_fn=hook,
+        input_data_shape=sample_data_shape,
+        target_data_shape=None,
+        rng_key=dummy_rng,
+        start_B=4,
+        limit_B=8,
+        max_trials_exp_search=3,
+        dtype=dtype
+    )
+    assert isinstance(max_B, int)
+    # estimate_grad_var with no targets
+    var = batch_optimizer.estimate_grad_var(
+        model_instance=mock_model_instance,
+        forward_backward_fn=forward_backward_for_test,
+        input_data_shape=sample_data_shape,
+        target_data_shape=None,
+        rng_key=dummy_rng,
+        batch_size_B=2,
+        repeats=2,
+        dtype=dtype
+    )
+    assert isinstance(var, float)
+    # B=0 returns NaN
+    var0 = batch_optimizer.estimate_grad_var(
+        model_instance=mock_model_instance,
+        forward_backward_fn=forward_backward_for_test,
+        input_data_shape=sample_data_shape,
+        target_data_shape=None,
+        rng_key=dummy_rng,
+        batch_size_B=0,
+        repeats=2,
+        dtype=dtype
+    )
+    assert jnp.isnan(var0)
+
+# Tests for main_batch_optimizer_workflow
+@pytest.mark.parametrize('dtype', [jnp.float32, jnp.bfloat16])
+@patch.object(batch_optimizer, 'find_max_batch')
+@patch.object(batch_optimizer, 'estimate_grad_var')
+@patch.object(batch_optimizer, 'sweep_accum')
+def test_main_batch_optimizer_workflow(mock_sweep, mock_est_var, mock_find_max, capsys, dummy_rng, dtype):
+    # Configure mocks
+    mock_find_max.return_value = 0
+    # Path where B_max == 0 should return immediately
+    batch_optimizer.main_batch_optimizer_workflow(
+        model_init_fn=lambda key: init_mock_model_for_test(key, din=4, dout=2),
+        forward_backward_fn=forward_backward_for_test,
+        input_data_shape=(4,),
+        target_data_shape=(2,),
+        rng_seed=0,
+        dtype=dtype
+    )
+    mock_find_max.assert_called_once()
+    mock_est_var.assert_not_called()
+    mock_sweep.assert_not_called()
+
+    # Now path where B_max > 0
+    mock_find_max.reset_mock()
+    mock_est_var.reset_mock()
+    mock_sweep.reset_mock()
+    mock_find_max.return_value = 5
+    mock_est_var.return_value = 0.1
+    mock_sweep.return_value = [{'K':2,'effective_B':10,'time_s':0.2,'throughput':50,'mem_used_bytes':123}]
+    batch_optimizer.main_batch_optimizer_workflow(
+        model_init_fn=lambda key: init_mock_model_for_test(key, din=4, dout=2),
+        forward_backward_fn=forward_backward_for_test,
+        input_data_shape=(4,),
+        target_data_shape=(2,),
+        rng_seed=1,
+        start_batch_size_B_max=3,
+        limit_batch_size_B_max=10,
+        max_accum_steps_K=2,
+        dtype=dtype
+    )
+    # Verify sub-functions calls
+    mock_find_max.assert_called_once()
+    mock_est_var.assert_called_once()
+    mock_sweep.assert_called_once()
+    # Verify printed summary
+    captured = capsys.readouterr().out
+    assert 'Max local batch size (B_max)        : 5' in captured
+    assert 'Sweet-spot batch size' in captured
+    assert 'Gradient Accumulation Sweep Results' in captured 
+
+# Additional tests to cover utility functions and example usage
+
+def test_init_muzero_model_and_params_not_implemented():
+    import pytest, jax
+    from open_spiel.python.algorithms.muzero_jax.utils import batch_optimizer
+    with pytest.raises(NotImplementedError):
+        batch_optimizer.init_muzero_model_and_params(jax.random.PRNGKey(0))
 
 
-@pytest.mark.skip(reason="Main workflow test requires extensive mocking or live runs, focusing on unit tests first.")
-def test_main_batch_optimizer_workflow():
-    pass 
+def test_forward_and_backward_muzero_not_implemented():
+    import pytest
+    from open_spiel.python.algorithms.muzero_jax.utils import batch_optimizer
+    with pytest.raises(NotImplementedError):
+        batch_optimizer.forward_and_backward_muzero(None, None)
+
+
+def test_get_device_memory_usage_unknown_platform(monkeypatch):
+    from open_spiel.python.algorithms.muzero_jax.utils import batch_optimizer
+    # Simulate a device with unknown platform and failing memory_stats
+    class DummyDev:
+        platform = 'foo'
+        def memory_stats(self):
+            raise Exception('no stats')
+    monkeypatch.setattr(batch_optimizer.jax, 'devices', lambda: [DummyDev()])
+    used, total = batch_optimizer.get_device_memory_usage()
+    assert used == 0 and total == 0
+
+
+def test_module_main_executes(monkeypatch, capsys):
+    # Execute module as script by running its file path to trigger __main__ block
+    file_path = batch_optimizer.__file__
+    runpy.run_path(file_path, run_name='__main__')
+    captured = capsys.readouterr().out
+    assert '1) Finding max batch size' in captured 

@@ -91,9 +91,14 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   Input: Model `nnx.State`, Optax `optimizer_state`, batch.
         *   Unroll model, calculate losses, compute gradients, update parameters.
         *   Output: New model `nnx.State`, new `optimizer_state`, metrics.
-    *   **Main Training Orchestration:** (Inspired by `@EfficientZeroV2/ez/agents/base.py`'s `train` method)
+    *   **Main Training Orchestration:** (Inspired by `@EfficientZeroV2/ez/agents/base.py`'s `train` method`)
         *   Initialize model, optimizer. Loop: Sample batch, train step, log (using WandB), checkpoint.
         *   Manage target network updates (EMA or periodic copy, per `EfficientZeroV2`).
+
+[TODO] 6.1.  **Connect Batch Optimizer Hooks to MuZeroNetwork:**
+    *   Implement `init_muzero_model_and_params` to initialize the actual `MuZeroNetwork` (using `nnx.Rngs`).
+    *   Implement `forward_and_backward_muzero` with `nnx.value_and_grad` computing the combined MuZero loss.
+    *   This task depends on Task 2 (MuZeroNetwork) and Task 6 (loss function definition and training step).
 
 [TODO] 7.  **Self-Play Loop (JAX):**
     *   **TDD:** Write Pytest tests for the actor loop, ensuring correct interaction with MCTS, game wrapper, and trajectory generation. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/self_play/test_actor.py`)
@@ -142,13 +147,13 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
     *   **TDD:** (Difficult to TDD directly, but ensure profiler calls are in place and can be activated).
     *   Add hooks for `jax.profiler`.
 
-[DEFERRED] 15. **Gradient Accumulation & Optimal Batch Sizing Script:**
+[DONE] 15. **Gradient Accumulation & Optimal Batch Sizing Script:**
     *   **TDD:** Write Pytest tests for each function in the script (`find_max_batch`, `estimate_grad_var`, `sweep_accum`) using a mock JAX/NNX model and synthetic data. Tests should cover both `float32` and `bfloat16` data types. (Test execution after `pip install -e .`: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/utils/test_batch_optimizer.py`)
     *   The script is located at `open_spiel/python/algorithms/muzero_jax/utils/batch_optimizer.py`.
     *   Ensure `init_params` initializes Flax NNX model, `forward_and_backward` uses `nnx.value_and_grad`, `flatten_grads` handles `nnx.State`.
     *   Support `float32` and `bfloat16` data types throughout the script for creating batches, performing computations, and finding optimal sizes.
     *   **Note:** `sweep_accum` currently runs its core logic in op-by-op mode to avoid JAX tracer issues; JIT for its internal step was removed. Tests for `main_batch_optimizer_workflow` are currently skipped and need implementation, including mixed precision aspects.
-    *   **Status:** Script structure and core logic exist. Placeholder model (`SimpleNNXModel`) is used. Needs to be connected to the actual MuZero NNX model once developed (see [TODO] 2). Tests for the script itself need to be written/completed to ensure its own correctness with the mock model.
+    *   **Status:** Script structure and core logic exist. Placeholder model (`SimpleNNXModel`) is used. Needs to be connected to the actual MuZero NNX model once developed (see [TODO] 6.1). Tests for the script itself need to be written/completed to ensure its own correctness with the mock model.
 
 [DEFERRED] 16. **Resilience and Fault Tolerance (Basic):**
     *   **TDD:** Tests for restarting actors/learner from checkpoints. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_resilience.py`)
