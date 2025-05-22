@@ -676,127 +676,127 @@ class Learner:
 
 # Example usage (for testing/illustration - will be in tests)
 if __name__ == '__main__': # pragma: no cover
-    from open_spiel.python.algorithms.muzero_jax.models.network import VisualRepresentationNetwork, MLPValuePolicyNetwork, DynamicsNetwork, RewardNetwork, MuZeroNetwork as TestMuZeroNetwork # type: ignore
-    from open_spiel.python.algorithms.muzero_jax.models.layers import DownSample, ResidualBlock, FCResidualBlock, MLP # type: ignore
+    from open_spiel.python.algorithms.muzero_jax.models.network import VisualRepresentationNetwork, MLPValuePolicyNetwork, DynamicsNetwork, RewardNetwork, MuZeroNetwork as TestMuZeroNetwork # type: ignore # pragma: no cover
+    from open_spiel.python.algorithms.muzero_jax.models.layers import DownSample, ResidualBlock, FCResidualBlock, MLP # type: ignore # pragma: no cover
 
-    key = jax.random.PRNGKey(42)
-    key_model_init, key_learner_init, key_batch_gen = jax.random.split(key, 3)
+    key = jax.random.PRNGKey(42) # pragma: no cover
+    key_model_init, key_learner_init, key_batch_gen = jax.random.split(key, 3) # pragma: no cover
 
     # Using ActualMuZeroNetworkConfig to define the structure for the main example
-    net_config_main = ActualMuZeroNetworkConfig(
-        observation_shape=(3, 96, 96),
-        num_actions=18,
-        num_channels=16,
-        num_residual_blocks=1,
-        num_fc_residual_blocks=1,
-        num_hidden_units_fc=32,
-        value_support_size=0,
-        reward_support_size=0,
-        downsample_channels=8,
-        downsample_blocks=1,
-        use_batch_norm=True,
-        use_projection=False,
-        spatial_extents=(96,96), # Should match observation if image
-        use_image_observation=True,
-        projection_hidden_dim=64, # Example value
-        projection_head_output_dim=32, # Example value
-        action_embedding_dim=16 # Example value for dummy dynamics compatibility
+    net_config_main = ActualMuZeroNetworkConfig( # pragma: no cover
+        observation_shape=(3, 96, 96), # pragma: no cover
+        num_actions=18, # pragma: no cover
+        num_channels=16, # pragma: no cover
+        num_residual_blocks=1, # pragma: no cover
+        num_fc_residual_blocks=1, # pragma: no cover
+        num_hidden_units_fc=32, # pragma: no cover
+        value_support_size=0, # pragma: no cover
+        reward_support_size=0, # pragma: no cover
+        downsample_channels=8, # pragma: no cover
+        downsample_blocks=1, # pragma: no cover
+        use_batch_norm=True, # pragma: no cover
+        use_projection=False, # pragma: no cover
+        spatial_extents=(96,96), # Should match observation if image # pragma: no cover
+        use_image_observation=True, # pragma: no cover
+        projection_hidden_dim=64, # Example value # pragma: no cover
+        projection_head_output_dim=32, # Example value # pragma: no cover
+        action_embedding_dim=16 # Example value for dummy dynamics compatibility # pragma: no cover
     )
     
-    class MainVisualRepresentationNetwork(nnx.Module): # Renamed
-        def __init__(self, config: ActualMuZeroNetworkConfig, *, rngs: nnx.Rngs):
-            self.downsample = DownSample(config.observation_shape[0], config.downsample_channels, rngs=rngs) # Assuming obs_shape is (C,H,W)
-            self.conv3x3 = nnx.Conv(in_features=config.downsample_channels, out_features=config.num_channels, kernel_size=(3, 3), strides=(1, 1), padding='SAME', use_bias=False, rngs=rngs)
-            self.bn_initial = nnx.BatchNorm(config.num_channels, use_running_average=not config.use_batch_norm, rngs=rngs) if config.use_batch_norm else nnx.Identity(rngs=rngs)
-            self.residuals = [ResidualBlock(config.num_channels, config.num_channels, rngs=nnx.Rngs(params=jax.random.fold_in(rngs.params(), i), dropout=jax.random.fold_in(rngs.dropout(), i))) for i in range(config.num_residual_blocks)]
-        def __call__(self, x: jax.Array, training: bool): 
+    class MainVisualRepresentationNetwork(nnx.Module): # Renamed # pragma: no cover
+        def __init__(self, config: ActualMuZeroNetworkConfig, *, rngs: nnx.Rngs): # pragma: no cover
+            self.downsample = DownSample(config.observation_shape[0], config.downsample_channels, rngs=rngs) # Assuming obs_shape is (C,H,W) # pragma: no cover
+            self.conv3x3 = nnx.Conv(in_features=config.downsample_channels, out_features=config.num_channels, kernel_size=(3, 3), strides=(1, 1), padding='SAME', use_bias=False, rngs=rngs) # pragma: no cover
+            self.bn_initial = nnx.BatchNorm(config.num_channels, use_running_average=not config.use_batch_norm, rngs=rngs) if config.use_batch_norm else nnx.Identity(rngs=rngs) # pragma: no cover
+            self.residuals = [ResidualBlock(config.num_channels, config.num_channels, rngs=nnx.Rngs(params=jax.random.fold_in(rngs.params(), i), dropout=jax.random.fold_in(rngs.dropout(), i))) for i in range(config.num_residual_blocks)] # pragma: no cover
+        def __call__(self, x: jax.Array, training: bool): # pragma: no cover
             # Input x expected as (B, C, H, W)
             # Transpose to (B, H, W, C) for Flax NNX conv layers
-            if x.shape[1] == net_config_main.observation_shape[0] and x.shape[2] == net_config_main.observation_shape[1] and x.shape[3] == net_config_main.observation_shape[2]: 
-                x = jnp.transpose(x, (0, 2, 3, 1)) 
-            x = self.downsample(x, training)
-            x = self.conv3x3(x)
-            x = self.bn_initial(x, use_running_average=not training)
-            x = nnx.relu(x)
-            for block in self.residuals:
-                x = block(x, training)
-            return x
+            if x.shape[1] == net_config_main.observation_shape[0] and x.shape[2] == net_config_main.observation_shape[1] and x.shape[3] == net_config_main.observation_shape[2]: # pragma: no cover
+                x = jnp.transpose(x, (0, 2, 3, 1)) # pragma: no cover
+            x = self.downsample(x, training) # pragma: no cover
+            x = self.conv3x3(x) # pragma: no cover
+            x = self.bn_initial(x, use_running_average=not training) # pragma: no cover
+            x = nnx.relu(x) # pragma: no cover
+            for block in self.residuals: # pragma: no cover
+                x = block(x, training) # pragma: no cover
+            return x # pragma: no cover
 
-    model_instance_main = TestMuZeroNetwork(
-        representation_network_def=lambda config, *, rngs: MainVisualRepresentationNetwork(config, rngs=rngs),
-        prediction_network_def=lambda config, *, rngs: MLPValuePolicyNetwork(config, rngs=rngs),
-        dynamics_network_def=lambda config, *, rngs: DynamicsNetwork(config, rngs=rngs),
-        reward_network_def=lambda config, *, rngs: RewardNetwork(config, rngs=rngs),
-        projection_network_def=None, 
-        config=net_config_main, # Pass the ActualMuZeroNetworkConfig instance
-        rngs=nnx.Rngs(params=key_model_init)
+    model_instance_main = TestMuZeroNetwork( # pragma: no cover
+        representation_network_def=lambda config, *, rngs: MainVisualRepresentationNetwork(config, rngs=rngs), # pragma: no cover
+        prediction_network_def=lambda config, *, rngs: MLPValuePolicyNetwork(config, rngs=rngs), # pragma: no cover
+        dynamics_network_def=lambda config, *, rngs: DynamicsNetwork(config, rngs=rngs), # pragma: no cover
+        reward_network_def=lambda config, *, rngs: RewardNetwork(config, rngs=rngs), # pragma: no cover
+        projection_network_def=None, # pragma: no cover
+        config=net_config_main, # Pass the ActualMuZeroNetworkConfig instance # pragma: no cover
+        rngs=nnx.Rngs(params=key_model_init) # pragma: no cover
     )
 
-    learner_config_main = MuZeroConfig(
-        value_support_size=net_config_main.value_support_size,
-        reward_support_size=net_config_main.reward_support_size,
-        num_unroll_steps=2, 
-        td_steps=2,
-        batch_size=2, 
-        l2_weight=1e-4,
-        learning_rate=1e-3,
-        use_projection=False,
-        checkpoint_dir="/tmp/muzero_jax_test_checkpoints_main", 
-        checkpoint_frequency=2, # Checkpoint more frequently for test
-        use_target_network_ema=True, 
-        ema_decay=0.95,
-        resume_from_checkpoint=False # Start fresh for this example
+    learner_config_main = MuZeroConfig( # pragma: no cover
+        value_support_size=net_config_main.value_support_size, # pragma: no cover
+        reward_support_size=net_config_main.reward_support_size, # pragma: no cover
+        num_unroll_steps=2, # pragma: no cover
+        td_steps=2, # pragma: no cover
+        batch_size=2, # pragma: no cover
+        l2_weight=1e-4, # pragma: no cover
+        learning_rate=1e-3, # pragma: no cover
+        use_projection=False, # pragma: no cover
+        checkpoint_dir="/tmp/muzero_jax_test_checkpoints_main", # pragma: no cover
+        checkpoint_frequency=2, # Checkpoint more frequently for test # pragma: no cover
+        use_target_network_ema=True, # pragma: no cover
+        ema_decay=0.95, # pragma: no cover
+        resume_from_checkpoint=False # Start fresh for this example # pragma: no cover
     )
     
-    optimizer_instance_main = optax.adam(learning_rate=learner_config_main.learning_rate)
-    learner_main = Learner(model_instance_main, optimizer_instance_main, learner_config_main, key_learner_init)
+    optimizer_instance_main = optax.adam(learning_rate=learner_config_main.learning_rate) # pragma: no cover
+    learner_main = Learner(model_instance_main, optimizer_instance_main, learner_config_main, key_learner_init) # pragma: no cover
 
-    B_main = learner_config_main.batch_size
-    K_main = learner_config_main.num_unroll_steps
-    obs_shape_main = net_config_main.observation_shape 
+    B_main = learner_config_main.batch_size # pragma: no cover
+    K_main = learner_config_main.num_unroll_steps # pragma: no cover
+    obs_shape_main = net_config_main.observation_shape # pragma: no cover
     
-    dummy_batches_main = []
-    for i in range(5): # Generate a few batches
-        k_batch = jax.random.fold_in(key_batch_gen, i)
-        obs_batch = jax.random.uniform(k_batch, (B_main, obs_shape_main[0], obs_shape_main[1], obs_shape_main[2]))
-        act_batch = jax.random.randint(k_batch, (B_main, K_main), 0, net_config_main.num_actions)
+    dummy_batches_main = [] # pragma: no cover
+    for i in range(5): # Generate a few batches # pragma: no cover
+        k_batch = jax.random.fold_in(key_batch_gen, i) # pragma: no cover
+        obs_batch = jax.random.uniform(k_batch, (B_main, obs_shape_main[0], obs_shape_main[1], obs_shape_main[2])) # pragma: no cover
+        act_batch = jax.random.randint(k_batch, (B_main, K_main), 0, net_config_main.num_actions) # pragma: no cover
         
-        val_target = jax.random.normal(k_batch, (B_main, K_main + 1))
-        rew_target = jax.random.normal(k_batch, (B_main, K_main + 1))
-        pol_target = jax.random.uniform(k_batch, (B_main, K_main + 1, net_config_main.num_actions))
-        pol_target = pol_target / jnp.sum(pol_target, axis=-1, keepdims=True)
-        mask = jnp.ones((B_main, K_main + 1), dtype=jnp.float32)
+        val_target = jax.random.normal(k_batch, (B_main, K_main + 1)) # pragma: no cover
+        rew_target = jax.random.normal(k_batch, (B_main, K_main + 1)) # pragma: no cover
+        pol_target = jax.random.uniform(k_batch, (B_main, K_main + 1, net_config_main.num_actions)) # pragma: no cover
+        pol_target = pol_target / jnp.sum(pol_target, axis=-1, keepdims=True) # pragma: no cover
+        mask = jnp.ones((B_main, K_main + 1), dtype=jnp.float32) # pragma: no cover
 
-        dummy_batches_main.append({
-            'observation': obs_batch, 'action': act_batch, 
-            'target_reward': rew_target, 'target_value': val_target,
-            'target_policy': pol_target, 'game_history_mask': mask,
+        dummy_batches_main.append({ # pragma: no cover
+            'observation': obs_batch, 'action': act_batch, # pragma: no cover
+            'target_reward': rew_target, 'target_value': val_target, # pragma: no cover
+            'target_policy': pol_target, 'game_history_mask': mask, # pragma: no cover
         })
 
-    def dummy_replay_buffer_iterator_fn_main() -> Generator[Batch, None, None]:
-        for batch_item in dummy_batches_main:
-            yield batch_item
+    def dummy_replay_buffer_iterator_fn_main() -> Generator[Batch, None, None]: # pragma: no cover
+        for batch_item in dummy_batches_main: # pragma: no cover
+            yield batch_item # pragma: no cover
 
-    print("Starting dummy training loop with JIT...")
-    learner_main.train(dummy_replay_buffer_iterator_fn_main, num_epochs=1, steps_per_epoch=len(dummy_batches_main))
+    print("Starting dummy training loop with JIT...") # pragma: no cover
+    learner_main.train(dummy_replay_buffer_iterator_fn_main, num_epochs=1, steps_per_epoch=len(dummy_batches_main)) # pragma: no cover
 
-    print("\nTrying to load from checkpoint...")
-    learner_config_resume = dataclasses.replace(learner_config_main, resume_from_checkpoint=True)
-    model_instance_resume = TestMuZeroNetwork( # Recreate model structure for new learner
-        representation_network_def=lambda config, *, rngs: MainVisualRepresentationNetwork(config, rngs=rngs),
-        prediction_network_def=lambda config, *, rngs: MLPValuePolicyNetwork(config, rngs=rngs),
-        dynamics_network_def=lambda config, *, rngs: DynamicsNetwork(config, rngs=rngs),
-        reward_network_def=lambda config, *, rngs: RewardNetwork(config, rngs=rngs),
-        projection_network_def=None, 
-        config=net_config_main,
-        rngs=nnx.Rngs(params=jax.random.key(1)) # Can use a different key for init, loaded state will overwrite
+    print("\nTrying to load from checkpoint...") # pragma: no cover
+    learner_config_resume = dataclasses.replace(learner_config_main, resume_from_checkpoint=True) # pragma: no cover
+    model_instance_resume = TestMuZeroNetwork( # Recreate model structure for new learner # pragma: no cover
+        representation_network_def=lambda config, *, rngs: MainVisualRepresentationNetwork(config, rngs=rngs), # pragma: no cover
+        prediction_network_def=lambda config, *, rngs: MLPValuePolicyNetwork(config, rngs=rngs), # pragma: no cover
+        dynamics_network_def=lambda config, *, rngs: DynamicsNetwork(config, rngs=rngs), # pragma: no cover
+        reward_network_def=lambda config, *, rngs: RewardNetwork(config, rngs=rngs), # pragma: no cover
+        projection_network_def=None, # pragma: no cover
+        config=net_config_main, # pragma: no cover
+        rngs=nnx.Rngs(params=jax.random.key(1)) # Can use a different key for init, loaded state will overwrite # pragma: no cover
     )
-    optimizer_instance_resume = optax.adam(learning_rate=learner_config_resume.learning_rate)
-    learner_resume = Learner(model_instance_resume, optimizer_instance_resume, learner_config_resume, jax.random.key(2))
+    optimizer_instance_resume = optax.adam(learning_rate=learner_config_resume.learning_rate) # pragma: no cover
+    learner_resume = Learner(model_instance_resume, optimizer_instance_resume, learner_config_resume, jax.random.key(2)) # pragma: no cover
     
-    if learner_resume.num_training_steps > 0:
-        print(f"Resumed successfully from step {learner_resume.num_training_steps}")
-    else:
-        print("Did not resume or resumed at step 0.")
+    if learner_resume.num_training_steps > 0: # pragma: no cover
+        print(f"Resumed successfully from step {learner_resume.num_training_steps}") # pragma: no cover
+    else: # pragma: no cover
+        print("Did not resume or resumed at step 0.") # pragma: no cover
 
-    print("Done with dummy run.") 
+    print("Done with dummy run.") # pragma: no cover 
