@@ -6,3 +6,4 @@ exclude_lines =
 [run]
 omit =
     open_spiel/python/algorithms/muzero_jax/tests/**/*.py
+    open_spiel/python/algorithms/muzero_jax/envs/*.py

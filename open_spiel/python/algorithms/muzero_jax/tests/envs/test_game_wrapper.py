@@ -1,5 +1,5 @@
 import pytest
-pytest.skip("Skipping game wrapper tests due to unavailable pyspiel module", allow_module_level=True)
+"""Removed the unconditional skip so that game wrapper tests execute when pyspiel is available."""
 
 
 def test_tic_tac_toe_wrapper():
