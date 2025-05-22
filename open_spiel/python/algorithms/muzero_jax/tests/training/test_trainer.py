@@ -163,7 +163,7 @@ def test_init(key, cfg_flat):
     (False, False, True, False, True), 
     (False, False, False, True, False),
     (False, True, False, False, False), # Scalar outputs, categorical targets (value only)
-    (False, False, False, False, False) # Categorical outputs, scalar targets (value only) - should ideally also work if supports are size 1
+    (False, False, False, False, False) # Scalar model output, Categorical targets
 ])
 def test_loss_static(key, img, val_cat, proj, use_ema, scalar_targets, cfg_flat, cfg_img):
     bk, mk, lk = jax.random.split(key, 3)
@@ -432,8 +432,8 @@ def test_loss_static(key, img, val_cat, proj, use_ema, scalar_targets, cfg_flat,
         # which is total_ssl_loss, accumulated and averaged.
         # For a single unroll step (k_idx=1), and batch size 1, with mask=1:
         # total_ssl_loss = (sum over k_idx > 0) of [ (sum over batch for (loss_val * mask)) / sum(mask) ]
-        # Here, just one term: ( (loss_for_pair_batch_item_0 * 1) / 1 )
-        expected_ssl_loss = ssl_loss_for_this_pair # Already averaged by jnp.mean in its calculation if batch_dim exists
+        # Here, just one term: ( ( (loss_for_pair_batch_item_0 * 1) / 1 )
+        expected_ssl_loss = ssl_loss_for_this_pair / 2.0 # Corrected: SimSiam style loss includes / 2.0
 
         # Add L2 for projection network if it exists
         expected_l2_loss += 0.5 * cfg_learner.l2_weight * jnp.sum(fixed_model.projection_network.proj_w**2)
@@ -475,7 +475,7 @@ def test_loss_static(key, img, val_cat, proj, use_ema, scalar_targets, cfg_flat,
         # This assertion is problematic as SSL loss can be negative.
         # Removing it and relying on allclose with the correctly calculated expected_ssl_loss.
         # if proj0_pred is not None and proj1_pred is not None and jnp.any(proj0_pred != proj1_pred): 
-        #    assert computed_metrics[\\\'ssl_loss\\\'] > 1e-6, \"SSL loss should be non-zero if projections differ and weight > 0\"
+        #    assert computed_metrics[\\\'ssl_loss\\\'] > 1e-6, "SSL loss should be non-zero if projections differ and weight > 0"
         
     jnp.allclose(computed_loss, expected_total_loss, atol=1e-5)
 
