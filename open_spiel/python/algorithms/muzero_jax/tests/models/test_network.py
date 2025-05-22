@@ -559,11 +559,11 @@ def test_muzero_network_initial_inference_with_projection_image(dummy_config_ima
         dynamics_network_def=DummyDynamicsNetwork,
         prediction_network_def=DummyPredictionNetwork,
         reward_network_def=DummyRewardNetwork,
-        projection_network_def=lambda cfg_param, *, rngs_lambda: DummyProjectionNetwork(
+        projection_network_def=lambda cfg_param, *, rngs: DummyProjectionNetwork(
             input_dim=cfg_param.num_channels, # For flat, input_dim is num_channels (hidden state size)
             hidden_dim=cfg_param.projection_hidden_dim,
             output_dim=cfg_param.projection_head_output_dim,
-            rngs=rngs_lambda
+            rngs=rngs
         ),
         config=config, 
         rngs=rngs
@@ -589,11 +589,11 @@ def test_muzero_network_recurrent_inference_with_projection_image(dummy_config_i
         dynamics_network_def=DummyDynamicsNetwork,
         prediction_network_def=DummyPredictionNetwork,
         reward_network_def=DummyRewardNetwork,
-        projection_network_def=lambda cfg_param, *, rngs_lambda: DummyProjectionNetwork(
+        projection_network_def=lambda cfg_param, *, rngs: DummyProjectionNetwork(
             input_dim=cfg_param.num_channels, # For flat, input_dim is num_channels (hidden state size)
             hidden_dim=cfg_param.projection_hidden_dim,
             output_dim=cfg_param.projection_head_output_dim,
-            rngs=rngs_lambda
+            rngs=rngs
         ),
         config=config, 
         rngs=rngs
@@ -623,11 +623,11 @@ def test_muzero_network_initial_inference_with_projection_flat(dummy_config_flat
         dynamics_network_def=DummyDynamicsNetwork,
         prediction_network_def=DummyPredictionNetwork,
         reward_network_def=DummyRewardNetwork,
-        projection_network_def=lambda cfg_param, *, rngs_lambda: DummyProjectionNetwork(
+        projection_network_def=lambda cfg_param, *, rngs: DummyProjectionNetwork(
             input_dim=cfg_param.num_channels, # For flat obs, input to projection is hidden state (num_channels)
             hidden_dim=cfg_param.projection_hidden_dim,
-            output_dim=cfg_param.projection_head_output_dim, # Use projection_head_output_dim
-            rngs=rngs_lambda
+            output_dim=cfg_param.projection_head_output_dim,
+            rngs=rngs
         ),
         config=config, 
         rngs=rngs
@@ -657,11 +657,11 @@ def test_muzero_network_recurrent_inference_with_projection_flat(dummy_config_fl
         dynamics_network_def=DummyDynamicsNetwork,
         prediction_network_def=DummyPredictionNetwork,
         reward_network_def=DummyRewardNetwork,
-        projection_network_def=lambda cfg_param, *, rngs_lambda: DummyProjectionNetwork(
+        projection_network_def=lambda cfg_param, *, rngs: DummyProjectionNetwork(
             input_dim=cfg_param.num_channels, # For flat obs
             hidden_dim=cfg_param.projection_hidden_dim,
             output_dim=cfg_param.projection_head_output_dim, # Use projection_head_output_dim
-            rngs=rngs_lambda
+            rngs=rngs
         ),
         config=config, 
         rngs=rngs

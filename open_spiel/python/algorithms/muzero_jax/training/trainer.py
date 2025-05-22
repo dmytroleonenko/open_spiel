@@ -11,6 +11,7 @@ import dataclasses # Added for MuZeroConfig
 import flax.nnx.filterlib 
 import flax.nnx.graph as nnx_graph # Import for nnx_graph.Static
 import logging
+import wandb # Added for WandB logging
 
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork # type: ignore
 from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib # type: ignore
@@ -474,6 +475,10 @@ class Learner:
 
                 self.num_training_steps += 1
                 
+                # WandB Logging
+                if wandb.run is not None and metrics: # Ensure metrics exist and wandb is initialized
+                    wandb.log(metrics, step=self.num_training_steps)
+
                 if (self.checkpoint_manager and self.num_training_steps % self.config.checkpoint_frequency == 0 and self.num_training_steps > 0):
                     logging.info(f"Regular checkpoint: step {self.num_training_steps}, freq {self.config.checkpoint_frequency}")
                     self.save_checkpoint(force_save=False) # Regular periodic save

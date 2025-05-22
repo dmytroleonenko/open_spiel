@@ -91,6 +91,13 @@ def compute_projection_consistency_loss(
     # loss = projection_loss(p_obs, p_pred.detach()) + projection_loss(p_pred, p_obs.detach())
     # where projection_loss(p, z) = -cosine_similarity(p, z).mean()
 
-    loss1 = -jnp.mean(optax.cosine_similarity(projection_current_step, jax.lax.stop_gradient(projection_initial_step)))
-    loss2 = -jnp.mean(optax.cosine_similarity(jax.lax.stop_gradient(projection_current_step), projection_initial_step))
+    sim1 = optax.cosine_similarity(projection_current_step, jax.lax.stop_gradient(projection_initial_step))
+    sim2 = optax.cosine_similarity(jax.lax.stop_gradient(projection_current_step), projection_initial_step)
+
+    # Clip similarities to be within [-1, 1] before computing loss
+    clipped_sim1 = jnp.clip(sim1, -1.0, 1.0)
+    clipped_sim2 = jnp.clip(sim2, -1.0, 1.0)
+
+    loss1 = -jnp.mean(clipped_sim1)
+    loss2 = -jnp.mean(clipped_sim2)
     return loss1 + loss2 

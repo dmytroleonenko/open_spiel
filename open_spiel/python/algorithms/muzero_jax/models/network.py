@@ -1,7 +1,7 @@
 import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
-from typing import Sequence, Callable # For type hinting
+from typing import Sequence, Callable, Tuple, Optional
 
 # Assuming layers.py is in the same directory or accessible in PYTHONPATH
 from .layers import conv3x3, ResidualBlock, FCResidualBlock, MLP
@@ -359,7 +359,7 @@ class MuZeroNetwork(nnx.Module):
         if config.use_projection and projection_network_def is not None:
             # The projection_network_def lambda expects (config, *, rngs_lambda) in tests
             # submodule_rngs is already correctly formatted.
-            self.projection_network = projection_network_def(config, rngs_lambda=submodule_rngs)
+            self.projection_network = projection_network_def(config, rngs=submodule_rngs)
         else:
             self.projection_network = None
 
