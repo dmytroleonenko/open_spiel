@@ -63,6 +63,7 @@ class MuZeroConfig:
     ssl_consistency_loss_weight: float = 0.0 # Weight for self-supervised consistency loss
     
     # EfficientZeroV2 specific loss parameters
+    use_iql: bool = True # Whether to use IQL asymmetric weighting for value loss
     iql_weight: float = 1.0 # IQL-style weighting for value loss (asymmetric weighting based on error sign)
     entropy_coeff: float = 0.0 # Entropy regularization coefficient
     consistency_coeff: float = 2.0 # Consistency loss coefficient (alternative name for SSL)
@@ -416,6 +417,12 @@ class Learner:
         else:
             predicted_projections = None
 
+        # Determine effective IQL parameter based on config (EfficientZeroV2 pattern)
+        if config.use_iql:
+            effective_iql_param = config.iql_weight
+        else:
+            effective_iql_param = 0.5  # Symmetric loss when IQL is disabled
+
         # Compute losses per step (accumulate per-sample losses for importance weighting)
         per_sample_policy_loss = jnp.zeros(initial_observation.shape[0])  # B
         per_sample_value_loss = jnp.zeros(initial_observation.shape[0])   # B
@@ -471,7 +478,7 @@ class Learner:
                         num_atoms=config.value_support_size if config.value_support_size > 0 else 601
                     )
                 
-                v_loss = losses_lib.compute_categorical_value_loss(predicted_val, target_val, config.iql_weight)
+                v_loss = losses_lib.compute_categorical_value_loss(predicted_val, target_val, effective_iql_param)
                 
             elif config.value_loss_type == "symlog":
                 # For symlog loss, ensure we have scalars
@@ -523,7 +530,7 @@ class Learner:
                 elif target_val.ndim == 2 and target_val.shape[-1] == 1: # pragma: no cover
                     target_val = jnp.squeeze(target_val, axis=-1) # pragma: no cover
                 
-                v_loss = losses_lib.compute_scalar_value_loss(predicted_val, target_val, config.iql_weight)
+                v_loss = losses_lib.compute_scalar_value_loss(predicted_val, target_val, effective_iql_param)
             masked_v_loss = v_loss * step_mask
             per_sample_value_loss += masked_v_loss
 

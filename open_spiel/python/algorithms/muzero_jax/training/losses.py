@@ -55,8 +55,14 @@ def compute_policy_loss(policy_logits: jax.Array, target_policy: jax.Array) -> j
     return cross_entropy_loss_with_logits(logits=policy_logits, targets=target_policy)
 
 # --- Value Loss ---
-def compute_scalar_value_loss(value_prediction: jax.Array, target_value: jax.Array, iql_weight: float = 1.0) -> jax.Array:
-    """Computes value loss for scalar values using MSE with optional IQL weighting."""
+def compute_scalar_value_loss(value_prediction: jax.Array, target_value: jax.Array, effective_iql_param: float = 0.5) -> jax.Array:
+    """Computes value loss for scalar values using MSE with IQL weighting.
+    
+    Args:
+        value_prediction: Predicted values
+        target_value: Target values  
+        effective_iql_param: Effective IQL parameter (0.5 for symmetric loss, other values for asymmetric)
+    """
     # Ensure predictions and targets are squeezed if they have an extra dim of 1
     if value_prediction.ndim > 1 and value_prediction.shape[-1] == 1:
         value_prediction = jnp.squeeze(value_prediction, axis=-1) # pragma: no cover
@@ -65,38 +71,38 @@ def compute_scalar_value_loss(value_prediction: jax.Array, target_value: jax.Arr
         
     base_loss = scalar_mse_loss(prediction=value_prediction, target=target_value)
     
-    # Apply IQL-style weighting if specified (EfficientZeroV2 pattern)
-    if iql_weight != 1.0:
-        # IQL weighting: apply different weights based on sign of error
-        # EfficientZeroV2: value_weight = (1 - value_sign) * iql_weight + value_sign * (1 - iql_weight)
-        # where value_sign = (error > 0).float()
-        error = value_prediction - target_value
-        value_sign = (error > 0).astype(jnp.float32)
-        weights = (1.0 - value_sign) * iql_weight + value_sign * (1.0 - iql_weight)
-        return base_loss * weights
-    
-    return base_loss
+    # Always apply IQL-style weighting (EfficientZeroV2 pattern)
+    # IQL weighting: apply different weights based on sign of error
+    # EfficientZeroV2: value_weight = (1 - value_sign) * effective_iql_param + value_sign * (1 - effective_iql_param)
+    # where value_sign = (error > 0).float()
+    error = value_prediction - target_value
+    value_sign = (error > 0).astype(jnp.float32)
+    weights = (1.0 - value_sign) * effective_iql_param + value_sign * (1.0 - effective_iql_param)
+    return base_loss * weights
 
-def compute_categorical_value_loss(value_logits: jax.Array, target_value_distribution: jax.Array, iql_weight: float = 1.0) -> jax.Array:
-    """Computes value loss for categorical distributions using cross-entropy with optional IQL weighting."""
+def compute_categorical_value_loss(value_logits: jax.Array, target_value_distribution: jax.Array, effective_iql_param: float = 0.5) -> jax.Array:
+    """Computes value loss for categorical distributions using cross-entropy with IQL weighting.
+    
+    Args:
+        value_logits: Predicted value logits
+        target_value_distribution: Target value distribution
+        effective_iql_param: Effective IQL parameter (0.5 for symmetric loss, other values for asymmetric)
+    """
     base_loss = cross_entropy_loss_with_logits(logits=value_logits, targets=target_value_distribution)
     
-    # Apply IQL-style weighting if specified
-    if iql_weight != 1.0:
-        # For categorical case, compute expected values to determine error sign
-        num_atoms = value_logits.shape[-1]
-        support = jnp.linspace(-1.0, 1.0, num_atoms)  # Assume normalized support
-        
-        pred_probs = jax.nn.softmax(value_logits)
-        pred_value = jnp.sum(pred_probs * support, axis=-1)
-        target_value = jnp.sum(target_value_distribution * support, axis=-1)
-        
-        error = pred_value - target_value
-        value_sign = (error > 0).astype(jnp.float32)
-        weights = (1.0 - value_sign) * iql_weight + value_sign * (1.0 - iql_weight)
-        return base_loss * weights
-        
-    return base_loss
+    # Always apply IQL-style weighting (EfficientZeroV2 pattern)
+    # For categorical case, compute expected values to determine error sign
+    num_atoms = value_logits.shape[-1]
+    support = jnp.linspace(-1.0, 1.0, num_atoms)  # Assume normalized support
+    
+    pred_probs = jax.nn.softmax(value_logits)
+    pred_value = jnp.sum(pred_probs * support, axis=-1)
+    target_value = jnp.sum(target_value_distribution * support, axis=-1)
+    
+    error = pred_value - target_value
+    value_sign = (error > 0).astype(jnp.float32)
+    weights = (1.0 - value_sign) * effective_iql_param + value_sign * (1.0 - effective_iql_param)
+    return base_loss * weights
 
 # --- Reward Loss ---
 def compute_scalar_reward_loss(reward_prediction: jax.Array, target_reward: jax.Array) -> jax.Array:

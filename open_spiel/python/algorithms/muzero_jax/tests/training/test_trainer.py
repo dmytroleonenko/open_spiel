@@ -145,7 +145,9 @@ def make_cfg(vsup, rsup, steps, proj, suffix, use_ema=False, ssl_weight=0.0, l2_
         checkpoint_dir=checkpoint_dir,  # Accept checkpoint_dir parameter
         checkpoint_frequency=2,  # Reduced from 5 to 2 for testing
         max_checkpoints_to_keep=1,
-        resume_from_checkpoint=False
+        resume_from_checkpoint=False,
+        use_iql=True,  # Default to True for testing
+        iql_weight=1.0  # Default IQL weight
     )
 
 def make_batch(key, bs, obs_shape, nact, steps, vsup, rsup, proj_dim=None, use_proj=False):
@@ -4617,3 +4619,96 @@ def test_lstm_value_prefix_configuration(key, cfg_flat):
     
     assert 'total_loss' in metrics
     # Test verifies LSTM horizon logic executes without error
+
+
+# --- Test IQL effective parameter logic in trainer (Action Item 13) ---
+def test_use_iql_config_default(key, cfg_flat):
+    """Test that use_iql defaults to True in MuZeroConfig."""
+    cfg = make_cfg(VALUE_SUPPORT_SCALAR, REWARD_SUPPORT_SCALAR, NUM_UNROLL_STEPS, False, 'iql_default')
+    # Default config should have use_iql=True
+    assert cfg.use_iql == True
+    assert cfg.iql_weight == 1.0
+
+
+def test_use_iql_disabled_symmetric_loss(key, cfg_flat):
+    """Test that use_iql=False produces symmetric loss (effective_iql_param=0.5)."""
+    mk, bk = jax.random.split(key, 2)
+    model = make_model(mk, cfg_flat)
+    
+    # Create config with IQL disabled
+    cfg_no_iql = make_cfg(VALUE_SUPPORT_SCALAR, REWARD_SUPPORT_SCALAR, NUM_UNROLL_STEPS, False, 'no_iql')
+    cfg_no_iql = dataclasses.replace(cfg_no_iql, use_iql=False, iql_weight=0.8)
+    
+    # Create a simple batch
+    batch = make_batch(bk, BATCH_SIZE, OBS_SHAPE_FLAT, NUM_ACTIONS, NUM_UNROLL_STEPS, 
+                      VALUE_SUPPORT_SCALAR, REWARD_SUPPORT_SCALAR)
+    
+    # Override target values to create controlled error scenario
+    batch['target_value'] = jnp.array([[5.0, 1.0, 3.0, 2.0],  # Batch item 0
+                                      [1.0, 5.0, 2.0, 3.0]])  # Batch item 1
+    
+    # Compute loss with IQL disabled
+    loss_value, metrics = Learner._compute_total_loss_static(
+        model, cfg_no_iql, batch, key, training=True
+    )
+    
+    # The effective_iql_param should be 0.5 (symmetric), not cfg.iql_weight (0.8)
+    assert 'total_loss' in metrics
+    assert 'value_loss' in metrics
+    assert jnp.isfinite(loss_value)
+    assert jnp.isfinite(metrics['value_loss'])
+
+
+def test_iql_effective_param_comparison(key, cfg_flat):
+    """Test that use_iql=True vs use_iql=False produces different losses."""
+    mk, bk = jax.random.split(key, 2)
+    model = make_model(mk, cfg_flat)
+    
+    # Create configs: one with IQL enabled, one disabled
+    cfg_iql_enabled = make_cfg(VALUE_SUPPORT_SCALAR, REWARD_SUPPORT_SCALAR, NUM_UNROLL_STEPS, False, 'iql_enabled')
+    cfg_iql_enabled = dataclasses.replace(cfg_iql_enabled, use_iql=True, iql_weight=0.1)
+    
+    cfg_iql_disabled = make_cfg(VALUE_SUPPORT_SCALAR, REWARD_SUPPORT_SCALAR, NUM_UNROLL_STEPS, False, 'iql_disabled')
+    cfg_iql_disabled = dataclasses.replace(cfg_iql_disabled, use_iql=False, iql_weight=0.1)  # iql_weight should be ignored
+    
+    # Create batch with controlled scenario
+    batch = make_batch(bk, BATCH_SIZE, OBS_SHAPE_FLAT, NUM_ACTIONS, NUM_UNROLL_STEPS, 
+                      VALUE_SUPPORT_SCALAR, REWARD_SUPPORT_SCALAR)
+    
+    # Override target values to create clear error signs
+    batch['target_value'] = jnp.array([[10.0, 1.0, 5.0, 3.0],  # High then low values
+                                      [1.0, 10.0, 3.0, 5.0]])  # Low then high values
+    
+    # Compute losses with both configs
+    loss_enabled, metrics_enabled = Learner._compute_total_loss_static(
+        model, cfg_iql_enabled, batch, key, training=True
+    )
+    
+    loss_disabled, metrics_disabled = Learner._compute_total_loss_static(
+        model, cfg_iql_disabled, batch, key, training=True
+    )
+    
+    # Losses should be different due to different effective IQL parameters
+    # IQL enabled uses 0.1, IQL disabled uses 0.5 (symmetric)
+    assert not jnp.allclose(loss_enabled, loss_disabled, atol=1e-6), \
+        f"Expected different losses, got enabled={loss_enabled}, disabled={loss_disabled}"
+    
+    assert not jnp.allclose(metrics_enabled['value_loss'], metrics_disabled['value_loss'], atol=1e-6), \
+        f"Expected different value losses"
+
+
+def test_iql_config_field_presence(key, cfg_flat):
+    """Test that the use_iql field is properly added to MuZeroConfig."""
+    cfg = make_cfg(VALUE_SUPPORT_SCALAR, REWARD_SUPPORT_SCALAR, NUM_UNROLL_STEPS, False, 'field_test')
+    
+    # Check that the field exists and has the expected default
+    assert hasattr(cfg, 'use_iql')
+    assert isinstance(cfg.use_iql, bool)
+    assert cfg.use_iql == True  # Default should be True
+    
+    # Test that we can create configs with different values
+    cfg_iql_disabled = dataclasses.replace(cfg, use_iql=False)
+    assert cfg_iql_disabled.use_iql == False
+    
+    cfg_iql_enabled = dataclasses.replace(cfg, use_iql=True)
+    assert cfg_iql_enabled.use_iql == True

@@ -82,20 +82,26 @@ def test_compute_policy_loss():
 def test_compute_scalar_value_loss():
     pred = jnp.array([10., 20.])
     target = jnp.array([11., 19.])
-    expected_loss = losses.scalar_mse_loss(pred, target)
+    # With default effective_iql_param=0.5, expect symmetric weighting
+    base_loss = losses.scalar_mse_loss(pred, target)
+    expected_loss = base_loss * 0.5  # IQL weighting with symmetric parameter
     assert jnp.allclose(losses.compute_scalar_value_loss(pred, target), expected_loss)
 
 def test_compute_scalar_value_loss_with_extra_dim():
     pred = jnp.array([[10.], [20.]])
     target = jnp.array([[11.], [19.]])
-    expected_loss = losses.scalar_mse_loss(jnp.squeeze(pred), jnp.squeeze(target))
+    # With default effective_iql_param=0.5, expect symmetric weighting
+    base_loss = losses.scalar_mse_loss(jnp.squeeze(pred), jnp.squeeze(target))
+    expected_loss = base_loss * 0.5  # IQL weighting with symmetric parameter
     assert jnp.allclose(losses.compute_scalar_value_loss(pred, target), expected_loss)
 
 # --- Test compute_categorical_value_loss ---
 def test_compute_categorical_value_loss():
     logits = jnp.array([[0., 0., 1.], [1., 0., 0.]]) # Batch 2, 3 classes
     targets = jnp.array([[0.1, 0.1, 0.8], [0.9, 0.05, 0.05]])
-    expected_loss = losses.cross_entropy_loss_with_logits(logits, targets)
+    # With default effective_iql_param=0.5, expect symmetric weighting
+    base_loss = losses.cross_entropy_loss_with_logits(logits, targets)
+    expected_loss = base_loss * 0.5  # IQL weighting with symmetric parameter
     assert jnp.allclose(losses.compute_categorical_value_loss(logits, targets), expected_loss)
 
 # --- Test compute_scalar_reward_loss ---
@@ -169,14 +175,14 @@ def test_compute_categorical_value_loss_with_iql():
     logits = jnp.array([[0., 0., 1.], [1., 0., 0.]])  # Batch 2, 3 classes  
     targets = jnp.array([[0.1, 0.1, 0.8], [0.9, 0.05, 0.05]])
     
-    # Test with IQL weight
-    iql_weight = 0.5
-    loss_with_iql = losses.compute_categorical_value_loss(logits, targets, iql_weight)
-    loss_without_iql = losses.compute_categorical_value_loss(logits, targets, 1.0)
+    # Test with symmetric IQL (0.5)
+    loss_symmetric = losses.compute_categorical_value_loss(logits, targets, 0.5)
+    # Test with asymmetric IQL (1.0)
+    loss_asymmetric = losses.compute_categorical_value_loss(logits, targets, 1.0)
     
     # IQL should modify the loss differently based on error sign
-    assert not jnp.allclose(loss_with_iql, loss_without_iql)
-    assert loss_with_iql.shape == (2,)  # Per-batch losses
+    assert not jnp.allclose(loss_symmetric, loss_asymmetric)
+    assert loss_symmetric.shape == (2,)  # Per-batch losses
 
 # --- Test symlog functions ---
 def test_symlog():
@@ -403,17 +409,17 @@ def test_categorical_value_loss_iql_detailed():
     targets = jnp.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])   # Target high vs low
     
     # This should create positive error for first sample, negative for second
-    loss_with_iql = losses.compute_categorical_value_loss(logits, targets, iql_weight=0.1)
-    loss_without_iql = losses.compute_categorical_value_loss(logits, targets, iql_weight=1.0)
+    loss_with_iql = losses.compute_categorical_value_loss(logits, targets, effective_iql_param=0.1)
+    loss_without_iql = losses.compute_categorical_value_loss(logits, targets, effective_iql_param=1.0)
     
     # Should be different due to IQL weighting
     assert not jnp.allclose(loss_with_iql, loss_without_iql)
     assert loss_with_iql.shape == (2,)
     
-    # Test with iql_weight = 1.0 (should skip the weighting branch)
-    loss_no_weight = losses.compute_categorical_value_loss(logits, targets, iql_weight=1.0)
-    base_loss = losses.cross_entropy_loss_with_logits(logits, targets)
-    assert jnp.allclose(loss_no_weight, base_loss)
+    # Test with effective_iql_param = 1.0 (extreme asymmetric, but still applies weighting)
+    loss_extreme_asym = losses.compute_categorical_value_loss(logits, targets, effective_iql_param=1.0)
+    # The loss should still apply the weighting formula
+    assert loss_extreme_asym.shape == (2,)
 
 def test_compute_scalar_value_loss_iql_detailed():
     """Test IQL weighting in scalar value loss to ensure branch coverage."""
@@ -422,30 +428,31 @@ def test_compute_scalar_value_loss_iql_detailed():
     target = jnp.array([1.0, 10.0])  # Low target, high target
     # This creates: positive error (+9), negative error (-9)
     
-    loss_with_iql = losses.compute_scalar_value_loss(pred, target, iql_weight=0.1)
-    loss_without_iql = losses.compute_scalar_value_loss(pred, target, iql_weight=1.0)
+    loss_with_iql = losses.compute_scalar_value_loss(pred, target, effective_iql_param=0.1)
+    loss_without_iql = losses.compute_scalar_value_loss(pred, target, effective_iql_param=1.0)
     
     # Should be different due to IQL weighting
     assert not jnp.allclose(loss_with_iql, loss_without_iql)
     assert loss_with_iql.shape == (2,)
     
-    # Test the no-weighting path (iql_weight=1.0)
-    loss_no_weight = losses.compute_scalar_value_loss(pred, target, iql_weight=1.0)
-    base_loss = losses.scalar_mse_loss(pred, target)
-    assert jnp.allclose(loss_no_weight, base_loss)
+    # Test extreme asymmetric case (effective_iql_param=1.0) - still applies weighting formula
+    loss_extreme_asym = losses.compute_scalar_value_loss(pred, target, effective_iql_param=1.0)
+    # The loss should still apply the weighting formula
+    assert loss_extreme_asym.shape == (2,)
 
 def test_value_loss_squeeze_paths():
-    """Test the squeeze paths in scalar value loss.""" 
+    """Test the squeeze paths in scalar value loss."""
     # Test with 2D inputs that need squeezing
     pred_2d = jnp.array([[10.0], [20.0]])  # Shape (2, 1)
     target_2d = jnp.array([[11.0], [19.0]]) # Shape (2, 1)
     
     result = losses.compute_scalar_value_loss(pred_2d, target_2d)
     
-    # Should squeeze and compute MSE
+    # Should squeeze and compute MSE with IQL weighting
     pred_squeezed = jnp.squeeze(pred_2d, axis=-1)
     target_squeezed = jnp.squeeze(target_2d, axis=-1)
-    expected = losses.scalar_mse_loss(pred_squeezed, target_squeezed)
+    base_loss = losses.scalar_mse_loss(pred_squeezed, target_squeezed)
+    expected = base_loss * 0.5  # IQL weighting with default symmetric parameter
     
     assert jnp.allclose(result, expected)
 
@@ -495,4 +502,191 @@ def test_compute_projection_consistency_loss_numerical_equivalence():
         
         # Verify that sim1 and clipped_sim1 are identical (and same for sim2)
         assert jnp.allclose(sim1, clipped_sim1, atol=1e-7), f"Case {i}: clipping changed sim1"
-        assert jnp.allclose(sim2, clipped_sim2, atol=1e-7), f"Case {i}: clipping changed sim2" 
+        assert jnp.allclose(sim2, clipped_sim2, atol=1e-7), f"Case {i}: clipping changed sim2"
+
+# --- Test IQL effective parameter logic (Action Item 13) ---
+def test_scalar_value_loss_effective_iql_symmetric():
+    """Test that effective_iql_param=0.5 produces symmetric loss."""
+    pred = jnp.array([10.0, 1.0])    # High prediction, low prediction  
+    target = jnp.array([1.0, 10.0])  # Low target, high target
+    # This creates: positive error (+9), negative error (-9)
+    
+    # With symmetric parameter (0.5), both errors should get same weight
+    loss_symmetric = losses.compute_scalar_value_loss(pred, target, effective_iql_param=0.5)
+    
+    # Manually compute expected symmetric loss
+    base_loss = losses.scalar_mse_loss(pred, target)  # [81.0, 81.0]
+    error = pred - target  # [9.0, -9.0] 
+    value_sign = (error > 0).astype(jnp.float32)  # [1.0, 0.0]
+    # weights = (1.0 - value_sign) * 0.5 + value_sign * (1.0 - 0.5)
+    # For positive error: weight = 0.0 * 0.5 + 1.0 * 0.5 = 0.5
+    # For negative error: weight = 1.0 * 0.5 + 0.0 * 0.5 = 0.5  
+    expected_weights = jnp.array([0.5, 0.5])
+    expected_loss = base_loss * expected_weights
+    
+    assert jnp.allclose(loss_symmetric, expected_loss), f"Expected {expected_loss}, got {loss_symmetric}"
+    assert jnp.allclose(loss_symmetric, jnp.array([40.5, 40.5])), "Symmetric loss should be equal for both samples"
+
+
+def test_scalar_value_loss_effective_iql_asymmetric():
+    """Test that effective_iql_param != 0.5 produces asymmetric loss."""
+    pred = jnp.array([10.0, 1.0])    # High prediction, low prediction  
+    target = jnp.array([1.0, 10.0])  # Low target, high target
+    # This creates: positive error (+9), negative error (-9)
+    
+    # With asymmetric parameter (0.8), positive and negative errors get different weights
+    loss_asymmetric = losses.compute_scalar_value_loss(pred, target, effective_iql_param=0.8)
+    
+    # Manually compute expected asymmetric loss
+    base_loss = losses.scalar_mse_loss(pred, target)  # [81.0, 81.0]
+    error = pred - target  # [9.0, -9.0] 
+    value_sign = (error > 0).astype(jnp.float32)  # [1.0, 0.0]
+    # weights = (1.0 - value_sign) * 0.8 + value_sign * (1.0 - 0.8) 
+    # For positive error: weight = 0.0 * 0.8 + 1.0 * 0.2 = 0.2
+    # For negative error: weight = 1.0 * 0.8 + 0.0 * 0.2 = 0.8
+    expected_weights = jnp.array([0.2, 0.8])
+    expected_loss = base_loss * expected_weights
+    
+    assert jnp.allclose(loss_asymmetric, expected_loss), f"Expected {expected_loss}, got {loss_asymmetric}"
+    assert jnp.allclose(loss_asymmetric, jnp.array([16.2, 64.8])), "Asymmetric loss should differ for positive vs negative errors"
+
+
+def test_categorical_value_loss_effective_iql_symmetric():
+    """Test that effective_iql_param=0.5 produces symmetric loss for categorical values."""
+    # Create logits and targets that will have clear error signs  
+    logits = jnp.array([[10.0, 0.0, 0.0], [0.0, 0.0, 10.0]])  # Predict low vs high
+    targets = jnp.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])   # Target high vs low
+    
+    # With symmetric parameter (0.5), both types of errors should get same weight
+    loss_symmetric = losses.compute_categorical_value_loss(logits, targets, effective_iql_param=0.5)
+    
+    # Manually compute expected symmetric loss
+    base_loss = losses.cross_entropy_loss_with_logits(logits, targets)
+    
+    # Compute expected values to determine error sign
+    num_atoms = logits.shape[-1]
+    support = jnp.linspace(-1.0, 1.0, num_atoms)  # [-1.0, 0.0, 1.0]
+    
+    pred_probs = jax.nn.softmax(logits)
+    pred_value = jnp.sum(pred_probs * support, axis=-1)
+    target_value = jnp.sum(targets * support, axis=-1)
+    
+    error = pred_value - target_value
+    value_sign = (error > 0).astype(jnp.float32)
+    # With 0.5: both positive and negative errors get weight 0.5
+    expected_weights = jnp.array([0.5, 0.5])
+    expected_loss = base_loss * expected_weights
+    
+    assert jnp.allclose(loss_symmetric, expected_loss), f"Expected {expected_loss}, got {loss_symmetric}"
+
+
+def test_categorical_value_loss_effective_iql_asymmetric():
+    """Test that effective_iql_param != 0.5 produces asymmetric loss for categorical values.""" 
+    # Create logits and targets that will have clear error signs  
+    logits = jnp.array([[10.0, 0.0, 0.0], [0.0, 0.0, 10.0]])  # Predict low vs high
+    targets = jnp.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])   # Target high vs low
+    
+    # With asymmetric parameter (0.2), positive and negative errors get different weights
+    loss_asymmetric = losses.compute_categorical_value_loss(logits, targets, effective_iql_param=0.2)
+    
+    # Manually compute expected asymmetric loss
+    base_loss = losses.cross_entropy_loss_with_logits(logits, targets)
+    
+    # Compute expected values to determine error sign
+    num_atoms = logits.shape[-1]
+    support = jnp.linspace(-1.0, 1.0, num_atoms)  # [-1.0, 0.0, 1.0]
+    
+    pred_probs = jax.nn.softmax(logits)
+    pred_value = jnp.sum(pred_probs * support, axis=-1)
+    target_value = jnp.sum(targets * support, axis=-1)
+    
+    error = pred_value - target_value
+    value_sign = (error > 0).astype(jnp.float32) 
+    # weights = (1.0 - value_sign) * 0.2 + value_sign * (1.0 - 0.2)
+    # For positive error: weight = 0.0 * 0.2 + 1.0 * 0.8 = 0.8
+    # For negative error: weight = 1.0 * 0.2 + 0.0 * 0.8 = 0.2
+    expected_weights = (1.0 - value_sign) * 0.2 + value_sign * 0.8
+    expected_loss = base_loss * expected_weights
+    
+    assert jnp.allclose(loss_asymmetric, expected_loss), f"Expected {expected_loss}, got {loss_asymmetric}"
+
+
+def test_iql_effective_param_boundary_cases():
+    """Test boundary cases for effective IQL parameter."""
+    pred = jnp.array([5.0, 1.0])
+    target = jnp.array([1.0, 5.0])  # positive error, negative error
+    
+    # Test effective_iql_param = 0.0 (extreme asymmetric)
+    loss_zero = losses.compute_scalar_value_loss(pred, target, effective_iql_param=0.0)
+    base_loss = losses.scalar_mse_loss(pred, target)
+    # error = [4.0, -4.0], value_sign = [1.0, 0.0]
+    # weights = (1.0 - value_sign) * 0.0 + value_sign * 1.0 = [1.0, 0.0]
+    expected_zero = base_loss * jnp.array([1.0, 0.0])
+    assert jnp.allclose(loss_zero, expected_zero)
+    
+    # Test effective_iql_param = 1.0 (extreme asymmetric - opposite direction)
+    loss_one = losses.compute_scalar_value_loss(pred, target, effective_iql_param=1.0)
+    # weights = (1.0 - value_sign) * 1.0 + value_sign * 0.0 = [0.0, 1.0]
+    expected_one = base_loss * jnp.array([0.0, 1.0])
+    assert jnp.allclose(loss_one, expected_one)
+
+
+def test_iql_effective_param_always_applied():
+    """Test that IQL weighting is always applied, regardless of the parameter value.""" 
+    pred = jnp.array([3.0, 2.0])
+    target = jnp.array([2.0, 3.0])  # positive error, negative error
+    
+    # Even with the "default" parameter 0.5, the weighting formula should be applied
+    loss_default = losses.compute_scalar_value_loss(pred, target, effective_iql_param=0.5)
+    
+    # Manually compute with explicit weighting formula
+    base_loss = losses.scalar_mse_loss(pred, target)
+    error = pred - target
+    value_sign = (error > 0).astype(jnp.float32)
+    weights = (1.0 - value_sign) * 0.5 + value_sign * 0.5  # Should be [0.5, 0.5]
+    expected_loss = base_loss * weights
+    
+    assert jnp.allclose(loss_default, expected_loss)
+    
+    # Test edge case: zero error (value_sign computation)
+    pred_zero_error = jnp.array([2.0, 2.0])
+    target_zero_error = jnp.array([2.0, 2.0])
+    loss_zero_error = losses.compute_scalar_value_loss(pred_zero_error, target_zero_error, effective_iql_param=0.7)
+    
+    # Zero error should result in zero loss regardless of weights
+    assert jnp.allclose(loss_zero_error, jnp.zeros(2))
+
+
+def test_scalar_value_loss_parameter_name_change():
+    """Test that the old iql_weight parameter was replaced with effective_iql_param."""
+    # This test ensures the API change is complete
+    pred = jnp.array([1.0, 2.0])
+    target = jnp.array([1.5, 1.5])
+    
+    # The new parameter should work
+    loss_new_param = losses.compute_scalar_value_loss(pred, target, effective_iql_param=0.3)
+    assert loss_new_param.shape == (2,)
+    
+    # The function should have the new parameter name in its signature
+    import inspect
+    sig = inspect.signature(losses.compute_scalar_value_loss)
+    param_names = list(sig.parameters.keys())
+    assert 'effective_iql_param' in param_names, f"Expected 'effective_iql_param' in {param_names}"
+    assert 'iql_weight' not in param_names, f"Old 'iql_weight' parameter should be removed from {param_names}"
+
+
+def test_categorical_value_loss_parameter_name_change():
+    """Test that the old iql_weight parameter was replaced with effective_iql_param in categorical loss."""
+    logits = jnp.array([[1.0, 0.0], [0.0, 1.0]])
+    targets = jnp.array([[0.6, 0.4], [0.3, 0.7]])
+    
+    # The new parameter should work
+    loss_new_param = losses.compute_categorical_value_loss(logits, targets, effective_iql_param=0.3)
+    assert loss_new_param.shape == (2,)
+    
+    # The function should have the new parameter name in its signature
+    import inspect
+    sig = inspect.signature(losses.compute_categorical_value_loss)
+    param_names = list(sig.parameters.keys())
+    assert 'effective_iql_param' in param_names, f"Expected 'effective_iql_param' in {param_names}"
+    assert 'iql_weight' not in param_names, f"Old 'iql_weight' parameter should be removed from {param_names}" 
