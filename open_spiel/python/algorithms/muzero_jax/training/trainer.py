@@ -74,82 +74,172 @@ class MuZeroConfig:
 
 
 class Learner:
-    """MuZero Learner.
-    
-    Handles model initialization, training steps, and overall training orchestration.
-    """
+    """Learner class for training the MuZero model with standard Flax NNX patterns."""
+
     def __init__(self, 
                  model: MuZeroNetwork, 
-                 optimizer: optax.GradientTransformation,
+                 optimizer_def: optax.GradientTransformation,
                  config: MuZeroConfig,
                  rng_key: PRNGKey):
         self.model = model
-        self.optimizer = optimizer # This is the optimizer config/transform
         self.config = config
-        self._rng_key, init_key = jax.random.split(rng_key)
-
-        # Initial split of the model
-        graphdef, model_params, batch_stats_state, rngs_state, static_state, ellipsis_state = nnx.split(
-            self.model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
-        )
-        self.opt_state = self.optimizer.init(model_params) 
-        
-        self.target_model: Optional[MuZeroNetwork] = None
-        self.ema_updater: Optional[optax.Ema] = None 
-        self.ema_params_state: Optional[optax.EmaState] = None
-
-        if self.config.use_target_network_ema:
-            self.target_model = copy.deepcopy(self.model)
-            
-            target_graphdef_ema_init, target_model_params_ema_init, t_batch_stats_ema_init, t_rngs_ema_init, t_static_attrs_ema_init, t_other_vars_ema_init = nnx.split(
-                self.target_model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
-            )
-            self.ema_updater = optax.ema(decay=self.config.ema_decay, debias=False)
-            self.ema_params_state = self.ema_updater.init(target_model_params_ema_init)
-
-            # Sync target_model to initial EMA state (which holds the initial online params)
-            # self.ema_params_state.ema holds the initial parameter *values*.
-            # t_batch_stats_ema_init, t_rngs_ema_init etc. are the states from target_model itself.
-            nnx.update(self.target_model, 
-                       self.ema_params_state.ema,  # This updates Param variables in target_model with values from ema_state.ema
-                       t_batch_stats_ema_init,    # This ensures BatchStat variables in target_model are set (redundant if deepcopy worked perfectly)
-                       t_rngs_ema_init)           # This ensures Rngs variables in target_model are set (redundant)
-                       # Static and Other states are not passed to update typically as they are part of graphdef or not variable.
-
+        self._rng_key = rng_key
         self.num_training_steps = 0
-        self.checkpoint_manager: Optional[ocp.CheckpointManager] = None
-        if self.config.checkpoint_dir:
-            # Pass options to ocp.CheckpointManager for compatibility
+        
+        # Use nnx.Optimizer for standard Flax pattern
+        self.optimizer = nnx.Optimizer(model, optimizer_def)
+        
+        # Target model and EMA for target network updates
+        self.target_model = None
+        self.ema_updater = None
+        self.ema_params_state = None
+        
+        if config.use_target_network_ema:
+            # Create target model as a copy of the main model
+            graphdef, params, batch_stats, rngs, static, ellipsis = nnx.split(
+                model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
+            )
+            self.target_model = nnx.merge(graphdef, params, batch_stats, rngs, static, ellipsis)
+            
+            # Set up EMA updater
+            self.ema_updater = optax.ema(config.ema_decay)
+            self.ema_params_state = self.ema_updater.init(params)
+
+        # Checkpointing
+        self.checkpoint_manager = None
+        if config.checkpoint_dir is not None:
+            os.makedirs(config.checkpoint_dir, exist_ok=True)
+            # Use CheckpointManagerOptions for the correct Orbax API
             manager_options = ocp.CheckpointManagerOptions(
-                max_to_keep=self.config.max_checkpoints_to_keep, create=True
+                max_to_keep=config.max_checkpoints_to_keep,
+                create=True
             )
             self.checkpoint_manager = ocp.CheckpointManager(
-                Path(self.config.checkpoint_dir),
-                options=manager_options 
-                # For the new API with StandardSave/StandardRestore, 
-                # an explicit handler here is often not needed, or should be passed 
-                # via item_handlers or handler_registry if customizing.
+                config.checkpoint_dir,
+                options=manager_options
             )
-
-            if self.config.resume_from_checkpoint:
+            
+            if config.resume_from_checkpoint:
                 self.load_checkpoint()
+
+        # JIT-compiled training step using standard nnx pattern
+        self.jit_train_step = nnx.jit(self._train_step_impl)
+
+    @nnx.jit
+    def _train_step_impl(self, batch: Batch) -> Tuple[Metrics]:
+        """JIT-compiled training step implementation using standard nnx patterns."""
+        self._rng_key, step_rng = jax.random.split(self._rng_key)
         
-        # JIT compile the static train step logic
-        # static_argnums for graphdef (0) and optimizer (5), config (7)
-        # Optimizer is an optax.GradientTransformation, which is a PyTreeNode and JIT-compatible.
-        # MuZeroConfig is a dataclass, also JIT-compatible if its fields are.
-        # graphdef is a nnx.GraphDef, which is static.
-        self.jit_static_train_step = jax.jit(
-            Learner._static_train_step_logic, 
-            static_argnames=("graphdef", "optimizer_transform", "config")
+        def loss_fn(model: MuZeroNetwork) -> Tuple[jax.Array, Metrics]:
+            """Loss function for gradient computation."""
+            loss_value, metrics = self._compute_total_loss_static(
+                model, self.config, batch, step_rng, training=True
+            )
+            return loss_value, metrics
+
+        # Compute loss and gradients using standard nnx pattern
+        (loss_value, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(self.model)
+        
+        # Update model parameters using nnx.Optimizer
+        self.optimizer.update(grads)
+        
+        # Add gradient and parameter norms to metrics
+        metrics['grad_norm'] = optax.global_norm(grads)
+        metrics['param_norm'] = optax.global_norm(nnx.state(self.model, nnx.Param))
+        
+        # Update EMA target network if enabled
+        if self.config.use_target_network_ema and self.target_model is not None:
+            self._update_target_network_ema()
+            
+        return metrics
+
+    def _update_target_network_ema(self):
+        """Update the target network using EMA of the online model parameters."""
+        # Only update if EMA is enabled and components are initialized
+        if (not self.config.use_target_network_ema or 
+            self.target_model is None or 
+            self.ema_updater is None or 
+            self.ema_params_state is None):
+            return
+            
+        # Get current model parameters
+        current_params = nnx.state(self.model, nnx.Param)
+        
+        # Update EMA state
+        updated_ema_params, self.ema_params_state = self.ema_updater.update(
+            updates=current_params, 
+            state=self.ema_params_state
         )
+        
+        # Update target model with EMA parameters
+        nnx.update(self.target_model, updated_ema_params)
+
+    def train_step(self, batch: Batch) -> Metrics:
+        """Performs a single training step (can be used for testing/debugging)."""
+        metrics = self.jit_train_step(batch)
+        self.num_training_steps += 1
+        return metrics
+
+    def train(self, replay_buffer_iterator_fn: Callable[[], Generator[Batch, None, None]], num_epochs: int, steps_per_epoch: int):
+        """Main training loop with WandB integration."""
+        print(f"Starting training for {num_epochs} epochs, {steps_per_epoch} steps per epoch.")
+        
+        batch_generator = replay_buffer_iterator_fn()
+
+        for epoch in range(num_epochs):
+            print(f"Epoch {epoch + 1}/{num_epochs}")
+            for step in range(steps_per_epoch):
+                try:
+                    batch = next(batch_generator)
+                except StopIteration: 
+                    print("Replay buffer iterator exhausted. Re-initializing generator for next epoch or stopping.") 
+                    batch_generator = replay_buffer_iterator_fn()
+                    try:
+                        batch = next(batch_generator)
+                    except StopIteration:
+                        print("Replay buffer truly exhausted. Stopping training.")
+                        return
+
+                # Perform training step using the new standard pattern
+                metrics = self.train_step(batch)
+                
+                # Log metrics with WandB
+                if wandb.run is not None:
+                    wandb.log({
+                        'loss/total': metrics['total_loss'],
+                        'loss/policy': metrics['policy_loss'],
+                        'loss/value': metrics['value_loss'],
+                        'loss/reward': metrics['reward_loss'],
+                        'loss/l2': metrics['l2_loss'],
+                        'metrics/grad_norm': metrics.get('grad_norm', 0.0),
+                        'metrics/param_norm': metrics.get('param_norm', 0.0),
+                    }, step=self.num_training_steps)
+                    
+                    # Add SSL loss if applicable
+                    if 'ssl_loss' in metrics:
+                        wandb.log({'loss/ssl': metrics['ssl_loss']}, step=self.num_training_steps)
+
+                # Log to console occasionally
+                if self.num_training_steps % 10 == 0:
+                    logging.info(f"Training step {self.num_training_steps}, "
+                               f"loss: {metrics.get('total_loss', 'N/A'):.6f}, "
+                               f"grad_norm: {metrics.get('grad_norm', 'N/A'):.6f}")
+
+                # Save checkpoint if needed
+                self.save_checkpoint()
+
+        print(f"Training completed after {num_epochs} epochs.")
+        
+        # Save final checkpoint at end of training
+        logging.info(f"End of training checkpoint: step {self.num_training_steps}")
+        self.save_checkpoint(force_save=True)
 
     @staticmethod
     def _compute_total_loss_static(
         model: MuZeroNetwork,
         config: MuZeroConfig,
         batch: Batch,
-        rng_key: PRNGKey,  # Ensure rng_key is used if any stochastic ops in loss/model
+        rng_key: PRNGKey,
         training: bool
     ) -> Tuple[jax.Array, Metrics]:
         """Computes the total MuZero loss for a batch of data with unrolling."""
@@ -160,8 +250,10 @@ class Learner:
         target_policies = batch['target_policy'] # B, K+1, A
         game_history_mask = batch['game_history_mask'] # B, K+1
 
+        # Apply gradient scaling per EfficientZeroV2 pattern
+        gradient_scale = 1.0 / config.num_unroll_steps
+
         # Initial inference
-        # Output: hidden_state, reward, value, policy_logits, projected_hidden_state (optional)
         initial_inference_output = model.initial_inference(initial_observation, training=training)
         hidden_state = initial_inference_output[0]
         initial_projection = initial_inference_output[4] if config.use_projection and len(initial_inference_output) > 4 else None
@@ -169,13 +261,11 @@ class Learner:
         predicted_rewards_list = [initial_inference_output[1]]
         predicted_values_list = [initial_inference_output[2]]
         predicted_policy_logits_list = [initial_inference_output[3]]
-        # Store projections if used
         predicted_projections_list = [initial_projection] if config.use_projection and initial_projection is not None else []
 
         # Recurrent inferences
         for k in range(config.num_unroll_steps):
             current_action = actions[:, k]
-            # Output: next_hidden_state, reward, value, policy_logits, projected_hidden_state (optional)
             recurrent_inference_output = model.recurrent_inference(
                 hidden_state, current_action, training=training
             )
@@ -195,7 +285,7 @@ class Learner:
         else:
             predicted_projections = None
 
-        # Compute losses per step
+        # Compute losses per step with gradient scaling
         total_policy_loss = jnp.array(0.0)
         total_value_loss = jnp.array(0.0)
         total_reward_loss = jnp.array(0.0)
@@ -204,63 +294,54 @@ class Learner:
         for k_idx in range(config.num_unroll_steps + 1):
             step_mask = game_history_mask[:, k_idx] # B
             
-            # Policy Loss - per-item losses from loss function
+            # Policy Loss with gradient scaling
             p_loss = losses_lib.compute_policy_loss(
                 predicted_policy_logits[:, k_idx], target_policies[:, k_idx]
-            ) # Shape (B,) - per-item losses
+            ) * gradient_scale
             masked_p_loss = p_loss * step_mask
             total_policy_loss += jnp.sum(masked_p_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
 
-            # Value Loss - per-item losses from loss function
+            # Value Loss with gradient scaling
             if config.value_support_size > 0:
                 v_loss = losses_lib.compute_categorical_value_loss(
                     predicted_values[:, k_idx], target_values[:, k_idx]
-                )
+                ) * gradient_scale
             else:
-                # Squeeze scalar predictions/targets if they have a trailing dim of 1
                 sv = predicted_values[:, k_idx]
                 if sv.ndim == 2 and sv.shape[-1] == 1: sv = jnp.squeeze(sv, axis=-1)
                 tv = target_values[:, k_idx]
                 if tv.ndim == 2 and tv.shape[-1] == 1: tv = jnp.squeeze(tv, axis=-1)
-                v_loss = losses_lib.compute_scalar_value_loss(sv, tv)
-            # Shape (B,) - per-item losses
+                v_loss = losses_lib.compute_scalar_value_loss(sv, tv) * gradient_scale
             masked_v_loss = v_loss * step_mask
             total_value_loss += jnp.sum(masked_v_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
 
-            # Reward Loss - per-item losses from loss function
+            # Reward Loss with gradient scaling
             if config.reward_support_size > 0:
                 r_loss = losses_lib.compute_categorical_reward_loss(
                     predicted_rewards[:, k_idx], target_rewards[:, k_idx]
-                )
+                ) * gradient_scale
             else:
                 sr = predicted_rewards[:, k_idx]
                 if sr.ndim == 2 and sr.shape[-1] == 1: sr = jnp.squeeze(sr, axis=-1)
                 tr = target_rewards[:, k_idx]
                 if tr.ndim == 2 and tr.shape[-1] == 1: tr = jnp.squeeze(tr, axis=-1)
-                r_loss = losses_lib.compute_scalar_reward_loss(sr, tr)
-            # Shape (B,) - per-item losses
+                r_loss = losses_lib.compute_scalar_reward_loss(sr, tr) * gradient_scale
             masked_r_loss = r_loss * step_mask
             total_reward_loss += jnp.sum(masked_r_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
             
-            # SSL Loss for this step (if applicable) - per-item losses from loss function
-            # Compare projection at step k_idx with initial_projection (from step 0)
+            # SSL Loss with stop_gradient and gradient scaling (EfficientZeroV2 pattern)
             if config.use_projection and config.ssl_consistency_loss_weight > 0 and \
                predicted_projections is not None and initial_projection is not None and k_idx > 0: 
-                # Make sure predicted_projections has shape (B, K+1, proj_dim)
                 ssl_loss_step = losses_lib.compute_projection_consistency_loss(
-                    predicted_projections[:, k_idx], # Projection at current unroll step k_idx
-                    initial_projection # Projection from initial_inference (step 0)
-                )
-                # Shape (B,) - per-item losses
+                    predicted_projections[:, k_idx], 
+                    jax.lax.stop_gradient(initial_projection)  # Stop gradient as in EfficientZeroV2
+                ) * gradient_scale
                 masked_ssl_loss = ssl_loss_step * step_mask
                 total_ssl_loss += jnp.sum(masked_ssl_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
 
-
-        # L2 regularization needs only Param state.
-        # We split the model here again to get the params. This assumes `model` is the full model.
-        # In the context of _static_train_step_logic, this means it's the model *before* gradient update.
-        _, model_params_for_l2, _, _, _, _ = nnx.split(model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...) 
-        l2_loss = losses_lib.l2_regularization(model_params_for_l2, config.l2_weight)
+        # L2 regularization
+        model_params = nnx.state(model, nnx.Param)
+        l2_loss = losses_lib.l2_regularization(model_params, config.l2_weight)
 
         final_loss = (
             config.policy_loss_weight * total_policy_loss
@@ -283,403 +364,125 @@ class Learner:
             
         return final_loss, metrics
 
-    @staticmethod
-    def _static_train_step_logic(
-        graphdef: nnx.GraphDef,
-        current_params: Params,
-        current_batch_stats: ModelBatchStats,
-        static_state: nnx.State, # nnx_graph.Static parts
-        current_rngs_state: nnx.State, # nnx.Rngs parts
-        current_ellipsis_state: nnx.State, # ... parts
-        optimizer_transform: optax.GradientTransformation, # The optimizer object itself
-        current_opt_state: OptState,
-        config: MuZeroConfig,
-        batch: Batch,
-        rng_key: PRNGKey
-    ) -> Tuple[Params, ModelBatchStats, nnx.State, nnx.State, OptState, Metrics]:
-        """Static logic for a single training step, suitable for JIT."""
-
-        # 1. Reconstruct the model for this step using provided state components
-        model_for_step = nnx.merge(
-            graphdef, 
-            current_params, 
-            current_batch_stats, 
-            static_state, 
-            current_rngs_state,
-            current_ellipsis_state
-        )
-
-        # 2. Define loss_fn_for_grad
-        def loss_fn_for_grad(model_to_grad: MuZeroNetwork) -> Tuple[jax.Array, Metrics]:
-            # model_to_grad here is model_for_step with its state correctly handled by nnx.value_and_grad
-            loss_value, metrics_from_loss = Learner._compute_total_loss_static(
-                model_to_grad, config, batch, rng_key, training=True
-            )
-            return loss_value, metrics_from_loss
-
-        # 3. Compute grads. model_for_step is updated with new batch_stats (and other mutable state like RNGs) here.
-        (loss_value, metrics), grads = nnx.value_and_grad(
-            loss_fn_for_grad, argnums=0, has_aux=True
-        )(model_for_step)
-
-        # 4. Extract the *new* state (batch_stats, other_state) from model_for_step
-        #    Parameters (current_params) are not changed by the forward pass.
-        (graphdef_after_fwd, # GraphDef should be static, but split returns it
-         params_after_fwd, 
-         new_batch_stats_from_fwd, 
-         new_rngs_state_from_fwd, 
-         static_attrs_after_fwd, 
-         new_ellipsis_vars_from_fwd) = nnx.split(
-            model_for_step, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
-        )
-
-        # 5. Update parameters using the optimizer
-        #    current_params (the nnx.Param part of the model) is passed to optimizer.update
-        updates, new_opt_state = optimizer_transform.update(grads, current_opt_state, current_params)
-        new_params = optax.apply_updates(current_params, updates)
-        
-        metrics['grad_norm'] = optax.global_norm(grads)
-        # new_params is the PyTree of updated parameter *values*.
-        # To get their norm, we pass this PyTree directly.
-        metrics['param_norm'] = optax.global_norm(new_params) 
-
-        return (
-            new_params, 
-            new_batch_stats_from_fwd, 
-            new_rngs_state_from_fwd, 
-            new_ellipsis_vars_from_fwd, 
-            new_opt_state, 
-            metrics
-        )
-
-
-    def train_step(self, batch: Batch) -> Tuple[MuZeroNetwork, OptState, Metrics]:
-        """Performs a single training step (non-JIT path, for tests/debugging)."""
-        self._rng_key, step_rng = jax.random.split(self._rng_key)
-        
-        # Get current model state, including GraphDef
-        model_graphdef, current_params, current_batch_stats, current_rngs, current_static_attrs, current_ellipsis_vars = nnx.split(
-            self.model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
-        )
-        # Pass individual state components to _static_train_step_logic
-        new_params, new_batch_stats, new_rngs_state, new_ellipsis_state, self.opt_state, metrics = Learner._static_train_step_logic(
-            model_graphdef, 
-            current_params, 
-            current_batch_stats, 
-            current_static_attrs, 
-            current_rngs, # Pass current_rngs directly
-            current_ellipsis_vars, # Pass current_ellipsis_vars directly
-            self.optimizer, self.opt_state, self.config, batch, step_rng
-        )
-        
-        # Update the main model instance with the new states
-        nnx.update(self.model, new_params, new_batch_stats, new_rngs_state, new_ellipsis_state)
-
-        # EMA Update logic (if enabled)
-        if self.config.use_target_network_ema and self.target_model is not None and \
-           self.ema_updater is not None and self.ema_params_state is not None:
-            
-            # EMA is updated with the *new parameters* of the online model
-            # new_params are the nnx.State containing Param Variables with updated values.
-            # self.ema_updater.init was called with params (State containing Variable objects).
-            # optax.ema.update expects `updates` to be a PyTree of raw values, matching structure of `params` given to `init`.
-            # `new_params` here is already a PyTree of raw values.
-            
-            # The `params` argument to ema.update should be the *current* EMA averaged parameters
-            # new_params is the nnx.State containing Param Variables with updated values.
-            # current_ema_values should be the current averaged *parameter values*.
-            # self.ema_params_state.ema is an nnx.State of parameter *values*.
-            current_ema_param_values_state = self.ema_params_state.ema
-
-            updated_ema_values, self.ema_params_state = self.ema_updater.update(
-                updates=new_params, # Pass the new parameter state (containing Variables)
-                state=self.ema_params_state
-                # The `params` argument is for when the `updates` are gradients, not the new params themselves.
-                # When `updates` are the new parameters, `params` should not be passed or be None.
-            )
-            
-            target_graphdef_train, _, target_bs_train, target_rngs_train, target_static_train, target_other_train = \
-                nnx.split(self.target_model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...)
-            # updated_ema_values is an nnx.State of parameter values
-            nnx.update(self.target_model,
-                       updated_ema_values, # This is a State of param values
-                       target_bs_train,    # Keep existing batch stats
-                       target_rngs_train)  # Keep existing rngs
-
-        self.num_training_steps += 1
-        return self.model, self.opt_state, metrics
-
-    def train(self, replay_buffer_iterator_fn: Callable[[], Generator[Batch, None, None]], num_epochs: int, steps_per_epoch: int):
-        """Main training loop."""
-        print(f"Starting training for {num_epochs} epochs, {steps_per_epoch} steps per epoch.")
-        
-        batch_generator = replay_buffer_iterator_fn() # Expect a generator
-
-        for epoch in range(num_epochs):
-            print(f"Epoch {epoch + 1}/{num_epochs}")
-            for step in range(steps_per_epoch):
-                try:
-                    batch = next(batch_generator)
-                except StopIteration: 
-                    print("Replay buffer iterator exhausted. Re-initializing generator for next epoch or stopping.") 
-                    batch_generator = replay_buffer_iterator_fn() # Re-initialize for next epoch or if it's a one-shot per epoch
-                    try:
-                        batch = next(batch_generator)
-                    except StopIteration:
-                        print("Replay buffer truly exhausted. Stopping training.")
-                        return
-
-                self._rng_key, step_rng = jax.random.split(self._rng_key)
-                
-                # Get current model state, including GraphDef
-                model_graphdef, current_params, current_batch_stats, current_rngs, current_static_attrs, current_ellipsis_vars = nnx.split(
-                    self.model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
-                )
-                # Pass individual state components to the JIT-compiled function
-                new_params, new_batch_stats, new_rngs_state, new_ellipsis_state, self.opt_state, metrics = self.jit_static_train_step(
-                    model_graphdef, 
-                    current_params, 
-                    current_batch_stats, 
-                    current_static_attrs, 
-                    current_rngs, # Pass current_rngs directly
-                    current_ellipsis_vars, # Pass current_ellipsis_vars directly
-                    self.optimizer, self.opt_state, self.config, batch, step_rng
-                )
-                
-                # Update the main model instance with the new states
-                nnx.update(self.model, new_params, new_batch_stats, new_rngs_state, new_ellipsis_state)
-
-                # EMA Update logic
-                if self.config.use_target_network_ema and self.target_model is not None and \
-                   self.ema_updater is not None and self.ema_params_state is not None:
-
-                    # new_params are the raw updated parameter values from the optimizer
-                    # We need to ensure the structure matches what ema_updater expects.
-                    # optax.ema.init was called with the PyTree of Param *Variables*.
-                    # optax.ema.update expects `updates` to be a PyTree of raw values, matching structure of `params` given to `init`.
-                    # `new_params` here is already a PyTree of raw values.
-                    
-                    # The `params` argument to ema.update should be the *current* EMA averaged parameters
-                    # new_params is the nnx.State containing Param Variables with updated values.
-                    # current_ema_values should be the current averaged *parameter values*.
-                    # self.ema_params_state.ema is an nnx.State of parameter *values*.
-                    current_ema_param_values_state = self.ema_params_state.ema
-
-                    updated_ema_values, self.ema_params_state = self.ema_updater.update(
-                        updates=new_params, # new_params are the latest online model's param values (as nnx.State)
-                        state=self.ema_params_state
-                        # The `params` argument is for when the `updates` are gradients, not the new params themselves.
-                    )
-                    
-                    target_graphdef_train, _, target_bs_train, target_rngs_train, target_static_train, target_other_train = \
-                        nnx.split(self.target_model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...)
-                    # updated_ema_values is an nnx.State of parameter values
-                    nnx.update(self.target_model,
-                               updated_ema_values, # This is a State of param values
-                               target_bs_train,    # Keep existing batch stats
-                               target_rngs_train)  # Keep existing rngs
-
-
-                self.num_training_steps += 1
-                
-                # WandB Logging
-                if wandb.run is not None and metrics: # Ensure metrics exist and wandb is initialized
-                    wandb.log(metrics, step=self.num_training_steps)
-
-                if (self.checkpoint_manager and self.num_training_steps % self.config.checkpoint_frequency == 0 and self.num_training_steps > 0):
-                    logging.info(f"Regular checkpoint: step {self.num_training_steps}, freq {self.config.checkpoint_frequency}")
-                    self.save_checkpoint(force_save=False) # Regular periodic save
-                elif (self.checkpoint_manager and step == steps_per_epoch -1 and epoch == num_epochs -1 ): 
-                    logging.info(f"End of training checkpoint: step {self.num_training_steps}")
-                    self.save_checkpoint(force_save=True) # Force save at the very end
-
-                if step % 100 == 0: 
-                    print(f"  Step {step + 1}/{steps_per_epoch}, Total Steps: {self.num_training_steps}, Loss: {metrics['total_loss']:.4f}")
-
-        print("Training finished.")
-        if self.checkpoint_manager:
-            self.checkpoint_manager.wait_until_finished()
-
-
     def save_checkpoint(self, force_save: bool = False):
-        """Saves the current learner state."""
-        if not self.checkpoint_manager:
+        """Save model and optimizer state to checkpoint."""
+        if self.checkpoint_manager is None:
             print("Checkpoint manager not configured. Skipping save.")
             return
-
-        save_step = self.num_training_steps
-        
-        # Split model states for saving
-        model_graphdef, model_params, model_batch_stats, model_rngs, model_static, model_ellipsis = nnx.split(
-            self.model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
-        )
-
-        items_to_save = {
-            'model_graphdef': model_graphdef, # GraphDef is static but good to save for consistency
-            'model_params': model_params,
-            'model_batch_stats': model_batch_stats,
-            'model_rngs': model_rngs,
-            'model_static': model_static,
-            'model_ellipsis': model_ellipsis,
-            'opt_state': self.opt_state,
-            'num_training_steps': self.num_training_steps,
-            'rng_key': self._rng_key,
-            'ema_params_state': self.ema_params_state
-        }
-
-        if self.target_model is not None:
-            target_model_graphdef, target_model_params, target_model_batch_stats, target_model_rngs, target_model_static, target_model_ellipsis = nnx.split(
-                self.target_model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
-            )
-            items_to_save['target_model_graphdef'] = target_model_graphdef
-            items_to_save['target_model_params'] = target_model_params
-            items_to_save['target_model_batch_stats'] = target_model_batch_stats
-            items_to_save['target_model_rngs'] = target_model_rngs
-            items_to_save['target_model_static'] = target_model_static
-            items_to_save['target_model_ellipsis'] = target_model_ellipsis
-        else:
-            # Add placeholders if target_model is None but we want a consistent structure
-            items_to_save['target_model_graphdef'] = None
-            items_to_save['target_model_params'] = None
-            items_to_save['target_model_batch_stats'] = None
-            items_to_save['target_model_rngs'] = None
-            items_to_save['target_model_static'] = None
-            items_to_save['target_model_ellipsis'] = None
             
-        save_args = ocp.args.StandardSave(items_to_save)
-
-        if force_save or (self.num_training_steps > 0 and self.num_training_steps % self.config.checkpoint_frequency == 0) :
-             logging.info(f"SAVE_CHECKPOINT: Condition met. force_save={force_save}, num_training_steps={self.num_training_steps}, freq={self.config.checkpoint_frequency}. Saving checkpoint for step {save_step}.")
-             self.checkpoint_manager.save(save_step, args=save_args)
-             print(f"Checkpoint saved at step {save_step}")
-             self.checkpoint_manager.wait_until_finished() # Ensure save completes
+        # Check if we should save based on frequency
+        should_save = (force_save or 
+                      (self.num_training_steps % self.config.checkpoint_frequency == 0 and 
+                       self.num_training_steps > 0))
+        
+        # Log the decision
+        if should_save:
+            logging.info(f"SAVE_CHECKPOINT: Condition met. force_save={force_save}, num_training_steps={self.num_training_steps}, freq={self.config.checkpoint_frequency}")
         else:
-             logging.info(f"SAVE_CHECKPOINT: Condition NOT met. force_save={force_save}, num_training_steps={self.num_training_steps}, freq={self.config.checkpoint_frequency}. Skipping save for step {save_step}.")
+            logging.info(f"SAVE_CHECKPOINT: Condition NOT met. force_save={force_save}, num_training_steps={self.num_training_steps}, freq={self.config.checkpoint_frequency}")
+            return
+            
+        try:
+            # Prepare checkpoint data using nnx.Optimizer pattern
+            checkpoint_data = {
+                'model': nnx.state(self.model),
+                'optimizer': nnx.state(self.optimizer),
+                'num_training_steps': self.num_training_steps,
+                'rng_key': self._rng_key,
+            }
+            
+            # Add EMA state if using target network
+            if (self.config.use_target_network_ema and 
+                self.target_model is not None and 
+                self.ema_params_state is not None):
+                checkpoint_data['target_model'] = nnx.state(self.target_model)
+                checkpoint_data['ema_params_state'] = self.ema_params_state
+            
+            # Save checkpoint using modern Orbax API
+            self.checkpoint_manager.save(
+                step=self.num_training_steps,
+                args=ocp.args.StandardSave(checkpoint_data)
+            )
+            
+            logging.info(f"Checkpoint saved at step {self.num_training_steps}")
+            
+        except Exception as e:
+            logging.error(f"Failed to save checkpoint: {e}")
 
     def load_checkpoint(self) -> bool:
-        """Loads the latest learner state from the checkpoint directory."""
-        if not self.checkpoint_manager:
+        """Load model and optimizer state from checkpoint. Returns True if successful."""
+        if self.checkpoint_manager is None:
             print("Checkpoint manager not configured. Skipping load.")
-            return False # pragma: no cover
-            
-        latest_step = self.checkpoint_manager.latest_step()
-        if latest_step is None:
-            print("No checkpoint found to resume from.")
             return False
-
-        print(f"Attempting to load checkpoint from step {latest_step}...")
-        
-        # We provide an "abstract" version of the items to guide restoration,
-        # especially for complex PyTrees or if types need to be exact.
-        # For nnx.Modules, providing the instance is a good way to hint structure.
-        
-        # Split current model to provide abstract structure for its components
-        model_graphdef_abs, model_params_abs, model_bs_abs, model_rngs_abs, model_static_abs, model_ellipsis_abs = nnx.split(
-            self.model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
-        )
-
-        abstract_items_to_restore = {
-            'model_graphdef': model_graphdef_abs, 
-            'model_params': model_params_abs,
-            'model_batch_stats': model_bs_abs,
-            'model_rngs': model_rngs_abs,
-            'model_static': model_static_abs,
-            'model_ellipsis': model_ellipsis_abs,
-            'opt_state': self.opt_state, # Optax states are PyTrees
-            'num_training_steps': 0, # type hint
-            'rng_key': self._rng_key, # type hint
-            'ema_params_state': self.ema_params_state 
-        }
-
-        if self.target_model is not None:
-            target_gdef_abs, target_params_abs, target_bs_abs, target_rngs_abs, target_static_abs, target_ellipsis_abs = nnx.split(
-                self.target_model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...)
-            abstract_items_to_restore['target_model_graphdef'] = target_gdef_abs
-            abstract_items_to_restore['target_model_params'] = target_params_abs
-            abstract_items_to_restore['target_model_batch_stats'] = target_bs_abs
-            abstract_items_to_restore['target_model_rngs'] = target_rngs_abs
-            abstract_items_to_restore['target_model_static'] = target_static_abs
-            abstract_items_to_restore['target_model_ellipsis'] = target_ellipsis_abs
-        else:
-            abstract_items_to_restore['target_model_graphdef'] = None
-            abstract_items_to_restore['target_model_params'] = None
-            abstract_items_to_restore['target_model_batch_stats'] = None
-            abstract_items_to_restore['target_model_rngs'] = None
-            abstract_items_to_restore['target_model_static'] = None
-            abstract_items_to_restore['target_model_ellipsis'] = None
-
+            
         try:
-            # Use ocp.args.StandardRestore
-            restore_args = ocp.args.StandardRestore(abstract_items_to_restore)
-            restored_state_dict = self.checkpoint_manager.restore(
-                latest_step, 
-                args=restore_args
+            latest_step = self.checkpoint_manager.latest_step()
+            if latest_step is None:
+                print("No checkpoint found to resume from.")
+                return False
+                
+            # Prepare target structure for restore (this prevents the immutable tuple error)
+            target_structure = {
+                'model': nnx.state(self.model),
+                'optimizer': nnx.state(self.optimizer),
+                'num_training_steps': self.num_training_steps,
+                'rng_key': self._rng_key,
+            }
+            
+            # Add EMA structure if enabled
+            if (self.config.use_target_network_ema and 
+                self.target_model is not None and 
+                self.ema_params_state is not None):
+                target_structure['target_model'] = nnx.state(self.target_model)
+                target_structure['ema_params_state'] = self.ema_params_state
+                
+            # Load checkpoint data using modern Orbax API with target
+            checkpoint_data = self.checkpoint_manager.restore(
+                step=latest_step,
+                args=ocp.args.StandardRestore(target_structure)
             )
             
-            # Update learner state from restored_state_dict.
-            # Update self.model
-            # GraphDef is static and part of the model structure, usually not updated unless model def changes.
-            # However, if saved, we can merge it to ensure consistency if ever needed, though typically
-            # the existing model's graphdef is correct.
-            nnx.update(self.model, 
-                       restored_state_dict['model_params'], 
-                       restored_state_dict['model_batch_stats'], 
-                       restored_state_dict['model_rngs'],
-                       restored_state_dict['model_ellipsis']) 
-            # model_static is part of graphdef, not updated here. model_graphdef also not directly updated into instance.
-
-            self.opt_state = restored_state_dict['opt_state']
-            self.num_training_steps = restored_state_dict['num_training_steps']
-            self._rng_key = restored_state_dict['rng_key']
-
-            if self.target_model is not None and restored_state_dict.get('target_model_params') is not None:
-                nnx.update(self.target_model,
-                           restored_state_dict['target_model_params'],
-                           restored_state_dict['target_model_batch_stats'],
-                           restored_state_dict['target_model_rngs'],
-                           restored_state_dict['target_model_ellipsis'])
-            elif self.config.use_target_network_ema and self.target_model is not None:
-                print("Warning: EMA enabled, target model components not fully in ckpt. Re-syncing with online model.")
-                # Re-initialize target model from current online model if its state wasn't fully saved/restored
-                # This might happen if target_model was None during save but is now available.
-                self.target_model = copy.deepcopy(self.model)
-                # Fall through to ema_params_state handling which will use the new target_model params for EMA init if needed.
-
-            if 'ema_params_state' in restored_state_dict and restored_state_dict['ema_params_state'] is not None:
-                 self.ema_params_state = restored_state_dict['ema_params_state']
-                 # If target_model was re-initialized or its params were just loaded,
-                 # ensure it's synced with the loaded EMA state values.
-                 if self.target_model and self.ema_updater and self.ema_params_state :
-                    # Split the just-updated or deepcopied target_model to get its current non-Param state
-                    _, _, target_bs_resume, target_rngs_resume, _, target_ellipsis_resume = nnx.split(
-                        self.target_model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
+            # Restore model and optimizer state
+            nnx.update(self.model, checkpoint_data['model'])
+            nnx.update(self.optimizer, checkpoint_data['optimizer'])
+            self.num_training_steps = checkpoint_data['num_training_steps']
+            self._rng_key = checkpoint_data['rng_key']
+            
+            # Restore EMA state if available
+            if (self.config.use_target_network_ema and 
+                'target_model' in checkpoint_data and 
+                'ema_params_state' in checkpoint_data):
+                
+                if self.target_model is not None:
+                    nnx.update(self.target_model, checkpoint_data['target_model'])
+                    self.ema_params_state = checkpoint_data['ema_params_state']
+                else:
+                    # Target model components not fully in checkpoint, re-initialize
+                    print("Warning: EMA enabled, target model components not fully in ckpt. Re-syncing with online model.")
+                    # Use proper Flax NNX state copying instead of copy.deepcopy
+                    graphdef, params, batch_stats, rngs, static, ellipsis = nnx.split(
+                        self.model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
                     )
-                    nnx.update(self.target_model, 
-                               self.ema_params_state.ema, # ema_params_state.ema contains the EMA *values*
-                               target_bs_resume, 
-                               target_rngs_resume,
-                               target_ellipsis_resume)
-
-            elif self.config.use_target_network_ema and self.ema_updater:
-                print("Warning: EMA enabled, ema_params_state not in ckpt. Reinitializing EMA state from online model.")
-                _, online_params_after_restore, _, _, _, _ = nnx.split(self.model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...)
-                self.ema_params_state = self.ema_updater.init(online_params_after_restore) 
-                if self.target_model: 
-                    _, _, target_bs_reinit_ema, target_rngs_reinit_ema, _, target_ellipsis_reinit_ema = nnx.split(
-                        self.target_model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
-                    )
-                    nnx.update(self.target_model, 
-                               self.ema_params_state.ema, 
-                               target_bs_reinit_ema, 
-                               target_rngs_reinit_ema,
-                               target_ellipsis_reinit_ema)
-
-            print(f"Successfully loaded checkpoint from step {latest_step}.")
-            self.checkpoint_manager.wait_until_finished() 
+                    self.target_model = nnx.merge(graphdef, params, batch_stats, rngs, static, ellipsis)
+                    
+                    # Re-initialize EMA state
+                    self.ema_updater = optax.ema(self.config.ema_decay)
+                    self.ema_params_state = self.ema_updater.init(params)
+            
+            print(f"Checkpoint restored from step {latest_step}")
             return True
+            
         except Exception as e:
-            print(f"Error loading checkpoint: {e}")
+            logging.error(f"Failed to load checkpoint: {e}")
             return False
+
+    def __del__(self):
+        """Cleanup method to ensure CheckpointManager is properly closed."""
+        if hasattr(self, 'checkpoint_manager') and self.checkpoint_manager is not None:
+            try:
+                self.checkpoint_manager.close()
+            except:
+                pass  # Ignore errors during cleanup
 
 # Example usage (for testing/illustration - will be in tests)
 if __name__ == '__main__': # pragma: no cover
