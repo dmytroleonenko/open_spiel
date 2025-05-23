@@ -55,18 +55,45 @@ def compute_policy_loss(policy_logits: jax.Array, target_policy: jax.Array) -> j
     return cross_entropy_loss_with_logits(logits=policy_logits, targets=target_policy)
 
 # --- Value Loss ---
-def compute_scalar_value_loss(value_prediction: jax.Array, target_value: jax.Array) -> jax.Array:
-    """Computes value loss for scalar values using MSE."""
+def compute_scalar_value_loss(value_prediction: jax.Array, target_value: jax.Array, iql_weight: float = 1.0) -> jax.Array:
+    """Computes value loss for scalar values using MSE with optional IQL weighting."""
     # Ensure predictions and targets are squeezed if they have an extra dim of 1
     if value_prediction.ndim > 1 and value_prediction.shape[-1] == 1:
         value_prediction = jnp.squeeze(value_prediction, axis=-1) # pragma: no cover
     if target_value.ndim > 1 and target_value.shape[-1] == 1:
         target_value = jnp.squeeze(target_value, axis=-1) # pragma: no cover
-    return scalar_mse_loss(prediction=value_prediction, target=target_value)
+        
+    base_loss = scalar_mse_loss(prediction=value_prediction, target=target_value)
+    
+    # Apply IQL-style weighting if specified (EfficientZeroV2 pattern)
+    if iql_weight != 1.0:
+        # IQL weighting: apply different weights based on sign of error
+        error = value_prediction - target_value
+        # Positive errors (overestimation) get weight 1.0, negative errors get iql_weight
+        weights = jnp.where(error >= 0, 1.0, iql_weight)
+        return base_loss * weights
+    
+    return base_loss
 
-def compute_categorical_value_loss(value_logits: jax.Array, target_value_distribution: jax.Array) -> jax.Array:
-    """Computes value loss for categorical distributions using cross-entropy."""
-    return cross_entropy_loss_with_logits(logits=value_logits, targets=target_value_distribution)
+def compute_categorical_value_loss(value_logits: jax.Array, target_value_distribution: jax.Array, iql_weight: float = 1.0) -> jax.Array:
+    """Computes value loss for categorical distributions using cross-entropy with optional IQL weighting."""
+    base_loss = cross_entropy_loss_with_logits(logits=value_logits, targets=target_value_distribution)
+    
+    # Apply IQL-style weighting if specified
+    if iql_weight != 1.0:
+        # For categorical case, compute expected values to determine error sign
+        num_atoms = value_logits.shape[-1]
+        support = jnp.linspace(-1.0, 1.0, num_atoms)  # Assume normalized support
+        
+        pred_probs = jax.nn.softmax(value_logits)
+        pred_value = jnp.sum(pred_probs * support, axis=-1)
+        target_value = jnp.sum(target_value_distribution * support, axis=-1)
+        
+        error = pred_value - target_value
+        weights = jnp.where(error >= 0, 1.0, iql_weight)
+        return base_loss * weights
+        
+    return base_loss
 
 # --- Reward Loss ---
 def compute_scalar_reward_loss(reward_prediction: jax.Array, target_reward: jax.Array) -> jax.Array:
@@ -82,10 +109,24 @@ def compute_categorical_reward_loss(reward_logits: jax.Array, target_reward_dist
     """Computes reward loss for categorical distributions using cross-entropy."""
     return cross_entropy_loss_with_logits(logits=reward_logits, targets=target_reward_distribution)
 
-# TODO: Implement support_to_scalar and scalar_to_support if needed for direct use,
-# or ensure network outputs/targets are already in the correct format for these loss functions.
-# EfficientZeroV2 uses these for converting between scalar and supported representations.
-# For now, these losses assume inputs are already appropriately formatted.
+def compute_symlog_loss(prediction: jax.Array, target: jax.Array, base: float = 2.0) -> jax.Array:
+    """Computes loss using symlog transformation (EfficientZeroV2 pattern)."""
+    # Transform both prediction and target to symlog space
+    symlog_pred = symlog(prediction, base)
+    symlog_target = symlog(target, base)
+    return scalar_mse_loss(symlog_pred, symlog_target)
+
+def compute_kl_loss(logits: jax.Array, target_probs: jax.Array) -> jax.Array:
+    """Computes KL divergence loss (EfficientZeroV2 pattern)."""
+    # Convert logits to log probabilities
+    log_probs = jax.nn.log_softmax(logits)
+    # KL(target || prediction) = sum(target * log(target / prediction))
+    # = sum(target * (log(target) - log(prediction)))
+    # Handle numerical stability
+    target_log_probs = jnp.log(jnp.clip(target_probs, 1e-8, 1.0))
+    kl_per_atom = target_probs * (target_log_probs - log_probs)
+    return jnp.sum(kl_per_atom, axis=-1)  # Sum over atoms, return per-batch
+
 
 def compute_projection_consistency_loss(
     projection_current_step: jax.Array,  # Projection of h_k
@@ -114,4 +155,141 @@ def compute_projection_consistency_loss(
 
     loss1 = -clipped_sim1  # Per-item loss, shape (batch_size,)
     loss2 = -clipped_sim2  # Per-item loss, shape (batch_size,)
-    return loss1 + loss2   # Per-item losses, shape (batch_size,) 
+    return loss1 + loss2   # Per-item losses, shape (batch_size,)
+
+# --- Symlog functions for EfficientZeroV2 parity ---
+def symlog(x: jax.Array, base: float = 2.0) -> jax.Array:
+    """Symmetric logarithm transformation as used in EfficientZeroV2."""
+    return jnp.sign(x) * jnp.log(jnp.abs(x) + 1.0) / jnp.log(base)
+
+def symexp(x: jax.Array, base: float = 2.0) -> jax.Array:
+    """Inverse of symlog transformation."""
+    return jnp.sign(x) * (jnp.power(base, jnp.abs(x)) - 1.0)
+
+# --- Discrete Support Transformations for EfficientZeroV2 parity ---
+def scalar_to_support(x: jax.Array, support_min: float = -300.0, support_max: float = 300.0, 
+                      num_atoms: int = 601, epsilon: float = 0.001) -> jax.Array:
+    """Converts scalar values to categorical distribution over support.
+    
+    Based on EfficientZeroV2's DiscreteSupport.scalar_to_vector implementation.
+    
+    Args:
+        x: Scalar values to convert. Shape (...,)
+        support_min: Minimum value of support range
+        support_max: Maximum value of support range  
+        num_atoms: Number of atoms in the support
+        epsilon: Small value for numerical stability
+        
+    Returns:
+        Categorical distribution over support. Shape (..., num_atoms)
+    """
+    # Create support range
+    scale = (support_max - support_min) / (num_atoms - 1)
+    support_range = jnp.linspace(support_min, support_max, num_atoms)
+    
+    # Apply symlog-like transformation
+    sign = jnp.sign(x)
+    x_transformed = sign * (jnp.sqrt(jnp.abs(x) + 1.0) - 1.0) + epsilon * x
+    
+    # Normalize to support range
+    x_normalized = x_transformed / scale
+    
+    # Clamp to valid range
+    x_clamped = jnp.clip(x_normalized, support_min / scale, support_max / scale - 1e-5)
+    x_shifted = x_clamped - support_min / scale
+    
+    # Get lower and upper indices for interpolation
+    x_low_idx = jnp.floor(x_shifted)
+    x_high_idx = jnp.ceil(x_shifted)
+    
+    # Compute interpolation weights
+    p_high = x_shifted - x_low_idx
+    p_low = 1.0 - p_high
+    
+    # Create target distribution
+    target_shape = x.shape + (num_atoms,)
+    target = jnp.zeros(target_shape)
+    
+    # Scatter weights to appropriate indices
+    x_low_idx = jnp.clip(x_low_idx.astype(jnp.int32), 0, num_atoms - 1)
+    x_high_idx = jnp.clip(x_high_idx.astype(jnp.int32), 0, num_atoms - 1)
+    
+    # Use advanced indexing to scatter values
+    batch_indices = jnp.arange(x.shape[0])[:, None] if x.ndim > 0 else jnp.array([0])
+    
+    # Handle different input shapes
+    if x.ndim == 0:  # Scalar input
+        target = target.at[x_low_idx].add(p_low)
+        target = target.at[x_high_idx].add(p_high)
+    elif x.ndim == 1:  # 1D input
+        target = target.at[batch_indices.squeeze(), x_low_idx].add(p_low)
+        target = target.at[batch_indices.squeeze(), x_high_idx].add(p_high)
+    else:  # Higher dimensional - flatten and reshape
+        x_flat = x.reshape(-1)
+        target_flat = target.reshape(-1, num_atoms)
+        batch_flat = jnp.arange(x_flat.shape[0])
+        x_low_flat = x_low_idx.reshape(-1)
+        x_high_flat = x_high_idx.reshape(-1)
+        p_low_flat = p_low.reshape(-1)
+        p_high_flat = p_high.reshape(-1)
+        
+        target_flat = target_flat.at[batch_flat, x_low_flat].add(p_low_flat)
+        target_flat = target_flat.at[batch_flat, x_high_flat].add(p_high_flat)
+        target = target_flat.reshape(target_shape)
+    
+    return target
+
+def support_to_scalar(logits: jax.Array, support_min: float = -300.0, support_max: float = 300.0,
+                      num_atoms: int = 601, epsilon: float = 0.001) -> jax.Array:
+    """Converts categorical distribution over support back to scalar values.
+    
+    Based on EfficientZeroV2's DiscreteSupport.vector_to_scalar implementation.
+    
+    Args:
+        logits: Logits over support atoms. Shape (..., num_atoms)
+        support_min: Minimum value of support range
+        support_max: Maximum value of support range
+        num_atoms: Number of atoms in the support  
+        epsilon: Small value for numerical stability
+        
+    Returns:
+        Scalar values. Shape (...,)
+    """
+    # Create support range
+    scale = (support_max - support_min) / (num_atoms - 1)
+    support_range = jnp.linspace(support_min, support_max, num_atoms)
+    
+    # Convert logits to probabilities
+    value_probs = jax.nn.softmax(logits, axis=-1)
+    
+    # Compute expected value
+    value = jnp.sum(value_probs * support_range, axis=-1) / scale
+    
+    # Apply inverse transformation
+    sign = jnp.sign(value)
+    abs_value = jnp.abs(value)
+    
+    # Inverse of symlog-like transformation: x = sign * ((sqrt(1 + 4*eps*(|v| + 1 + eps)) - 1) / (2*eps))^2 - 1)
+    sqrt_term = jnp.sqrt(1.0 + 4.0 * epsilon * (abs_value * scale + 1.0 + epsilon))
+    output = ((sqrt_term - 1.0) / (2.0 * epsilon)) ** 2 - 1.0
+    output = sign * output
+    
+    # Handle numerical issues
+    output = jnp.where(jnp.isnan(output), 0.0, output)
+    output = jnp.where(jnp.abs(output) < epsilon, 0.0, output)
+    
+    return output
+
+def compute_policy_entropy(policy_logits: jax.Array) -> jax.Array:
+    """Computes entropy of policy distribution for regularization.
+    
+    Args:
+        policy_logits: Policy logits. Shape (batch_size, num_actions)
+        
+    Returns:
+        Per-batch entropy values. Shape (batch_size,)
+    """
+    log_probs = jax.nn.log_softmax(policy_logits, axis=-1)
+    probs = jax.nn.softmax(policy_logits, axis=-1)
+    entropy = -jnp.sum(probs * log_probs, axis=-1)
+    return entropy 

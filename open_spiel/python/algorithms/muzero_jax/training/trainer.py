@@ -50,12 +50,26 @@ class MuZeroConfig:
     l2_weight: float = 1e-4
     use_projection: bool = False # Whether the model uses projection heads (for SSL)
     ssl_consistency_loss_weight: float = 0.0 # Weight for self-supervised consistency loss
+    
+    # EfficientZeroV2 specific loss parameters
+    iql_weight: float = 1.0 # IQL-style weighting for value loss (asymmetric weighting based on error sign)
+    entropy_coeff: float = 0.0 # Entropy regularization coefficient
+    consistency_coeff: float = 2.0 # Consistency loss coefficient (alternative name for SSL)
+    
+    # Loss function types - for EfficientZeroV2 parity
+    value_loss_type: str = "mse" # "mse", "symlog", or "categorical"
+    reward_loss_type: str = "mse" # "mse", "symlog", "kl", or "categorical"
+    
+    # Symlog parameters
+    use_symlog: bool = False # Whether to use symlog representation
+    symlog_base: float = 2.0 # Base for symlog transformation
 
     # Optimizer
     learning_rate: float = 1e-4
     adam_b1: float = 0.9
     adam_b2: float = 0.999
     clip_grad_norm: float = 5.0 # Max gradient norm
+    weight_decay: float = 0.0 # Optimizer weight decay (alternative to manual L2)
 
     # Training
     batch_size: int = 256
@@ -88,11 +102,20 @@ class Learner:
         
         # Create optimizer_def from config if not provided
         if optimizer_def is None:
-            optimizer_def = optax.adam(
-                learning_rate=config.learning_rate,
-                b1=config.adam_b1,
-                b2=config.adam_b2,
-            )
+            if config.weight_decay > 0:
+                # Use AdamW for weight decay as in EfficientZeroV2
+                optimizer_def = optax.adamw(
+                    learning_rate=config.learning_rate,
+                    b1=config.adam_b1,
+                    b2=config.adam_b2,
+                    weight_decay=config.weight_decay,
+                )
+            else:
+                optimizer_def = optax.adam(
+                    learning_rate=config.learning_rate,
+                    b1=config.adam_b1,
+                    b2=config.adam_b2,
+                )
         
         # Use nnx.Optimizer for standard Flax pattern
         self.optimizer = nnx.Optimizer(model, optimizer_def)
@@ -112,6 +135,10 @@ class Learner:
             # Set up EMA updater
             self.ema_updater = optax.ema(config.ema_decay)
             self.ema_params_state = self.ema_updater.init(params)
+            
+            # Initialize EMA state to match online parameters
+            # Directly set the ema field to match the initial parameters
+            self.ema_params_state = self.ema_params_state._replace(ema=params)
 
         # Checkpointing
         self.checkpoint_manager = None
@@ -147,6 +174,10 @@ class Learner:
 
         # Compute loss and gradients using standard nnx pattern
         (loss_value, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(self.model)
+        
+        # Apply gradient scaling per EfficientZeroV2 pattern: scale gradients by 1/unroll_steps
+        gradient_scale = 1.0 / self.config.num_unroll_steps
+        grads = jax.tree_util.tree_map(lambda g: g * gradient_scale, grads)
         
         # Apply gradient clipping if configured
         if self.config.clip_grad_norm > 0:
@@ -248,6 +279,10 @@ class Learner:
                     # Add SSL loss if applicable
                     if 'ssl_loss' in metrics:
                         wandb.log({'loss/ssl': metrics['ssl_loss']}, step=self.num_training_steps)
+                    
+                    # Add entropy loss if applicable
+                    if 'entropy_loss' in metrics:
+                        wandb.log({'loss/entropy': metrics['entropy_loss']}, step=self.num_training_steps)
 
                 # Log to console occasionally
                 if self.num_training_steps % 10 == 0:
@@ -279,9 +314,6 @@ class Learner:
         target_values = batch['target_value'] # B, K+1 or B, K+1, S
         target_policies = batch['target_policy'] # B, K+1, A
         game_history_mask = batch['game_history_mask'] # B, K+1
-
-        # Apply gradient scaling per EfficientZeroV2 pattern
-        gradient_scale = 1.0 / config.num_unroll_steps
 
         # Initial inference
         initial_inference_output = model.initial_inference(initial_observation, training=training)
@@ -315,63 +347,241 @@ class Learner:
         else:
             predicted_projections = None
 
-        # Compute losses per step with gradient scaling
+        # Compute losses per step (gradient scaling now applied to gradients directly)
         total_policy_loss = jnp.array(0.0)
         total_value_loss = jnp.array(0.0)
         total_reward_loss = jnp.array(0.0)
         total_ssl_loss = jnp.array(0.0)
+        total_entropy_loss = jnp.array(0.0)
 
         for k_idx in range(config.num_unroll_steps + 1):
             step_mask = game_history_mask[:, k_idx] # B
             
-            # Policy Loss with gradient scaling
+            # Policy Loss
             p_loss = losses_lib.compute_policy_loss(
                 predicted_policy_logits[:, k_idx], target_policies[:, k_idx]
-            ) * gradient_scale
+            )
             masked_p_loss = p_loss * step_mask
             total_policy_loss += jnp.sum(masked_p_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
 
-            # Value Loss with gradient scaling
-            if config.value_support_size > 0:
-                v_loss = losses_lib.compute_categorical_value_loss(
-                    predicted_values[:, k_idx], target_values[:, k_idx]
-                ) * gradient_scale
-            else:
-                sv = predicted_values[:, k_idx]
-                if sv.ndim == 2 and sv.shape[-1] == 1: sv = jnp.squeeze(sv, axis=-1)
-                tv = target_values[:, k_idx]
-                if tv.ndim == 2 and tv.shape[-1] == 1: tv = jnp.squeeze(tv, axis=-1)
-                v_loss = losses_lib.compute_scalar_value_loss(sv, tv) * gradient_scale
+            # Value Loss with EfficientZeroV2 parity
+            predicted_val = predicted_values[:, k_idx]
+            target_val = target_values[:, k_idx]
+            
+            # Handle discrete support transformations based on loss type and data format
+            if config.value_loss_type == "categorical" or config.value_support_size > 0:
+                # For categorical loss, ensure we have distributions
+                if predicted_val.ndim == 1 or (predicted_val.ndim == 2 and predicted_val.shape[-1] == 1):
+                    # Predicted values are scalar, convert to support distribution
+                    if predicted_val.ndim == 2 and predicted_val.shape[-1] == 1:
+                        predicted_val = jnp.squeeze(predicted_val, axis=-1)
+                    predicted_val = losses_lib.scalar_to_support(
+                        predicted_val, 
+                        support_min=-300.0, 
+                        support_max=300.0, 
+                        num_atoms=config.value_support_size if config.value_support_size > 0 else 601
+                    )
+                
+                if target_val.ndim == 1 or (target_val.ndim == 2 and target_val.shape[-1] == 1):
+                    # Target values are scalar, convert to support distribution
+                    if target_val.ndim == 2 and target_val.shape[-1] == 1:
+                        target_val = jnp.squeeze(target_val, axis=-1)
+                    target_val = losses_lib.scalar_to_support(
+                        target_val,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=config.value_support_size if config.value_support_size > 0 else 601
+                    )
+                
+                v_loss = losses_lib.compute_categorical_value_loss(predicted_val, target_val, config.iql_weight)
+                
+            elif config.value_loss_type == "symlog":
+                # For symlog loss, ensure we have scalars
+                if predicted_val.ndim > 1 and predicted_val.shape[-1] > 1:
+                    # Predicted values are distributions, convert to scalars
+                    predicted_val = losses_lib.support_to_scalar(
+                        predicted_val,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=predicted_val.shape[-1]
+                    )
+                elif predicted_val.ndim == 2 and predicted_val.shape[-1] == 1:
+                    predicted_val = jnp.squeeze(predicted_val, axis=-1)
+                
+                if target_val.ndim > 1 and target_val.shape[-1] > 1:
+                    # Target values are distributions, convert to scalars
+                    target_val = losses_lib.support_to_scalar(
+                        target_val,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=target_val.shape[-1]
+                    )
+                elif target_val.ndim == 2 and target_val.shape[-1] == 1:
+                    target_val = jnp.squeeze(target_val, axis=-1)
+                
+                v_loss = losses_lib.compute_symlog_loss(predicted_val, target_val, config.symlog_base)
+                
+            else:  # MSE
+                # For MSE loss, ensure we have scalars
+                if predicted_val.ndim > 1 and predicted_val.shape[-1] > 1:
+                    # Predicted values are distributions, convert to scalars
+                    predicted_val = losses_lib.support_to_scalar(
+                        predicted_val,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=predicted_val.shape[-1]
+                    )
+                elif predicted_val.ndim == 2 and predicted_val.shape[-1] == 1:
+                    predicted_val = jnp.squeeze(predicted_val, axis=-1)
+                
+                if target_val.ndim > 1 and target_val.shape[-1] > 1:
+                    # Target values are distributions, convert to scalars
+                    target_val = losses_lib.support_to_scalar(
+                        target_val,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=target_val.shape[-1]
+                    )
+                elif target_val.ndim == 2 and target_val.shape[-1] == 1:
+                    target_val = jnp.squeeze(target_val, axis=-1)
+                
+                v_loss = losses_lib.compute_scalar_value_loss(predicted_val, target_val, config.iql_weight)
             masked_v_loss = v_loss * step_mask
             total_value_loss += jnp.sum(masked_v_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
 
-            # Reward Loss with gradient scaling
-            if config.reward_support_size > 0:
-                r_loss = losses_lib.compute_categorical_reward_loss(
-                    predicted_rewards[:, k_idx], target_rewards[:, k_idx]
-                ) * gradient_scale
-            else:
-                sr = predicted_rewards[:, k_idx]
-                if sr.ndim == 2 and sr.shape[-1] == 1: sr = jnp.squeeze(sr, axis=-1)
-                tr = target_rewards[:, k_idx]
-                if tr.ndim == 2 and tr.shape[-1] == 1: tr = jnp.squeeze(tr, axis=-1)
-                r_loss = losses_lib.compute_scalar_reward_loss(sr, tr) * gradient_scale
+            # Reward Loss with EfficientZeroV2 parity
+            predicted_rew = predicted_rewards[:, k_idx]
+            target_rew = target_rewards[:, k_idx]
+            
+            # Handle discrete support transformations based on loss type and data format
+            if config.reward_loss_type == "categorical" or config.reward_support_size > 0:
+                # For categorical loss, ensure we have distributions
+                if predicted_rew.ndim == 1 or (predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1):
+                    # Predicted rewards are scalar, convert to support distribution
+                    if predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1:
+                        predicted_rew = jnp.squeeze(predicted_rew, axis=-1)
+                    predicted_rew = losses_lib.scalar_to_support(
+                        predicted_rew,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=config.reward_support_size if config.reward_support_size > 0 else 601
+                    )
+                
+                if target_rew.ndim == 1 or (target_rew.ndim == 2 and target_rew.shape[-1] == 1):
+                    # Target rewards are scalar, convert to support distribution
+                    if target_rew.ndim == 2 and target_rew.shape[-1] == 1:
+                        target_rew = jnp.squeeze(target_rew, axis=-1)
+                    target_rew = losses_lib.scalar_to_support(
+                        target_rew,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=config.reward_support_size if config.reward_support_size > 0 else 601
+                    )
+                
+                r_loss = losses_lib.compute_categorical_reward_loss(predicted_rew, target_rew)
+                
+            elif config.reward_loss_type == "symlog":
+                # For symlog loss, ensure we have scalars
+                if predicted_rew.ndim > 1 and predicted_rew.shape[-1] > 1:
+                    # Predicted rewards are distributions, convert to scalars
+                    predicted_rew = losses_lib.support_to_scalar(
+                        predicted_rew,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=predicted_rew.shape[-1]
+                    )
+                elif predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1:
+                    predicted_rew = jnp.squeeze(predicted_rew, axis=-1)
+                
+                if target_rew.ndim > 1 and target_rew.shape[-1] > 1:
+                    # Target rewards are distributions, convert to scalars
+                    target_rew = losses_lib.support_to_scalar(
+                        target_rew,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=target_rew.shape[-1]
+                    )
+                elif target_rew.ndim == 2 and target_rew.shape[-1] == 1:
+                    target_rew = jnp.squeeze(target_rew, axis=-1)
+                
+                r_loss = losses_lib.compute_symlog_loss(predicted_rew, target_rew, config.symlog_base)
+                
+            elif config.reward_loss_type == "kl":
+                # For KL loss, ensure we have distributions
+                if predicted_rew.ndim == 1 or (predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1):
+                    # Predicted rewards are scalar, convert to support distribution
+                    if predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1:
+                        predicted_rew = jnp.squeeze(predicted_rew, axis=-1)
+                    predicted_rew = losses_lib.scalar_to_support(
+                        predicted_rew,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=config.reward_support_size if config.reward_support_size > 0 else 601
+                    )
+                
+                if target_rew.ndim == 1 or (target_rew.ndim == 2 and target_rew.shape[-1] == 1):
+                    # Target rewards are scalar, convert to support distribution
+                    if target_rew.ndim == 2 and target_rew.shape[-1] == 1:
+                        target_rew = jnp.squeeze(target_rew, axis=-1)
+                    target_rew = losses_lib.scalar_to_support(
+                        target_rew,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=config.reward_support_size if config.reward_support_size > 0 else 601
+                    )
+                
+                r_loss = losses_lib.compute_kl_loss(predicted_rew, target_rew)
+                
+            else:  # MSE
+                # For MSE loss, ensure we have scalars
+                if predicted_rew.ndim > 1 and predicted_rew.shape[-1] > 1:
+                    # Predicted rewards are distributions, convert to scalars
+                    predicted_rew = losses_lib.support_to_scalar(
+                        predicted_rew,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=predicted_rew.shape[-1]
+                    )
+                elif predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1:
+                    predicted_rew = jnp.squeeze(predicted_rew, axis=-1)
+                
+                if target_rew.ndim > 1 and target_rew.shape[-1] > 1:
+                    # Target rewards are distributions, convert to scalars
+                    target_rew = losses_lib.support_to_scalar(
+                        target_rew,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=target_rew.shape[-1]
+                    )
+                elif target_rew.ndim == 2 and target_rew.shape[-1] == 1:
+                    target_rew = jnp.squeeze(target_rew, axis=-1)
+                
+                r_loss = losses_lib.compute_scalar_reward_loss(predicted_rew, target_rew)
             masked_r_loss = r_loss * step_mask
             total_reward_loss += jnp.sum(masked_r_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
             
-            # SSL Loss with stop_gradient and gradient scaling (EfficientZeroV2 pattern)
+            # SSL Loss with stop_gradient (EfficientZeroV2 pattern)
             if config.use_projection and config.ssl_consistency_loss_weight > 0 and \
                predicted_projections is not None and initial_projection is not None and k_idx > 0: 
                 ssl_loss_step = losses_lib.compute_projection_consistency_loss(
                     predicted_projections[:, k_idx], 
                     jax.lax.stop_gradient(initial_projection)  # Stop gradient as in EfficientZeroV2
-                ) * gradient_scale
+                )
                 masked_ssl_loss = ssl_loss_step * step_mask
                 total_ssl_loss += jnp.sum(masked_ssl_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
+            
+            # Entropy Loss for policy regularization (EfficientZeroV2 pattern)
+            if config.entropy_coeff > 0:
+                entropy_loss_step = losses_lib.compute_policy_entropy(predicted_policy_logits[:, k_idx])
+                masked_entropy_loss = entropy_loss_step * step_mask
+                total_entropy_loss += jnp.sum(masked_entropy_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
 
-        # L2 regularization
+        # L2 regularization (only if not using optimizer weight_decay)
         model_params = nnx.state(model, nnx.Param)
-        l2_loss = losses_lib.l2_regularization(model_params, config.l2_weight)
+        if config.weight_decay == 0:
+            l2_loss = losses_lib.l2_regularization(model_params, config.l2_weight)
+        else:
+            l2_loss = jnp.array(0.0)  # Weight decay handled by optimizer
 
         final_loss = (
             config.policy_loss_weight * total_policy_loss
@@ -379,6 +589,10 @@ class Learner:
             + config.reward_loss_weight * total_reward_loss 
             + l2_loss
         )
+        # Add entropy regularization (EfficientZeroV2 pattern)
+        if config.entropy_coeff > 0:
+            final_loss -= config.entropy_coeff * total_entropy_loss  # Negative because we want to maximize entropy
+        
         if config.use_projection and config.ssl_consistency_loss_weight > 0:
             final_loss += config.ssl_consistency_loss_weight * total_ssl_loss
         
@@ -389,6 +603,8 @@ class Learner:
             'reward_loss': total_reward_loss,
             'l2_loss': l2_loss,
         }
+        if config.entropy_coeff > 0:
+            metrics['entropy_loss'] = total_entropy_loss
         if config.use_projection and config.ssl_consistency_loss_weight > 0:
             metrics['ssl_loss'] = total_ssl_loss
             
