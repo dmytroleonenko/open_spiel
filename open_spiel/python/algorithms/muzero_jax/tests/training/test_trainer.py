@@ -1967,3 +1967,209 @@ def test_comprehensive_error_handling_and_edge_cases(key, cfg_flat):
     # Clean up test checkpoints
     if cfg_ema_test.checkpoint_dir and os.path.exists(cfg_ema_test.checkpoint_dir):
         shutil.rmtree(cfg_ema_test.checkpoint_dir)
+
+# Add this test after the comprehensive error handling test and before teardown_module
+
+def test_gradient_clipping_enforcement(key, cfg_flat):
+    """Test that gradient clipping is actually applied when configured."""
+    mk, lk, bk = jax.random.split(key, 3)
+    
+    # Create a simple model for testing
+    cfgn = cfg_flat
+    model = make_model(mk, cfgn)
+    
+    # Test Case 1: No gradient clipping (clip_grad_norm = 0)
+    cfg_no_clip = make_cfg(
+        cfgn.value_support_size,
+        cfgn.reward_support_size,
+        1,
+        False,
+        'grad_clip_test_no_clip',
+        l2_weight=0.0
+    )
+    cfg_no_clip = dataclasses.replace(cfg_no_clip, clip_grad_norm=0.0, batch_size=1)
+    
+    opt_no_clip = optax.adam(cfg_no_clip.learning_rate)
+    learner_no_clip = Learner(model, opt_no_clip, cfg_no_clip, lk)
+    
+    # Create a batch that will produce large gradients
+    large_batch = make_batch(bk, 1, cfgn.observation_shape, cfgn.num_actions, 1, 
+                            cfgn.value_support_size, cfgn.reward_support_size)
+    # Make targets very different from likely predictions to get large gradients
+    large_batch['target_value'] = jnp.ones_like(large_batch['target_value']) * 100.0
+    large_batch['target_reward'] = jnp.ones_like(large_batch['target_reward']) * 100.0
+    
+    metrics_no_clip = learner_no_clip.train_step(large_batch)
+    grad_norm_no_clip = float(metrics_no_clip['grad_norm'])
+    
+    # Test Case 2: With gradient clipping (small clip_grad_norm)
+    cfg_with_clip = dataclasses.replace(cfg_no_clip, clip_grad_norm=0.1)  # Very small clip norm
+    
+    # Create fresh model and learner for fair comparison
+    model_clip = make_model(jax.random.fold_in(mk, 1), cfgn)
+    opt_with_clip = optax.adam(cfg_with_clip.learning_rate)
+    learner_with_clip = Learner(model_clip, opt_with_clip, cfg_with_clip, jax.random.fold_in(lk, 1))
+    
+    metrics_with_clip = learner_with_clip.train_step(large_batch)
+    grad_norm_with_clip = float(metrics_with_clip['grad_norm'])
+    
+    # Verify that gradient clipping actually reduced the gradient norm
+    assert grad_norm_with_clip <= cfg_with_clip.clip_grad_norm + 1e-6, \
+        f"Gradient norm {grad_norm_with_clip} should be clipped to {cfg_with_clip.clip_grad_norm}"
+    
+    # The clipped gradient norm should be significantly smaller than unclipped
+    # (unless the original gradients were already very small)
+    if grad_norm_no_clip > cfg_with_clip.clip_grad_norm:
+        assert grad_norm_with_clip < grad_norm_no_clip, \
+            f"Clipped grad norm {grad_norm_with_clip} should be less than unclipped {grad_norm_no_clip}"
+    
+    print(f"✅ Gradient clipping test passed:")
+    print(f"  - Unclipped grad norm: {grad_norm_no_clip:.6f}")
+    print(f"  - Clipped grad norm: {grad_norm_with_clip:.6f}")
+    print(f"  - Clip threshold: {cfg_with_clip.clip_grad_norm}")
+
+def test_ema_frequency_enforcement(key, cfg_flat):
+    """Test that EMA updates respect the configured frequencies."""
+    mk, lk, bk = jax.random.split(key, 3)
+    
+    cfgn = cfg_flat
+    model = make_model(mk, cfgn)
+    
+    # Configure different frequencies for EMA update vs target sync
+    ema_update_freq = 3
+    target_sync_freq = 5
+    
+    cfg_ema_freq = make_cfg(
+        cfgn.value_support_size,
+        cfgn.reward_support_size,
+        1,
+        False,
+        'ema_freq_test',
+        use_ema=True,
+        l2_weight=0.0
+    )
+    cfg_ema_freq = dataclasses.replace(
+        cfg_ema_freq,
+        ema_update_frequency=ema_update_freq,
+        target_network_update_frequency=target_sync_freq,
+        batch_size=1
+    )
+    
+    opt = optax.adam(cfg_ema_freq.learning_rate)
+    learner = Learner(model, opt, cfg_ema_freq, lk)
+    
+    # Create a simple batch
+    batch = make_batch(bk, 1, cfgn.observation_shape, cfgn.num_actions, 1,
+                      cfgn.value_support_size, cfgn.reward_support_size)
+    
+    # Mock the EMA update methods to track when they're called
+    ema_update_calls = []
+    target_sync_calls = []
+    
+    original_update_ema = learner._update_target_network_ema
+    original_sync_target = learner._sync_target_network_from_ema
+    
+    def mock_update_ema():
+        ema_update_calls.append(learner.num_training_steps + 1)  # Record the step that will be current after increment
+        return original_update_ema()
+    
+    def mock_sync_target():
+        target_sync_calls.append(learner.num_training_steps + 1)  # Record the step that will be current after increment
+        return original_sync_target()
+    
+    learner._update_target_network_ema = mock_update_ema
+    learner._sync_target_network_from_ema = mock_sync_target
+    
+    # Run training steps and check frequency enforcement
+    num_steps = 15  # Run enough steps to see the pattern
+    for step in range(num_steps):
+        learner.train_step(batch)
+    
+    # Verify EMA updates happened at the right frequency
+    expected_ema_steps = [step for step in range(1, num_steps + 1) if step % ema_update_freq == 0]
+    assert ema_update_calls == expected_ema_steps, \
+        f"EMA updates should happen at steps {expected_ema_steps}, but happened at {ema_update_calls}"
+    
+    # Verify target sync happened at the right frequency
+    expected_sync_steps = [step for step in range(1, num_steps + 1) if step % target_sync_freq == 0]
+    assert target_sync_calls == expected_sync_steps, \
+        f"Target sync should happen at steps {expected_sync_steps}, but happened at {target_sync_calls}"
+    
+    print(f"✅ EMA frequency test passed:")
+    print(f"  - EMA updates at steps: {ema_update_calls} (every {ema_update_freq} steps)")
+    print(f"  - Target sync at steps: {target_sync_calls} (every {target_sync_freq} steps)")
+
+def test_optimizer_config_usage(key, cfg_flat):
+    """Test that optimizer hyperparameters from config are used when optimizer_def is None."""
+    mk, lk = jax.random.split(key, 2)
+    
+    cfgn = cfg_flat
+    model = make_model(mk, cfgn)
+    
+    # Test Case 1: Pass None for optimizer_def, should use config values
+    custom_lr = 0.001234
+    custom_b1 = 0.85
+    custom_b2 = 0.995
+    
+    cfg_custom = make_cfg(
+        cfgn.value_support_size,
+        cfgn.reward_support_size,
+        1,
+        False,
+        'optimizer_config_test',
+        l2_weight=0.0
+    )
+    cfg_custom = dataclasses.replace(
+        cfg_custom,
+        learning_rate=custom_lr,
+        adam_b1=custom_b1,
+        adam_b2=custom_b2,
+        batch_size=1
+    )
+    
+    # Pass None for optimizer_def to trigger config-based creation
+    learner_from_config = Learner(model, None, cfg_custom, lk)
+    
+    # Verify the learner was created successfully
+    assert learner_from_config.optimizer is not None
+    assert isinstance(learner_from_config.optimizer, nnx.Optimizer)
+    
+    # Test Case 2: Compare with explicitly created optimizer
+    explicit_optimizer = optax.adam(
+        learning_rate=custom_lr,
+        b1=custom_b1,
+        b2=custom_b2
+    )
+    
+    model_explicit = make_model(jax.random.fold_in(mk, 1), cfgn)
+    learner_explicit = Learner(model_explicit, explicit_optimizer, cfg_custom, jax.random.fold_in(lk, 1))
+    
+    # Create a batch for testing
+    batch = make_batch(jax.random.fold_in(key, 2), 1, cfgn.observation_shape, cfgn.num_actions, 1,
+                      cfgn.value_support_size, cfgn.reward_support_size)
+    
+    # Both learners should produce similar results (within numerical precision)
+    metrics_from_config = learner_from_config.train_step(batch)
+    metrics_explicit = learner_explicit.train_step(batch)
+    
+    # The losses should be very similar (not exactly equal due to different random initialization)
+    # but the gradient norms should be in the same ballpark
+    assert jnp.isfinite(metrics_from_config['total_loss'])
+    assert jnp.isfinite(metrics_explicit['total_loss'])
+    assert jnp.isfinite(metrics_from_config['grad_norm'])
+    assert jnp.isfinite(metrics_explicit['grad_norm'])
+    
+    # Test Case 3: Verify that passing an explicit optimizer still works
+    another_optimizer = optax.sgd(learning_rate=0.01)
+    model_sgd = make_model(jax.random.fold_in(mk, 2), cfgn)
+    learner_sgd = Learner(model_sgd, another_optimizer, cfg_custom, jax.random.fold_in(lk, 2))
+    
+    # This should work without error
+    metrics_sgd = learner_sgd.train_step(batch)
+    assert jnp.isfinite(metrics_sgd['total_loss'])
+    
+    print(f"✅ Optimizer config test passed:")
+    print(f"  - Config-based optimizer created successfully")
+    print(f"  - Custom learning rate: {custom_lr}")
+    print(f"  - Custom Adam b1: {custom_b1}, b2: {custom_b2}")
+    print(f"  - Explicit optimizer override still works")

@@ -78,13 +78,21 @@ class Learner:
 
     def __init__(self, 
                  model: MuZeroNetwork, 
-                 optimizer_def: optax.GradientTransformation,
+                 optimizer_def: optax.GradientTransformation | None,
                  config: MuZeroConfig,
                  rng_key: PRNGKey):
         self.model = model
         self.config = config
         self._rng_key = rng_key
         self.num_training_steps = 0
+        
+        # Create optimizer_def from config if not provided
+        if optimizer_def is None:
+            optimizer_def = optax.adam(
+                learning_rate=config.learning_rate,
+                b1=config.adam_b1,
+                b2=config.adam_b2,
+            )
         
         # Use nnx.Optimizer for standard Flax pattern
         self.optimizer = nnx.Optimizer(model, optimizer_def)
@@ -140,6 +148,10 @@ class Learner:
         # Compute loss and gradients using standard nnx pattern
         (loss_value, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(self.model)
         
+        # Apply gradient clipping if configured
+        if self.config.clip_grad_norm > 0:
+            grads = optax.clip_by_global_norm(self.config.clip_grad_norm).update(grads, None)[0]
+        
         # Update model parameters using nnx.Optimizer
         self.optimizer.update(grads)
         
@@ -147,14 +159,24 @@ class Learner:
         metrics['grad_norm'] = optax.global_norm(grads)
         metrics['param_norm'] = optax.global_norm(nnx.state(self.model, nnx.Param))
         
-        # Update EMA target network if enabled
-        if self.config.use_target_network_ema and self.target_model is not None:
+        # Update EMA state at configured frequency
+        # Use next step number since num_training_steps will be incremented after this function
+        next_step = self.num_training_steps + 1
+        if (self.config.use_target_network_ema and 
+            self.target_model is not None and
+            next_step % self.config.ema_update_frequency == 0):
             self._update_target_network_ema()
+            
+        # Sync target network from EMA at configured frequency
+        if (self.config.use_target_network_ema and 
+            self.target_model is not None and
+            next_step % self.config.target_network_update_frequency == 0):
+            self._sync_target_network_from_ema()
             
         return metrics
 
     def _update_target_network_ema(self):
-        """Update the target network using EMA of the online model parameters."""
+        """Update the EMA state with online model parameters."""
         # Only update if EMA is enabled and components are initialized
         if (not self.config.use_target_network_ema or 
             self.target_model is None or 
@@ -165,14 +187,22 @@ class Learner:
         # Get current model parameters
         current_params = nnx.state(self.model, nnx.Param)
         
-        # Update EMA state
+        # Update EMA state (this accumulates the exponential moving average)
         updated_ema_params, self.ema_params_state = self.ema_updater.update(
             updates=current_params, 
             state=self.ema_params_state
         )
-        
+
+    def _sync_target_network_from_ema(self):
+        """Sync target network with current EMA parameters."""
+        # Only sync if EMA is enabled and components are initialized
+        if (not self.config.use_target_network_ema or 
+            self.target_model is None or 
+            self.ema_params_state is None):
+            return
+            
         # Update target model with EMA parameters
-        nnx.update(self.target_model, updated_ema_params)
+        nnx.update(self.target_model, self.ema_params_state.ema)
 
     def train_step(self, batch: Batch) -> Metrics:
         """Performs a single training step (can be used for testing/debugging)."""
