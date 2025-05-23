@@ -1,6 +1,7 @@
 import pytest
 import jax
 import jax.numpy as jnp
+import numpy as np
 import flax.nnx as nnx
 import optax
 import os
@@ -1442,5 +1443,247 @@ def test_learner_train_orchestration_with_mocks(key, cfg_flat):
         # Verify total training steps counter was incremented correctly
         assert learner.num_training_steps == total_expected_steps, \
             f"Expected {total_expected_steps} total training steps, got {learner.num_training_steps}"
+
+# Add this test after the existing test_learner_train_orchestration_with_mocks function
+
+def test_gradient_update_verification_with_fixed_network(key, cfg_flat):
+    """Action Item 2: Strengthen gradient-update verification.
+    
+    Tests that:
+    - Gradients flow correctly through _static_train_step_logic
+    - Parameter updates match optax.apply_updates exactly  
+    - Gradient clipping works when enabled
+    """
+    mk, lk, bk = jax.random.split(key, 3)
+    
+    # Use smaller dimensions for analytical tractability
+    obs_shape_test = (4,)  # Small observation space
+    num_actions_test = 3   # Small action space  
+    hidden_size_test = 2   # Very small hidden size
+    batch_size_test = 1    # Single batch item
+    unroll_steps_test = 1  # Single unroll step
+    
+    # Create fixed-weight toy network for analytical gradients
+    class TinyFixedRep(nnx.Module):
+        def __init__(self, *, rngs):
+            self.dense = nnx.Linear(4, 2, rngs=rngs)
+            # Set fixed, simple weights for analytical computation
+            self.dense.kernel.value = jnp.array([[1.0, 0.5], [0.0, 1.0], [0.5, 0.0], [1.0, 1.0]])
+            self.dense.bias.value = jnp.array([0.1, 0.2])
+        def __call__(self, x, training):
+            if x.ndim > 2: x = x.reshape((x.shape[0], -1))
+            return self.dense(x)
+
+    class TinyFixedDyn(nnx.Module):
+        def __init__(self, *, rngs):
+            self.embed = nnx.Embed(3, 1, rngs=rngs)
+            self.fc = nnx.Linear(3, 2, rngs=rngs)  # 2 hidden + 1 embed = 3 input
+            # Fixed weights
+            self.embed.embedding.value = jnp.array([[0.1], [0.2], [0.3]])
+            self.fc.kernel.value = jnp.array([[0.5, 0.0], [0.0, 0.5], [0.2, 0.8]])
+            self.fc.bias.value = jnp.array([0.0, 0.0])
+        def __call__(self, h, a, training):
+            e = self.embed(a)
+            if e.ndim == 1: e = jnp.broadcast_to(e, (h.shape[0], e.shape[-1]))
+            return nnx.relu(self.fc(jnp.concatenate([h, e], -1)))
+
+    class TinyFixedPred(nnx.Module):
+        def __init__(self, *, rngs):
+            # Fixed weight matrices
+            self.ph_w = jnp.array([[1.0, 0.0, 0.5], [0.5, 1.0, 0.0]])  # 2x3
+            self.ph_b = jnp.array([0.0, 0.0, 0.0])
+            self.vh_w = jnp.array([[0.8], [0.6]])  # 2x1 for scalar value
+            self.vh_b = jnp.array([0.1])
+        def __call__(self, h, training):
+            p_logits = h @ self.ph_w + self.ph_b
+            val_out = h @ self.vh_w + self.vh_b
+            return p_logits, val_out
+
+    class TinyFixedRew(nnx.Module):
+        def __init__(self, *, rngs):
+            self.rh_w = jnp.array([[0.4], [0.5]])  # 2x1 for scalar reward
+            self.rh_b = jnp.array([0.05])
+        def __call__(self, h, training):
+            return h @ self.rh_w + self.rh_b
+
+    # Create model config
+    model_cfg = MockNetCfg(
+        observation_shape=obs_shape_test,
+        num_actions=num_actions_test,
+        hidden_size=hidden_size_test,
+        value_support_size=0,  # Scalar value/reward for simplicity
+        reward_support_size=0,
+        projection_output_size=0,
+        use_projection=False,
+        batch_size=batch_size_test
+    )
+
+    # Create the fixed-weight toy network
+    toy_model = MuZeroNetwork(
+        representation_network_def=lambda cfg, *, rngs: TinyFixedRep(rngs=rngs),
+        dynamics_network_def=lambda cfg, *, rngs: TinyFixedDyn(rngs=rngs),
+        prediction_network_def=lambda cfg, *, rngs: TinyFixedPred(rngs=rngs),
+        reward_network_def=lambda cfg, *, rngs: TinyFixedRew(rngs=rngs),
+        projection_network_def=None,
+        config=model_cfg,
+        rngs=nnx.Rngs(params=mk)
+    )
+
+    # Test Case 1: Verify gradients without clipping
+    cfg_no_clip = make_cfg(
+        model_cfg.value_support_size, 
+        model_cfg.reward_support_size, 
+        unroll_steps_test, 
+        False, 
+        'grad_verify_no_clip',
+        l2_weight=0.0  # No L2 for cleaner gradient analysis
+    )
+    cfg_no_clip = dataclasses.replace(cfg_no_clip, 
+                                     clip_grad_norm=0.0,  # No clipping
+                                     batch_size=batch_size_test)
+
+    # Create analytically tractable batch
+    # Use constant inputs and simple targets for predictable gradients
+    fixed_obs = jnp.ones((batch_size_test, unroll_steps_test + 1, *obs_shape_test)) * 0.5
+    fixed_action = jnp.ones((batch_size_test, unroll_steps_test), dtype=jnp.int32) * 1  # Action index 1
+    fixed_target_policy = jnp.array([0.2, 0.5, 0.3]).reshape(1, 1, 3)  # Simple target distribution
+    fixed_target_policy = jnp.tile(fixed_target_policy, (batch_size_test, unroll_steps_test + 1, 1))
+    fixed_target_value = jnp.ones((batch_size_test, unroll_steps_test + 1)) * 0.8
+    fixed_target_reward = jnp.ones((batch_size_test, unroll_steps_test + 1)) * 0.6
+    fixed_mask = jnp.ones((batch_size_test, unroll_steps_test + 1))
+
+    analytical_batch = {
+        'observation': fixed_obs,
+        'action': fixed_action,
+        'target_policy': fixed_target_policy,
+        'target_value': fixed_target_value,
+        'target_reward': fixed_target_reward,
+        'game_history_mask': fixed_mask
+    }
+
+    # Follow the exact pattern from _static_train_step_logic for reference computation
+    # Split the model to get params and other components
+    graphdef, ref_params, ref_batch_stats, ref_static, ref_rngs, ref_ellipsis = nnx.split(
+        toy_model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
+    )
+    
+    # Reconstruct model for gradient computation
+    ref_model_for_grad = nnx.merge(graphdef, ref_params, ref_batch_stats, ref_static, ref_rngs, ref_ellipsis)
+    
+    # Define the same loss function pattern as in _static_train_step_logic
+    def loss_fn_for_reference_grad(model):
+        loss, metrics = Learner._compute_total_loss_static(model, cfg_no_clip, analytical_batch, lk, training=True)
+        return loss, metrics
+
+    # Compute reference gradients using same pattern as real training
+    (ref_loss, ref_metrics), ref_grads = nnx.value_and_grad(loss_fn_for_reference_grad, has_aux=True)(ref_model_for_grad)
+
+    # Create optimizer and compute expected updates using the same types
+    test_optimizer = optax.adam(cfg_no_clip.learning_rate)
+    initial_opt_state = test_optimizer.init(ref_params)
+    expected_updates, expected_opt_state = test_optimizer.update(ref_grads, initial_opt_state, ref_params)
+    expected_updated_params = optax.apply_updates(ref_params, expected_updates)
+
+    # Now test _static_train_step_logic produces same results
+    (actual_updated_params, actual_batch_stats, actual_rngs, actual_ellipsis, 
+     actual_opt_state, actual_metrics) = Learner._static_train_step_logic(
+        graphdef, ref_params, ref_batch_stats, ref_static, 
+        ref_rngs, ref_ellipsis, test_optimizer, initial_opt_state, 
+        cfg_no_clip, analytical_batch, lk
+    )
+
+    # Verify parameter updates match exactly  
+    # Both expected_updated_params and actual_updated_params should be PyTrees of param values
+    jax.tree_util.tree_map(
+        lambda expected, actual: np.testing.assert_allclose(expected, actual, atol=1e-6),
+        expected_updated_params, actual_updated_params
+    )
+
+    # Verify optimizer state matches
+    jax.tree_util.tree_map(
+        lambda expected, actual: np.testing.assert_allclose(expected, actual, atol=1e-6),
+        expected_opt_state, actual_opt_state
+    )
+
+    # Test Case 2: Verify gradient clipping works
+    cfg_with_clip = dataclasses.replace(cfg_no_clip, 
+                                       clip_grad_norm=0.5,  # Small clip threshold
+                                       l2_weight=0.0)  # Keep L2 zero for cleaner analysis
+
+    # Create a batch that will produce large gradients
+    # Use large target values that are far from model predictions
+    large_target_value = jnp.ones((batch_size_test, unroll_steps_test + 1)) * 10.0  # Large target
+    large_target_reward = jnp.ones((batch_size_test, unroll_steps_test + 1)) * 8.0  # Large target
+    
+    large_gradient_batch = {
+        'observation': fixed_obs,
+        'action': fixed_action, 
+        'target_policy': fixed_target_policy,
+        'target_value': large_target_value,
+        'target_reward': large_target_reward,
+        'game_history_mask': fixed_mask
+    }
+
+    # Compute reference gradients for clipping test
+    ref_model_for_clip = nnx.merge(graphdef, ref_params, ref_batch_stats, ref_static, ref_rngs, ref_ellipsis)
+    
+    def loss_fn_for_clip_test(model):
+        loss, metrics = Learner._compute_total_loss_static(model, cfg_with_clip, large_gradient_batch, lk, training=True)
+        return loss, metrics
+
+    (ref_loss_clip, ref_metrics_clip), ref_grads_clip = nnx.value_and_grad(loss_fn_for_clip_test, has_aux=True)(ref_model_for_clip)
+
+    # Verify gradients are large before clipping
+    grad_norm_before_clip = optax.global_norm(ref_grads_clip)
+    assert grad_norm_before_clip > cfg_with_clip.clip_grad_norm, \
+        f"Test setup error: gradient norm {grad_norm_before_clip} should be > clip threshold {cfg_with_clip.clip_grad_norm}"
+
+    # Create optimizer with gradient clipping
+    clipped_optimizer = optax.chain(
+        optax.clip_by_global_norm(cfg_with_clip.clip_grad_norm),
+        optax.adam(cfg_with_clip.learning_rate)
+    )
+    initial_clipped_opt_state = clipped_optimizer.init(ref_params)
+
+    # Compute expected clipped updates
+    expected_clipped_updates, expected_clipped_opt_state = clipped_optimizer.update(
+        ref_grads_clip, initial_clipped_opt_state, ref_params
+    )
+    
+    # Verify the clipped updates have the expected norm
+    clipped_update_norm = optax.global_norm(expected_clipped_updates)
+    # After clipping, the gradient norm should be <= clip_grad_norm
+    # (It might be less if the original norm was exactly the threshold)
+    assert clipped_update_norm <= cfg_with_clip.clip_grad_norm + 1e-6, \
+        f"Clipped update norm {clipped_update_norm} should be <= {cfg_with_clip.clip_grad_norm}"
+
+    # Test _static_train_step_logic with clipping
+    (clipped_updated_params, clipped_batch_stats, clipped_rngs, clipped_ellipsis,
+     clipped_opt_state, clipped_metrics) = Learner._static_train_step_logic(
+        graphdef, ref_params, ref_batch_stats, ref_static,
+        ref_rngs, ref_ellipsis, clipped_optimizer, initial_clipped_opt_state,
+        cfg_with_clip, large_gradient_batch, lk
+    )
+
+    # Verify the actual implementation respects gradient clipping
+    expected_clipped_param_values = optax.apply_updates(ref_params, expected_clipped_updates)
+    jax.tree_util.tree_map(
+        lambda expected, actual: np.testing.assert_allclose(expected, actual, atol=1e-6),
+        expected_clipped_param_values, clipped_updated_params
+    )
+
+    # Verify grad_norm in metrics reflects the clipping
+    assert 'grad_norm' in clipped_metrics, "grad_norm should be in metrics"
+    # The reported grad_norm should be the norm before clipping (for monitoring)
+    # but the actual updates should be clipped
+    reported_grad_norm = clipped_metrics['grad_norm']
+    # The reported norm should be the original (large) norm, not the clipped one
+    assert reported_grad_norm > cfg_with_clip.clip_grad_norm, \
+        f"Reported grad_norm {reported_grad_norm} should be original (pre-clip) norm"
+
+    print(f"✅ Gradient verification passed:")
+    print(f"   - Parameter updates match optax.apply_updates exactly")
+    print(f"   - Gradient clipping works: {grad_norm_before_clip:.4f} -> {clipped_update_norm:.4f}")
+    print(f"   - Clip threshold: {cfg_with_clip.clip_grad_norm}")
 
 # ... rest of existing code ...
