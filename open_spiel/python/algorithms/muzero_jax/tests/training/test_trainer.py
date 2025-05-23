@@ -95,12 +95,29 @@ def cfg_img():
 
 # Helpers
 def make_model(key, cfg):
-    rep = lambda model_config, *, rngs: MockRep(model_config.observation_shape, model_config.hidden_size, rngs=rngs)
-    dyn = lambda model_config, *, rngs: MockDyn(model_config.hidden_size, model_config.num_actions, rngs=rngs)
-    pred = lambda model_config, *, rngs: MockPred(model_config.hidden_size, model_config.num_actions, model_config.value_support_size, rngs=rngs)
-    rew = lambda model_config, *, rngs: MockRew(model_config.hidden_size, model_config.reward_support_size, rngs=rngs)
-    proj_def_lambda = (lambda model_config, *, rngs: MockProj(model_config.hidden_size, model_config.projection_output_size, rngs=rngs)) if cfg.use_projection else None
-    return MuZeroNetwork(rep, dyn, pred, rew, proj_def_lambda, cfg, rngs=nnx.Rngs(params=key))
+    # MockNetCfg should be used for model creation, MuZeroConfig for learner config
+    if hasattr(cfg, 'observation_shape'):
+        # It's a MockNetCfg
+        mock_cfg = cfg
+    else:
+        # It's a MuZeroConfig, create MockNetCfg from it
+        mock_cfg = MockNetCfg(
+            observation_shape=OBS_SHAPE_FLAT,  # Default
+            num_actions=NUM_ACTIONS,  # Default
+            hidden_size=16,  # Default
+            value_support_size=cfg.value_support_size,
+            reward_support_size=cfg.reward_support_size,
+            projection_output_size=8,  # Default
+            use_projection=cfg.use_projection,
+            batch_size=cfg.batch_size
+        )
+    
+    rep = lambda model_config, *, rngs: MockRep(mock_cfg.observation_shape, mock_cfg.hidden_size, rngs=rngs)
+    dyn = lambda model_config, *, rngs: MockDyn(mock_cfg.hidden_size, mock_cfg.num_actions, rngs=rngs)
+    pred = lambda model_config, *, rngs: MockPred(mock_cfg.hidden_size, mock_cfg.num_actions, mock_cfg.value_support_size, rngs=rngs)
+    rew = lambda model_config, *, rngs: MockRew(mock_cfg.hidden_size, mock_cfg.reward_support_size, rngs=rngs)
+    proj_def_lambda = (lambda model_config, *, rngs: MockProj(mock_cfg.hidden_size, mock_cfg.projection_output_size, rngs=rngs)) if mock_cfg.use_projection else None
+    return MuZeroNetwork(rep, dyn, pred, rew, proj_def_lambda, mock_cfg, rngs=nnx.Rngs(params=key))
 
 def maybe_val(x):
     return x.value if isinstance(x, nnx.Variable) else x
@@ -3534,114 +3551,7 @@ def test_discrete_support_transformations_integration(key, cfg_flat):
     print("✅ Direct transformation tests passed!")
     print("✅ Discrete support transformations are properly integrated into loss computation!")
 
-def test_discrete_support_transformations_integration(key, cfg_flat):
-    """Test that discrete support transformations work with model outputs that have scalar dimensions."""
-    # Create a mock configuration with categorical losses  
-    cfg = make_cfg(
-        vsup=601,  # Categorical value  
-        rsup=601,  # Categorical reward
-        steps=2,
-        proj=False,
-        suffix="_categorical_integration",
-        use_ema=False
-    )
-    
-    class ScalarRep(nnx.Module):
-        def __init__(self, *, rngs):
-            pass
-        def __call__(self, x, training):
-            return jnp.ones((x.shape[0], 2))  # B, 2
-
-    class ScalarDyn(nnx.Module):
-        def __init__(self, *, rngs):
-            pass
-        def __call__(self, h, a, training):
-            # Dynamics network should only return next hidden state
-            # The MuZeroNetwork.dynamics method will separately call reward_network
-            return jnp.ones_like(h)  # B, 2
-
-    class ScalarPred(nnx.Module):
-        def __init__(self, *, rngs):
-            pass
-        def __call__(self, h, training):
-            policy = jnp.ones((h.shape[0], NUM_ACTIONS)) * 0.1  # B, A
-            value = jnp.ones((h.shape[0],))  # B (scalar)
-            return value, policy
-
-    class ScalarRew(nnx.Module):
-        def __init__(self, *, rngs):
-            pass
-        def __call__(self, h, training):
-            return jnp.zeros((h.shape[0],))  # B (scalar reward)
-    
-    # Create model with scalar outputs but categorical loss configuration
-    mock_cfg = MockNetCfg(
-        observation_shape=cfg_flat.observation_shape,
-        num_actions=cfg_flat.num_actions,
-        hidden_size=cfg_flat.hidden_size,
-        value_support_size=601,
-        reward_support_size=601,
-        use_projection=False,
-        batch_size=cfg_flat.batch_size
-    )
-    model = make_model(key, mock_cfg)
-    model.representation_network = ScalarRep(rngs=nnx.Rngs(params=key))
-    model.dynamics_network = ScalarDyn(rngs=nnx.Rngs(params=key))
-    model.prediction_network = ScalarPred(rngs=nnx.Rngs(params=key))
-    model.reward_network = ScalarRew(rngs=nnx.Rngs(params=key))
-    
-    # Create batch with scalar targets  
-    batch = make_batch(key, cfg.batch_size, mock_cfg.observation_shape, mock_cfg.num_actions, cfg.num_unroll_steps, 
-                      vsup=601, rsup=601, use_proj=False)
-    
-    # Force targets to be scalar for this test to trigger transformation paths
-    scalar_values = jnp.ones((cfg.batch_size, cfg.num_unroll_steps + 1))  # B, K+1
-    scalar_rewards = jnp.zeros((cfg.batch_size, cfg.num_unroll_steps + 1))  # B, K+1
-    
-    batch = {
-        **batch,
-        'target_value': scalar_values,  # Scalar targets
-        'target_reward': scalar_rewards  # Scalar targets
-    }
-    
-    try:
-        loss, metrics = Learner._compute_total_loss_static(
-            model=model,
-            config=cfg,
-            batch=batch,
-            rng_key=key,
-            training=True
-        )
-        
-        assert jnp.isfinite(loss), "Loss should be finite"
-        assert 'total_loss' in metrics
-        assert 'policy_loss' in metrics
-        assert 'value_loss' in metrics  
-        assert 'reward_loss' in metrics
-        
-        print("✅ Loss computation successful with discrete support transformations!")
-        print(f"  Total loss: {metrics['total_loss']:.6f}")
-        print(f"  Policy loss: {metrics['policy_loss']:.6f}")
-        print(f"  Value loss: {metrics['value_loss']:.6f}")
-        print(f"  Reward loss: {metrics['reward_loss']:.6f}")
-        print(f"  Entropy loss: {metrics['entropy_loss']:.6f}")
-        
-    except Exception as e:
-        pytest.fail(f"Loss computation failed with discrete support transformations: {e}")
-        
-    # Test that transformations are actually converting formats
-    # Direct test: scalar to support
-    scalar_vals = jnp.array([1.0, -2.0, 3.5])
-    support_dist = losses_lib.scalar_to_support(scalar_vals, num_atoms=601)
-    assert support_dist.shape == (3, 601), "Should convert to support distribution"
-    
-    # Direct test: support to scalar 
-    logits = jnp.ones((2, 601)) * 0.1  # Uniform-ish distribution
-    scalar_vals_converted = losses_lib.support_to_scalar(logits, num_atoms=601)
-    assert scalar_vals_converted.shape == (2,), "Should convert to scalar"
-    
-    print("✅ Direct transformation tests passed!")
-    print("✅ Discrete support transformations are properly integrated into loss computation!")
+# Duplicate function removed - keeping only the first version above
 
 
 def test_symlog_and_kl_loss_types(key, cfg_flat):
@@ -3771,10 +3681,10 @@ def test_wandb_logging_disabled(key, cfg_flat):
     optimizer_def = optax.adam(learning_rate=1e-4)
     learner = Learner(model, optimizer_def, cfg, key)
     
-    # Create a simple batch generator
+        # Create a simple batch generator
     def batch_generator():
         while True:
-            batch = make_batch(key, cfg.batch_size, cfg.observation_shape, cfg.num_actions, 
+            batch = make_batch(key, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions,
                              cfg.num_unroll_steps, vsup=0, rsup=0, use_proj=False)
             yield batch
     
@@ -3819,14 +3729,13 @@ def test_entropy_loss_integration(key, cfg_flat):
 
 def test_weight_decay_vs_l2_paths(key, cfg_flat):
     """Test different L2 regularization paths to cover missing lines."""
-    # Test with weight_decay = 0 (should use manual L2)
-    cfg_manual_l2 = make_cfg(vsup=0, rsup=0, steps=1, proj=False, suffix="_manual_l2", use_ema=False)
-    cfg_manual_l2.weight_decay = 0.0
-    cfg_manual_l2.l2_weight = 1e-4
+    # Test with weight_decay = 0 (should use manual L2) - use dataclasses.replace since it's frozen
+    cfg_manual_l2_base = make_cfg(vsup=0, rsup=0, steps=1, proj=False, suffix="_manual_l2", use_ema=False)
+    cfg_manual_l2 = dataclasses.replace(cfg_manual_l2_base, weight_decay=0.0, l2_weight=1e-4)
     
     model_manual = make_model(key, cfg_manual_l2)
-    batch_manual = make_batch(key, cfg_manual_l2.batch_size, cfg_manual_l2.observation_shape,
-                             cfg_manual_l2.num_actions, cfg_manual_l2.num_unroll_steps,
+    batch_manual = make_batch(key, cfg_manual_l2.batch_size, cfg_flat.observation_shape,
+                             cfg_flat.num_actions, cfg_manual_l2.num_unroll_steps,
                              vsup=0, rsup=0, use_proj=False)
     
     loss_manual, metrics_manual = Learner._compute_total_loss_static(
@@ -3837,13 +3746,12 @@ def test_weight_decay_vs_l2_paths(key, cfg_flat):
     assert metrics_manual['l2_loss'] > 0.0  # Should have L2 regularization
     
     # Test with weight_decay > 0 (should skip manual L2)
-    cfg_weight_decay = make_cfg(vsup=0, rsup=0, steps=1, proj=False, suffix="_weight_decay", use_ema=False)
-    cfg_weight_decay.weight_decay = 1e-4
-    cfg_weight_decay.l2_weight = 1e-4
+    cfg_weight_decay_base = make_cfg(vsup=0, rsup=0, steps=1, proj=False, suffix="_weight_decay", use_ema=False)
+    cfg_weight_decay = dataclasses.replace(cfg_weight_decay_base, weight_decay=1e-4, l2_weight=1e-4)
     
     model_wd = make_model(key, cfg_weight_decay)
-    batch_wd = make_batch(key, cfg_weight_decay.batch_size, cfg_weight_decay.observation_shape,
-                         cfg_weight_decay.num_actions, cfg_weight_decay.num_unroll_steps,
+    batch_wd = make_batch(key, cfg_weight_decay.batch_size, cfg_flat.observation_shape,
+                         cfg_flat.num_actions, cfg_weight_decay.num_unroll_steps,
                          vsup=0, rsup=0, use_proj=False)
     
     loss_wd, metrics_wd = Learner._compute_total_loss_static(
@@ -3861,7 +3769,7 @@ def test_ssl_projection_integration(key, cfg_flat):
     cfg = make_cfg(vsup=0, rsup=0, steps=3, proj=True, suffix="_ssl", use_ema=False, ssl_weight=1.0)
     
     model = make_model(key, cfg)
-    batch = make_batch(key, cfg.batch_size, cfg.observation_shape, cfg.num_actions,
+    batch = make_batch(key, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions,
                       cfg.num_unroll_steps, vsup=0, rsup=0, proj_dim=8, use_proj=True)
     
     loss, metrics = Learner._compute_total_loss_static(
