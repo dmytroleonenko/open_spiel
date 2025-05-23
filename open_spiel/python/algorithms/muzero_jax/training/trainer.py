@@ -204,13 +204,14 @@ class Learner:
         for k_idx in range(config.num_unroll_steps + 1):
             step_mask = game_history_mask[:, k_idx] # B
             
-            # Policy Loss
+            # Policy Loss - per-item losses from loss function
             p_loss = losses_lib.compute_policy_loss(
                 predicted_policy_logits[:, k_idx], target_policies[:, k_idx]
-            ) # Scalar per batch item
-            total_policy_loss += jnp.sum(p_loss * step_mask) / jnp.maximum(jnp.sum(step_mask), 1.0)
+            ) # Shape (B,) - per-item losses
+            masked_p_loss = p_loss * step_mask
+            total_policy_loss += jnp.sum(masked_p_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
 
-            # Value Loss
+            # Value Loss - per-item losses from loss function
             if config.value_support_size > 0:
                 v_loss = losses_lib.compute_categorical_value_loss(
                     predicted_values[:, k_idx], target_values[:, k_idx]
@@ -222,9 +223,11 @@ class Learner:
                 tv = target_values[:, k_idx]
                 if tv.ndim == 2 and tv.shape[-1] == 1: tv = jnp.squeeze(tv, axis=-1)
                 v_loss = losses_lib.compute_scalar_value_loss(sv, tv)
-            total_value_loss += jnp.sum(v_loss * step_mask) / jnp.maximum(jnp.sum(step_mask), 1.0)
+            # Shape (B,) - per-item losses
+            masked_v_loss = v_loss * step_mask
+            total_value_loss += jnp.sum(masked_v_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
 
-            # Reward Loss
+            # Reward Loss - per-item losses from loss function
             if config.reward_support_size > 0:
                 r_loss = losses_lib.compute_categorical_reward_loss(
                     predicted_rewards[:, k_idx], target_rewards[:, k_idx]
@@ -235,9 +238,11 @@ class Learner:
                 tr = target_rewards[:, k_idx]
                 if tr.ndim == 2 and tr.shape[-1] == 1: tr = jnp.squeeze(tr, axis=-1)
                 r_loss = losses_lib.compute_scalar_reward_loss(sr, tr)
-            total_reward_loss += jnp.sum(r_loss * step_mask) / jnp.maximum(jnp.sum(step_mask), 1.0)
+            # Shape (B,) - per-item losses
+            masked_r_loss = r_loss * step_mask
+            total_reward_loss += jnp.sum(masked_r_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
             
-            # SSL Loss for this step (if applicable)
+            # SSL Loss for this step (if applicable) - per-item losses from loss function
             # Compare projection at step k_idx with initial_projection (from step 0)
             if config.use_projection and config.ssl_consistency_loss_weight > 0 and \
                predicted_projections is not None and initial_projection is not None and k_idx > 0: 
@@ -246,7 +251,9 @@ class Learner:
                     predicted_projections[:, k_idx], # Projection at current unroll step k_idx
                     initial_projection # Projection from initial_inference (step 0)
                 )
-                total_ssl_loss += jnp.sum(ssl_loss_step * step_mask) / jnp.maximum(jnp.sum(step_mask), 1.0)
+                # Shape (B,) - per-item losses
+                masked_ssl_loss = ssl_loss_step * step_mask
+                total_ssl_loss += jnp.sum(masked_ssl_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
 
 
         # L2 regularization needs only Param state.

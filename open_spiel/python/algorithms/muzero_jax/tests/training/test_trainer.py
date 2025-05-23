@@ -417,24 +417,26 @@ def test_loss_static(key, img, val_cat, proj, use_ema, scalar_targets, cfg_flat,
         clipped_sim1_test = jnp.clip(sim1_test, -1.0, 1.0)
         clipped_sim2_test = jnp.clip(sim2_test, -1.0, 1.0)
         
-        # For batch_size_test = 1, jnp.mean over the batch dim is just the value itself
+        # For batch_size_test = 1, the per-item loss is the value itself
         # The loss is applied per unroll step, and then averaged.
         # Here, we only care about the SSL loss for k_idx=1 vs k_idx=0
         # The total_ssl_loss in _compute_total_loss_static averages this over masked steps.
         # Since mask_data[:, 1] is 1 and batch_size is 1, this should be direct.
         
         # This is the per-instance loss for the (proj1_pred, proj0_pred) pair
-        ssl_loss_for_this_pair = -jnp.mean(clipped_sim1_test) - jnp.mean(clipped_sim2_test)
+        # Note: compute_projection_consistency_loss now returns per-item losses, not batch-averaged
+        ssl_loss_per_item = -clipped_sim1_test - clipped_sim2_test  # Shape (B,)
         
         # The test setup has unroll_steps_test = 1.
         # The SSL loss is calculated for k_idx > 0. So only for k_idx = 1.
-        # The trainer\'s _compute_total_loss_static applies a mask and averages.
-        # expected_ssl_loss should be the value that goes into metrics[\'ssl_loss\']
+        # The trainer's _compute_total_loss_static applies a mask and averages.
+        # expected_ssl_loss should be the value that goes into metrics['ssl_loss']
         # which is total_ssl_loss, accumulated and averaged.
         # For a single unroll step (k_idx=1), and batch size 1, with mask=1:
         # total_ssl_loss = (sum over k_idx > 0) of [ (sum over batch for (loss_val * mask)) / sum(mask) ]
         # Here, just one term: ( ( (loss_for_pair_batch_item_0 * 1) / 1 )
-        expected_ssl_loss = ssl_loss_for_this_pair / 2.0 # Corrected: SimSiam style loss includes / 2.0
+        # Since ssl_loss_per_item has shape (B,) and B=1, we take the first (and only) element
+        expected_ssl_loss = ssl_loss_per_item[0]  # For batch_size_test = 1, take the single batch item loss
 
         # Add L2 for projection network if it exists
         expected_l2_loss += 0.5 * cfg_learner.l2_weight * jnp.sum(fixed_model.projection_network.proj_w**2)
@@ -1691,12 +1693,8 @@ def test_gradient_update_verification_with_fixed_network(key, cfg_flat):
 def test_mask_aware_loss_verification(key, cfg_flat):
     """Action Item 3: Add mask-aware loss tests.
     
-    Tests that game_history_mask completely zero-out contributions for padded steps.
-    This is easy to regress silently.
-    
-    NOTE: This test reveals a BUG in the current implementation! 
-    The loss functions return scalars (averaged over batch), but the trainer
-    tries to apply per-item masking. The masking logic needs to be fixed.
+    Tests that game_history_mask correctly zero-out contributions for padded steps.
+    With the fixed implementation, per-item losses are properly masked.
     """
     mk, lk, bk = jax.random.split(key, 3)
     
@@ -1783,13 +1781,30 @@ def test_mask_aware_loss_verification(key, cfg_flat):
                                        clip_grad_norm=0.0,
                                        batch_size=batch_size_test)
 
-    # Create two identical batches
+    # Create two identical batches with different masks
     fixed_obs = jnp.ones((batch_size_test, unroll_steps_test + 1, *obs_shape_test)) * 0.5
     fixed_action = jnp.ones((batch_size_test, unroll_steps_test), dtype=jnp.int32) * 1
-    fixed_target_policy = jnp.array([0.2, 0.5, 0.3]).reshape(1, 1, 3)
-    fixed_target_policy = jnp.tile(fixed_target_policy, (batch_size_test, unroll_steps_test + 1, 1))
-    fixed_target_value = jnp.ones((batch_size_test, unroll_steps_test + 1)) * 0.8
-    fixed_target_reward = jnp.ones((batch_size_test, unroll_steps_test + 1)) * 0.6
+    
+    # Create DIFFERENT targets for each batch item to make masking effects visible
+    # First batch item gets one set of targets, second batch item gets different targets
+    fixed_target_policy_item1 = jnp.array([0.2, 0.5, 0.3]).reshape(1, 1, 3)
+    fixed_target_policy_item2 = jnp.array([0.6, 0.1, 0.3]).reshape(1, 1, 3)  # Different policy
+    fixed_target_policy = jnp.concatenate([
+        jnp.tile(fixed_target_policy_item1, (1, unroll_steps_test + 1, 1)),
+        jnp.tile(fixed_target_policy_item2, (1, unroll_steps_test + 1, 1))
+    ], axis=0)  # Shape: (2, 3, 3)
+    
+    # Different value targets for each batch item
+    fixed_target_value = jnp.array([
+        [0.8, 0.8, 0.8],  # First batch item: all 0.8
+        [0.3, 0.3, 0.3]   # Second batch item: all 0.3
+    ])  # Shape: (2, 3)
+    
+    # Different reward targets for each batch item  
+    fixed_target_reward = jnp.array([
+        [0.6, 0.6, 0.6],  # First batch item: all 0.6
+        [0.2, 0.2, 0.2]   # Second batch item: all 0.2
+    ])  # Shape: (2, 3)
 
     # Batch 1: Full mask (all ones)
     full_mask = jnp.ones((batch_size_test, unroll_steps_test + 1))
@@ -1802,60 +1817,75 @@ def test_mask_aware_loss_verification(key, cfg_flat):
         'game_history_mask': full_mask
     }
 
-    # Batch 2: Half mask (second half steps are masked out)
+    # Batch 2: Partial mask (only first step valid for both batch items)
     # For unroll_steps_test=2, we have 3 total steps (indices 0, 1, 2)
     # Mask out steps 1 and 2 (keep only step 0)
-    half_mask = jnp.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])  # Only first step is valid
-    batch_half_mask = {
+    partial_mask = jnp.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])  # Only first step is valid
+    batch_partial_mask = {
         'observation': fixed_obs,
         'action': fixed_action,
         'target_policy': fixed_target_policy,
         'target_value': fixed_target_value,
         'target_reward': fixed_target_reward,
-        'game_history_mask': half_mask
+        'game_history_mask': partial_mask
     }
 
-    # Compute losses for both batches
+    # Batch 3: Mixed mask (different patterns for each batch item)
+    # First batch item: all steps valid
+    # Second batch item: only middle step valid (step 1)
+    mixed_mask = jnp.array([[1.0, 1.0, 1.0], [0.0, 1.0, 0.0]])  # Different masking patterns
+    batch_mixed_mask = {
+        'observation': fixed_obs,
+        'action': fixed_action,
+        'target_policy': fixed_target_policy,
+        'target_value': fixed_target_value,
+        'target_reward': fixed_target_reward,
+        'game_history_mask': mixed_mask
+    }
+
+    # Compute losses for all batches
     loss_full, metrics_full = Learner._compute_total_loss_static(
         toy_model, cfg_mask_test, batch_full_mask, lk, training=False
     )
 
-    loss_half, metrics_half = Learner._compute_total_loss_static(
-        toy_model, cfg_mask_test, batch_half_mask, lk, training=False
+    loss_partial, metrics_partial = Learner._compute_total_loss_static(
+        toy_model, cfg_mask_test, batch_partial_mask, lk, training=False
     )
 
-    print(f"🔍 Mask-aware loss verification (revealing current implementation bug):")
+    loss_mixed, metrics_mixed = Learner._compute_total_loss_static(
+        toy_model, cfg_mask_test, batch_mixed_mask, lk, training=False
+    )
+
+    print(f"✅ Mask-aware loss verification (after bug fix):")
     print(f"   Full mask losses - Policy: {metrics_full['policy_loss']:.6f}, Value: {metrics_full['value_loss']:.6f}, Reward: {metrics_full['reward_loss']:.6f}")
-    print(f"   Half mask losses - Policy: {metrics_half['policy_loss']:.6f}, Value: {metrics_half['value_loss']:.6f}, Reward: {metrics_half['reward_loss']:.6f}")
+    print(f"   Partial mask losses - Policy: {metrics_partial['policy_loss']:.6f}, Value: {metrics_partial['value_loss']:.6f}, Reward: {metrics_partial['reward_loss']:.6f}")
+    print(f"   Mixed mask losses - Policy: {metrics_mixed['policy_loss']:.6f}, Value: {metrics_mixed['value_loss']:.6f}, Reward: {metrics_mixed['reward_loss']:.6f}")
     
-    # Instead of testing for the CORRECT behavior (which would be 1/3 reduction),
-    # let's verify the CURRENT (buggy) behavior to document the bug
-    
-    # The current implementation has this bug in trainer.py lines 198-203:
-    # p_loss = losses_lib.compute_policy_loss(...) # Returns scalar
-    # total_policy_loss += jnp.sum(p_loss * step_mask) / jnp.maximum(jnp.sum(step_mask), 1.0)
-    # This doesn't make sense because p_loss is a scalar, not per-item losses
-    
-    # Let's verify the current behavior at least doesn't crash and produces some output
+    # Verify correct masking behavior
     assert isinstance(loss_full, jax.Array) and loss_full.shape == ()
-    assert isinstance(loss_half, jax.Array) and loss_half.shape == ()
-    assert 'policy_loss' in metrics_full and 'policy_loss' in metrics_half
-    assert 'value_loss' in metrics_full and 'value_loss' in metrics_half  
-    assert 'reward_loss' in metrics_full and 'reward_loss' in metrics_half
+    assert isinstance(loss_partial, jax.Array) and loss_partial.shape == ()
+    assert isinstance(loss_mixed, jax.Array) and loss_mixed.shape == ()
     
-    # The losses should be different (due to the buggy masking)
-    assert not jnp.allclose(loss_full, loss_half), "Losses should be different with different masks"
-    assert not jnp.allclose(metrics_full['policy_loss'], metrics_half['policy_loss']), "Policy losses should be different"
+    # The losses should be different due to proper masking
+    assert not jnp.allclose(loss_full, loss_partial), "Full and partial mask losses should differ"
+    assert not jnp.allclose(loss_full, loss_mixed), "Full and mixed mask losses should differ"
     
-    # Test that both masked and unmasked losses are finite and positive
-    assert jnp.isfinite(loss_full) and jnp.isfinite(loss_half)
-    assert loss_full > 0 and loss_half > 0
+    # Partial mask should have lower losses (fewer contributing steps)
+    # Full mask has 3 steps per batch item, partial mask has 1 step per batch item  
+    assert loss_partial < loss_full, "Partial mask should have lower loss than full mask"
     
-    print(f"⚠️ Current implementation behavior verified (but contains bug):")
-    print(f"   - Masking logic is implemented incorrectly")
-    print(f"   - Loss functions return scalars but trainer tries per-item masking")
-    print(f"   - The mask affects loss computation but not in the expected way")
-    print(f"   - This test documents the bug for future fixing")
+    # Mixed mask has 3 steps for item 1, 1 step for item 2, so between partial and full
+    assert loss_partial < loss_mixed < loss_full, "Mixed mask loss should be between partial and full"
+    
+    # Test that all losses are finite and positive
+    assert jnp.isfinite(loss_full) and jnp.isfinite(loss_partial) and jnp.isfinite(loss_mixed)
+    assert loss_full > 0 and loss_partial > 0 and loss_mixed > 0
+    
+    print(f"✅ Masking now works correctly:")
+    print(f"   - Per-item losses are properly computed and masked")
+    print(f"   - Masked steps/items contribute zero to the total loss")
+    print(f"   - Averaging is done only over valid (unmasked) items")
+    print(f"   - Bug has been successfully fixed!")
 
 # Add this test after the mask-aware loss verification test
 

@@ -8,17 +8,16 @@ from open_spiel.python.algorithms.muzero_jax.training import losses
 def test_scalar_mse_loss_basic():
     pred = jnp.array([1., 2., 3.])
     target = jnp.array([1.5, 2.5, 2.5])
-    # ((1-1.5)^2 + (2-2.5)^2 + (3-2.5)^2) / 3
-    # = (0.25 + 0.25 + 0.25) / 3 = 0.75 / 3 = 0.25
-    expected_loss = jnp.array(0.25)
-    assert jnp.isclose(losses.scalar_mse_loss(pred, target), expected_loss)
+    # Per-item losses: (1-1.5)^2, (2-2.5)^2, (3-2.5)^2 = 0.25, 0.25, 0.25
+    expected_loss = jnp.array([0.25, 0.25, 0.25])
+    assert jnp.allclose(losses.scalar_mse_loss(pred, target), expected_loss)
 
 def test_scalar_mse_loss_batch():
     pred = jnp.array([[1., 2.], [3., 4.]])
     target = jnp.array([[1.5, 2.5], [2.5, 3.5]])
-    # ((0.25+0.25)/2 + (0.25+0.25)/2) / 2 = (0.25 + 0.25) / 2 = 0.25
-    expected_loss = jnp.array(0.25)
-    assert jnp.isclose(losses.scalar_mse_loss(pred, target), expected_loss)
+    # Per-batch-item losses: [(1-1.5)^2+(2-2.5)^2], [(3-2.5)^2+(4-3.5)^2] = [0.5], [0.5]
+    expected_loss = jnp.array([0.5, 0.5])
+    assert jnp.allclose(losses.scalar_mse_loss(pred, target), expected_loss)
 
 # --- Test cross_entropy_loss_with_logits ---
 def test_cross_entropy_loss_basic():
@@ -27,17 +26,17 @@ def test_cross_entropy_loss_basic():
     targets = jnp.array([[0., 1., 0.]]) # True class is 1
     # For a target of [0,1,0], loss is -log(softmax(logits)[1])
     # softmax(logits)[1] = exp(1)/(exp(0)+exp(1)+exp(0)) = e / (2+e) approx 2.718 / (2+2.718) = 0.576
-    # -log(0.576) approx 0.551
-    expected_loss = -jnp.log(jnp.exp(1.) / (2 * jnp.exp(0.) + jnp.exp(1.)))
-    assert jnp.isclose(losses.cross_entropy_loss_with_logits(logits, targets), expected_loss)
+    # -log(0.576) approx 0.551 (per-item loss for the single batch item)
+    expected_loss = jnp.array([-jnp.log(jnp.exp(1.) / (2 * jnp.exp(0.) + jnp.exp(1.)))])
+    assert jnp.allclose(losses.cross_entropy_loss_with_logits(logits, targets), expected_loss)
 
 def test_cross_entropy_loss_batch():
     logits = jnp.array([[0., 1., 0.], [1., 0., 0.]])
     targets = jnp.array([[0., 1., 0.], [1., 0., 0.]])
     loss1 = -jnp.log(jnp.exp(1.) / (2 * jnp.exp(0.) + jnp.exp(1.)))
     loss2 = -jnp.log(jnp.exp(1.) / (2 * jnp.exp(0.) + jnp.exp(1.))) # Same due to symmetry
-    expected_loss = (loss1 + loss2) / 2
-    assert jnp.isclose(losses.cross_entropy_loss_with_logits(logits, targets), expected_loss)
+    expected_loss = jnp.array([loss1, loss2])  # Per-item losses
+    assert jnp.allclose(losses.cross_entropy_loss_with_logits(logits, targets), expected_loss)
 
 # --- Test l2_regularization ---
 def test_l2_regularization_basic():
@@ -76,47 +75,47 @@ def test_compute_policy_loss():
     logits = jnp.array([[0., 1., 0.]])
     targets = jnp.array([[0., 1., 0.]])
     expected_loss = losses.cross_entropy_loss_with_logits(logits, targets)
-    assert jnp.isclose(losses.compute_policy_loss(logits, targets), expected_loss)
+    assert jnp.allclose(losses.compute_policy_loss(logits, targets), expected_loss)
 
 # --- Test compute_scalar_value_loss ---
 def test_compute_scalar_value_loss():
     pred = jnp.array([10., 20.])
     target = jnp.array([11., 19.])
     expected_loss = losses.scalar_mse_loss(pred, target)
-    assert jnp.isclose(losses.compute_scalar_value_loss(pred, target), expected_loss)
+    assert jnp.allclose(losses.compute_scalar_value_loss(pred, target), expected_loss)
 
 def test_compute_scalar_value_loss_with_extra_dim():
     pred = jnp.array([[10.], [20.]])
     target = jnp.array([[11.], [19.]])
     expected_loss = losses.scalar_mse_loss(jnp.squeeze(pred), jnp.squeeze(target))
-    assert jnp.isclose(losses.compute_scalar_value_loss(pred, target), expected_loss)
+    assert jnp.allclose(losses.compute_scalar_value_loss(pred, target), expected_loss)
 
 # --- Test compute_categorical_value_loss ---
 def test_compute_categorical_value_loss():
     logits = jnp.array([[0., 0., 1.], [1., 0., 0.]]) # Batch 2, 3 classes
     targets = jnp.array([[0.1, 0.1, 0.8], [0.9, 0.05, 0.05]])
     expected_loss = losses.cross_entropy_loss_with_logits(logits, targets)
-    assert jnp.isclose(losses.compute_categorical_value_loss(logits, targets), expected_loss)
+    assert jnp.allclose(losses.compute_categorical_value_loss(logits, targets), expected_loss)
 
 # --- Test compute_scalar_reward_loss ---
 def test_compute_scalar_reward_loss():
     pred = jnp.array([-1., 1.])
     target = jnp.array([-0.5, 0.5])
     expected_loss = losses.scalar_mse_loss(pred, target)
-    assert jnp.isclose(losses.compute_scalar_reward_loss(pred, target), expected_loss)
+    assert jnp.allclose(losses.compute_scalar_reward_loss(pred, target), expected_loss)
 
 def test_compute_scalar_reward_loss_with_extra_dim():
     pred = jnp.array([[-1.], [1.]])
     target = jnp.array([[-0.5], [0.5]])
     expected_loss = losses.scalar_mse_loss(jnp.squeeze(pred), jnp.squeeze(target))
-    assert jnp.isclose(losses.compute_scalar_reward_loss(pred, target), expected_loss)
+    assert jnp.allclose(losses.compute_scalar_reward_loss(pred, target), expected_loss)
 
 # --- Test compute_categorical_reward_loss ---
 def test_compute_categorical_reward_loss():
     logits = jnp.array([[0.5, 0.5], [0.8, 0.2]]) # Batch 2, 2 classes (e.g. reward present/absent)
     targets = jnp.array([[0.4, 0.6], [0.7, 0.3]])
     expected_loss = losses.cross_entropy_loss_with_logits(logits, targets)
-    assert jnp.isclose(losses.compute_categorical_reward_loss(logits, targets), expected_loss)
+    assert jnp.allclose(losses.compute_categorical_reward_loss(logits, targets), expected_loss)
 
 # --- Test ValueError conditions ---
 def test_scalar_mse_loss_shape_mismatch():

@@ -4,26 +4,40 @@ import optax # For softmax_cross_entropy
 from typing import Any # For PyTrees
 
 def scalar_mse_loss(prediction: jax.Array, target: jax.Array) -> jax.Array:
-    """Computes Mean Squared Error loss for scalar predictions."""
+    """Computes Mean Squared Error loss for scalar predictions (per-batch-item).
+    
+    Returns:
+        Per-batch-item losses. Shape (batch_size,).
+    """
     if prediction.shape != target.shape:
         raise ValueError(f"Prediction shape {prediction.shape} must match target shape {target.shape}") # pragma: no cover
-    return jnp.mean(jnp.square(prediction - target))
+    
+    squared_errors = jnp.square(prediction - target)
+    
+    # Sum across all dimensions except the first (batch dimension)
+    # This handles both scalar inputs (1D) and multi-dimensional features
+    if squared_errors.ndim == 1:
+        # Already per-batch-item for 1D inputs
+        return squared_errors
+    else:
+        # Sum across feature dimensions for each batch item
+        return jnp.sum(squared_errors, axis=tuple(range(1, squared_errors.ndim)))
 
 def cross_entropy_loss_with_logits(logits: jax.Array, targets: jax.Array) -> jax.Array:
-    """Computes softmax cross-entropy loss.
+    """Computes softmax cross-entropy loss (per-item).
     
     Args:
         logits: Network output before softmax. Shape (batch_size, num_classes).
         targets: Target probabilities (e.g., MCTS policy). Shape (batch_size, num_classes).
     
     Returns:
-        Mean cross-entropy loss.
+        Per-item cross-entropy losses. Shape (batch_size,).
     """
     if logits.shape != targets.shape:
         raise ValueError(f"Logits shape {logits.shape} must match targets shape {targets.shape}") # pragma: no cover
     if logits.ndim != 2:
         raise ValueError(f"Logits and targets must be 2D (batch_size, num_classes), got {logits.ndim}D") # pragma: no cover
-    return jnp.mean(optax.softmax_cross_entropy(logits=logits, labels=targets))
+    return optax.softmax_cross_entropy(logits=logits, labels=targets)  # Return per-item losses, shape (batch_size,)
 
 def l2_regularization(params: Any, weight: float) -> jax.Array:
     """Computes L2 regularization loss for a PyTree of parameters."""
@@ -85,11 +99,11 @@ def compute_projection_consistency_loss(
                                  One of the pair will have stop_gradient applied.
 
     Returns:
-        The SSL consistency loss.
+        Per-item SSL consistency losses. Shape (batch_size,).
     """
     # EfficientZeroV2 style:
     # loss = projection_loss(p_obs, p_pred.detach()) + projection_loss(p_pred, p_obs.detach())
-    # where projection_loss(p, z) = -cosine_similarity(p, z).mean()
+    # where projection_loss(p, z) = -cosine_similarity(p, z) (per-item, not averaged)
 
     sim1 = optax.cosine_similarity(projection_current_step, jax.lax.stop_gradient(projection_initial_step))
     sim2 = optax.cosine_similarity(jax.lax.stop_gradient(projection_current_step), projection_initial_step)
@@ -98,6 +112,6 @@ def compute_projection_consistency_loss(
     clipped_sim1 = jnp.clip(sim1, -1.0, 1.0)
     clipped_sim2 = jnp.clip(sim2, -1.0, 1.0)
 
-    loss1 = -jnp.mean(clipped_sim1)
-    loss2 = -jnp.mean(clipped_sim2)
-    return loss1 + loss2 
+    loss1 = -clipped_sim1  # Per-item loss, shape (batch_size,)
+    loss2 = -clipped_sim2  # Per-item loss, shape (batch_size,)
+    return loss1 + loss2   # Per-item losses, shape (batch_size,) 
