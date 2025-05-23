@@ -113,10 +113,42 @@ def test_compute_scalar_reward_loss_with_extra_dim():
 
 # --- Test compute_categorical_reward_loss ---
 def test_compute_categorical_reward_loss():
+    """Test that categorical reward loss uses KL divergence."""
     logits = jnp.array([[0.5, 0.5], [0.8, 0.2]]) # Batch 2, 2 classes (e.g. reward present/absent)
     targets = jnp.array([[0.4, 0.6], [0.7, 0.3]])
-    expected_loss = losses.cross_entropy_loss_with_logits(logits, targets)
+    expected_loss = losses.compute_kl_loss(logits, targets)  # Now uses KL divergence
     assert jnp.allclose(losses.compute_categorical_reward_loss(logits, targets), expected_loss)
+
+def test_categorical_reward_loss_vs_cross_entropy():
+    """Verify that categorical reward loss differs from cross-entropy loss."""
+    logits = jnp.array([[1.0, 0.0, 0.5], [0.0, 1.0, 0.0]])
+    targets = jnp.array([[0.6, 0.2, 0.2], [0.1, 0.8, 0.1]])
+    
+    kl_loss = losses.compute_categorical_reward_loss(logits, targets)
+    cross_entropy_loss = losses.cross_entropy_loss_with_logits(logits, targets)
+    
+    # KL loss and cross-entropy should generally differ
+    assert not jnp.allclose(kl_loss, cross_entropy_loss)
+    # Both should return per-batch losses
+    assert kl_loss.shape == (2,)
+    assert cross_entropy_loss.shape == (2,)
+
+def test_categorical_reward_loss_equivalence_with_kl():
+    """Test that categorical reward loss is equivalent to direct KL loss computation."""
+    # Test with multiple cases
+    test_cases = [
+        # Uniform distributions
+        (jnp.array([[0.0, 0.0, 0.0]]), jnp.array([[1/3, 1/3, 1/3]])),
+        # Peaked distributions  
+        (jnp.array([[5.0, 0.0, 0.0]]), jnp.array([[0.9, 0.05, 0.05]])),
+        # Mixed batch
+        (jnp.array([[1.0, 2.0], [0.5, 1.5]]), jnp.array([[0.3, 0.7], [0.6, 0.4]])),
+    ]
+    
+    for logits, targets in test_cases:
+        categorical_loss = losses.compute_categorical_reward_loss(logits, targets)
+        direct_kl_loss = losses.compute_kl_loss(logits, targets)
+        assert jnp.allclose(categorical_loss, direct_kl_loss), f"Failed for logits {logits}, targets {targets}"
 
 # --- Test ValueError conditions ---
 def test_scalar_mse_loss_shape_mismatch():
@@ -258,12 +290,38 @@ def test_compute_projection_consistency_loss():
     result = losses.compute_projection_consistency_loss(projection_current, projection_initial)
     
     # Should compute symmetric cosine similarity loss
+    # Note: No clipping needed since optax.cosine_similarity normalizes inputs
     sim1 = optax.cosine_similarity(projection_current, jax.lax.stop_gradient(projection_initial))
     sim2 = optax.cosine_similarity(jax.lax.stop_gradient(projection_current), projection_initial)
-    expected = -jnp.clip(sim1, -1.0, 1.0) + -jnp.clip(sim2, -1.0, 1.0)
+    expected = -sim1 + -sim2
     
     assert jnp.allclose(result, expected)
     assert result.shape == (2,)  # Per-batch losses
+
+def test_optax_cosine_similarity_bounds():
+    """Test that optax.cosine_similarity output is naturally bounded in [-1, 1]."""
+    # Test with various input magnitudes and orientations
+    vec1 = jnp.array([[1.0, 0.0], [100.0, 0.0], [-50.0, 25.0], [1e-6, 1e-6]])
+    vec2 = jnp.array([[0.0, 1.0], [0.0, 100.0], [25.0, -50.0], [-1e-6, 1e-6]])
+    
+    similarities = optax.cosine_similarity(vec1, vec2)
+    
+    # Should be bounded in [-1, 1] without explicit clipping
+    assert jnp.all(similarities >= -1.0), f"Found similarity < -1: {jnp.min(similarities)}"
+    assert jnp.all(similarities <= 1.0), f"Found similarity > 1: {jnp.max(similarities)}"
+    assert similarities.shape == (4,)
+    
+    # Test edge cases: identical and opposite vectors
+    identical = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+    opposite = jnp.array([[-1.0, -2.0], [-3.0, -4.0]])
+    
+    sim_identical = optax.cosine_similarity(identical, identical)
+    sim_opposite = optax.cosine_similarity(identical, opposite)
+    
+    # Identical vectors should have cosine similarity of 1
+    assert jnp.allclose(sim_identical, 1.0), f"Identical vectors sim: {sim_identical}"
+    # Opposite vectors should have cosine similarity of -1
+    assert jnp.allclose(sim_opposite, -1.0), f"Opposite vectors sim: {sim_opposite}"
 
 # --- Test compute_policy_entropy ---
 def test_compute_policy_entropy():
@@ -389,4 +447,52 @@ def test_value_loss_squeeze_paths():
     target_squeezed = jnp.squeeze(target_2d, axis=-1)
     expected = losses.scalar_mse_loss(pred_squeezed, target_squeezed)
     
-    assert jnp.allclose(result, expected) 
+    assert jnp.allclose(result, expected)
+
+def test_compute_projection_consistency_loss_numerical_equivalence():
+    """Test that simplified SSL loss (without clipping) produces equivalent results to the clipped version."""
+    # Test various edge cases to ensure clipping was truly redundant
+    test_cases = [
+        # Case 1: Normal vectors
+        (jnp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]), 
+         jnp.array([[0.8, 0.6, 0.0], [0.0, 0.8, 0.6]])),
+        
+        # Case 2: Very large magnitude vectors (should be normalized by optax.cosine_similarity)
+        (jnp.array([[1000.0, 0.0], [0.0, 1000.0]]), 
+         jnp.array([[1000.0, 0.0], [0.0, 1000.0]])),
+        
+        # Case 3: Very small magnitude vectors
+        (jnp.array([[1e-6, 1e-6], [1e-8, 1e-8]]), 
+         jnp.array([[1e-6, -1e-6], [-1e-8, 1e-8]])),
+        
+        # Case 4: Opposite vectors
+        (jnp.array([[1.0, 2.0], [3.0, 4.0]]), 
+         jnp.array([[-1.0, -2.0], [-3.0, -4.0]])),
+        
+        # Case 5: Orthogonal vectors 
+        (jnp.array([[1.0, 0.0], [0.0, 1.0]]), 
+         jnp.array([[0.0, 1.0], [1.0, 0.0]])),
+    ]
+    
+    for i, (proj_current, proj_initial) in enumerate(test_cases):
+        # Compute with our simplified version (current implementation)
+        result_simplified = losses.compute_projection_consistency_loss(proj_current, proj_initial)
+        
+        # Manually compute what the old clipped version would have produced
+        sim1 = optax.cosine_similarity(proj_current, jax.lax.stop_gradient(proj_initial))
+        sim2 = optax.cosine_similarity(jax.lax.stop_gradient(proj_current), proj_initial)
+        clipped_sim1 = jnp.clip(sim1, -1.0, 1.0)
+        clipped_sim2 = jnp.clip(sim2, -1.0, 1.0)
+        result_clipped = -clipped_sim1 + -clipped_sim2
+        
+        # Verify cosine similarities are naturally in bounds (no clipping needed)
+        assert jnp.all(sim1 >= -1.0) and jnp.all(sim1 <= 1.0), f"Case {i}: sim1 out of bounds: {sim1}"
+        assert jnp.all(sim2 >= -1.0) and jnp.all(sim2 <= 1.0), f"Case {i}: sim2 out of bounds: {sim2}"
+        
+        # Results should be identical (clipping was redundant)
+        assert jnp.allclose(result_simplified, result_clipped, atol=1e-7), \
+            f"Case {i}: simplified={result_simplified}, clipped={result_clipped}"
+        
+        # Verify that sim1 and clipped_sim1 are identical (and same for sim2)
+        assert jnp.allclose(sim1, clipped_sim1, atol=1e-7), f"Case {i}: clipping changed sim1"
+        assert jnp.allclose(sim2, clipped_sim2, atol=1e-7), f"Case {i}: clipping changed sim2" 

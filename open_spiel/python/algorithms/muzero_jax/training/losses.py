@@ -109,8 +109,12 @@ def compute_scalar_reward_loss(reward_prediction: jax.Array, target_reward: jax.
     return scalar_mse_loss(prediction=reward_prediction, target=target_reward)
 
 def compute_categorical_reward_loss(reward_logits: jax.Array, target_reward_distribution: jax.Array) -> jax.Array:
-    """Computes reward loss for categorical distributions using cross-entropy."""
-    return cross_entropy_loss_with_logits(logits=reward_logits, targets=target_reward_distribution)
+    """Computes reward loss for categorical distributions using KL divergence (EfficientZeroV2 pattern).
+    
+    This aligns with PyTorch's approach where categorical rewards use KL divergence for consistency
+    with categorical value loss, instead of cross-entropy.
+    """
+    return compute_kl_loss(logits=reward_logits, target_probs=target_reward_distribution)
 
 def compute_symlog_loss(prediction: jax.Array, target: jax.Array, base: float = 2.0) -> jax.Array:
     """Computes loss using symlog transformation (EfficientZeroV2 pattern)."""
@@ -153,12 +157,11 @@ def compute_projection_consistency_loss(
     sim1 = optax.cosine_similarity(projection_current_step, jax.lax.stop_gradient(projection_initial_step))
     sim2 = optax.cosine_similarity(jax.lax.stop_gradient(projection_current_step), projection_initial_step)
     
-    # Clip similarities to be within [-1, 1] before computing loss
-    clipped_sim1 = jnp.clip(sim1, -1.0, 1.0)
-    clipped_sim2 = jnp.clip(sim2, -1.0, 1.0)
+    # Note: optax.cosine_similarity normalizes inputs, ensuring output is in [-1, 1]
+    # No explicit clipping needed - this was redundant
     
     # Return negative cosine similarity as loss (per-item), bidirectional
-    return -clipped_sim1 + -clipped_sim2  # Per-item losses, shape (batch_size,)
+    return -sim1 + -sim2  # Per-item losses, shape (batch_size,)
 
 # --- Symlog functions for EfficientZeroV2 parity ---
 def symlog(x: jax.Array, base: float = 2.0) -> jax.Array:
