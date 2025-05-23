@@ -3914,3 +3914,406 @@ def test_checkpoint_coverage_simple(key, cfg_flat):
                 learner_with_ckpt.checkpoint_manager.close()
         
         print("✅ Checkpoint coverage test completed!")
+
+def test_comprehensive_missing_coverage_lines(key, cfg_flat):
+    """Test the specific missing coverage lines involving squeeze operations and edge cases."""
+    
+    # Test 1: Value loss with scalar predictions that need squeezing from (B, 1) to (B,)
+    class SqueezeTestRep(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, x, training):
+            return jnp.ones((x.shape[0], 2))  # B, 2
+    
+    class SqueezeTestDyn(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, h, a, training):
+            return jnp.ones((h.shape[0], 2))  # B, 2
+    
+    class SqueezeTestPred(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, h, training):
+            # Return values with shape (B, 1) to trigger squeeze operations
+            policy = jnp.ones((h.shape[0], NUM_ACTIONS)) * 0.1  # B, A
+            value = jnp.ones((h.shape[0], 1))  # B, 1 - this will trigger squeeze on line 388
+            return policy, value
+    
+    class SqueezeTestRew(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, h, training):
+            # Return rewards with shape (B, 1) to trigger squeeze operations  
+            return jnp.ones((h.shape[0], 1))  # B, 1 - this will trigger squeeze on line 472
+    
+    # Test with categorical value loss to hit lines 377, 388
+    cfg_categorical_val = make_cfg(vsup=601, rsup=0, steps=1, proj=False, suffix="_squeeze_val", use_ema=False)
+    cfg_categorical_val = dataclasses.replace(cfg_categorical_val, value_loss_type="categorical")
+    
+    rep = lambda model_config, *, rngs: SqueezeTestRep(rngs=rngs)
+    dyn = lambda model_config, *, rngs: SqueezeTestDyn(rngs=rngs)
+    pred = lambda model_config, *, rngs: SqueezeTestPred(rngs=rngs)
+    rew = lambda model_config, *, rngs: SqueezeTestRew(rngs=rngs)
+    
+    model_squeeze_val = MuZeroNetwork(rep, dyn, pred, rew, None, cfg_flat, rngs=nnx.Rngs(params=key))
+    
+    # Create batch with scalar targets that will need conversion 
+    batch_squeeze_val = make_batch(key, cfg_categorical_val.batch_size, cfg_flat.observation_shape,
+                                   cfg_flat.num_actions, cfg_categorical_val.num_unroll_steps,
+                                   vsup=0, rsup=0, use_proj=False)  # vsup=0 means scalar targets
+    
+    # This should trigger the squeeze operations for value
+    loss_val, metrics_val = Learner._compute_total_loss_static(
+        model_squeeze_val, cfg_categorical_val, batch_squeeze_val, key, training=True
+    )
+    assert loss_val.shape == ()
+    assert 'value_loss' in metrics_val
+    
+    # Test 2: Reward loss with scalar predictions that need squeezing from (B, 1) to (B,)
+    cfg_categorical_rew = make_cfg(vsup=0, rsup=601, steps=1, proj=False, suffix="_squeeze_rew", use_ema=False)
+    cfg_categorical_rew = dataclasses.replace(cfg_categorical_rew, reward_loss_type="categorical")
+    
+    model_squeeze_rew = MuZeroNetwork(rep, dyn, pred, rew, None, cfg_flat, rngs=nnx.Rngs(params=key))
+    
+    batch_squeeze_rew = make_batch(key, cfg_categorical_rew.batch_size, cfg_flat.observation_shape,
+                                   cfg_flat.num_actions, cfg_categorical_rew.num_unroll_steps,
+                                   vsup=0, rsup=0, use_proj=False)  # rsup=0 means scalar targets
+    
+    # This should trigger the squeeze operations for reward  
+    loss_rew, metrics_rew = Learner._compute_total_loss_static(
+        model_squeeze_rew, cfg_categorical_rew, batch_squeeze_rew, key, training=True
+    )
+    assert loss_rew.shape == ()
+    assert 'reward_loss' in metrics_rew
+    
+    # Test 3: Symlog value loss with (B, 1) shape tensors to hit lines 402, 413
+    class SymlogSqueezeTestPred(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, h, training):
+            policy = jnp.ones((h.shape[0], NUM_ACTIONS)) * 0.1  # B, A
+            value = jnp.ones((h.shape[0], 1))  # B, 1 - this will trigger squeeze on line 402
+            return policy, value
+    
+    cfg_symlog_val = make_cfg(vsup=0, rsup=0, steps=1, proj=False, suffix="_symlog_squeeze", use_ema=False)
+    cfg_symlog_val = dataclasses.replace(cfg_symlog_val, value_loss_type="symlog")
+    
+    pred_symlog = lambda model_config, *, rngs: SymlogSqueezeTestPred(rngs=rngs)
+    model_symlog = MuZeroNetwork(rep, dyn, pred_symlog, rew, None, cfg_flat, rngs=nnx.Rngs(params=key))
+    
+    # Create batch with target values that have shape (B, 1)
+    batch_symlog = make_batch(key, cfg_symlog_val.batch_size, cfg_flat.observation_shape,
+                              cfg_flat.num_actions, cfg_symlog_val.num_unroll_steps,
+                              vsup=0, rsup=0, use_proj=False)
+    # Reshape target values to (B, K+1, 1) to trigger squeeze on line 413
+    target_values_reshaped = batch_symlog['target_value'][..., None]  # Add dimension
+    batch_symlog_modified = {**batch_symlog, 'target_value': target_values_reshaped}
+    
+    loss_symlog, metrics_symlog = Learner._compute_total_loss_static(
+        model_symlog, cfg_symlog_val, batch_symlog_modified, key, training=True
+    )
+    assert loss_symlog.shape == ()
+    assert 'value_loss' in metrics_symlog
+    
+    # Test 4: MSE value loss with distributions that need conversion to scalars (lines 428, 439)
+    class DistributionTestPred(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, h, training):
+            policy = jnp.ones((h.shape[0], NUM_ACTIONS)) * 0.1  # B, A
+            # Return distribution instead of scalar to trigger support_to_scalar on line 428
+            value_dist = jnp.ones((h.shape[0], 601))  # B, 601 - distribution
+            return policy, value_dist
+    
+    cfg_mse_dist = make_cfg(vsup=0, rsup=0, steps=1, proj=False, suffix="_mse_dist", use_ema=False)
+    cfg_mse_dist = dataclasses.replace(cfg_mse_dist, value_loss_type="mse")
+    
+    pred_dist = lambda model_config, *, rngs: DistributionTestPred(rngs=rngs)
+    model_dist = MuZeroNetwork(rep, dyn, pred_dist, rew, None, cfg_flat, rngs=nnx.Rngs(params=key))
+    
+    # Create batch with distribution targets to trigger squeeze on line 439
+    batch_dist = make_batch(key, cfg_mse_dist.batch_size, cfg_flat.observation_shape,
+                            cfg_flat.num_actions, cfg_mse_dist.num_unroll_steps,
+                            vsup=601, rsup=0, use_proj=False)  # vsup=601 creates distributions
+    
+    loss_dist, metrics_dist = Learner._compute_total_loss_static(
+        model_dist, cfg_mse_dist, batch_dist, key, training=True
+    )
+    assert loss_dist.shape == ()
+    assert 'value_loss' in metrics_dist
+    
+    # Test 5: Reward losses with various squeeze scenarios (lines 461-463, 472-474, etc)
+    class RewardSqueezeTestRew(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, h, training):
+            # Return rewards with shape (B, 1) to trigger squeeze operations on line 461/472
+            return jnp.ones((h.shape[0], 1))  # B, 1
+    
+    # Test categorical reward loss with scalar predictions
+    cfg_cat_rew_squeeze = make_cfg(vsup=0, rsup=601, steps=1, proj=False, suffix="_cat_rew_squeeze", use_ema=False)
+    cfg_cat_rew_squeeze = dataclasses.replace(cfg_cat_rew_squeeze, reward_loss_type="categorical")
+    
+    rew_squeeze = lambda model_config, *, rngs: RewardSqueezeTestRew(rngs=rngs)
+    model_rew_squeeze = MuZeroNetwork(rep, dyn, pred, rew_squeeze, None, cfg_flat, rngs=nnx.Rngs(params=key))
+    
+    batch_rew_squeeze = make_batch(key, cfg_cat_rew_squeeze.batch_size, cfg_flat.observation_shape,
+                                   cfg_flat.num_actions, cfg_cat_rew_squeeze.num_unroll_steps,
+                                   vsup=0, rsup=0, use_proj=False)  # rsup=0 means scalar targets
+    
+    loss_rew_squeeze, metrics_rew_squeeze = Learner._compute_total_loss_static(
+        model_rew_squeeze, cfg_cat_rew_squeeze, batch_rew_squeeze, key, training=True
+    )
+    assert loss_rew_squeeze.shape == ()
+    assert 'reward_loss' in metrics_rew_squeeze
+
+
+def test_remaining_squeeze_operations_comprehensive(key, cfg_flat):
+    """Test the remaining squeeze operations for KL loss and other edge cases."""
+    
+    # Test KL loss with squeeze operations (lines 487, 498)
+    class KLSqueezeTestRew(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, h, training):
+            return jnp.ones((h.shape[0], 1))  # B, 1 - triggers squeeze on line 487
+    
+    cfg_kl = make_cfg(vsup=0, rsup=601, steps=1, proj=False, suffix="_kl_squeeze", use_ema=False)
+    cfg_kl = dataclasses.replace(cfg_kl, reward_loss_type="kl")
+    
+    rep = lambda model_config, *, rngs: MockRep(cfg_flat.observation_shape, cfg_flat.hidden_size, rngs=rngs)
+    dyn = lambda model_config, *, rngs: MockDyn(cfg_flat.hidden_size, cfg_flat.num_actions, rngs=rngs)
+    pred = lambda model_config, *, rngs: MockPred(cfg_flat.hidden_size, cfg_flat.num_actions, 0, rngs=rngs)
+    rew_kl = lambda model_config, *, rngs: KLSqueezeTestRew(rngs=rngs)
+    
+    model_kl = MuZeroNetwork(rep, dyn, pred, rew_kl, None, cfg_flat, rngs=nnx.Rngs(params=key))
+    
+    # Create batch with scalar targets that will need conversion to distributions
+    batch_kl = make_batch(key, cfg_kl.batch_size, cfg_flat.observation_shape,
+                          cfg_flat.num_actions, cfg_kl.num_unroll_steps,
+                          vsup=0, rsup=0, use_proj=False)
+    
+    # Add targets with shape (B, K+1, 1) to trigger squeeze on line 498  
+    target_rewards_reshaped = batch_kl['target_reward'][..., None]  # Add dimension
+    batch_kl_modified = {**batch_kl, 'target_reward': target_rewards_reshaped}
+    
+    loss_kl, metrics_kl = Learner._compute_total_loss_static(
+        model_kl, cfg_kl, batch_kl_modified, key, training=True
+    )
+    assert loss_kl.shape == ()
+    assert 'reward_loss' in metrics_kl
+    
+    # Test MSE reward loss with distribution predictions (lines 514, 525)
+    class MSERewardDistRew(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, h, training):
+            # Return distribution to trigger support_to_scalar on line 514
+            return jnp.ones((h.shape[0], 601))  # B, 601
+    
+    cfg_mse_rew = make_cfg(vsup=0, rsup=0, steps=1, proj=False, suffix="_mse_rew_dist", use_ema=False)
+    cfg_mse_rew = dataclasses.replace(cfg_mse_rew, reward_loss_type="mse")
+    
+    rew_mse_dist = lambda model_config, *, rngs: MSERewardDistRew(rngs=rngs)
+    model_mse_rew = MuZeroNetwork(rep, dyn, pred, rew_mse_dist, None, cfg_flat, rngs=nnx.Rngs(params=key))
+    
+    # Create batch with distribution targets to trigger squeeze on line 525
+    batch_mse_rew = make_batch(key, cfg_mse_rew.batch_size, cfg_flat.observation_shape,
+                               cfg_flat.num_actions, cfg_mse_rew.num_unroll_steps,
+                               vsup=0, rsup=601, use_proj=False)  # rsup=601 creates distributions
+    
+    loss_mse_rew, metrics_mse_rew = Learner._compute_total_loss_static(
+        model_mse_rew, cfg_mse_rew, batch_mse_rew, key, training=True
+    )
+    assert loss_mse_rew.shape == ()
+    assert 'reward_loss' in metrics_mse_rew
+    
+    # Test symlog reward loss with squeeze (lines 539, 550, 557) 
+    class SymlogRewardSqueezeRew(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, h, training):
+            return jnp.ones((h.shape[0], 1))  # B, 1 - triggers squeeze on line 539
+    
+    cfg_symlog_rew = make_cfg(vsup=0, rsup=0, steps=1, proj=False, suffix="_symlog_rew", use_ema=False)
+    cfg_symlog_rew = dataclasses.replace(cfg_symlog_rew, reward_loss_type="symlog")
+    
+    rew_symlog = lambda model_config, *, rngs: SymlogRewardSqueezeRew(rngs=rngs)
+    model_symlog_rew = MuZeroNetwork(rep, dyn, pred, rew_symlog, None, cfg_flat, rngs=nnx.Rngs(params=key))
+    
+    # Create batch with distribution targets that will trigger squeeze on line 550
+    batch_symlog_rew = make_batch(key, cfg_symlog_rew.batch_size, cfg_flat.observation_shape,
+                                  cfg_flat.num_actions, cfg_symlog_rew.num_unroll_steps,
+                                  vsup=0, rsup=601, use_proj=False)  # Distribution targets
+    
+    loss_symlog_rew, metrics_symlog_rew = Learner._compute_total_loss_static(
+        model_symlog_rew, cfg_symlog_rew, batch_symlog_rew, key, training=True
+    )
+    assert loss_symlog_rew.shape == ()
+    assert 'reward_loss' in metrics_symlog_rew
+    
+    # Also test with scalar targets having shape (B, K+1, 1) to hit line 557
+    # Create a batch with scalar targets first, then reshape
+    batch_scalar_rew = make_batch(key, cfg_symlog_rew.batch_size, cfg_flat.observation_shape,
+                                  cfg_flat.num_actions, cfg_symlog_rew.num_unroll_steps,
+                                  vsup=0, rsup=0, use_proj=False)  # Scalar targets
+    target_rewards_1d = batch_scalar_rew['target_reward'][..., None]  # Add dimension: (B, K+1, 1)
+    batch_symlog_rew_1d = {**batch_scalar_rew, 'target_reward': target_rewards_1d}
+    
+    loss_symlog_rew_1d, metrics_symlog_rew_1d = Learner._compute_total_loss_static(
+        model_symlog_rew, cfg_symlog_rew, batch_symlog_rew_1d, key, training=True
+    )
+    assert loss_symlog_rew_1d.shape == ()
+    assert 'reward_loss' in metrics_symlog_rew_1d
+
+
+def test_checkpoint_error_handling(key, cfg_flat):
+    """Test checkpoint error handling paths that aren't covered."""
+    
+    # Create a learner without checkpoint manager
+    cfg_no_checkpoint = make_cfg(vsup=0, rsup=0, steps=1, proj=False, suffix="_no_checkpoint", 
+                                 use_ema=False, checkpoint_dir=None)
+    model = make_model(key, cfg_no_checkpoint)
+    learner = Learner(model, None, cfg_no_checkpoint, key)
+    
+    # Test save_checkpoint when checkpoint_manager is None
+    learner.save_checkpoint(force_save=True)  # Should print message and return
+    
+    # Test load_checkpoint when checkpoint_manager is None
+    result = learner.load_checkpoint()  # Should print message and return False
+    assert result == False
+    
+    # Test __del__ method when checkpoint_manager exists
+    cfg_with_checkpoint = make_cfg(vsup=0, rsup=0, steps=1, proj=False, suffix="_cleanup_test", 
+                                   use_ema=False, checkpoint_dir="/tmp/test_cleanup")
+    model_cleanup = make_model(key, cfg_with_checkpoint)
+    learner_cleanup = Learner(model_cleanup, None, cfg_with_checkpoint, key)
+    
+    # The __del__ method should be called when the object is destroyed
+    # We can't directly test __del__ but we can verify the checkpoint_manager exists
+    assert learner_cleanup.checkpoint_manager is not None
+    
+    # Clean up manually to avoid issues
+    learner_cleanup.checkpoint_manager.close()
+
+def test_final_squeeze_edge_cases(key, cfg_flat):
+    """Test the final edge cases for squeeze operations to reach 100% coverage."""
+    
+    # Test 1: Categorical value loss with target values that have shape (B, K+1, 1) - Line 388
+    class EdgeCaseValuePred(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, h, training):
+            policy = jnp.ones((h.shape[0], NUM_ACTIONS)) * 0.1  # B, A
+            value = jnp.ones((h.shape[0],))  # B - scalar values, not (B, 1)
+            return policy, value
+    
+    cfg_cat_val_edge = make_cfg(vsup=601, rsup=0, steps=1, proj=False, suffix="_cat_val_edge", use_ema=False)
+    cfg_cat_val_edge = dataclasses.replace(cfg_cat_val_edge, value_loss_type="categorical")
+    
+    rep = lambda model_config, *, rngs: MockRep(cfg_flat.observation_shape, cfg_flat.hidden_size, rngs=rngs)
+    dyn = lambda model_config, *, rngs: MockDyn(cfg_flat.hidden_size, cfg_flat.num_actions, rngs=rngs)
+    pred_edge_val = lambda model_config, *, rngs: EdgeCaseValuePred(rngs=rngs)
+    rew = lambda model_config, *, rngs: MockRew(cfg_flat.hidden_size, 0, rngs=rngs)
+    
+    model_edge_val = MuZeroNetwork(rep, dyn, pred_edge_val, rew, None, cfg_flat, rngs=nnx.Rngs(params=key))
+    
+    # Create batch with scalar targets, then reshape to (B, K+1, 1) to trigger line 388 squeeze
+    batch_edge_val = make_batch(key, cfg_cat_val_edge.batch_size, cfg_flat.observation_shape,
+                                cfg_flat.num_actions, cfg_cat_val_edge.num_unroll_steps,
+                                vsup=0, rsup=0, use_proj=False)
+    # Reshape target values to trigger the squeeze: target_val.ndim == 2 and target_val.shape[-1] == 1
+    target_values_1d = batch_edge_val['target_value'][..., None]  # (B, K+1, 1)
+    batch_edge_val_modified = {**batch_edge_val, 'target_value': target_values_1d}
+    
+    loss_edge_val, metrics_edge_val = Learner._compute_total_loss_static(
+        model_edge_val, cfg_cat_val_edge, batch_edge_val_modified, key, training=True
+    )
+    assert loss_edge_val.shape == ()
+    assert 'value_loss' in metrics_edge_val
+    
+    # Test 2: Symlog value loss with predicted values that have shape (B, 1) - Line 402
+    class SymlogEdgePred(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, h, training):
+            policy = jnp.ones((h.shape[0], NUM_ACTIONS)) * 0.1  # B, A
+            value = jnp.ones((h.shape[0], 1))  # B, 1 - to trigger squeeze on line 402
+            return policy, value
+    
+    cfg_symlog_edge = make_cfg(vsup=0, rsup=0, steps=1, proj=False, suffix="_symlog_edge", use_ema=False)
+    cfg_symlog_edge = dataclasses.replace(cfg_symlog_edge, value_loss_type="symlog")
+    
+    pred_symlog_edge = lambda model_config, *, rngs: SymlogEdgePred(rngs=rngs)
+    model_symlog_edge = MuZeroNetwork(rep, dyn, pred_symlog_edge, rew, None, cfg_flat, rngs=nnx.Rngs(params=key))
+    
+    batch_symlog_edge = make_batch(key, cfg_symlog_edge.batch_size, cfg_flat.observation_shape,
+                                   cfg_flat.num_actions, cfg_symlog_edge.num_unroll_steps,
+                                   vsup=0, rsup=0, use_proj=False)
+    
+    loss_symlog_edge, metrics_symlog_edge = Learner._compute_total_loss_static(
+        model_symlog_edge, cfg_symlog_edge, batch_symlog_edge, key, training=True
+    )
+    assert loss_symlog_edge.shape == ()
+    assert 'value_loss' in metrics_symlog_edge
+    
+    # Test 3: KL reward loss with predicted rewards (B, 1) - Line 487
+    class KLEdgeRew(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, h, training):
+            return jnp.ones((h.shape[0], 1))  # B, 1 - to trigger squeeze on line 487
+    
+    cfg_kl_edge = make_cfg(vsup=0, rsup=601, steps=1, proj=False, suffix="_kl_edge", use_ema=False)
+    cfg_kl_edge = dataclasses.replace(cfg_kl_edge, reward_loss_type="kl")
+    
+    rew_kl_edge = lambda model_config, *, rngs: KLEdgeRew(rngs=rngs)
+    model_kl_edge = MuZeroNetwork(rep, dyn, pred_edge_val, rew_kl_edge, None, cfg_flat, rngs=nnx.Rngs(params=key))
+    
+    batch_kl_edge = make_batch(key, cfg_kl_edge.batch_size, cfg_flat.observation_shape,
+                               cfg_flat.num_actions, cfg_kl_edge.num_unroll_steps,
+                               vsup=0, rsup=0, use_proj=False)
+    
+    loss_kl_edge, metrics_kl_edge = Learner._compute_total_loss_static(
+        model_kl_edge, cfg_kl_edge, batch_kl_edge, key, training=True
+    )
+    assert loss_kl_edge.shape == ()
+    assert 'reward_loss' in metrics_kl_edge
+    
+    # Test 4: MSE reward loss with predicted (B, 1) and distribution targets - Line 514
+    class MSERewardEdgeRew(nnx.Module):
+        def __init__(self, *, rngs):
+            pass
+        def __call__(self, h, training):
+            return jnp.ones((h.shape[0], 1))  # B, 1 - to trigger squeeze on line 514
+    
+    cfg_mse_edge = make_cfg(vsup=0, rsup=0, steps=1, proj=False, suffix="_mse_edge", use_ema=False)
+    cfg_mse_edge = dataclasses.replace(cfg_mse_edge, reward_loss_type="mse")
+    
+    rew_mse_edge = lambda model_config, *, rngs: MSERewardEdgeRew(rngs=rngs)
+    model_mse_edge = MuZeroNetwork(rep, dyn, pred_edge_val, rew_mse_edge, None, cfg_flat, rngs=nnx.Rngs(params=key))
+    
+    # Create batch with distribution targets to trigger different path
+    batch_mse_edge = make_batch(key, cfg_mse_edge.batch_size, cfg_flat.observation_shape,
+                                cfg_flat.num_actions, cfg_mse_edge.num_unroll_steps,
+                                vsup=0, rsup=601, use_proj=False)  # Distribution targets
+    
+    loss_mse_edge, metrics_mse_edge = Learner._compute_total_loss_static(
+        model_mse_edge, cfg_mse_edge, batch_mse_edge, key, training=True
+    )
+    assert loss_mse_edge.shape == ()
+    assert 'reward_loss' in metrics_mse_edge
+    
+    # Test 5: MSE reward loss with targets shaped (B, K+1, 1) - Line 525
+    # Use same model but modify target shape
+    target_rewards_1d = batch_mse_edge['target_reward'][..., None]  # (B, K+1, 601, 1)
+    # But we need to squash to (B, K+1, 1) to trigger line 525
+    target_rewards_scalar_1d = batch_kl_edge['target_reward'][..., None]  # (B, K+1, 1) from scalar batch
+    batch_mse_edge_1d = {**batch_kl_edge, 'target_reward': target_rewards_scalar_1d}
+    
+    loss_mse_edge_1d, metrics_mse_edge_1d = Learner._compute_total_loss_static(
+        model_mse_edge, cfg_mse_edge, batch_mse_edge_1d, key, training=True
+    )
+    assert loss_mse_edge_1d.shape == ()
+    assert 'reward_loss' in metrics_mse_edge_1d
