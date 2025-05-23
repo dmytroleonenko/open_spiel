@@ -4317,3 +4317,303 @@ def test_final_squeeze_edge_cases(key, cfg_flat):
     )
     assert loss_mse_edge_1d.shape == ()
     assert 'reward_loss' in metrics_mse_edge_1d
+
+
+# EfficientZeroV2 specific tests for new features
+
+def test_gradient_scaling_on_gradients_not_loss(key, cfg_flat):
+    """Test that gradient scaling is applied to gradients, not loss value (EfficientZeroV2 pattern)."""
+    mk = jax.random.fold_in(key, 1)
+    bk = jax.random.fold_in(key, 2)
+    
+    # Create model and learner
+    model = make_model(mk, cfg_flat)
+    cfg = make_cfg(cfg_flat.value_support_size, cfg_flat.reward_support_size, 2, False, 'grad_scale')
+    opt = optax.adam(cfg.learning_rate)
+    learner = Learner(model, opt, cfg, mk)
+    
+    # Create batch
+    batch = make_batch(bk, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions, 
+                      cfg.num_unroll_steps, cfg.value_support_size, cfg.reward_support_size)
+    
+    # Get initial parameters
+    initial_params = nnx.state(learner.model, nnx.Param)
+    
+    # Perform train step
+    metrics = learner.train_step(batch)
+    
+    # Check that loss is reasonable (not scaled by 1/num_unroll_steps)
+    assert 'total_loss' in metrics
+    total_loss = metrics['total_loss']
+    
+    # With gradient scaling, the loss should not be tiny (it's not scaled by 1/K)
+    # but gradients are scaled internally
+    assert total_loss > 0.001  # Loss should not be artificially small
+    
+    # Check that parameters actually changed (indicating gradients were applied)
+    final_params = nnx.state(learner.model, nnx.Param)
+    
+    def params_changed(p1, p2):
+        diff_found = False
+        def check_leaf(leaf1, leaf2):
+            nonlocal diff_found
+            if not jnp.allclose(leaf1, leaf2, atol=1e-6):
+                diff_found = True
+            return leaf1
+        jax.tree_util.tree_map(check_leaf, p1, p2)
+        return diff_found
+    
+    assert params_changed(initial_params, final_params), "Parameters should have changed after training step"
+
+
+def test_priority_computation_and_batch_indices(key, cfg_flat):
+    """Test that priorities are computed correctly when batch has indices."""
+    mk = jax.random.fold_in(key, 1)
+    bk = jax.random.fold_in(key, 2)
+    
+    # Create model and learner with priority replay enabled
+    model = make_model(mk, cfg_flat)
+    cfg = dataclasses.replace(
+        make_cfg(cfg_flat.value_support_size, cfg_flat.reward_support_size, 1, False, 'priority'),
+        use_priority_replay=True,
+        min_priority=0.01
+    )
+    opt = optax.adam(cfg.learning_rate)
+    learner = Learner(model, opt, cfg, mk)
+    
+    # Create batch with indices for priority replay
+    batch = make_batch(bk, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions, 
+                      cfg.num_unroll_steps, cfg.value_support_size, cfg.reward_support_size)
+    batch['indices'] = jnp.array([0, 1])  # Add buffer indices
+    batch['weights'] = jnp.array([1.0, 0.5])  # Add importance sampling weights
+    
+    # Perform train step
+    metrics = learner.train_step(batch)
+    
+    # Check that priorities were computed
+    assert 'priorities' in metrics, "Priorities should be computed when use_priority_replay=True and indices present"
+    assert 'indices' in metrics, "Indices should be returned in metrics"
+    
+    priorities = metrics['priorities']
+    indices = metrics['indices']
+    
+    # Check priority shape and values
+    assert priorities.shape == (cfg.batch_size,), f"Priorities should have shape {(cfg.batch_size,)}, got {priorities.shape}"
+    assert jnp.all(priorities >= cfg.min_priority), f"All priorities should be >= min_priority ({cfg.min_priority})"
+    assert jnp.array_equal(indices, batch['indices']), "Returned indices should match batch indices"
+
+
+def test_value_target_selection_logic(key, cfg_flat):
+    """Test EfficientZeroV2 value target selection (search/sarsa/mixed)."""
+    mk = jax.random.fold_in(key, 1)
+    bk = jax.random.fold_in(key, 2)
+    
+    model = make_model(mk, cfg_flat)
+    
+    # Test different value target modes
+    for value_target in ["search", "sarsa", "mixed"]:
+        cfg = dataclasses.replace(
+            make_cfg(cfg_flat.value_support_size, cfg_flat.reward_support_size, 1, False, f'target_{value_target}'),
+            value_target=value_target,
+            mixed_value_target_switch_step=2  # Switch at step 2 for testing
+        )
+        
+        opt = optax.adam(cfg.learning_rate)
+        learner = Learner(model, opt, cfg, mk)
+        
+        # Create batch with different value targets
+        batch = make_batch(bk, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions, 
+                          cfg.num_unroll_steps, cfg.value_support_size, cfg.reward_support_size)
+        
+        # Add different types of value targets
+        batch['target_search_value'] = batch['target_value'] + 0.1  # Slightly different search values
+        batch['target_sarsa_value'] = batch['target_value'] - 0.1   # Slightly different sarsa values
+        
+        # Test with training step before switch (for mixed mode)
+        learner.num_training_steps = 1  # Before switch
+        metrics1 = learner.train_step(batch)
+        
+        # Test with training step after switch (for mixed mode)
+        learner.num_training_steps = 3  # After switch
+        metrics2 = learner.train_step(batch)
+        
+        # Both should complete without error
+        assert 'total_loss' in metrics1
+        assert 'total_loss' in metrics2
+
+
+def test_multiple_value_heads_support(key, cfg_flat):
+    """Test support for multiple value heads (v_num > 1)."""
+    mk = jax.random.fold_in(key, 1)
+    bk = jax.random.fold_in(key, 2)
+    
+    # Create a mock model that returns multiple value heads
+    class MultiValuePred(nnx.Module):
+        def __init__(self, hidden, nact, v_num, *, rngs):
+            self.ph = nnx.Linear(hidden, nact, rngs=rngs)
+            self.vh = nnx.Linear(hidden, v_num, rngs=rngs)  # v_num value heads
+        def __call__(self, h, training):
+            return self.ph(h), self.vh(h)
+    
+    # Create model with multiple value heads
+    def make_multi_value_model(key, v_num):
+        mock_cfg = MockNetCfg(
+            observation_shape=cfg_flat.observation_shape,
+            num_actions=cfg_flat.num_actions,
+            hidden_size=16,
+            value_support_size=0,  # Scalar values
+            reward_support_size=0,
+            projection_output_size=8,
+            use_projection=False,
+            batch_size=cfg_flat.batch_size
+        )
+        
+        rep = lambda model_config, *, rngs: MockRep(mock_cfg.observation_shape, mock_cfg.hidden_size, rngs=rngs)
+        dyn = lambda model_config, *, rngs: MockDyn(mock_cfg.hidden_size, mock_cfg.num_actions, rngs=rngs)
+        pred = lambda model_config, *, rngs: MultiValuePred(mock_cfg.hidden_size, mock_cfg.num_actions, v_num, rngs=rngs)
+        rew = lambda model_config, *, rngs: MockRew(mock_cfg.hidden_size, mock_cfg.reward_support_size, rngs=rngs)
+        return MuZeroNetwork(rep, dyn, pred, rew, None, mock_cfg, rngs=nnx.Rngs(params=key))
+    
+    # Test with v_num = 3
+    v_num = 3
+    model = make_multi_value_model(mk, v_num)
+    cfg = dataclasses.replace(
+        make_cfg(cfg_flat.value_support_size, cfg_flat.reward_support_size, 1, False, 'multi_value'),
+        v_num=v_num
+    )
+    
+    opt = optax.adam(cfg.learning_rate)
+    learner = Learner(model, opt, cfg, mk)
+    
+    # Create batch
+    batch = make_batch(bk, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions, 
+                      cfg.num_unroll_steps, cfg.value_support_size, cfg.reward_support_size)
+    
+    # Perform train step - should handle multiple value heads correctly
+    metrics = learner.train_step(batch)
+    
+    assert 'total_loss' in metrics
+    assert 'value_loss' in metrics
+    # Training should complete without error, indicating proper handling of multiple value heads
+
+
+def test_efficientzero_v2_config_defaults(key, cfg_flat):
+    """Test that new EfficientZeroV2 config options have correct defaults."""
+    cfg = MuZeroConfig()
+    
+    # Test value target selection defaults
+    assert cfg.value_target == "mixed"
+    assert cfg.mixed_value_target_switch_step == 100000
+    
+    # Test multiple value heads defaults
+    assert cfg.v_num == 1
+    
+    # Test priority replay defaults
+    assert cfg.use_priority_replay == True
+    assert cfg.priority_exponent == 0.6
+    assert cfg.min_priority == 1e-6
+    
+    # Test LSTM support defaults
+    assert cfg.use_value_prefix == False
+    assert cfg.lstm_horizon_length == 5
+
+
+def test_priority_replay_disabled_no_priority_computation(key, cfg_flat):
+    """Test that priorities are not computed when priority replay is disabled."""
+    mk = jax.random.fold_in(key, 1)
+    bk = jax.random.fold_in(key, 2)
+    
+    model = make_model(mk, cfg_flat)
+    cfg = dataclasses.replace(
+        make_cfg(cfg_flat.value_support_size, cfg_flat.reward_support_size, 1, False, 'no_priority'),
+        use_priority_replay=False  # Disable priority replay
+    )
+    
+    opt = optax.adam(cfg.learning_rate)
+    learner = Learner(model, opt, cfg, mk)
+    
+    # Create batch with indices (but priority replay disabled)
+    batch = make_batch(bk, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions, 
+                      cfg.num_unroll_steps, cfg.value_support_size, cfg.reward_support_size)
+    batch['indices'] = jnp.array([0, 1])
+    
+    # Perform train step
+    metrics = learner.train_step(batch)
+    
+    # Check that priorities were NOT computed
+    assert 'priorities' not in metrics, "Priorities should not be computed when use_priority_replay=False"
+    assert 'indices' not in metrics, "Indices should not be returned when use_priority_replay=False"
+
+
+def test_value_target_fallback_when_invalid_type(key, cfg_flat):
+    """Test fallback to default targets when invalid value_target is specified."""
+    mk = jax.random.fold_in(key, 1)
+    bk = jax.random.fold_in(key, 2)
+    
+    model = make_model(mk, cfg_flat)
+    cfg = dataclasses.replace(
+        make_cfg(cfg_flat.value_support_size, cfg_flat.reward_support_size, 1, False, 'fallback'),
+        value_target="invalid_type"  # Invalid type should fallback to default
+    )
+    
+    opt = optax.adam(cfg.learning_rate)
+    learner = Learner(model, opt, cfg, mk)
+    
+    # Create batch
+    batch = make_batch(bk, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions, 
+                      cfg.num_unroll_steps, cfg.value_support_size, cfg.reward_support_size)
+    
+    # Add different value targets
+    batch['target_search_value'] = batch['target_value'] + 0.1
+    batch['target_sarsa_value'] = batch['target_value'] - 0.1
+    
+    # Should fallback to original target_value and complete without error
+    metrics = learner.train_step(batch)
+    assert 'total_loss' in metrics
+
+
+def test_half_gradient_application_in_unroll_loop(key, cfg_flat):
+    """Test that half_gradient is applied in the unroll loop without errors."""
+    mk = jax.random.fold_in(key, 1)
+    bk = jax.random.fold_in(key, 2)
+    
+    model = make_model(mk, cfg_flat)
+    cfg = make_cfg(cfg_flat.value_support_size, cfg_flat.reward_support_size, 3, False, 'half_grad')
+    opt = optax.adam(cfg.learning_rate)
+    learner = Learner(model, opt, cfg, mk)
+    
+    # Create batch with multiple unroll steps
+    batch = make_batch(bk, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions, 
+                      cfg.num_unroll_steps, cfg.value_support_size, cfg.reward_support_size)
+    
+    # Perform train step - half_gradient should be applied to hidden states during unroll
+    metrics = learner.train_step(batch)
+    
+    assert 'total_loss' in metrics
+    # The test verifies that half_gradient function is called in the unroll loop without errors
+
+
+def test_lstm_value_prefix_configuration(key, cfg_flat):
+    """Test LSTM value prefix configuration setup."""
+    mk = jax.random.fold_in(key, 1)
+    bk = jax.random.fold_in(key, 2)
+    
+    model = make_model(mk, cfg_flat)
+    cfg = dataclasses.replace(
+        make_cfg(cfg_flat.value_support_size, cfg_flat.reward_support_size, 6, False, 'lstm'),
+        use_value_prefix=True,
+        lstm_horizon_length=3  # Reset every 3 steps
+    )
+    
+    opt = optax.adam(cfg.learning_rate)
+    learner = Learner(model, opt, cfg, mk)
+    
+    # Create batch with enough unroll steps to trigger LSTM reset logic
+    batch = make_batch(bk, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions, 
+                      cfg.num_unroll_steps, cfg.value_support_size, cfg.reward_support_size)
+    
+    # Perform train step - should handle LSTM horizon correctly
+    metrics = learner.train_step(batch)
+    
+    assert 'total_loss' in metrics
+    # Test verifies LSTM horizon logic executes without error

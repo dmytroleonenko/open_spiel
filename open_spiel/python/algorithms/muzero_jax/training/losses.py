@@ -68,9 +68,11 @@ def compute_scalar_value_loss(value_prediction: jax.Array, target_value: jax.Arr
     # Apply IQL-style weighting if specified (EfficientZeroV2 pattern)
     if iql_weight != 1.0:
         # IQL weighting: apply different weights based on sign of error
+        # EfficientZeroV2: value_weight = (1 - value_sign) * iql_weight + value_sign * (1 - iql_weight)
+        # where value_sign = (error > 0).float()
         error = value_prediction - target_value
-        # Positive errors (overestimation) get weight 1.0, negative errors get iql_weight
-        weights = jnp.where(error >= 0, 1.0, iql_weight)
+        value_sign = (error > 0).astype(jnp.float32)
+        weights = (1.0 - value_sign) * iql_weight + value_sign * (1.0 - iql_weight)
         return base_loss * weights
     
     return base_loss
@@ -90,7 +92,8 @@ def compute_categorical_value_loss(value_logits: jax.Array, target_value_distrib
         target_value = jnp.sum(target_value_distribution * support, axis=-1)
         
         error = pred_value - target_value
-        weights = jnp.where(error >= 0, 1.0, iql_weight)
+        value_sign = (error > 0).astype(jnp.float32)
+        weights = (1.0 - value_sign) * iql_weight + value_sign * (1.0 - iql_weight)
         return base_loss * weights
         
     return base_loss
@@ -130,32 +133,32 @@ def compute_kl_loss(logits: jax.Array, target_probs: jax.Array) -> jax.Array:
 
 def compute_projection_consistency_loss(
     projection_current_step: jax.Array,  # Projection of h_k
-    projection_initial_step: jax.Array   # Projection of h_0
+    projection_initial_step: jax.Array   # Projection of h_0 (with stop_gradient applied)
 ) -> jax.Array:
-    """Computes SSL consistency loss between two projected states (SimSiam-style).
+    """Computes SSL consistency loss between two projected states (EfficientZeroV2 style).
 
     Args:
         projection_current_step: Projected hidden state from the current unroll step.
         projection_initial_step: Projected hidden state from the initial step (t=0).
-                                 One of the pair will have stop_gradient applied.
+                                 Should have stop_gradient applied externally.
 
     Returns:
         Per-item SSL consistency losses. Shape (batch_size,).
     """
-    # EfficientZeroV2 style:
+    # EfficientZeroV2 style: bidirectional consistency loss 
     # loss = projection_loss(p_obs, p_pred.detach()) + projection_loss(p_pred, p_obs.detach())
     # where projection_loss(p, z) = -cosine_similarity(p, z) (per-item, not averaged)
 
+    # Compute cosine similarity in both directions
     sim1 = optax.cosine_similarity(projection_current_step, jax.lax.stop_gradient(projection_initial_step))
     sim2 = optax.cosine_similarity(jax.lax.stop_gradient(projection_current_step), projection_initial_step)
-
+    
     # Clip similarities to be within [-1, 1] before computing loss
     clipped_sim1 = jnp.clip(sim1, -1.0, 1.0)
     clipped_sim2 = jnp.clip(sim2, -1.0, 1.0)
-
-    loss1 = -clipped_sim1  # Per-item loss, shape (batch_size,)
-    loss2 = -clipped_sim2  # Per-item loss, shape (batch_size,)
-    return loss1 + loss2   # Per-item losses, shape (batch_size,)
+    
+    # Return negative cosine similarity as loss (per-item), bidirectional
+    return -clipped_sim1 + -clipped_sim2  # Per-item losses, shape (batch_size,)
 
 # --- Symlog functions for EfficientZeroV2 parity ---
 def symlog(x: jax.Array, base: float = 2.0) -> jax.Array:

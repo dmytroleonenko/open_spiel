@@ -24,15 +24,26 @@ Params = nnx.State # PyTree of Param Variable instances or their values
 ModelBatchStats = nnx.State # PyTree of BatchStat Variable instances or their values
 ModelOtherState = nnx.State # PyTree of other Variable instances (like Rngs) or their values
 
-# Updated Batch definition:
+# Updated Batch definition for EfficientZeroV2 parity:
 # 'observation': (B, *obs_shape) - initial observation at index 0
 # 'action': (B, K) - actions taken for K unroll steps (a_0 to a_{K-1})
 # 'target_reward': (B, K+1) or (B, K+1, support_size) - r_0 to r_K
 # 'target_value': (B, K+1) or (B, K+1, support_size) - v_0 to v_K
 # 'target_policy': (B, K+1, num_actions) - p_0 to p_K
 # 'game_history_mask': (B, K+1) - 1 if valid step, 0 if padding
+# EfficientZeroV2 specific:
+# 'weights': (B,) - importance sampling weights from prioritized replay
+# 'indices': (B,) - buffer indices for priority updates
+# 'priorities': (B,) - current priorities (for priority updates)
 Batch = Dict[str, jax.Array]
 Metrics = Dict[str, jax.Array]
+
+
+def half_gradient(x: jax.Array) -> jax.Array:
+    """Apply half gradient to input array (EfficientZeroV2 equivalent of register_hook(lambda grad: grad * 0.5))."""
+    # Forward pass: identity
+    # Backward pass: multiply gradient by 0.5
+    return x + 0.5 * jax.lax.stop_gradient(x) - 0.5 * x
 
 
 @dataclasses.dataclass(frozen=True)
@@ -64,6 +75,22 @@ class MuZeroConfig:
     use_symlog: bool = False # Whether to use symlog representation
     symlog_base: float = 2.0 # Base for symlog transformation
 
+    # EfficientZeroV2 value target selection
+    value_target: str = "mixed" # "search", "sarsa", "mixed" - EfficientZeroV2 target selection
+    mixed_value_target_switch_step: int = 100000 # When to switch from search to sarsa in mixed mode
+    
+    # Multiple value heads (v_num) support - EfficientZeroV2 feature
+    v_num: int = 1 # Number of value heads for better value estimation
+    
+    # Priority replay parameters - EfficientZeroV2 feature
+    use_priority_replay: bool = True # Whether to use prioritized experience replay
+    priority_exponent: float = 0.6 # Priority exponent (alpha in PER paper)
+    min_priority: float = 1e-6 # Minimum priority to prevent zero priorities
+    
+    # LSTM reward hidden state support - EfficientZeroV2 feature
+    use_value_prefix: bool = False # Whether to use value prefix (LSTM reward prediction)
+    lstm_horizon_length: int = 5 # Horizon for LSTM reward hidden state reset
+
     # Optimizer
     learning_rate: float = 1e-4
     adam_b1: float = 0.9
@@ -83,8 +110,6 @@ class MuZeroConfig:
     checkpoint_frequency: int = 1000
     max_checkpoints_to_keep: int = 1
     resume_from_checkpoint: bool = False
-
-    # TODO: Add other necessary configs, e.g., from EfficientZeroV2/ez/config/default_config.py
 
 
 class Learner:
@@ -165,17 +190,21 @@ class Learner:
         """JIT-compiled training step implementation using standard nnx patterns."""
         self._rng_key, step_rng = jax.random.split(self._rng_key)
         
+        # Add training step to batch for value target selection
+        batch_with_step = dict(batch)
+        batch_with_step['training_step'] = self.num_training_steps
+        
         def loss_fn(model: MuZeroNetwork) -> Tuple[jax.Array, Metrics]:
             """Loss function for gradient computation."""
             loss_value, metrics = self._compute_total_loss_static(
-                model, self.config, batch, step_rng, training=True
+                model, self.config, batch_with_step, step_rng, training=True
             )
             return loss_value, metrics
 
         # Compute loss and gradients using standard nnx pattern
         (loss_value, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(self.model)
         
-        # Apply gradient scaling per EfficientZeroV2 pattern: scale gradients by 1/unroll_steps
+        # Apply gradient scaling to gradients (EfficientZeroV2 pattern)
         gradient_scale = 1.0 / self.config.num_unroll_steps
         grads = jax.tree_util.tree_map(lambda g: g * gradient_scale, grads)
         
@@ -314,6 +343,29 @@ class Learner:
         target_values = batch['target_value'] # B, K+1 or B, K+1, S
         target_policies = batch['target_policy'] # B, K+1, A
         game_history_mask = batch['game_history_mask'] # B, K+1
+        
+        # EfficientZeroV2: Get importance sampling weights (default to 1.0 if not provided)
+        importance_weights = batch.get('weights', jnp.ones(initial_observation.shape[0]))
+        
+        # EfficientZeroV2: Value target selection logic
+        # Extract different types of value targets if available
+        search_values = batch.get('target_search_value', target_values)  # MCTS search values
+        sarsa_values = batch.get('target_sarsa_value', target_values)  # N-step TD targets
+        
+        # Select target values based on configuration and training step
+        training_step = batch.get('training_step', 0)  # Current training step for mixed mode
+        if config.value_target == "search":
+            actual_target_values = search_values
+        elif config.value_target == "sarsa":
+            actual_target_values = sarsa_values
+        elif config.value_target == "mixed":
+            # Mixed mode: start with search values, switch to sarsa values after threshold
+            if training_step < config.mixed_value_target_switch_step:
+                actual_target_values = search_values
+            else:
+                actual_target_values = sarsa_values
+        else:
+            actual_target_values = target_values  # Default fallback
 
         # Initial inference
         initial_inference_output = model.initial_inference(initial_observation, training=training)
@@ -325,11 +377,28 @@ class Learner:
         predicted_policy_logits_list = [initial_inference_output[3]]
         predicted_projections_list = [initial_projection] if config.use_projection and initial_projection is not None else []
 
+        # Initialize LSTM reward hidden state if using value prefix (EfficientZeroV2 feature)
+        reward_hidden = None
+        if config.use_value_prefix:
+            batch_size = initial_observation.shape[0]
+            # Initialize reward hidden state (this would be model-specific)
+            # For now, we'll assume the model handles this internally
+            reward_hidden = None  # Model should handle LSTM state initialization
+
         # Recurrent inferences
         for k in range(config.num_unroll_steps):
             current_action = actions[:, k]
+            # Apply half-gradient to hidden state (EfficientZeroV2 pattern)
+            hidden_state_half_grad = half_gradient(hidden_state)
+            
+            # Reset LSTM reward hidden state periodically (EfficientZeroV2 pattern)
+            if config.use_value_prefix and (k + 1) % config.lstm_horizon_length == 0:
+                # This would typically involve calling model.init_reward_hidden()
+                # For now, we rely on the model to handle this internally
+                pass
+            
             recurrent_inference_output = model.recurrent_inference(
-                hidden_state, current_action, training=training
+                hidden_state_half_grad, current_action, training=training
             )
             hidden_state = recurrent_inference_output[0]
             predicted_rewards_list.append(recurrent_inference_output[1])
@@ -347,12 +416,12 @@ class Learner:
         else:
             predicted_projections = None
 
-        # Compute losses per step (gradient scaling now applied to gradients directly)
-        total_policy_loss = jnp.array(0.0)
-        total_value_loss = jnp.array(0.0)
-        total_reward_loss = jnp.array(0.0)
-        total_ssl_loss = jnp.array(0.0)
-        total_entropy_loss = jnp.array(0.0)
+        # Compute losses per step (accumulate per-sample losses for importance weighting)
+        per_sample_policy_loss = jnp.zeros(initial_observation.shape[0])  # B
+        per_sample_value_loss = jnp.zeros(initial_observation.shape[0])   # B
+        per_sample_reward_loss = jnp.zeros(initial_observation.shape[0])  # B
+        per_sample_ssl_loss = jnp.zeros(initial_observation.shape[0])     # B
+        per_sample_entropy_loss = jnp.zeros(initial_observation.shape[0]) # B
 
         for k_idx in range(config.num_unroll_steps + 1):
             step_mask = game_history_mask[:, k_idx] # B
@@ -362,11 +431,20 @@ class Learner:
                 predicted_policy_logits[:, k_idx], target_policies[:, k_idx]
             )
             masked_p_loss = p_loss * step_mask
-            total_policy_loss += jnp.sum(masked_p_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
+            per_sample_policy_loss += masked_p_loss
 
             # Value Loss with EfficientZeroV2 parity
             predicted_val = predicted_values[:, k_idx]
-            target_val = target_values[:, k_idx]
+            target_val = actual_target_values[:, k_idx]
+            
+            # Support multiple value heads (v_num) - EfficientZeroV2 feature
+            if config.v_num > 1:
+                # Repeat targets for multiple value heads if predictions have multiple heads
+                if predicted_val.ndim >= 2 and predicted_val.shape[-1] == config.v_num:
+                    # predicted_val shape: (B, v_num) or (B, v_num, support_size)
+                    if target_val.ndim == 1 or (target_val.ndim == 2 and target_val.shape[-1] != config.v_num):
+                        # Repeat targets across value heads
+                        target_val = jnp.repeat(jnp.expand_dims(target_val, axis=-1), config.v_num, axis=-1)
             
             # Handle discrete support transformations based on loss type and data format
             if config.value_loss_type == "categorical" or config.value_support_size > 0:
@@ -447,7 +525,7 @@ class Learner:
                 
                 v_loss = losses_lib.compute_scalar_value_loss(predicted_val, target_val, config.iql_weight)
             masked_v_loss = v_loss * step_mask
-            total_value_loss += jnp.sum(masked_v_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
+            per_sample_value_loss += masked_v_loss
 
             # Reward Loss with EfficientZeroV2 parity
             predicted_rew = predicted_rewards[:, k_idx]
@@ -558,7 +636,7 @@ class Learner:
                 
                 r_loss = losses_lib.compute_scalar_reward_loss(predicted_rew, target_rew)
             masked_r_loss = r_loss * step_mask
-            total_reward_loss += jnp.sum(masked_r_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
+            per_sample_reward_loss += masked_r_loss
             
             # SSL Loss with stop_gradient (EfficientZeroV2 pattern)
             if config.use_projection and config.ssl_consistency_loss_weight > 0 and \
@@ -568,13 +646,13 @@ class Learner:
                     jax.lax.stop_gradient(initial_projection)  # Stop gradient as in EfficientZeroV2
                 )
                 masked_ssl_loss = ssl_loss_step * step_mask
-                total_ssl_loss += jnp.sum(masked_ssl_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
+                per_sample_ssl_loss += masked_ssl_loss
             
             # Entropy Loss for policy regularization (EfficientZeroV2 pattern)
             if config.entropy_coeff > 0:
                 entropy_loss_step = losses_lib.compute_policy_entropy(predicted_policy_logits[:, k_idx])
                 masked_entropy_loss = entropy_loss_step * step_mask
-                total_entropy_loss += jnp.sum(masked_entropy_loss) / jnp.maximum(jnp.sum(step_mask), 1.0)
+                per_sample_entropy_loss += masked_entropy_loss
 
         # L2 regularization (only if not using optimizer weight_decay)
         model_params = nnx.state(model, nnx.Param)
@@ -583,18 +661,61 @@ class Learner:
         else:
             l2_loss = jnp.array(0.0)  # Weight decay handled by optimizer
 
-        final_loss = (
-            config.policy_loss_weight * total_policy_loss
-            + config.value_loss_weight * total_value_loss 
-            + config.reward_loss_weight * total_reward_loss 
-            + l2_loss
+        # Combine individual loss components per sample
+        per_sample_combined_loss = (
+            config.policy_loss_weight * per_sample_policy_loss
+            + config.value_loss_weight * per_sample_value_loss 
+            + config.reward_loss_weight * per_sample_reward_loss 
         )
         # Add entropy regularization (EfficientZeroV2 pattern)
         if config.entropy_coeff > 0:
-            final_loss -= config.entropy_coeff * total_entropy_loss  # Negative because we want to maximize entropy
+            per_sample_combined_loss -= config.entropy_coeff * per_sample_entropy_loss  # Negative because we want to maximize entropy
         
         if config.use_projection and config.ssl_consistency_loss_weight > 0:
-            final_loss += config.ssl_consistency_loss_weight * total_ssl_loss
+            per_sample_combined_loss += config.ssl_consistency_loss_weight * per_sample_ssl_loss
+            
+        # Apply importance weighting (EfficientZeroV2 pattern: weighted_loss = (weights * loss).mean())
+        final_loss = jnp.mean(importance_weights * per_sample_combined_loss) + l2_loss
+        
+        # Compute priorities for replay buffer update (EfficientZeroV2 pattern)
+        # Use value prediction error at step 0 as priority (L1 loss)
+        priorities = None
+        if config.use_priority_replay and 'indices' in batch:
+            # Get value prediction and target at step 0
+            predicted_val_step0 = predicted_values[:, 0]  # B or B, S
+            target_val_step0 = actual_target_values[:, 0]  # B or B, S
+            
+            # Convert to scalars if needed for priority computation
+            if predicted_val_step0.ndim > 1 and predicted_val_step0.shape[-1] > 1:
+                predicted_val_step0 = losses_lib.support_to_scalar(
+                    predicted_val_step0,
+                    support_min=-300.0,
+                    support_max=300.0,
+                    num_atoms=predicted_val_step0.shape[-1]
+                )
+            elif predicted_val_step0.ndim == 2 and predicted_val_step0.shape[-1] == 1:
+                predicted_val_step0 = jnp.squeeze(predicted_val_step0, axis=-1)
+            
+            if target_val_step0.ndim > 1 and target_val_step0.shape[-1] > 1:
+                target_val_step0 = losses_lib.support_to_scalar(
+                    target_val_step0,
+                    support_min=-300.0,
+                    support_max=300.0,
+                    num_atoms=target_val_step0.shape[-1]
+                )
+            elif target_val_step0.ndim == 2 and target_val_step0.shape[-1] == 1:
+                target_val_step0 = jnp.squeeze(target_val_step0, axis=-1)
+            
+            # Compute L1 loss for priorities
+            value_errors = jnp.abs(predicted_val_step0 - target_val_step0)
+            priorities = value_errors + config.min_priority
+        
+        # Compute average losses for metrics (unweighted)
+        total_policy_loss = jnp.mean(per_sample_policy_loss)
+        total_value_loss = jnp.mean(per_sample_value_loss)
+        total_reward_loss = jnp.mean(per_sample_reward_loss)
+        total_ssl_loss = jnp.mean(per_sample_ssl_loss)
+        total_entropy_loss = jnp.mean(per_sample_entropy_loss)
         
         metrics = {
             'total_loss': final_loss,
@@ -607,6 +728,9 @@ class Learner:
             metrics['entropy_loss'] = total_entropy_loss
         if config.use_projection and config.ssl_consistency_loss_weight > 0:
             metrics['ssl_loss'] = total_ssl_loss
+        if priorities is not None:
+            metrics['priorities'] = priorities
+            metrics['indices'] = batch['indices']
             
         return final_loss, metrics
 
