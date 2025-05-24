@@ -138,9 +138,9 @@ def compute_symlog_loss(prediction: jax.Array, target: jax.Array, base: float = 
         base: Base for symlog transformation (default: e for EfficientZeroV2 parity)
     """
     # PyTorch EfficientZeroV2 pattern: prediction is already in symlog space
-    # loss = mse_loss(prediction, symlog(target))
+    # loss = 0.5 * mse_loss(prediction, symlog(target))
     symlog_target = symlog(target, base)
-    return scalar_mse_loss(prediction, symlog_target)
+    return 0.5 * scalar_mse_loss(prediction, symlog_target)
 
 def compute_symlog_value_loss(prediction: jax.Array, target: jax.Array, effective_iql_param: float = 1.0, base: float = jnp.e) -> jax.Array:
     """Computes symlog value loss with IQL weighting (Action Item 18).
