@@ -205,7 +205,12 @@ class Learner:
         # Compute loss and gradients using standard nnx pattern
         (loss_value, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(self.model)
         
-        # Apply gradient scaling to gradients (EfficientZeroV2 pattern)
+        # Apply gradient scaling by 1/num_unroll_steps (EfficientZeroV2 pattern)
+        # This is standard in MuZero-style algorithms to ensure that the effective learning rate
+        # per unroll step remains consistent regardless of the number of unroll steps K.
+        # Mathematically equivalent to scaling the loss by 1/K before gradient computation,
+        # but applied to gradients for clarity and computational efficiency.
+        # Reference: EfficientZeroV2 implementation and MuZero paper principles.
         gradient_scale = 1.0 / self.config.num_unroll_steps
         grads = jax.tree_util.tree_map(lambda g: g * gradient_scale, grads)
         

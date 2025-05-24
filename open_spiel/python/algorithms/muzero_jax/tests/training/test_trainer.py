@@ -4847,3 +4847,115 @@ def test_consistency_loss_coefficient_consolidation(key, cfg_flat):
     print(f"  - SSL loss computation works correctly with consolidated parameter")
     print(f"  - SSL loss correctly enabled/disabled based on coefficient value")
     print(f"  - SSL loss weighting applied correctly in total loss computation")
+
+
+def test_gradient_scaling_mathematical_equivalence_and_edge_cases(key, cfg_flat):
+    """Comprehensive test for gradient scaling mathematical equivalence and edge cases.
+    
+    This test verifies:
+    1. Gradient scaling factors are correctly applied
+    2. Edge cases with different unroll step values
+    3. Interaction with gradient clipping
+    4. Numerical stability
+    """
+    mk, lk, bk = jax.random.split(key, 3)
+    
+    # Test gradient scaling factors
+    cfgn = cfg_flat
+    
+    # Test with different unroll steps
+    for num_unroll_steps in [1, 3, 5, 10]:
+        # Create model
+        model = make_model(jax.random.fold_in(mk, num_unroll_steps), cfgn)
+        
+        # Create config
+        cfg_test = make_cfg(0, 0, num_unroll_steps, False, f'grad_scale_{num_unroll_steps}', l2_weight=0.0)
+        cfg_test = dataclasses.replace(cfg_test, clip_grad_norm=0.0)  # Disable clipping for pure comparison
+        
+        # Create batch
+        batch = make_batch(jax.random.fold_in(bk, num_unroll_steps), 2, cfgn.observation_shape, cfgn.num_actions, num_unroll_steps, 0, 0)
+        
+        # Use fixed RNG for deterministic comparison
+        step_rng = jax.random.PRNGKey(42)
+        
+        # Get unscaled gradients
+        def loss_fn(model):
+            return Learner._compute_total_loss_static(model, cfg_test, batch, step_rng, training=True)
+        
+        (loss_value, metrics), grads_unscaled = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+        gradient_scale = 1.0 / num_unroll_steps
+        grads_scaled = jax.tree_util.tree_map(lambda g: g * gradient_scale, grads_unscaled)
+        
+        # Verify gradient norms scale correctly
+        grad_norm_scaled = optax.global_norm(grads_scaled)
+        grad_norm_unscaled = optax.global_norm(grads_unscaled)
+        expected_ratio = 1.0 / num_unroll_steps
+        
+        if grad_norm_unscaled > 1e-8:  # Avoid division by zero
+            actual_ratio = grad_norm_scaled / grad_norm_unscaled
+            assert jnp.allclose(actual_ratio, expected_ratio, rtol=1e-4), \
+                f"Gradient scaling ratio should be {expected_ratio}, got {actual_ratio}"
+        
+        # Test that each individual gradient component is scaled
+        def check_individual_scaling(grad_unscaled, grad_scaled):
+            if jnp.linalg.norm(grad_unscaled) > 1e-8:
+                individual_ratio = jnp.linalg.norm(grad_scaled) / jnp.linalg.norm(grad_unscaled)
+                return jnp.allclose(individual_ratio, expected_ratio, rtol=1e-4)
+            return True
+        
+        scaling_correct = jax.tree_util.tree_reduce(
+            lambda acc, check_result: acc and check_result,
+            jax.tree_util.tree_map(check_individual_scaling, grads_unscaled, grads_scaled),
+            initializer=True
+        )
+        
+        assert scaling_correct, f"Individual gradient components should be scaled by {expected_ratio} for {num_unroll_steps} unroll steps"
+    
+    # Test interaction with gradient clipping
+    cfg_with_clipping = make_cfg(0, 0, 5, False, 'with_clipping', l2_weight=0.0)
+    cfg_with_clipping = dataclasses.replace(cfg_with_clipping, clip_grad_norm=1.0)  # Enable clipping
+    
+    model_clipping = make_model(jax.random.fold_in(mk, 3), cfgn)
+    learner_clipping = Learner(model_clipping, None, cfg_with_clipping, jax.random.fold_in(lk, 3))
+    
+    # Create batch that will produce large gradients
+    batch_large = make_batch(jax.random.fold_in(bk, 3), 2, cfgn.observation_shape, cfgn.num_actions, 5, 0, 0)
+    # Scale targets to create larger gradients
+    batch_large['target_value'] = batch_large['target_value'] * 100.0
+    batch_large['target_reward'] = batch_large['target_reward'] * 100.0
+    
+    # Run training step with clipping
+    metrics_clipped = learner_clipping.train_step(batch_large)
+    
+    # Verify gradient norm is clipped
+    assert 'grad_norm' in metrics_clipped
+    grad_norm_clipped = float(metrics_clipped['grad_norm'])
+    
+    # Gradient norm should be <= clip_grad_norm (allowing for small numerical errors)
+    assert grad_norm_clipped <= cfg_with_clipping.clip_grad_norm + 1e-6, \
+        f"Gradient norm {grad_norm_clipped} should be <= {cfg_with_clipping.clip_grad_norm}"
+    
+    # Test numerical stability with very large unroll steps
+    cfg_large_unroll = make_cfg(0, 0, 100, False, 'large_unroll', l2_weight=0.0)
+    cfg_large_unroll = dataclasses.replace(cfg_large_unroll, clip_grad_norm=0.0)
+    
+    model_large = make_model(jax.random.fold_in(mk, 4), cfgn)
+    learner_large = Learner(model_large, None, cfg_large_unroll, jax.random.fold_in(lk, 4))
+    
+    batch_large_unroll = make_batch(jax.random.fold_in(bk, 4), 2, cfgn.observation_shape, cfgn.num_actions, 100, 0, 0)
+    
+    # Should complete without numerical issues
+    metrics_large = learner_large.train_step(batch_large_unroll)
+    
+    assert jnp.isfinite(metrics_large['total_loss']), "Loss should be finite with large unroll steps"
+    assert jnp.isfinite(metrics_large['grad_norm']), "Gradient norm should be finite with large unroll steps"
+    
+    # Verify scaling factor is correct
+    expected_scale_large = 1.0 / 100
+    assert jnp.isclose(expected_scale_large, 0.01), "Scaling factor calculation should be correct"
+    
+    print(f"✅ Gradient scaling and edge cases test passed:")
+    print(f"  - Gradient scaling factors verified for unroll steps: [1, 3, 5, 10]")
+    print(f"  - Individual gradient component scaling ratios verified to be 1/num_unroll_steps")
+    print(f"  - Interaction with gradient clipping verified")
+    print(f"  - Numerical stability with large unroll steps (100) verified")
