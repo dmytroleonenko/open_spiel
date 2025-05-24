@@ -15,6 +15,8 @@ class MuZeroNetworkConfig:
     num_residual_blocks: int = 2 # representation + dynamics
     num_fc_residual_blocks: int = 1 # prediction
     num_hidden_units_fc: int = 128 # For MLPs in prediction/reward
+    prediction_num_blocks: int = 2 # For resblocks before value/policy heads
+    fc_prediction_layers: list[int] = dataclasses.field(default_factory=lambda: [64]) # FC layers in prediction head
     # Supports
     value_support_size: int = 0 # 0 for scalar, >0 for categorical
     reward_support_size: int = 0 # 0 for scalar, >0 for categorical
@@ -25,4 +27,8 @@ class MuZeroNetworkConfig:
     # Batch norm
     use_batch_norm: bool = True
     # Added for DummyDynamicsNetwork
-    action_embedding_dim: int = 32 
+    action_embedding_dim: int = 32
+    # Loss types - for model head output configuration (EfficientZeroV2 parity)
+    value_loss_type: str = "mse" # "mse", "symlog", or "categorical"
+    reward_loss_type: str = "mse" # "mse", "symlog", "kl", or "categorical"
+    symlog_base: float = 2.71828182845904523536 # Base for symlog transformation (e for EfficientZeroV2) 

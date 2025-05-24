@@ -12,6 +12,7 @@ import flax.nnx.filterlib
 import flax.nnx.graph as nnx_graph # Import for nnx_graph.Static
 import logging
 import wandb # Added for WandB logging
+import math # For math.e constant
 
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork # type: ignore
 from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib # type: ignore
@@ -74,7 +75,7 @@ class MuZeroConfig:
     
     # Symlog parameters
     use_symlog: bool = False # Whether to use symlog representation
-    symlog_base: float = 2.0 # Base for symlog transformation
+    symlog_base: float = math.e # Base for symlog transformation (e for EfficientZeroV2 parity)
 
     # EfficientZeroV2 value target selection
     value_target: str = "mixed" # "search", "sarsa", "mixed" - EfficientZeroV2 target selection
@@ -504,6 +505,7 @@ class Learner:
                 elif target_val.ndim == 2 and target_val.shape[-1] == 1: # pragma: no cover
                     target_val = jnp.squeeze(target_val, axis=-1) # pragma: no cover
                 
+                # EfficientZeroV2 pattern: model outputs symlog-transformed values when symlog loss is used
                 v_loss = losses_lib.compute_symlog_loss(predicted_val, target_val, config.symlog_base)
                 
             else:  # MSE
@@ -589,6 +591,7 @@ class Learner:
                 elif target_rew.ndim == 2 and target_rew.shape[-1] == 1: # pragma: no cover
                     target_rew = jnp.squeeze(target_rew, axis=-1) # pragma: no cover
                 
+                # EfficientZeroV2 pattern: model outputs symlog-transformed values when symlog loss is used
                 r_loss = losses_lib.compute_symlog_loss(predicted_rew, target_rew, config.symlog_base)
                 
             elif config.reward_loss_type == "kl":
@@ -744,7 +747,7 @@ class Learner:
     def save_checkpoint(self, force_save: bool = False):
         """Save model and optimizer state to checkpoint."""
         if self.checkpoint_manager is None:
-            print("Checkpoint manager not configured. Skipping save.")
+            print("Checkpoint manager not configured. Skipping save.") # pragma: no cover
             return # pragma: no cover
             
         # Check if we should save based on frequency

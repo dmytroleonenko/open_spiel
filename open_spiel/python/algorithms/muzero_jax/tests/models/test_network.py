@@ -4,8 +4,10 @@ import jax.numpy as jnp
 import flax.nnx as nnx
 import dataclasses
 from typing import Tuple
+import math
 
 from open_spiel.python.algorithms.muzero_jax.models import network as muzero_network_lib
+from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
 from open_spiel.python.algorithms.muzero_jax.models.network_config import MuZeroNetworkConfig
 from open_spiel.python.algorithms.muzero_jax.models.layers import MLP
 
@@ -78,6 +80,17 @@ class DummyPredictionNetwork(nnx.Module):
         value = self.value_head(hidden_state_flat)
         if self.config.value_support_size == 0 and value.ndim > 1: # Scalar value, remove trailing dim if present
              value = jnp.squeeze(value, axis=-1)
+        
+        # EfficientZeroV2 pattern: Apply symlog transformation to value output if symlog loss is used
+        if hasattr(self.config, 'value_loss_type') and self.config.value_loss_type == "symlog":
+            if value.ndim == 1 or (value.ndim == 2 and value.shape[-1] == 1):
+                # Only apply symlog to scalar values
+                if value.ndim == 2:
+                    value = jnp.squeeze(value, axis=-1)
+                # Import symlog function from network module
+                from open_spiel.python.algorithms.muzero_jax.models.network import symlog
+                value = symlog(value, base=getattr(self.config, 'symlog_base', jnp.e))
+        
         return policy_logits, value
 
 class DummyRewardNetwork(nnx.Module):
@@ -95,6 +108,17 @@ class DummyRewardNetwork(nnx.Module):
         reward = self.reward_head(hidden_state_flat)
         if self.config.reward_support_size == 0 and reward.ndim > 1: # Scalar reward, remove trailing dim
             reward = jnp.squeeze(reward, axis=-1)
+        
+        # EfficientZeroV2 pattern: Apply symlog transformation to reward output if symlog loss is used
+        if hasattr(self.config, 'reward_loss_type') and self.config.reward_loss_type == "symlog":
+            if reward.ndim == 1 or (reward.ndim == 2 and reward.shape[-1] == 1):
+                # Only apply symlog to scalar rewards
+                if reward.ndim == 2:
+                    reward = jnp.squeeze(reward, axis=-1)
+                # Import symlog function from network module
+                from open_spiel.python.algorithms.muzero_jax.models.network import symlog
+                reward = symlog(reward, base=getattr(self.config, 'symlog_base', jnp.e))
+        
         return reward
 
 class DummyProjectionNetwork(nnx.Module):
@@ -150,6 +174,12 @@ def base_config():
             # Default to flat observations unless specified
             self.use_image_observation = False
             self.observation_shape = self.observation_shape_flat
+            
+            # Add missing attributes that network.py expects
+            self.num_residual_blocks = 2
+            self.num_hidden_units_fc = 64
+            self.downsample_blocks = 0  # 0 means no downsampling
+            self.downsample_channels = 16
     return Config()
 
 @pytest.fixture
@@ -163,7 +193,7 @@ def image_obs_config(base_config):
 
 @pytest.fixture
 def image_obs_downsample_config(image_obs_config):
-    image_obs_config.downsample = True
+    image_obs_config.downsample_blocks = 1  # Enable downsampling
     # After downsampling (e.g. 2x strideconv, 2x strideconv in simplified DownSample)
     # 96 -> 48 -> 24. If DownSample is more complex, this needs adjustment.
     # Let's assume for testing our current simplified DownSample leads to e.g. 24x24
@@ -232,7 +262,7 @@ def test_dynamics_network(config_fixture_name, request, rngs):
     # This will cover line 114 if action_embedding_config is used, as getattr will be true.
     dyn_net = muzero_network_lib.DynamicsNetwork(config, rngs=rngs)
     batch_size = 2
-    action_shape = (batch_size, 1) # For discrete actions
+    action_shape = (batch_size,) # For discrete actions
     dummy_action = jnp.zeros(action_shape, dtype=jnp.int32)
 
     if config.use_image_observation:
@@ -736,3 +766,543 @@ def test_muzero_network_recurrent_inference_without_projection(dummy_config_imag
 # However, that would require modifying the fixture or config on the fly which can be tricky.
 # For now, assume config is correctly set up by the user if use_projection is True.
 # The __init__ of MuZeroNetwork already has a check for this. 
+
+# Helper functions for creating test networks
+def create_test_representation_network(config, *, rngs):
+    return DummyRepresentationNetwork(config, rngs=rngs)
+
+def create_test_prediction_network(config, *, rngs):
+    return DummyPredictionNetwork(config, rngs=rngs)
+
+def create_test_dynamics_network(config, *, rngs):
+    return DummyDynamicsNetwork(config, rngs=rngs)
+
+def create_test_reward_network(config, *, rngs):
+    return DummyRewardNetwork(config, rngs=rngs)
+
+# --- Test symlog model output transformations (EfficientZeroV2 parity) ---
+def test_model_symlog_value_output():
+    """Test that value head outputs symlog-transformed values when configured."""
+    # Test with symlog value loss
+    config_symlog = MuZeroNetworkConfig(
+        observation_shape=(4,),
+        num_actions=3,
+        num_channels=8,
+        use_image_observation=False,
+        num_residual_blocks=1,
+        num_fc_residual_blocks=1,
+        num_hidden_units_fc=16,
+        value_loss_type="symlog",
+        symlog_base=math.e
+    )
+    
+    key = jax.random.PRNGKey(0)
+    
+    # Create model with symlog value loss
+    model_symlog = MuZeroNetwork(
+        representation_network_def=lambda config, *, rngs: create_test_representation_network(config, rngs=rngs),
+        prediction_network_def=lambda config, *, rngs: create_test_prediction_network(config, rngs=rngs),
+        dynamics_network_def=lambda config, *, rngs: create_test_dynamics_network(config, rngs=rngs),
+        reward_network_def=lambda config, *, rngs: create_test_reward_network(config, rngs=rngs),
+        projection_network_def=None,
+        config=config_symlog,
+        rngs=nnx.Rngs(params=key)
+    )
+    
+    # Test with normal MSE value loss
+    config_mse = MuZeroNetworkConfig(
+        observation_shape=(4,),
+        num_actions=3,
+        num_channels=8,
+        use_image_observation=False,
+        num_residual_blocks=1,
+        num_fc_residual_blocks=1,
+        num_hidden_units_fc=16,
+        value_loss_type="mse",
+    )
+    
+    model_mse = MuZeroNetwork(
+        representation_network_def=lambda config, *, rngs: create_test_representation_network(config, rngs=rngs),
+        prediction_network_def=lambda config, *, rngs: create_test_prediction_network(config, rngs=rngs),
+        dynamics_network_def=lambda config, *, rngs: create_test_dynamics_network(config, rngs=rngs),
+        reward_network_def=lambda config, *, rngs: create_test_reward_network(config, rngs=rngs),
+        projection_network_def=None,
+        config=config_mse,
+        rngs=nnx.Rngs(params=key)
+    )
+    
+    # Test observation
+    observation = jnp.array([[1.0, -2.0, 3.0, -4.0]])
+    
+    # Get initial inference outputs
+    _, _, value_symlog, _, _ = model_symlog.initial_inference(observation, training=False)
+    _, _, value_mse, _, _ = model_mse.initial_inference(observation, training=False)
+    
+    # The symlog model should output different values than the MSE model
+    # (because symlog transformation is applied)
+    assert not jnp.allclose(value_symlog, value_mse, atol=1e-6), \
+        "Symlog model should output different values than MSE model"
+    
+    # Verify symlog values are reasonable (finite and bounded)
+    assert jnp.all(jnp.isfinite(value_symlog)), "Symlog values should be finite"
+    
+    print("✅ Model symlog value output test passed!")
+
+
+def test_model_symlog_reward_output():
+    """Test that reward head outputs symlog-transformed values when configured."""
+    # Test with symlog reward loss
+    config_symlog = MuZeroNetworkConfig(
+        observation_shape=(4,),
+        num_actions=3,
+        num_channels=8,
+        use_image_observation=False,
+        num_residual_blocks=1,
+        num_fc_residual_blocks=1,
+        num_hidden_units_fc=16,
+        reward_loss_type="symlog",
+        symlog_base=math.e
+    )
+    
+    key = jax.random.PRNGKey(0)
+    
+    # Create model with symlog reward loss
+    model_symlog = MuZeroNetwork(
+        representation_network_def=lambda config, *, rngs: create_test_representation_network(config, rngs=rngs),
+        prediction_network_def=lambda config, *, rngs: create_test_prediction_network(config, rngs=rngs),
+        dynamics_network_def=lambda config, *, rngs: create_test_dynamics_network(config, rngs=rngs),
+        reward_network_def=lambda config, *, rngs: create_test_reward_network(config, rngs=rngs),
+        projection_network_def=None,
+        config=config_symlog,
+        rngs=nnx.Rngs(params=key)
+    )
+    
+    # Test with normal MSE reward loss
+    config_mse = MuZeroNetworkConfig(
+        observation_shape=(4,),
+        num_actions=3,
+        num_channels=8,
+        use_image_observation=False,
+        num_residual_blocks=1,
+        num_fc_residual_blocks=1,
+        num_hidden_units_fc=16,
+        reward_loss_type="mse",
+    )
+    
+    model_mse = MuZeroNetwork(
+        representation_network_def=lambda config, *, rngs: create_test_representation_network(config, rngs=rngs),
+        prediction_network_def=lambda config, *, rngs: create_test_prediction_network(config, rngs=rngs),
+        dynamics_network_def=lambda config, *, rngs: create_test_dynamics_network(config, rngs=rngs),
+        reward_network_def=lambda config, *, rngs: create_test_reward_network(config, rngs=rngs),
+        projection_network_def=None,
+        config=config_mse,
+        rngs=nnx.Rngs(params=key)
+    )
+    
+    # Test observation and action
+    observation = jnp.array([[1.0, -2.0, 3.0, -4.0]])
+    action = jnp.array([1])
+    
+    # Get initial inference to get hidden state, then do recurrent inference
+    hidden_state_symlog, _, _, _, _ = model_symlog.initial_inference(observation, training=False)
+    hidden_state_mse, _, _, _, _ = model_mse.initial_inference(observation, training=False)
+    
+    _, reward_symlog, _, _, _ = model_symlog.recurrent_inference(hidden_state_symlog, action, training=False)
+    _, reward_mse, _, _, _ = model_mse.recurrent_inference(hidden_state_mse, action, training=False)
+    
+    # The symlog model should output different rewards than the MSE model
+    # (because symlog transformation is applied)
+    assert not jnp.allclose(reward_symlog, reward_mse, atol=1e-6), \
+        "Symlog model should output different rewards than MSE model"
+    
+    # Verify symlog rewards are reasonable (finite and bounded)
+    assert jnp.all(jnp.isfinite(reward_symlog)), "Symlog rewards should be finite"
+    
+    print("✅ Model symlog reward output test passed!")
+
+
+def test_model_symlog_base_configuration():
+    """Test that different symlog bases produce different outputs."""
+    # Test with base e
+    config_base_e = MuZeroNetworkConfig(
+        observation_shape=(4,),
+        num_actions=3,
+        num_channels=8,
+        use_image_observation=False,
+        num_residual_blocks=1,
+        num_fc_residual_blocks=1,
+        num_hidden_units_fc=16,
+        value_loss_type="symlog",
+        reward_loss_type="symlog", 
+        symlog_base=math.e
+    )
+    
+    # Test with base 2
+    config_base_2 = MuZeroNetworkConfig(
+        observation_shape=(4,),
+        num_actions=3,
+        num_channels=8,
+        use_image_observation=False,
+        num_residual_blocks=1,
+        num_fc_residual_blocks=1,
+        num_hidden_units_fc=16,
+        value_loss_type="symlog",
+        reward_loss_type="symlog",
+        symlog_base=2.0
+    )
+    
+    key = jax.random.PRNGKey(0)
+    
+    # Create models with different bases
+    model_base_e = MuZeroNetwork(
+        representation_network_def=lambda config, *, rngs: create_test_representation_network(config, rngs=rngs),
+        prediction_network_def=lambda config, *, rngs: create_test_prediction_network(config, rngs=rngs),
+        dynamics_network_def=lambda config, *, rngs: create_test_dynamics_network(config, rngs=rngs),
+        reward_network_def=lambda config, *, rngs: create_test_reward_network(config, rngs=rngs),
+        projection_network_def=None,
+        config=config_base_e,
+        rngs=nnx.Rngs(params=key)
+    )
+    
+    model_base_2 = MuZeroNetwork(
+        representation_network_def=lambda config, *, rngs: create_test_representation_network(config, rngs=rngs),
+        prediction_network_def=lambda config, *, rngs: create_test_prediction_network(config, rngs=rngs),
+        dynamics_network_def=lambda config, *, rngs: create_test_dynamics_network(config, rngs=rngs),
+        reward_network_def=lambda config, *, rngs: create_test_reward_network(config, rngs=rngs),
+        projection_network_def=None,
+        config=config_base_2,
+        rngs=nnx.Rngs(params=key)
+    )
+    
+    # Test observation and action
+    observation = jnp.array([[1.0, -2.0, 3.0, -4.0]])
+    action = jnp.array([1])
+    
+    # Get outputs from both models
+    _, reward_e, value_e, _, _ = model_base_e.initial_inference(observation, training=False)
+    _, reward_2, value_2, _, _ = model_base_2.initial_inference(observation, training=False)
+    
+    # Different bases should produce different outputs
+    assert not jnp.allclose(value_e, value_2, atol=1e-6), \
+        "Different symlog bases should produce different value outputs"
+    assert not jnp.allclose(reward_e, reward_2, atol=1e-6), \
+        "Different symlog bases should produce different reward outputs"
+    
+    print("✅ Model symlog base configuration test passed!")
+
+
+def test_model_output_consistency_with_loss_functions():
+    """Test that model outputs are compatible with various loss functions."""
+    import jax.random as jr
+    from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
+    from open_spiel.python.algorithms.muzero_jax.training import losses as loss_lib
+
+    config = MuZeroNetworkConfig(
+        observation_shape=(10,),
+        num_actions=5,
+        num_channels=8,
+        value_support_size=11,  # Categorical value 
+        reward_support_size=11,  # Categorical reward
+        use_image_observation=False,
+        num_residual_blocks=1,
+        num_fc_residual_blocks=1,
+        num_hidden_units_fc=16,
+        spatial_extents=(8, 8),
+        use_projection=False
+    )
+
+    key = jr.key(42)
+    model = MuZeroNetwork(
+        representation_network_def=create_test_representation_network,
+        dynamics_network_def=create_test_dynamics_network,
+        prediction_network_def=create_test_prediction_network,
+        reward_network_def=create_test_reward_network,
+        projection_network_def=None,
+        config=config,
+        rngs=nnx.Rngs(params=key)
+    )
+
+    batch_size = 3
+    observation = jr.normal(key, (batch_size, 10))
+    action = jr.randint(key, (batch_size,), 0, 5)
+
+    # Test initial inference with categorical outputs
+    hidden_state, reward, value, policy_logits, _ = model.initial_inference(observation, training=False)
+    
+    # Verify shapes are compatible with loss functions
+    assert reward.shape == (batch_size, 11), f"Expected reward shape (3, 11), got {reward.shape}"
+    assert value.shape == (batch_size, 11), f"Expected value shape (3, 11), got {value.shape}"
+    assert policy_logits.shape == (batch_size, 5), f"Expected policy shape (3, 5), got {policy_logits.shape}"
+
+    # Test recurrent inference
+    next_hidden_state, reward_rec, value_rec, policy_logits_rec, _ = model.recurrent_inference(
+        hidden_state, action, training=False
+    )
+    
+    # Verify categorical distributions can be used with categorical losses
+    target_value_dist = jr.uniform(key, (batch_size, 11))
+    target_value_dist = target_value_dist / jnp.sum(target_value_dist, axis=-1, keepdims=True)
+    
+    target_reward_dist = jr.uniform(key, (batch_size, 11))
+    target_reward_dist = target_reward_dist / jnp.sum(target_reward_dist, axis=-1, keepdims=True)
+    
+    target_policy = jr.uniform(key, (batch_size, 5))
+    target_policy = target_policy / jnp.sum(target_policy, axis=-1, keepdims=True)
+    
+    # Test compatibility with loss functions
+    value_loss = loss_lib.compute_categorical_value_loss(value, target_value_dist)
+    reward_loss = loss_lib.compute_categorical_reward_loss(reward, target_reward_dist)
+    policy_loss = loss_lib.compute_policy_loss(policy_logits, target_policy)
+    
+    assert value_loss.shape == (batch_size,), f"Expected value_loss shape (3,), got {value_loss.shape}"
+    assert reward_loss.shape == (batch_size,), f"Expected reward_loss shape (3,), got {reward_loss.shape}"
+    assert policy_loss.shape == (batch_size,), f"Expected policy_loss shape (3,), got {policy_loss.shape}"
+
+
+# Test coverage for missing network.py lines
+def test_downsample_network():
+    """Test the DownSample network with various configurations."""
+    from open_spiel.python.algorithms.muzero_jax.models.network import DownSample
+    
+    key = jax.random.key(42)
+    in_channels = 3
+    out_channels = 16
+    
+    downsampler = DownSample(in_channels, out_channels, rngs=nnx.Rngs(params=key))
+    
+    # Test with different batch sizes and image sizes
+    batch_size = 2
+    height, width = 96, 96
+    x = jax.random.normal(key, (batch_size, height, width, in_channels))
+    
+    # Test training=True
+    output_train = downsampler(x, training=True)
+    expected_h = height // 4  # Two stride-2 convs: 96 -> 48 -> 24
+    expected_w = width // 4
+    assert output_train.shape == (batch_size, expected_h, expected_w, out_channels), \
+        f"Expected shape (2, {expected_h}, {expected_w}, {out_channels}), got {output_train.shape}"
+    
+    # Test training=False
+    output_eval = downsampler(x, training=False)
+    assert output_eval.shape == output_train.shape
+
+
+def test_representation_network_image_branch():
+    """Test RepresentationNetwork image branch with and without downsampling."""
+    from open_spiel.python.algorithms.muzero_jax.models.network import RepresentationNetwork
+
+    key = jax.random.key(42)
+    batch_size = 2
+
+    # Test with downsampling
+    config_downsample = MuZeroNetworkConfig(
+        observation_shape=(96, 96, 3),
+        num_channels=16,
+        num_residual_blocks=2,
+        use_image_observation=True,
+        downsample_channels=8,
+        downsample_blocks=1,
+        spatial_extents=(24, 24)  # After 4x downsampling
+    )
+    
+    rep_net_down = RepresentationNetwork(config_downsample, rngs=nnx.Rngs(params=key))
+    x = jax.random.normal(key, (batch_size, 96, 96, 3))
+    output_down = rep_net_down(x, training=True)
+    assert output_down.shape == (batch_size, 24, 24, 16)
+    
+    # Test without downsampling
+    config_no_downsample = MuZeroNetworkConfig(
+        observation_shape=(96, 96, 3),
+        num_channels=16,
+        num_residual_blocks=2,
+        use_image_observation=True,
+        downsample_blocks=0,  # Use 0 blocks to disable downsampling
+        spatial_extents=(96, 96)
+    )
+    
+    rep_net_no_down = RepresentationNetwork(config_no_downsample, rngs=nnx.Rngs(params=key))
+    output_no_down = rep_net_no_down(x, training=False)
+    # When no downsampling, should preserve spatial dimensions
+    assert output_no_down.shape == (batch_size, 96, 96, 16)
+
+
+def test_dynamics_network_action_embedding():
+    """Test DynamicsNetwork with action embedding enabled."""
+    from open_spiel.python.algorithms.muzero_jax.models.network import DynamicsNetwork
+
+    key = jax.random.key(42)
+    batch_size = 2
+
+    # Test image observation with action embedding
+    config = MuZeroNetworkConfig(
+        observation_shape=(24, 24, 3),
+        num_channels=16,
+        num_actions=5,
+        num_residual_blocks=2,
+        use_image_observation=True,
+        action_embedding_dim=8,
+        spatial_extents=(24, 24)
+    )
+    
+    dynamics_net = DynamicsNetwork(config, rngs=nnx.Rngs(params=key))
+    hidden_state = jax.random.normal(key, (batch_size, 24, 24, 16))
+    action = jax.random.randint(key, (batch_size,), 0, 5)
+    
+    next_hidden_state = dynamics_net(hidden_state, action, training=True)
+    assert next_hidden_state.shape == (batch_size, 24, 24, 16)
+
+
+def test_dynamics_network_continuous_actions():
+    """Test DynamicsNetwork with continuous actions."""
+    from open_spiel.python.algorithms.muzero_jax.models.network import DynamicsNetwork
+
+    key = jax.random.key(42)
+    batch_size = 2
+
+    # Test with continuous actions in image setting
+    config = MuZeroNetworkConfig(
+        observation_shape=(24, 24, 3),
+        num_channels=16,
+        num_actions=3,  # Continuous action dim
+        num_residual_blocks=1,
+        use_image_observation=True,
+        spatial_extents=(24, 24)
+    )
+    
+    dynamics_net = DynamicsNetwork(config, rngs=nnx.Rngs(params=key))
+    hidden_state = jax.random.normal(key, (batch_size, 24, 24, 16))
+    continuous_action = jax.random.normal(key, (batch_size, 3))
+    
+    next_hidden_state = dynamics_net(hidden_state, continuous_action, training=False)
+    assert next_hidden_state.shape == (batch_size, 24, 24, 16)
+
+
+def test_dynamics_network_error_cases():
+    """Test DynamicsNetwork error handling for invalid inputs."""
+    from open_spiel.python.algorithms.muzero_jax.models.network import DynamicsNetwork
+
+    key = jax.random.key(42)
+
+    # Test flat observations with invalid hidden state dimensions
+    config = MuZeroNetworkConfig(
+        observation_shape=(64,),
+        num_channels=16,
+        num_actions=5,
+        num_residual_blocks=1,
+        use_image_observation=False,
+        num_hidden_units_fc=32
+    )
+    
+    dynamics_net = DynamicsNetwork(config, rngs=nnx.Rngs(params=key))
+    
+    # Invalid hidden state shape (should be 2D for flat observations)
+    hidden_state_invalid = jax.random.normal(key, (2, 16, 16))  # 3D instead of 2D
+    action = jax.random.randint(key, (2,), 0, 5)
+    
+    with pytest.raises(TypeError, match="Expected hidden_state with ndim=2"):
+        dynamics_net(hidden_state_invalid, action, training=False)
+
+
+def test_prediction_network_image_branch():
+    """Test PredictionNetwork image branch functionality."""
+    from open_spiel.python.algorithms.muzero_jax.models.network import PredictionNetwork
+    
+    key = jax.random.key(42)
+    batch_size = 2
+    
+    config = MuZeroNetworkConfig(
+        observation_shape=(24, 24, 3),
+        num_channels=16,
+        num_actions=5,
+        num_fc_residual_blocks=2,
+        use_image_observation=True,
+        value_support_size=0,  # Scalar value
+        spatial_extents=(24, 24),
+        num_hidden_units_fc=32
+    )
+    
+    pred_net = PredictionNetwork(config, rngs=nnx.Rngs(params=key))
+    hidden_state = jax.random.normal(key, (batch_size, 24, 24, 16))
+    
+    policy_logits, value = pred_net(hidden_state, training=True)
+    assert policy_logits.shape == (batch_size, 5)
+    assert value.shape == (batch_size,)  # Scalar value
+
+
+def test_prediction_network_symlog_transformation():
+    """Test PredictionNetwork symlog transformation for value output."""
+    from open_spiel.python.algorithms.muzero_jax.models.network import PredictionNetwork
+
+    key = jax.random.key(42)
+    batch_size = 2
+
+    # Config with symlog value loss
+    config = MuZeroNetworkConfig(
+        observation_shape=(64,),
+        num_channels=16,
+        num_actions=5,
+        value_support_size=0,  # Scalar value
+        use_image_observation=False,
+        num_hidden_units_fc=32,
+        value_loss_type="symlog"  # Set during initialization since config is frozen
+    )
+    # Config is frozen, so symlog_base is already set to e as default
+    
+    pred_net = PredictionNetwork(config, rngs=nnx.Rngs(params=key))
+    hidden_state = jax.random.normal(key, (batch_size, 16))
+    
+    policy_logits, value = pred_net(hidden_state, training=False)
+    assert policy_logits.shape == (batch_size, 5)
+    assert value.shape == (batch_size,)
+    
+    # Value should be transformed via symlog
+    # We can't easily verify the exact transformation without knowing the internal weights,
+    # but we can check the shape and that it doesn't crash
+
+
+def test_reward_network_image_branch():
+    """Test RewardNetwork image branch functionality."""
+    from open_spiel.python.algorithms.muzero_jax.models.network import RewardNetwork
+    
+    key = jax.random.key(42)
+    batch_size = 2
+    
+    config = MuZeroNetworkConfig(
+        observation_shape=(24, 24, 3),
+        num_channels=16,
+        reward_support_size=0,  # Scalar reward
+        use_image_observation=True,
+        spatial_extents=(24, 24),
+        num_hidden_units_fc=32
+    )
+    
+    reward_net = RewardNetwork(config, rngs=nnx.Rngs(params=key))
+    hidden_state = jax.random.normal(key, (batch_size, 24, 24, 16))
+    
+    reward = reward_net(hidden_state, training=True)
+    assert reward.shape == (batch_size,)  # Scalar reward
+
+
+def test_reward_network_symlog_transformation():
+    """Test RewardNetwork symlog transformation for reward output."""
+    from open_spiel.python.algorithms.muzero_jax.models.network import RewardNetwork
+    
+    key = jax.random.key(42)
+    batch_size = 2
+    
+    # Config with symlog reward loss
+    config = MuZeroNetworkConfig(
+        observation_shape=(64,),
+        num_channels=16,
+        reward_support_size=0,  # Scalar reward
+        use_image_observation=False,
+        num_hidden_units_fc=32,
+        reward_loss_type="symlog"  # Set during initialization since config is frozen
+    )
+    # Config is frozen, so symlog_base is already set to e as default
+    
+    reward_net = RewardNetwork(config, rngs=nnx.Rngs(params=key))
+    hidden_state = jax.random.normal(key, (batch_size, 16))
+    
+    reward = reward_net(hidden_state, training=False)
+    assert reward.shape == (batch_size,)

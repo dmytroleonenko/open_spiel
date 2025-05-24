@@ -187,42 +187,77 @@ def test_compute_categorical_value_loss_with_iql():
 # --- Test symlog functions ---
 def test_symlog():
     x = jnp.array([-2.0, -1.0, 0.0, 1.0, 2.0])
-    result = losses.symlog(x, base=2.0)
     
-    # Symlog: sign(x) * log(|x| + 1) / log(base)
+    # Test with explicit base=2.0
+    result = losses.symlog(x, base=2.0)
     expected = jnp.sign(x) * jnp.log(jnp.abs(x) + 1.0) / jnp.log(2.0)
     assert jnp.allclose(result, expected)
+    
+    # Test with default base (e) - EfficientZeroV2 pattern
+    result_default = losses.symlog(x)
+    expected_default = jnp.sign(x) * jnp.log(jnp.abs(x) + 1.0) / jnp.log(jnp.e)
+    assert jnp.allclose(result_default, expected_default)
+    
+    # Test that default is indeed base e
+    result_e = losses.symlog(x, base=jnp.e) 
+    assert jnp.allclose(result_default, result_e)
 
 def test_symexp():
     x = jnp.array([-2.0, -1.0, 0.0, 1.0, 2.0])
-    result = losses.symexp(x, base=2.0)
     
-    # Symexp: sign(x) * (base^|x| - 1)
+    # Test with explicit base=2.0
+    result = losses.symexp(x, base=2.0)
     expected = jnp.sign(x) * (jnp.power(2.0, jnp.abs(x)) - 1.0)
     assert jnp.allclose(result, expected)
+    
+    # Test with default base (e) - EfficientZeroV2 pattern
+    result_default = losses.symexp(x)
+    expected_default = jnp.sign(x) * (jnp.power(jnp.e, jnp.abs(x)) - 1.0)
+    assert jnp.allclose(result_default, expected_default)
+    
+    # Test that default is indeed base e
+    result_e = losses.symexp(x, base=jnp.e) 
+    assert jnp.allclose(result_default, result_e)
 
 def test_symlog_symexp_inverse():
     x = jnp.array([-5.0, -1.0, 0.0, 1.0, 5.0])
-    base = 2.0
     
-    # Test that symexp(symlog(x)) ≈ x
+    # Test with explicit base=2.0
+    base = 2.0
     symlog_result = losses.symlog(x, base)
     reconstructed = losses.symexp(symlog_result, base)
     assert jnp.allclose(reconstructed, x, atol=1e-6)
+    
+    # Test with default base (e) - EfficientZeroV2 pattern 
+    symlog_result_default = losses.symlog(x)
+    reconstructed_default = losses.symexp(symlog_result_default)
+    assert jnp.allclose(reconstructed_default, x, atol=1e-6)
+    
+    # Test that both default and explicit e give same results
+    symlog_result_e = losses.symlog(x, base=jnp.e)
+    reconstructed_e = losses.symexp(symlog_result_e, base=jnp.e)
+    assert jnp.allclose(reconstructed_default, reconstructed_e)
 
 # --- Test compute_symlog_loss ---
 def test_compute_symlog_loss():
-    pred = jnp.array([1.0, -2.0, 5.0])
-    target = jnp.array([1.5, -1.5, 4.5])
+    # EfficientZeroV2 pattern: predictions are already in symlog space, only targets are transformed
+    pred_symlog = jnp.array([1.0, -2.0, 5.0])  # Already in symlog space
+    target_raw = jnp.array([1.5, -1.5, 4.5])   # Raw scalar targets
     
-    result = losses.compute_symlog_loss(pred, target, base=2.0)
+    result = losses.compute_symlog_loss(pred_symlog, target_raw, base=2.0)
     
-    # Should transform both pred and target then compute MSE
-    symlog_pred = losses.symlog(pred, 2.0)
-    symlog_target = losses.symlog(target, 2.0)
-    expected = losses.scalar_mse_loss(symlog_pred, symlog_target)
+    # EfficientZeroV2 pattern: prediction is already symlog, only transform target
+    # loss = 0.5 * (prediction - symlog(target)) ** 2
+    symlog_target = losses.symlog(target_raw, 2.0)
+    expected = 0.5 * losses.scalar_mse_loss(pred_symlog, symlog_target)
     
     assert jnp.allclose(result, expected)
+    
+    # Test with default base (e)
+    result_default = losses.compute_symlog_loss(pred_symlog, target_raw)
+    symlog_target_e = losses.symlog(target_raw, jnp.e)
+    expected_default = 0.5 * losses.scalar_mse_loss(pred_symlog, symlog_target_e)
+    assert jnp.allclose(result_default, expected_default)
 
 # --- Test compute_kl_loss ---
 def test_compute_kl_loss():
@@ -690,3 +725,360 @@ def test_categorical_value_loss_parameter_name_change():
     param_names = list(sig.parameters.keys())
     assert 'effective_iql_param' in param_names, f"Expected 'effective_iql_param' in {param_names}"
     assert 'iql_weight' not in param_names, f"Old 'iql_weight' parameter should be removed from {param_names}" 
+
+def test_comprehensive_missing_coverage():
+    """Test functions and edge cases that are missing coverage."""
+    import jax.random as jr
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    
+    key = jr.key(42)
+    
+    # Test error conditions for cross_entropy_loss_with_logits
+    logits_valid = jr.normal(key, (3, 5))
+    targets_valid = jr.uniform(key, (3, 5))
+    targets_valid = targets_valid / jnp.sum(targets_valid, axis=-1, keepdims=True)
+    
+    # Test valid case
+    loss = losses_lib.cross_entropy_loss_with_logits(logits_valid, targets_valid)
+    assert loss.shape == (3,)
+    
+    # Test with 1D inputs (should be per-item)
+    scalar_pred = jnp.array([2.0])
+    scalar_target = jnp.array([1.5])
+    scalar_loss = losses_lib.scalar_mse_loss(scalar_pred, scalar_target)
+    assert scalar_loss.shape == (1,)
+    
+    # Test l2_regularization with zero weight (should return 0.0)
+    dummy_params = {'w': jnp.array([[1.0, 2.0], [3.0, 4.0]])}
+    l2_zero = losses_lib.l2_regularization(dummy_params, 0.0)
+    assert l2_zero == 0.0
+    
+    # Test compute_scalar_value_loss with squeezing
+    value_pred_unsqueezed = jr.normal(key, (3, 1))  # Shape (B, 1)
+    target_val_unsqueezed = jr.normal(key, (3, 1))  # Shape (B, 1)
+    value_loss = losses_lib.compute_scalar_value_loss(
+        value_pred_unsqueezed, target_val_unsqueezed, effective_iql_param=0.7
+    )
+    assert value_loss.shape == (3,)
+    
+    # Test compute_scalar_reward_loss with squeezing
+    reward_pred_unsqueezed = jr.normal(key, (3, 1))  # Shape (B, 1)
+    target_rew_unsqueezed = jr.normal(key, (3, 1))  # Shape (B, 1)
+    reward_loss = losses_lib.compute_scalar_reward_loss(
+        reward_pred_unsqueezed, target_rew_unsqueezed
+    )
+    assert reward_loss.shape == (3,)
+
+
+def test_symlog_symexp_functions():
+    """Test symlog and symexp functions with various inputs and bases."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    
+    # Test various inputs
+    x_values = jnp.array([-10.0, -1.0, 0.0, 1.0, 10.0])
+    
+    # Test with default base (e)
+    symlog_default = losses_lib.symlog(x_values)
+    symexp_default = losses_lib.symexp(symlog_default)
+    
+    # Test that symexp is inverse of symlog (approximately)
+    assert jnp.allclose(x_values, symexp_default, atol=1e-5)
+    
+    # Test with base 2
+    symlog_base2 = losses_lib.symlog(x_values, base=2.0)
+    symexp_base2 = losses_lib.symexp(symlog_base2, base=2.0)
+    assert jnp.allclose(x_values, symexp_base2, atol=1e-5)
+    
+    # Test that symlog preserves sign
+    assert jnp.all(jnp.sign(symlog_default) == jnp.sign(x_values))
+    
+    # Test zero case specifically
+    zero_input = jnp.array([0.0])
+    assert jnp.abs(losses_lib.symlog(zero_input)[0]) < 1e-10
+    assert jnp.abs(losses_lib.symexp(losses_lib.symlog(zero_input))[0]) < 1e-10
+
+
+def test_scalar_to_support_function():
+    """Test scalar_to_support function with various configurations."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    
+    # Test with scalar input
+    scalar_val = jnp.array(5.0)
+    support_dist = losses_lib.scalar_to_support(
+        scalar_val, support_min=-10.0, support_max=10.0, num_atoms=21
+    )
+    assert support_dist.shape == (21,)
+    assert jnp.abs(jnp.sum(support_dist) - 1.0) < 1e-5  # Should sum to 1
+    
+    # Test with 1D batch input
+    batch_vals = jnp.array([1.0, -2.0, 3.0])
+    batch_support = losses_lib.scalar_to_support(
+        batch_vals, support_min=-5.0, support_max=5.0, num_atoms=11
+    )
+    assert batch_support.shape == (3, 11)
+    # Each row should sum to approximately 1
+    row_sums = jnp.sum(batch_support, axis=-1)
+    assert jnp.allclose(row_sums, 1.0, atol=1e-5)
+    
+    # Test with 2D input (should flatten and reshape)
+    vals_2d = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+    support_2d = losses_lib.scalar_to_support(
+        vals_2d, support_min=0.0, support_max=5.0, num_atoms=6
+    )
+    assert support_2d.shape == (2, 2, 6)
+
+
+def test_support_to_scalar_function():
+    """Test support_to_scalar function with various configurations."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Test round-trip: scalar -> support -> scalar
+    original_vals = jnp.array([1.5, -2.3, 0.0, 4.7])
+    support_min, support_max, num_atoms = -5.0, 5.0, 11
+    
+    # Convert to support
+    support_dist = losses_lib.scalar_to_support(
+        original_vals, support_min=support_min, support_max=support_max, num_atoms=num_atoms
+    )
+    
+    # Convert back to scalar using logits (add small noise to simulate real logits)
+    logits = jnp.log(support_dist + 1e-8) + jr.normal(key, support_dist.shape) * 0.01
+    recovered_vals = losses_lib.support_to_scalar(
+        logits, support_min=support_min, support_max=support_max, num_atoms=num_atoms
+    )
+    
+    # Should be approximately the same (some precision loss expected)
+    assert jnp.allclose(original_vals, recovered_vals, atol=0.5)
+    
+    # Test with random logits
+    random_logits = jr.normal(key, (3, 21))
+    scalar_output = losses_lib.support_to_scalar(
+        random_logits, support_min=-10.0, support_max=10.0, num_atoms=21
+    )
+    assert scalar_output.shape == (3,)
+    assert jnp.all(jnp.isfinite(scalar_output))  # Should not have NaN/inf
+
+
+def test_compute_policy_entropy():
+    """Test policy entropy computation."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Test uniform distribution (should have maximum entropy)
+    uniform_logits = jnp.zeros((2, 4))  # Uniform over 4 actions
+    uniform_entropy = losses_lib.compute_policy_entropy(uniform_logits)
+    expected_uniform_entropy = jnp.log(4.0)  # log(num_actions) for uniform
+    assert jnp.allclose(uniform_entropy, expected_uniform_entropy, rtol=1e-5)
+    
+    # Test deterministic distribution (should have zero entropy)
+    deterministic_logits = jnp.array([[10.0, -10.0, -10.0, -10.0],
+                                      [-10.0, 10.0, -10.0, -10.0]])
+    det_entropy = losses_lib.compute_policy_entropy(deterministic_logits)
+    assert jnp.allclose(det_entropy, 0.0, atol=1e-5)
+    
+    # Test with random logits
+    random_logits = jr.normal(key, (3, 5))
+    random_entropy = losses_lib.compute_policy_entropy(random_logits)
+    assert random_entropy.shape == (3,)
+    assert jnp.all(random_entropy >= 0.0)  # Entropy should be non-negative
+    assert jnp.all(random_entropy <= jnp.log(5.0))  # Should not exceed max entropy
+
+
+def test_compute_kl_loss():
+    """Test KL divergence loss computation."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Test with identical distributions (KL should be 0)
+    logits = jr.normal(key, (2, 5))
+    probs = jax.nn.softmax(logits)
+    kl_identical = losses_lib.compute_kl_loss(logits, probs)
+    assert jnp.allclose(kl_identical, 0.0, atol=1e-5)
+    
+    # Test with different distributions
+    logits1 = jr.normal(key, (3, 4))
+    logits2 = jr.normal(jr.split(key)[0], (3, 4))
+    probs2 = jax.nn.softmax(logits2)
+    kl_diff = losses_lib.compute_kl_loss(logits1, probs2)
+    assert kl_diff.shape == (3,)
+    assert jnp.all(kl_diff >= 0.0)  # KL divergence should be non-negative
+    
+    # Test numerical stability with very small probabilities
+    small_probs = jnp.array([[1e-10, 1.0 - 1e-10], [0.5, 0.5]])
+    test_logits = jr.normal(key, (2, 2))
+    kl_stable = losses_lib.compute_kl_loss(test_logits, small_probs)
+    assert jnp.all(jnp.isfinite(kl_stable))
+
+
+def test_compute_symlog_loss():
+    """Test symlog loss computation."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Test with various predictions and targets
+    predictions = jr.normal(key, (3,))  # Assumed to be in symlog space
+    targets = jr.normal(jr.split(key)[0], (3,))  # Raw scalar values
+    
+    symlog_loss = losses_lib.compute_symlog_loss(predictions, targets)
+    assert symlog_loss.shape == (3,)
+    assert jnp.all(symlog_loss >= 0.0)
+    
+    # Test with different base
+    symlog_loss_base2 = losses_lib.compute_symlog_loss(predictions, targets, base=2.0)
+    assert symlog_loss_base2.shape == (3,)
+    assert jnp.all(symlog_loss_base2 >= 0.0)
+    
+    # Test that loss is 0 when prediction equals symlog(target)
+    target_val = jnp.array([2.0])
+    symlog_target = losses_lib.symlog(target_val)
+    zero_loss = losses_lib.compute_symlog_loss(symlog_target, target_val)
+    assert jnp.allclose(zero_loss, 0.0, atol=1e-6)
+
+
+def test_compute_projection_consistency_loss():
+    """Test SSL projection consistency loss."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Test with identical projections (loss should be close to minimum)
+    projection_size = 64
+    projection1 = jr.normal(key, (2, projection_size))
+    projection1_normalized = projection1 / jnp.linalg.norm(projection1, axis=-1, keepdims=True)
+    
+    # Identical projections should have maximum cosine similarity (-1 * 2 = -2)
+    loss_identical = losses_lib.compute_projection_consistency_loss(
+        projection1_normalized, projection1_normalized
+    )
+    expected_loss = -2.0  # -cosine_sim - cosine_sim = -1 - 1 = -2
+    assert jnp.allclose(loss_identical, expected_loss, atol=1e-5)
+    
+    # Test with orthogonal projections
+    projection2 = jr.normal(jr.split(key)[0], (2, projection_size))
+    projection2_normalized = projection2 / jnp.linalg.norm(projection2, axis=-1, keepdims=True)
+    
+    loss_different = losses_lib.compute_projection_consistency_loss(
+        projection1_normalized, projection2_normalized
+    )
+    assert loss_different.shape == (2,)
+    # Loss should be higher for different projections
+    assert jnp.all(loss_different > loss_identical)
+
+
+def test_compute_categorical_value_loss_with_iql():
+    """Test categorical value loss with IQL weighting."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Create value logits and target distributions
+    batch_size = 3
+    num_atoms = 11
+    value_logits = jr.normal(key, (batch_size, num_atoms))
+    target_dist = jr.uniform(jr.split(key)[0], (batch_size, num_atoms))
+    target_dist = target_dist / jnp.sum(target_dist, axis=-1, keepdims=True)
+    
+    # Test with different IQL parameters
+    loss_symmetric = losses_lib.compute_categorical_value_loss(
+        value_logits, target_dist, effective_iql_param=0.5
+    )
+    loss_asymmetric = losses_lib.compute_categorical_value_loss(
+        value_logits, target_dist, effective_iql_param=0.8
+    )
+    
+    assert loss_symmetric.shape == (batch_size,)
+    assert loss_asymmetric.shape == (batch_size,)
+    assert jnp.all(loss_symmetric >= 0.0)
+    assert jnp.all(loss_asymmetric >= 0.0)
+
+
+def test_compute_categorical_reward_loss():
+    """Test categorical reward loss using KL divergence."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Create reward logits and target distributions
+    batch_size = 3
+    num_atoms = 11
+    reward_logits = jr.normal(key, (batch_size, num_atoms))
+    target_dist = jr.uniform(jr.split(key)[0], (batch_size, num_atoms))
+    target_dist = target_dist / jnp.sum(target_dist, axis=-1, keepdims=True)
+    
+    # Test categorical reward loss (should use KL divergence)
+    loss = losses_lib.compute_categorical_reward_loss(reward_logits, target_dist)
+    assert loss.shape == (batch_size,)
+    assert jnp.all(loss >= 0.0)
+    
+    # Compare with direct KL loss computation
+    direct_kl_loss = losses_lib.compute_kl_loss(reward_logits, target_dist)
+    assert jnp.allclose(loss, direct_kl_loss, rtol=1e-5)
+
+
+# Test edge cases and error conditions that might have been missed
+def test_edge_cases_and_error_conditions():
+    """Test various edge cases and error conditions."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Test MSE loss with multi-dimensional features
+    pred_multi = jr.normal(key, (2, 3, 4))  # Batch of 2, features (3, 4)
+    target_multi = jr.normal(jr.split(key)[0], (2, 3, 4))
+    loss_multi = losses_lib.scalar_mse_loss(pred_multi, target_multi)
+    assert loss_multi.shape == (2,)  # Should sum across feature dimensions
+    
+    # Test with very small values for numerical stability
+    small_vals = jnp.array([1e-10, -1e-10, 0.0])
+    small_symlog = losses_lib.symlog(small_vals)
+    small_symexp = losses_lib.symexp(small_symlog)
+    assert jnp.allclose(small_vals, small_symexp, atol=1e-8)
+    
+    # Test support conversion with edge values
+    edge_vals = jnp.array([-300.0, 300.0, 0.0])  # At the boundaries
+    edge_support = losses_lib.scalar_to_support(
+        edge_vals, support_min=-300.0, support_max=300.0, num_atoms=601
+    )
+    assert edge_support.shape == (3, 601)
+    assert jnp.all(jnp.sum(edge_support, axis=-1) > 0.9)  # Should be approximately normalized
+
+
+def test_additional_squeeze_operations():
+    """Test additional squeeze operations in value and reward loss functions."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Test scalar value loss without extra dimensions (should not squeeze)
+    pred_no_squeeze = jr.normal(key, (3,))
+    target_no_squeeze = jr.normal(jr.split(key)[0], (3,))
+    loss_no_squeeze = losses_lib.compute_scalar_value_loss(pred_no_squeeze, target_no_squeeze)
+    assert loss_no_squeeze.shape == (3,)
+    
+    # Test scalar reward loss without extra dimensions (should not squeeze) 
+    reward_loss_no_squeeze = losses_lib.compute_scalar_reward_loss(pred_no_squeeze, target_no_squeeze)
+    assert reward_loss_no_squeeze.shape == (3,)
+    
+    # Test edge case where both prediction and target have shape (B, 1)
+    pred_both_squeeze = jr.normal(key, (3, 1))
+    target_both_squeeze = jr.normal(jr.split(key)[0], (3, 1))
+    
+    value_loss_both = losses_lib.compute_scalar_value_loss(pred_both_squeeze, target_both_squeeze)
+    reward_loss_both = losses_lib.compute_scalar_reward_loss(pred_both_squeeze, target_both_squeeze)
+    
+    assert value_loss_both.shape == (3,)
+    assert reward_loss_both.shape == (3,) 

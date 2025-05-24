@@ -122,12 +122,21 @@ def compute_categorical_reward_loss(reward_logits: jax.Array, target_reward_dist
     """
     return compute_kl_loss(logits=reward_logits, target_probs=target_reward_distribution)
 
-def compute_symlog_loss(prediction: jax.Array, target: jax.Array, base: float = 2.0) -> jax.Array:
-    """Computes loss using symlog transformation (EfficientZeroV2 pattern)."""
-    # Transform both prediction and target to symlog space
-    symlog_pred = symlog(prediction, base)
+def compute_symlog_loss(prediction: jax.Array, target: jax.Array, base: float = jnp.e) -> jax.Array:
+    """Computes loss using symlog transformation (EfficientZeroV2 pattern).
+    
+    EfficientZeroV2 expects predictions to already be in symlog space and only 
+    applies symlog transformation to targets.
+    
+    Args:
+        prediction: Model predictions already in symlog space
+        target: Target values in raw scalar space
+        base: Base for symlog transformation (default: e for EfficientZeroV2 parity)
+    """
+    # PyTorch EfficientZeroV2 pattern: prediction is already in symlog space
+    # loss = 0.5 * (prediction.squeeze() - symlog(target)) ** 2
     symlog_target = symlog(target, base)
-    return scalar_mse_loss(symlog_pred, symlog_target)
+    return 0.5 * scalar_mse_loss(prediction, symlog_target)
 
 def compute_kl_loss(logits: jax.Array, target_probs: jax.Array) -> jax.Array:
     """Computes KL divergence loss (EfficientZeroV2 pattern)."""
@@ -170,12 +179,18 @@ def compute_projection_consistency_loss(
     return -sim1 + -sim2  # Per-item losses, shape (batch_size,)
 
 # --- Symlog functions for EfficientZeroV2 parity ---
-def symlog(x: jax.Array, base: float = 2.0) -> jax.Array:
-    """Symmetric logarithm transformation as used in EfficientZeroV2."""
+def symlog(x: jax.Array, base: float = jnp.e) -> jax.Array:
+    """Symmetric logarithm transformation as used in EfficientZeroV2.
+    
+    EfficientZeroV2 uses natural log (base e) by default for consistency with PyTorch implementation.
+    """
     return jnp.sign(x) * jnp.log(jnp.abs(x) + 1.0) / jnp.log(base)
 
-def symexp(x: jax.Array, base: float = 2.0) -> jax.Array:
-    """Inverse of symlog transformation."""
+def symexp(x: jax.Array, base: float = jnp.e) -> jax.Array:
+    """Inverse of symlog transformation.
+    
+    EfficientZeroV2 uses natural log (base e) by default for consistency with PyTorch implementation.
+    """
     return jnp.sign(x) * (jnp.power(base, jnp.abs(x)) - 1.0)
 
 # --- Discrete Support Transformations for EfficientZeroV2 parity ---

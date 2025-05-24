@@ -76,7 +76,7 @@ class MLP(nnx.Module):
         self.layers = []
         sizes = [input_size] + hidden_sizes + [output_size]
         for i in range(len(sizes) - 1):
-            rngs_l = nnx.Rngs(params=rngs.params(), dropout=rngs.dropout()) # Get new key for each layer
+            rngs_l = nnx.Rngs(params=rngs.params()) # Get new key for each layer
             if i < len(sizes) - 2:
                 self.layers.append(nnx.Linear(sizes[i], sizes[i+1], rngs=rngs_l))
                 if use_bn:
