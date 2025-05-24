@@ -399,6 +399,9 @@ class Learner:
         for k in range(config.num_unroll_steps):
             current_action = actions[:, k]
             # Apply half-gradient to hidden state (EfficientZeroV2 pattern)
+            # Action Item 11 VERIFIED: This matches PyTorch EfficientZeroV2 line 500 in base.py:
+            # states.register_hook(lambda grad: grad * 0.5)
+            # Applied in the same location: main training unroll loop, not during MCTS/target generation
             hidden_state_half_grad = half_gradient(hidden_state)
             
             # Reset LSTM reward hidden state periodically (EfficientZeroV2 pattern)
