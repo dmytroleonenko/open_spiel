@@ -859,8 +859,10 @@ class Learner:
                     self.target_model = nnx.merge(graphdef, params, batch_stats, rngs, static, ellipsis) # pragma: no cover
                     
                     # Re-initialize EMA state
-                    self.ema_updater = optax.ema(self.config.ema_decay) # pragma: no cover
-                    self.ema_params_state = self.ema_updater.init(params) # pragma: no cover
+                    self.ema_updater = optax.ema(self.config.ema_decay)
+                    self.ema_params_state = self.ema_updater.init(params)
+                    # Crucial synchronization: ensure EMA internal average matches current online params
+                    self.ema_params_state = self.ema_params_state._replace(ema=params)
             
             print(f"Checkpoint restored from step {latest_step}") # pragma: no cover
             return True # pragma: no cover
