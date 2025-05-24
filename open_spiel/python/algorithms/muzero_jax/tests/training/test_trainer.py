@@ -15,7 +15,7 @@ import time
 import wandb
 from unittest.mock import patch, PropertyMock, MagicMock, Mock
 
-from open_spiel.python.algorithms.muzero_jax.training.trainer import Learner, MuZeroConfig, Batch
+from open_spiel.python.algorithms.muzero_jax.training.trainer import Learner, MuZeroConfig, Batch, apply_value_prefix_reward_accumulation
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
 
 # Constants
@@ -3592,9 +3592,6 @@ def test_discrete_support_transformations_integration(key, cfg_flat):
     print("✅ Direct transformation tests passed!")
     print("✅ Discrete support transformations are properly integrated into loss computation!")
 
-# Duplicate function removed - keeping only the first version above
-
-
 def test_symlog_and_kl_loss_types(key, cfg_flat):
     """Test symlog and KL loss types to cover missing branches in trainer."""
     # Test symlog loss type
@@ -5879,7 +5876,8 @@ def test_optimizer_choice_adam_adamw_action_item_23(key, cfg_flat):
     """Test optimizer choice (AdamW vs. Adam) alignment with EfficientZeroV2.
     
     Verifies that JAX's optimizer selection strategy correctly chooses between AdamW 
-    (when weight_decay > 0) and Adam (when weight_decay == 0) and prevents double 
+    (when weight_decay > 0) and Adam (when weight_decay == 0) and prevents 
+    double 
     weight decay application, aligning with EfficientZeroV2 practices.
     """
     mk, lk, bk = jax.random.split(key, 3)
@@ -6282,3 +6280,372 @@ def test_noisy_networks_trainer_integration_coverage(key, cfg_flat):
     print(f"  5. ✅ Configuration transfer and setup verified")
     print(f"  - Lines 328-332 in trainer.py are now covered by this test")
     print(f"  - Noisy network functionality integrated properly with training loop")
+
+def test_noisy_networks_trainer_integration_coverage(key, cfg_flat):
+    """Comprehensive test for trainer integration with noisy networks to achieve 100% coverage.
+    
+    This test specifically targets the missing lines in trainer.py (lines 328-332) where
+    noise reset is performed after gradient updates when noisy_net=True.
+    """
+    mk, bk = jax.random.split(key, 2)
+    
+    # Use a configuration with noisy networks enabled
+    cfg_noisy = dataclasses.replace(
+        cfg_flat, 
+        noisy_net=True,  # Enable noisy networks
+        use_target_network_ema=True  # Enable target network for both branches
+    )
+    
+    # Create model with noisy networks
+    model_noisy = make_model(mk, cfg_noisy)
+    
+    # Create trainer config
+    cfg_trainer = make_cfg(
+        cfg_noisy.value_support_size, 
+        cfg_noisy.reward_support_size, 
+        2,  # num_unroll_steps
+        False,  # use_projection
+        'noisy_trainer_test',
+        use_ema=True  # Enable EMA for target network
+    )
+    cfg_trainer = dataclasses.replace(cfg_trainer, noisy_net=True)
+    
+    # Initialize learner
+    optimizer = optax.adam(cfg_trainer.learning_rate)
+    learner = Learner(model_noisy, optimizer, cfg_trainer, mk)
+    
+    # Create batch for training
+    batch = make_batch(
+        bk, 
+        cfg_trainer.batch_size, 
+        cfg_noisy.observation_shape, 
+        cfg_noisy.num_actions, 
+        cfg_trainer.num_unroll_steps, 
+        cfg_noisy.value_support_size, 
+        cfg_noisy.reward_support_size
+    )
+    
+    # Perform training step which should trigger noise reset code paths
+    # This will exercise lines 328-332 in trainer.py where noise is reset
+    metrics = learner.train_step(batch)
+    
+    # Verify training completed successfully
+    assert 'total_loss' in metrics
+    assert jnp.isfinite(metrics['total_loss'])
+    
+    # Verify that the training step incremented
+    assert learner.num_training_steps == 1
+    
+    # Test that both main model and target model noise reset branches are covered
+    # The trainer should reset noise for both the main model (line 329) and target model (line 332)
+    
+    # Perform another training step to ensure consistency
+    metrics2 = learner.train_step(batch)
+    assert 'total_loss' in metrics2
+    assert jnp.isfinite(metrics2['total_loss'])
+    assert learner.num_training_steps == 2
+
+
+# --- Value Prefix Tests for Action Item 19 ---
+
+def test_apply_value_prefix_reward_accumulation_disabled(key, cfg_flat):
+    """Test that value prefix logic is disabled when use_value_prefix=False."""
+    batch_size, sequence_length = 2, 4
+    
+    # Create test config with value prefix disabled
+    config = MuZeroConfig(use_value_prefix=False, lstm_horizon_length=3)
+    
+    # Create test rewards (scalar)
+    original_rewards = jnp.array([[1.0, 2.0, 3.0, 4.0], 
+                                 [5.0, 6.0, 7.0, 8.0]])
+    
+    # Apply function
+    result = apply_value_prefix_reward_accumulation(original_rewards, config)
+    
+    # Should return unchanged rewards
+    assert jnp.allclose(result, original_rewards)
+
+
+def test_apply_value_prefix_reward_accumulation_scalar_basic(key, cfg_flat):
+    """Test basic scalar reward accumulation with value prefix enabled."""
+    batch_size, sequence_length = 2, 6
+    
+    # Create test config with value prefix enabled
+    config = MuZeroConfig(use_value_prefix=True, lstm_horizon_length=3)
+    
+    # Create test rewards (scalar): each batch item with different reward pattern
+    rewards = jnp.array([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],  # Batch 0: increasing
+                        [2.0, 2.0, 2.0, 1.0, 1.0, 1.0]])  # Batch 1: constant per period
+    
+    # Expected accumulation:
+    # Batch 0: Reset at steps 0, 3
+    # Step 0: acc=0+1=1, Step 1: acc=1+2=3, Step 2: acc=3+3=6
+    # Step 3: acc=0+4=4, Step 4: acc=4+5=9, Step 5: acc=9+6=15
+    # Batch 1: 
+    # Step 0: acc=0+2=2, Step 1: acc=2+2=4, Step 2: acc=4+2=6
+    # Step 3: acc=0+1=1, Step 4: acc=1+1=2, Step 5: acc=2+1=3
+    expected = jnp.array([[1.0, 3.0, 6.0, 4.0, 9.0, 15.0],
+                         [2.0, 4.0, 6.0, 1.0, 2.0, 3.0]])
+    
+    # Apply function
+    result = apply_value_prefix_reward_accumulation(rewards, config)
+    
+    # Verify accumulation
+    assert jnp.allclose(result, expected), f"Expected {expected}, got {result}"
+
+
+def test_apply_value_prefix_reward_accumulation_categorical_basic(key, cfg_flat):
+    """Test basic categorical reward accumulation with value prefix enabled."""
+    batch_size, sequence_length, support_size = 2, 4, 3
+    
+    # Create test config
+    config = MuZeroConfig(use_value_prefix=True, lstm_horizon_length=2)
+    
+    # Create test categorical rewards (one-hot distributions)
+    # Batch 0: [1,0,0] -> [0,1,0] -> [0,0,1] -> [1,0,0]
+    # Batch 1: [0,0,1] -> [0,0,1] -> [1,0,0] -> [0,1,0]
+    rewards = jnp.array([
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]],
+        [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    ])
+    
+    # Expected accumulation with horizon=2 (reset at steps 0, 2):
+    # Batch 0:
+    # Step 0: [0,0,0] + [1,0,0] = [1,0,0]
+    # Step 1: [1,0,0] + [0,1,0] = [1,1,0] 
+    # Step 2: [0,0,0] + [0,0,1] = [0,0,1]  # Reset at step 2
+    # Step 3: [0,0,1] + [1,0,0] = [1,0,1]
+    expected = jnp.array([
+        [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0]],
+        [[0.0, 0.0, 1.0], [0.0, 0.0, 2.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]
+    ])
+    
+    # Apply function
+    result = apply_value_prefix_reward_accumulation(rewards, config)
+    
+    # Verify accumulation
+    assert jnp.allclose(result, expected), f"Expected {expected}, got {result}"
+
+
+def test_apply_value_prefix_reward_accumulation_with_mask(key, cfg_flat):
+    """Test reward accumulation with game history mask to handle invalid steps."""
+    batch_size, sequence_length = 2, 5
+    
+    # Create test config
+    config = MuZeroConfig(use_value_prefix=True, lstm_horizon_length=3)
+    
+    # Create test rewards
+    rewards = jnp.array([[1.0, 2.0, 3.0, 4.0, 5.0],
+                        [1.0, 1.0, 1.0, 1.0, 1.0]])
+    
+    # Create mask with some invalid steps
+    mask = jnp.array([[1.0, 1.0, 0.0, 1.0, 1.0],  # Step 2 is invalid
+                     [1.0, 0.0, 1.0, 0.0, 1.0]])  # Steps 1,3 are invalid
+    
+    # Expected accumulation:
+    # Batch 0: Step 0: 0+1=1, Step 1: 1+2=3, Step 2: 3+0=3 (masked), 
+    #          Step 3: 0+4=4 (reset), Step 4: 4+5=9
+    # Batch 1: Step 0: 0+1=1, Step 1: 1+0=1 (masked), Step 2: 1+1=2,
+    #          Step 3: 0+0=0 (reset+masked), Step 4: 0+1=1
+    expected = jnp.array([[1.0, 3.0, 3.0, 4.0, 9.0],
+                         [1.0, 1.0, 2.0, 0.0, 1.0]])
+    
+    # Apply function with mask
+    result = apply_value_prefix_reward_accumulation(rewards, config, mask)
+    
+    # Verify accumulation
+    assert jnp.allclose(result, expected), f"Expected {expected}, got {result}"
+
+
+def test_apply_value_prefix_reward_accumulation_horizon_length_one(key, cfg_flat):
+    """Test reward accumulation with LSTM horizon length of 1 (reset every step)."""
+    batch_size, sequence_length = 1, 4
+    
+    # Create test config with horizon=1
+    config = MuZeroConfig(use_value_prefix=True, lstm_horizon_length=1)
+    
+    # Create test rewards
+    rewards = jnp.array([[5.0, 3.0, 8.0, 2.0]])
+    
+    # With horizon=1, accumulator resets every step, so result should equal input
+    expected = rewards
+    
+    # Apply function
+    result = apply_value_prefix_reward_accumulation(rewards, config)
+    
+    # Verify accumulation
+    assert jnp.allclose(result, expected), f"Expected {expected}, got {result}"
+
+
+def test_apply_value_prefix_reward_accumulation_edge_cases(key, cfg_flat):
+    """Test edge cases for value prefix reward accumulation."""
+    # Test with very long horizon (longer than sequence)
+    config_long = MuZeroConfig(use_value_prefix=True, lstm_horizon_length=100)
+    rewards_long = jnp.array([[1.0, 2.0, 3.0]])
+    
+    # With horizon > sequence length, no resets should occur
+    # Expected: [1, 3, 6] (cumulative sum)
+    expected_long = jnp.array([[1.0, 3.0, 6.0]])
+    result_long = apply_value_prefix_reward_accumulation(rewards_long, config_long)
+    assert jnp.allclose(result_long, expected_long)
+    
+    # Test with empty sequence
+    config_empty = MuZeroConfig(use_value_prefix=True, lstm_horizon_length=2)
+    rewards_empty = jnp.array([]).reshape(0, 0)
+    result_empty = apply_value_prefix_reward_accumulation(rewards_empty, config_empty)
+    assert result_empty.shape == (0, 0)
+    
+    # Test with zero rewards
+    config_zero = MuZeroConfig(use_value_prefix=True, lstm_horizon_length=2)
+    rewards_zero = jnp.zeros((2, 4))
+    expected_zero = jnp.zeros((2, 4))
+    result_zero = apply_value_prefix_reward_accumulation(rewards_zero, config_zero)
+    assert jnp.allclose(result_zero, expected_zero)
+
+
+def test_apply_value_prefix_integration_with_trainer(key, cfg_flat):
+    """Test value prefix integration with the trainer's loss computation."""
+    mk, bk = jax.random.split(key, 2)
+    
+    # Create model and config with value prefix enabled
+    model = make_model(mk, cfg_flat)
+    config = make_cfg(
+        cfg_flat.value_support_size, 
+        cfg_flat.reward_support_size, 
+        3,  # num_unroll_steps
+        False,  # use_projection
+        'value_prefix_integration'
+    )
+    config = dataclasses.replace(config, 
+                                use_value_prefix=True, 
+                                lstm_horizon_length=2)
+    
+    # Create batch with known reward pattern
+    batch = make_batch(
+        bk, 
+        config.batch_size, 
+        cfg_flat.observation_shape, 
+        cfg_flat.num_actions, 
+        config.num_unroll_steps, 
+        cfg_flat.value_support_size, 
+        cfg_flat.reward_support_size
+    )
+    
+    # Replace with predictable rewards for testing
+    original_rewards = jnp.array([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
+    batch['target_reward'] = original_rewards
+    
+    # Compute loss (this should apply value prefix internally)
+    loss, metrics = Learner._compute_total_loss_static(
+        model, config, batch, key, training=True
+    )
+    
+    # Verify that loss computation completed successfully
+    assert jnp.isfinite(loss)
+    assert 'reward_loss' in metrics
+    assert jnp.isfinite(metrics['reward_loss'])
+    
+    # Compare with disabled value prefix to ensure different behavior
+    config_disabled = dataclasses.replace(config, use_value_prefix=False)
+    loss_disabled, metrics_disabled = Learner._compute_total_loss_static(
+        model, config_disabled, batch, key, training=True
+    )
+    
+    # Losses should be different due to reward accumulation
+    assert not jnp.allclose(loss, loss_disabled, atol=1e-6), \
+        "Expected different losses with/without value prefix"
+
+
+def test_apply_value_prefix_mathematical_properties(key, cfg_flat):
+    """Test mathematical properties of value prefix accumulation."""
+    config = MuZeroConfig(use_value_prefix=True, lstm_horizon_length=3)
+    
+    # Test linearity: accumulation of (a*x + b*y) should equal a*acc(x) + b*acc(y)
+    x = jnp.array([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]])
+    y = jnp.array([[2.0, 1.0, 4.0, 3.0, 6.0, 5.0]])
+    a, b = 2.0, 3.0
+    
+    combined = a * x + b * y
+    acc_combined = apply_value_prefix_reward_accumulation(combined, config)
+    
+    acc_x = apply_value_prefix_reward_accumulation(x, config)
+    acc_y = apply_value_prefix_reward_accumulation(y, config)
+    acc_linear = a * acc_x + b * acc_y
+    
+    assert jnp.allclose(acc_combined, acc_linear, rtol=1e-6), \
+        "Value prefix accumulation should be linear"
+    
+    # Test that accumulation preserves total reward within each horizon segment
+    rewards = jnp.array([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]])  # Two segments: [1,2,3] and [4,5,6]
+    accumulated = apply_value_prefix_reward_accumulation(rewards, config)
+    
+    # First segment sum should match last value of first segment: 1+2+3 = 6
+    assert jnp.allclose(accumulated[0, 2], 6.0)
+    # Second segment sum should match last value of second segment: 4+5+6 = 15
+    assert jnp.allclose(accumulated[0, 5], 15.0)
+
+
+def test_apply_value_prefix_comprehensive_coverage(key, cfg_flat):
+    """Comprehensive test for complete coverage of value prefix functionality."""
+    # Test all combinations of scalar/categorical with different horizon lengths
+    horizon_lengths = [1, 2, 5]
+    reward_types = ['scalar', 'categorical']
+    
+    for horizon_len in horizon_lengths:
+        for reward_type in reward_types:
+            config = MuZeroConfig(use_value_prefix=True, lstm_horizon_length=horizon_len)
+            
+            if reward_type == 'scalar':
+                rewards = jnp.array([[1.0, 2.0, 3.0, 4.0, 5.0]])
+                expected_shape = (1, 5)
+            else:
+                rewards = jnp.array([[[1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [0.0, 1.0], [1.0, 0.0]]])
+                expected_shape = (1, 5, 2)
+            
+            result = apply_value_prefix_reward_accumulation(rewards, config)
+            
+            # Verify shape preservation
+            assert result.shape == expected_shape, \
+                f"Shape mismatch for {reward_type} with horizon {horizon_len}"
+            
+            # Verify numerical stability
+            assert jnp.all(jnp.isfinite(result)), \
+                f"Non-finite values for {reward_type} with horizon {horizon_len}"
+            
+            # Verify that first step equals original first step
+            if reward_type == 'scalar':
+                assert jnp.allclose(result[0, 0], rewards[0, 0])
+            else:
+                assert jnp.allclose(result[0, 0], rewards[0, 0])
+
+
+def test_value_prefix_config_parameter_verification(key, cfg_flat):
+    """Verify that value prefix configuration parameters are properly handled."""
+    # Test default configuration
+    default_config = MuZeroConfig()
+    assert default_config.use_value_prefix == False
+    assert default_config.lstm_horizon_length == 5
+    assert default_config.lstm_hidden_size == 512
+    
+    # Test configuration override
+    custom_config = MuZeroConfig(
+        use_value_prefix=True,
+        lstm_horizon_length=10,
+        lstm_hidden_size=256
+    )
+    assert custom_config.use_value_prefix == True
+    assert custom_config.lstm_horizon_length == 10
+    assert custom_config.lstm_hidden_size == 256
+    
+    # Test that config affects accumulation behavior
+    config_h2 = MuZeroConfig(use_value_prefix=True, lstm_horizon_length=2)
+    config_h3 = MuZeroConfig(use_value_prefix=True, lstm_horizon_length=3)
+    
+    rewards = jnp.array([[1.0, 1.0, 1.0, 1.0]])
+    
+    result_h2 = apply_value_prefix_reward_accumulation(rewards, config_h2)
+    result_h3 = apply_value_prefix_reward_accumulation(rewards, config_h3)
+    
+    # Results should be different due to different horizon lengths
+    assert not jnp.allclose(result_h2, result_h3), \
+        "Different horizon lengths should produce different results"

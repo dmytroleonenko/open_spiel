@@ -482,6 +482,11 @@ class Learner:
                 actual_target_values = sarsa_values
         else:
             actual_target_values = target_values  # Default fallback
+        
+        # Apply value prefix reward accumulation if enabled (EfficientZeroV2 feature)
+        target_rewards = apply_value_prefix_reward_accumulation(
+            target_rewards, config, game_history_mask
+        )
 
         # Initial inference
         initial_inference_output = model.initial_inference(initial_observation, training=training)
@@ -977,6 +982,99 @@ class Learner:
                 self.checkpoint_manager.close() # pragma: no cover
             except: # pragma: no cover
                 pass  # Ignore errors during cleanup # pragma: no cover
+
+def apply_value_prefix_reward_accumulation(
+    target_reward: jax.Array, 
+    config: MuZeroConfig,
+    game_history_mask: jax.Array | None = None
+) -> jax.Array:
+    """Apply value prefix reward accumulation logic to target_reward.
+    
+    When use_value_prefix is enabled, this function accumulates rewards over
+    the LSTM horizon and resets the accumulation every lstm_horizon_length steps
+    within a trajectory, as per EfficientZeroV2's value prefix feature.
+    
+    Args:
+        target_reward: Target rewards with shape (B, K+1) or (B, K+1, support_size)
+        config: MuZeroConfig with value prefix settings
+        game_history_mask: Optional mask indicating valid steps (B, K+1). If None, all steps are considered valid.
+        
+    Returns:
+        Modified target_reward with accumulated rewards if use_value_prefix is True,
+        otherwise returns the original target_reward unchanged.
+    """
+    if not config.use_value_prefix:
+        return target_reward
+    
+    batch_size, sequence_length = target_reward.shape[:2]
+    
+    # Handle both scalar and categorical rewards
+    if target_reward.ndim == 2:
+        # Scalar rewards: (B, K+1)
+        accumulated_reward = jnp.zeros_like(target_reward)
+    else:
+        # Categorical rewards: (B, K+1, support_size)
+        accumulated_reward = jnp.zeros_like(target_reward)
+    
+    # Default mask if not provided
+    if game_history_mask is None:
+        game_history_mask = jnp.ones((batch_size, sequence_length))
+    
+    def accumulate_batch_step(batch_idx):
+        """Accumulate rewards for a single batch item."""
+        batch_rewards = target_reward[batch_idx]
+        batch_mask = game_history_mask[batch_idx]
+        
+        if target_reward.ndim == 2:
+            batch_accumulated = jnp.zeros(sequence_length)
+        else:
+            batch_accumulated = jnp.zeros((sequence_length, target_reward.shape[-1]))
+        
+        # Initialize accumulator
+        if target_reward.ndim == 2:
+            current_accumulator = 0.0
+        else:
+            current_accumulator = jnp.zeros(target_reward.shape[-1])
+        
+        def step_accumulation(step_idx, accumulator):
+            """Accumulate rewards for a single step."""
+            # Reset accumulator at LSTM horizon boundaries
+            reset_condition = (step_idx % config.lstm_horizon_length == 0)
+            accumulator = jnp.where(reset_condition, 
+                                  jnp.zeros_like(accumulator), 
+                                  accumulator)
+            
+            # Add current step reward if valid
+            step_reward = batch_rewards[step_idx]
+            step_valid = batch_mask[step_idx]
+            
+            # Accumulate reward (element-wise for categorical, scalar for scalar)
+            if target_reward.ndim == 2:
+                accumulator = accumulator + step_reward * step_valid
+            else:
+                accumulator = accumulator + step_reward * step_valid[..., None]
+            
+            return accumulator
+        
+        # Process each step
+        for step_idx in range(sequence_length):
+            current_accumulator = step_accumulation(step_idx, current_accumulator)
+            if target_reward.ndim == 2:
+                batch_accumulated = batch_accumulated.at[step_idx].set(current_accumulator)
+            else:
+                batch_accumulated = batch_accumulated.at[step_idx].set(current_accumulator)
+        
+        return batch_accumulated
+    
+    # Process each batch item
+    for batch_idx in range(batch_size):
+        batch_result = accumulate_batch_step(batch_idx)
+        if target_reward.ndim == 2:
+            accumulated_reward = accumulated_reward.at[batch_idx].set(batch_result)
+        else:
+            accumulated_reward = accumulated_reward.at[batch_idx].set(batch_result)
+    
+    return accumulated_reward
 
 # Example usage (for testing/illustration - will be in tests)
 if __name__ == '__main__': # pragma: no cover
