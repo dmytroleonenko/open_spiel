@@ -203,6 +203,7 @@ def scalar_to_support(x: jax.Array, support_min: float = -300.0, support_max: fl
     """Converts scalar values to categorical distribution over support.
     
     Based on EfficientZeroV2's DiscreteSupport.scalar_to_vector implementation.
+    For OpenSpiel environments, this uses the standard Atari-style transformation.
     
     Args:
         x: Scalar values to convert. Shape (...,)
@@ -214,27 +215,27 @@ def scalar_to_support(x: jax.Array, support_min: float = -300.0, support_max: fl
     Returns:
         Categorical distribution over support. Shape (..., num_atoms)
     """
-    # Create support range
-    scale = (support_max - support_min) / (num_atoms - 1)
-    support_range = jnp.linspace(support_min, support_max, num_atoms)
-    
-    # Apply symlog-like transformation
+    # Apply symlog-like transformation (EfficientZeroV2 Atari style for OpenSpiel)
     sign = jnp.sign(x)
     x_transformed = sign * (jnp.sqrt(jnp.abs(x) + 1.0) - 1.0) + epsilon * x
     
-    # Normalize to support range
-    x_normalized = x_transformed / scale
+    # Map to [0, num_atoms-1] index space  
+    # Rescale transformed values to fit in the support range
+    scale = (support_max - support_min) / (num_atoms - 1)
     
-    # Clamp to valid range
-    x_clamped = jnp.clip(x_normalized, support_min / scale, support_max / scale - 1e-5)
-    x_shifted = x_clamped - support_min / scale
+    # For better numerical behavior, we'll map the transformed space to index space more directly
+    # The transformation typically maps small values to small values, so we can use this fact
+    x_index_space = (x_transformed - support_min) / scale
+    
+    # Clamp to valid index range
+    x_index_space = jnp.clip(x_index_space, 0.0, num_atoms - 1.0 - 1e-5)
     
     # Get lower and upper indices for interpolation
-    x_low_idx = jnp.floor(x_shifted)
-    x_high_idx = jnp.ceil(x_shifted)
+    x_low_idx = jnp.floor(x_index_space)
+    x_high_idx = jnp.ceil(x_index_space)
     
     # Compute interpolation weights
-    p_high = x_shifted - x_low_idx
+    p_high = x_index_space - x_low_idx
     p_low = 1.0 - p_high
     
     # Create target distribution
@@ -245,16 +246,14 @@ def scalar_to_support(x: jax.Array, support_min: float = -300.0, support_max: fl
     x_low_idx = jnp.clip(x_low_idx.astype(jnp.int32), 0, num_atoms - 1)
     x_high_idx = jnp.clip(x_high_idx.astype(jnp.int32), 0, num_atoms - 1)
     
-    # Use advanced indexing to scatter values
-    batch_indices = jnp.arange(x.shape[0])[:, None] if x.ndim > 0 else jnp.array([0])
-    
     # Handle different input shapes
     if x.ndim == 0:  # Scalar input
         target = target.at[x_low_idx].add(p_low)
         target = target.at[x_high_idx].add(p_high)
     elif x.ndim == 1:  # 1D input
-        target = target.at[batch_indices.squeeze(), x_low_idx].add(p_low)
-        target = target.at[batch_indices.squeeze(), x_high_idx].add(p_high)
+        batch_indices = jnp.arange(x.shape[0])
+        target = target.at[batch_indices, x_low_idx].add(p_low)
+        target = target.at[batch_indices, x_high_idx].add(p_high)
     else:  # Higher dimensional - flatten and reshape
         x_flat = x.reshape(-1)
         target_flat = target.reshape(-1, num_atoms)
@@ -275,41 +274,69 @@ def support_to_scalar(logits: jax.Array, support_min: float = -300.0, support_ma
     """Converts categorical distribution over support back to scalar values.
     
     Based on EfficientZeroV2's DiscreteSupport.vector_to_scalar implementation.
+    Uses Newton's method to precisely invert the forward transformation.
     
     Args:
         logits: Logits over support atoms. Shape (..., num_atoms)
         support_min: Minimum value of support range
         support_max: Maximum value of support range
         num_atoms: Number of atoms in the support  
-        epsilon: Small value for numerical stability
+        epsilon: Small value for numerical stability (should match scalar_to_support)
         
     Returns:
         Scalar values. Shape (...,)
     """
     # Create support range
-    scale = (support_max - support_min) / (num_atoms - 1)
     support_range = jnp.linspace(support_min, support_max, num_atoms)
     
-    # Convert logits to probabilities
+    # Convert logits to probabilities and compute expected value
     value_probs = jax.nn.softmax(logits, axis=-1)
+    y_target = jnp.sum(value_probs * support_range, axis=-1)  # This is the transformed value
     
-    # Compute expected value
-    value = jnp.sum(value_probs * support_range, axis=-1) / scale
+    # Now we need to solve for x in: y_target = sign(x) * (sqrt(abs(x) + 1) - 1) + epsilon * x
+    # Use Newton's method for precision
     
-    # Apply inverse transformation
-    sign = jnp.sign(value)
-    abs_value = jnp.abs(value)
+    def forward_transform(x):
+        """The forward transformation from scalar_to_support"""
+        sign = jnp.sign(x)
+        return sign * (jnp.sqrt(jnp.abs(x) + 1.0) - 1.0) + epsilon * x
     
-    # Inverse of symlog-like transformation: x = sign * ((sqrt(1 + 4*eps*(|v| + 1 + eps)) - 1) / (2*eps))^2 - 1)
-    sqrt_term = jnp.sqrt(1.0 + 4.0 * epsilon * (abs_value * scale + 1.0 + epsilon))
-    output = ((sqrt_term - 1.0) / (2.0 * epsilon)) ** 2 - 1.0
-    output = sign * output
+    def forward_derivative(x):
+        """Derivative of the forward transformation"""
+        sign = jnp.sign(x)
+        abs_x = jnp.abs(x)
+        # d/dx [sign(x) * (sqrt(abs(x) + 1) - 1) + epsilon * x]
+        # For x > 0: d/dx [sqrt(x + 1) - 1 + epsilon * x] = 1/(2*sqrt(x + 1)) + epsilon
+        # For x < 0: d/dx [-sqrt(-x + 1) + 1 + epsilon * x] = 1/(2*sqrt(-x + 1)) + epsilon
+        # For x = 0: derivative is 0.5 + epsilon (by continuity)
+        sqrt_term = jnp.sqrt(abs_x + 1.0)
+        derivative = 0.5 / jnp.maximum(sqrt_term, 1e-8) + epsilon
+        return derivative
     
-    # Handle numerical issues
-    output = jnp.where(jnp.isnan(output), 0.0, output)
-    output = jnp.where(jnp.abs(output) < epsilon, 0.0, output)
+    # Newton's method to solve forward_transform(x) - y_target = 0
+    # Initialize with a reasonable guess: for small values, x ≈ y_target / (0.5 + epsilon)
+    x = y_target / (0.5 + epsilon)
     
-    return output
+    # Newton iterations (typically 3-5 iterations give excellent precision)
+    for _ in range(5):
+        fx = forward_transform(x) - y_target
+        fpx = forward_derivative(x)
+        # Avoid division by zero
+        fpx = jnp.where(jnp.abs(fpx) < 1e-10, 1e-10, fpx)
+        x_new = x - fx / fpx
+        
+        # Check for convergence (optional, but helps with numerical stability)
+        converged = jnp.abs(x_new - x) < 1e-8
+        x = jnp.where(converged, x, x_new)
+        
+        # Clamp to reasonable bounds to avoid numerical issues
+        x = jnp.clip(x, -1000.0, 1000.0)
+    
+    # Final cleanup: handle edge cases
+    x = jnp.where(jnp.isnan(x), 0.0, x)
+    x = jnp.where(jnp.isinf(x), jnp.sign(x) * 1000.0, x)
+    
+    return x
 
 def compute_policy_entropy(policy_logits: jax.Array) -> jax.Array:
     """Computes entropy of discrete policy distribution for regularization.
