@@ -218,7 +218,8 @@ class PredictionNetwork(nnx.Module):
             self.value_conv = nnx.Conv(self.config.num_channels, 1, kernel_size=(1,1), rngs=rngs)
             self.value_bn = nnx.BatchNorm(1, use_running_average=True, rngs=rngs)
             flatten_size_value = self.config.spatial_extents[0] * self.config.spatial_extents[1] * 1
-            value_output_dim = self.config.value_support_size if self.config.value_support_size > 0 else 1
+            # Configure value head output dimension based on loss type
+            value_output_dim = self.config.get_value_output_dim()
             self.value_fc = MLP(flatten_size_value, self.config.fc_prediction_layers, value_output_dim, rngs=rngs)
         else: # Flat observations
             policy_rngs = nnx.Rngs(params=rngs.params())
@@ -226,7 +227,8 @@ class PredictionNetwork(nnx.Module):
                                  hidden_sizes=self.config.fc_prediction_layers,
                                  output_size=self.config.num_actions,
                                  rngs=policy_rngs)
-            value_output_dim = self.config.value_support_size if self.config.value_support_size > 0 else 1
+            # Configure value head output dimension based on loss type
+            value_output_dim = self.config.get_value_output_dim()
             value_rngs = nnx.Rngs(params=rngs.params())
             self.value_fc = MLP(input_size=self.config.num_channels,
                                 hidden_sizes=self.config.fc_prediction_layers, 
@@ -256,16 +258,19 @@ class PredictionNetwork(nnx.Module):
             policy_logits = self.policy_fc(hidden_state, training=training)
             value = self.value_fc(hidden_state, training=training)
 
-        if self.config.value_support_size == 0: 
-            value = jnp.squeeze(value, axis=-1) 
-            
-        # EfficientZeroV2 pattern: Apply symlog transformation to value output if symlog loss is used
-        if hasattr(self.config, 'value_loss_type') and self.config.value_loss_type == "symlog": # pragma: no cover
-            if value.ndim == 1 or (value.ndim == 2 and value.shape[-1] == 1): # pragma: no cover
-                # Only apply symlog to scalar values
-                if value.ndim == 2: # pragma: no cover
-                    value = jnp.squeeze(value, axis=-1) # pragma: no cover
-                value = symlog(value, base=getattr(self.config, 'symlog_base', jnp.e)) # pragma: no cover
+        # Apply transformations to match loss function expectations
+        if self.config.value_loss_type == "categorical":
+            # For categorical loss, output logits over support (already configured in head)
+            pass  # No transformation needed - head outputs correct dimension
+        elif self.config.value_loss_type == "symlog":
+            # For symlog loss, squeeze to scalar and apply symlog transformation
+            if value.ndim == 2 and value.shape[-1] == 1:
+                value = jnp.squeeze(value, axis=-1)
+            value = symlog(value, base=self.config.symlog_base)
+        else:  # MSE
+            # For MSE loss, ensure scalar output
+            if value.ndim == 2 and value.shape[-1] == 1:
+                value = jnp.squeeze(value, axis=-1)
 
         return policy_logits, value
 
@@ -273,7 +278,8 @@ class RewardNetwork(nnx.Module):
     """Reward Network for Flax NNX. Predicts reward from hidden state."""
     def __init__(self, config, *, rngs: nnx.Rngs):
         self.config = config
-        output_dim = self.config.reward_support_size if self.config.reward_support_size > 0 else 1
+        # Configure reward head output dimension based on loss type
+        output_dim = self.config.get_reward_output_dim()
         
         if self.config.use_image_observation:
             self.conv = nnx.Conv(self.config.num_channels, 1, kernel_size=(1,1), rngs=rngs) 
@@ -296,16 +302,19 @@ class RewardNetwork(nnx.Module):
         else:
             reward = self.fc(hidden_state, training=training)
 
-        if self.config.reward_support_size == 0: 
-            reward = jnp.squeeze(reward, axis=-1) 
-            
-        # EfficientZeroV2 pattern: Apply symlog transformation to reward output if symlog loss is used
-        if hasattr(self.config, 'reward_loss_type') and self.config.reward_loss_type == "symlog": # pragma: no cover
-            if reward.ndim == 1 or (reward.ndim == 2 and reward.shape[-1] == 1): # pragma: no cover
-                # Only apply symlog to scalar rewards
-                if reward.ndim == 2: # pragma: no cover
-                    reward = jnp.squeeze(reward, axis=-1) # pragma: no cover
-                reward = symlog(reward, base=getattr(self.config, 'symlog_base', jnp.e)) # pragma: no cover
+        # Apply transformations to match loss function expectations
+        if self.config.reward_loss_type in ["categorical", "kl"]:
+            # For categorical/kl loss, output logits over support (already configured in head)
+            pass  # No transformation needed - head outputs correct dimension
+        elif self.config.reward_loss_type == "symlog":
+            # For symlog loss, squeeze to scalar and apply symlog transformation
+            if reward.ndim == 2 and reward.shape[-1] == 1:
+                reward = jnp.squeeze(reward, axis=-1)
+            reward = symlog(reward, base=self.config.symlog_base)
+        else:  # MSE
+            # For MSE loss, ensure scalar output
+            if reward.ndim == 2 and reward.shape[-1] == 1:
+                reward = jnp.squeeze(reward, axis=-1)
             
         return reward
 

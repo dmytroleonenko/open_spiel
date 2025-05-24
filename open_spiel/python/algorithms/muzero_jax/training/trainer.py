@@ -17,6 +17,7 @@ import math # For math.e constant
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork # type: ignore
 from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib # type: ignore
 from open_spiel.python.algorithms.muzero_jax.models.network_config import MuZeroNetworkConfig as ActualMuZeroNetworkConfig # Alias to avoid clash
+from open_spiel.python.algorithms.muzero_jax.models.network_config import MuZeroNetworkConfig
 
 # Type Aliases
 PRNGKey = jax.Array
@@ -115,6 +116,34 @@ class MuZeroConfig:
     checkpoint_frequency: int = 1000
     max_checkpoints_to_keep: int = 1
     resume_from_checkpoint: bool = False
+
+
+def create_network_config_from_muzero_config(
+    muzero_config: MuZeroConfig,
+    observation_shape: Tuple[int, ...],
+    num_actions: int,
+    use_image_observation: bool = False,
+    spatial_extents: Tuple[int, int] = (8, 8),
+    **kwargs
+) -> MuZeroNetworkConfig:
+    """Creates a MuZeroNetworkConfig from MuZeroConfig, ensuring loss types are properly transferred.
+    
+    This function ensures that loss type configuration is passed from the training
+    config to the network config so model heads can output the correct format.
+    """
+    return MuZeroNetworkConfig(
+        observation_shape=observation_shape,
+        num_actions=num_actions,
+        use_image_observation=use_image_observation,
+        spatial_extents=spatial_extents,
+        value_support_size=muzero_config.value_support_size,
+        reward_support_size=muzero_config.reward_support_size,
+        # Transfer loss types from trainer config to network config
+        value_loss_type=muzero_config.value_loss_type,
+        reward_loss_type=muzero_config.reward_loss_type,
+        symlog_base=muzero_config.symlog_base,
+        **kwargs
+    )
 
 
 class Learner:
@@ -399,9 +428,9 @@ class Learner:
         for k in range(config.num_unroll_steps):
             current_action = actions[:, k]
             # Apply half-gradient to hidden state (EfficientZeroV2 pattern)
-            # Action Item 11 VERIFIED: This matches PyTorch EfficientZeroV2 line 500 in base.py:
+            # Apply half-gradient as per EfficientZeroV2 pattern (matches PyTorch line 500 in base.py):
             # states.register_hook(lambda grad: grad * 0.5)
-            # Applied in the same location: main training unroll loop, not during MCTS/target generation
+            # Applied in the main training unroll loop, not during MCTS/target generation
             hidden_state_half_grad = half_gradient(hidden_state)
             
             # Reset LSTM reward hidden state periodically (EfficientZeroV2 pattern)
@@ -465,20 +494,9 @@ class Learner:
                         # Repeat targets across value heads
                         target_val = jnp.repeat(jnp.expand_dims(target_val, axis=-1), config.v_num, axis=-1)
             
-            # Handle discrete support transformations based on loss type and data format
-            if config.value_loss_type == "categorical" or config.value_support_size > 0:
-                # For categorical loss, ensure we have distributions
-                if predicted_val.ndim == 1 or (predicted_val.ndim == 2 and predicted_val.shape[-1] == 1):
-                    # Predicted values are scalar, convert to support distribution
-                    if predicted_val.ndim == 2 and predicted_val.shape[-1] == 1: # pragma: no cover
-                        predicted_val = jnp.squeeze(predicted_val, axis=-1) # pragma: no cover
-                    predicted_val = losses_lib.scalar_to_support(
-                        predicted_val, 
-                        support_min=-300.0, 
-                        support_max=300.0, 
-                        num_atoms=config.value_support_size if config.value_support_size > 0 else 601
-                    )
-                
+            # Simplified value loss computation - model outputs correct format
+            if config.value_loss_type == "categorical":
+                # Model outputs logits, targets may need conversion to distributions
                 if target_val.ndim == 1 or (target_val.ndim == 2 and target_val.shape[-1] == 1):
                     # Target values are scalar, convert to support distribution
                     if target_val.ndim == 2 and target_val.shape[-1] == 1: # pragma: no cover
@@ -493,18 +511,7 @@ class Learner:
                 v_loss = losses_lib.compute_categorical_value_loss(predicted_val, target_val, effective_iql_param)
                 
             elif config.value_loss_type == "symlog":
-                # For symlog loss, ensure we have scalars
-                if predicted_val.ndim > 1 and predicted_val.shape[-1] > 1: # pragma: no cover
-                    # Predicted values are distributions, convert to scalars
-                    predicted_val = losses_lib.support_to_scalar( # pragma: no cover
-                        predicted_val, # pragma: no cover
-                        support_min=-300.0, # pragma: no cover
-                        support_max=300.0, # pragma: no cover
-                        num_atoms=predicted_val.shape[-1] # pragma: no cover
-                    ) # pragma: no cover
-                elif predicted_val.ndim == 2 and predicted_val.shape[-1] == 1: # pragma: no cover
-                    predicted_val = jnp.squeeze(predicted_val, axis=-1) # pragma: no cover
-                
+                # Model outputs symlog-transformed scalars, targets need to be scalars
                 if target_val.ndim > 1 and target_val.shape[-1] > 1: # pragma: no cover
                     # Target values are distributions, convert to scalars
                     target_val = losses_lib.support_to_scalar( # pragma: no cover
@@ -516,23 +523,11 @@ class Learner:
                 elif target_val.ndim == 2 and target_val.shape[-1] == 1: # pragma: no cover
                     target_val = jnp.squeeze(target_val, axis=-1) # pragma: no cover
                 
-                # EfficientZeroV2 pattern: model outputs symlog-transformed values when symlog loss is used
-                # Action Item 18: Use symlog loss with IQL weighting for value prediction
+                # Use symlog loss with IQL weighting for value prediction
                 v_loss = losses_lib.compute_symlog_value_loss(predicted_val, target_val, effective_iql_param, config.symlog_base)
                 
             else:  # MSE
-                # For MSE loss, ensure we have scalars
-                if predicted_val.ndim > 1 and predicted_val.shape[-1] > 1:
-                    # Predicted values are distributions, convert to scalars
-                    predicted_val = losses_lib.support_to_scalar(
-                        predicted_val,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=predicted_val.shape[-1]
-                    )
-                elif predicted_val.ndim == 2 and predicted_val.shape[-1] == 1: # pragma: no cover
-                    predicted_val = jnp.squeeze(predicted_val, axis=-1) # pragma: no cover
-                
+                # Model outputs scalars, targets need to be scalars
                 if target_val.ndim > 1 and target_val.shape[-1] > 1:
                     # Target values are distributions, convert to scalars
                     target_val = losses_lib.support_to_scalar(
@@ -552,20 +547,9 @@ class Learner:
             predicted_rew = predicted_rewards[:, k_idx]
             target_rew = target_rewards[:, k_idx]
             
-            # Handle discrete support transformations based on loss type and data format
-            if config.reward_loss_type == "categorical" or config.reward_support_size > 0:
-                # For categorical loss, ensure we have distributions
-                if predicted_rew.ndim == 1 or (predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1):
-                    # Predicted rewards are scalar, convert to support distribution
-                    if predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1: # pragma: no cover
-                        predicted_rew = jnp.squeeze(predicted_rew, axis=-1) # pragma: no cover
-                    predicted_rew = losses_lib.scalar_to_support(
-                        predicted_rew,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=config.reward_support_size if config.reward_support_size > 0 else 601
-                    )
-                
+            # Simplified reward loss computation - model outputs correct format
+            if config.reward_loss_type == "categorical":
+                # Model outputs logits, targets may need conversion to distributions
                 if target_rew.ndim == 1 or (target_rew.ndim == 2 and target_rew.shape[-1] == 1):
                     # Target rewards are scalar, convert to support distribution
                     if target_rew.ndim == 2 and target_rew.shape[-1] == 1: # pragma: no cover
@@ -580,18 +564,7 @@ class Learner:
                 r_loss = losses_lib.compute_categorical_reward_loss(predicted_rew, target_rew)
                 
             elif config.reward_loss_type == "symlog":
-                # For symlog loss, ensure we have scalars
-                if predicted_rew.ndim > 1 and predicted_rew.shape[-1] > 1: # pragma: no cover
-                    # Predicted rewards are distributions, convert to scalars
-                    predicted_rew = losses_lib.support_to_scalar( # pragma: no cover
-                        predicted_rew, # pragma: no cover
-                        support_min=-300.0, # pragma: no cover
-                        support_max=300.0, # pragma: no cover
-                        num_atoms=predicted_rew.shape[-1] # pragma: no cover
-                    ) # pragma: no cover
-                elif predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1: # pragma: no cover
-                    predicted_rew = jnp.squeeze(predicted_rew, axis=-1) # pragma: no cover
-                
+                # Model outputs symlog-transformed scalars, targets need to be scalars
                 if target_rew.ndim > 1 and target_rew.shape[-1] > 1:
                     # Target rewards are distributions, convert to scalars
                     target_rew = losses_lib.support_to_scalar(
@@ -603,22 +576,10 @@ class Learner:
                 elif target_rew.ndim == 2 and target_rew.shape[-1] == 1: # pragma: no cover
                     target_rew = jnp.squeeze(target_rew, axis=-1) # pragma: no cover
                 
-                # EfficientZeroV2 pattern: model outputs symlog-transformed values when symlog loss is used
                 r_loss = losses_lib.compute_symlog_loss(predicted_rew, target_rew, config.symlog_base)
                 
             elif config.reward_loss_type == "kl":
-                # For KL loss, ensure we have distributions
-                if predicted_rew.ndim == 1 or (predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1):
-                    # Predicted rewards are scalar, convert to support distribution
-                    if predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1:
-                        predicted_rew = jnp.squeeze(predicted_rew, axis=-1) # pragma: no cover
-                    predicted_rew = losses_lib.scalar_to_support(
-                        predicted_rew,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=config.reward_support_size if config.reward_support_size > 0 else 601
-                    )
-                
+                # Model outputs logits, targets may need conversion to distributions
                 if target_rew.ndim == 1 or (target_rew.ndim == 2 and target_rew.shape[-1] == 1):
                     # Target rewards are scalar, convert to support distribution
                     if target_rew.ndim == 2 and target_rew.shape[-1] == 1: # pragma: no cover
@@ -633,18 +594,7 @@ class Learner:
                 r_loss = losses_lib.compute_kl_loss(predicted_rew, target_rew)
                 
             else:  # MSE
-                # For MSE loss, ensure we have scalars
-                if predicted_rew.ndim > 1 and predicted_rew.shape[-1] > 1:
-                    # Predicted rewards are distributions, convert to scalars
-                    predicted_rew = losses_lib.support_to_scalar(
-                        predicted_rew,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=predicted_rew.shape[-1]
-                    )
-                elif predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1: # pragma: no cover
-                    predicted_rew = jnp.squeeze(predicted_rew, axis=-1) # pragma: no cover
-                
+                # Model outputs scalars, targets need to be scalars
                 if target_rew.ndim > 1 and target_rew.shape[-1] > 1:
                     # Target rewards are distributions, convert to scalars
                     target_rew = losses_lib.support_to_scalar(

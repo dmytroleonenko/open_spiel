@@ -28,7 +28,21 @@ class MuZeroNetworkConfig:
     use_batch_norm: bool = True
     # Added for DummyDynamicsNetwork
     action_embedding_dim: int = 32
-    # Loss types - for model head output configuration (EfficientZeroV2 parity)
+    # Loss types - configures model head output format to match loss function expectations
     value_loss_type: str = "mse" # "mse", "symlog", or "categorical"
     reward_loss_type: str = "mse" # "mse", "symlog", "kl", or "categorical"
-    symlog_base: float = 2.71828182845904523536 # Base for symlog transformation (e for EfficientZeroV2) 
+    symlog_base: float = 2.71828182845904523536 # Base for symlog transformation (natural log base e)
+    
+    def get_value_output_dim(self) -> int:
+        """Determines the correct output dimension for the value head based on loss type and support size."""
+        if self.value_loss_type == "categorical":
+            return self.value_support_size if self.value_support_size > 0 else 601
+        else:  # "mse" or "symlog"
+            return 1
+    
+    def get_reward_output_dim(self) -> int:
+        """Determines the correct output dimension for the reward head based on loss type and support size."""
+        if self.reward_loss_type in ["categorical", "kl"]:
+            return self.reward_support_size if self.reward_support_size > 0 else 601
+        else:  # "mse" or "symlog"
+            return 1 
