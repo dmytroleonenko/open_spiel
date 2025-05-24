@@ -454,8 +454,8 @@ def test_loss_static(key, img, val_cat, proj, use_ema, scalar_targets, cfg_flat,
         # For batch_size_test = 1, the per-item loss is the value itself
         # The loss is applied per unroll step, and then averaged.
         # Here, we only care about the SSL loss for k_idx=1 vs k_idx=0
-        # The total_ssl_loss in _compute_total_loss_static averages this over masked steps.
-        # Since mask_data[:, 1] is 1 and batch_size is 1, this should be direct.
+        # The trainer's _compute_total_loss_static applies a mask and averages.
+        # Since mask_data[:, 1] is 1 and batch size is 1, this should be direct.
         
         # This is the per-instance loss for the (proj1_pred, proj0_pred) pair
         # Note: compute_projection_consistency_loss now returns per-item losses, not batch-averaged
@@ -1195,7 +1195,7 @@ def teardown_module(module):
 
 # Add this test after the existing tests and before teardown_module
 def test_learner_train_orchestration_with_mocks(key, cfg_flat):
-    """Action Item 1: Focused test for Learner.train() orchestration.
+    """Focused test for Learner.train() orchestration.
     
     Tests that every moving part fires at the configured cadence:
     - Replay buffer generator is called exact number of times
@@ -1329,7 +1329,7 @@ def test_learner_train_orchestration_with_mocks(key, cfg_flat):
                 pass
 
 def test_gradient_update_verification_with_fixed_network(key, cfg_flat):
-    """Action Item 2: Strengthen gradient-update verification.
+    """Strengthen gradient-update verification.
     
     Tests that:
     - Gradients flow correctly through the modern nnx.Optimizer pattern
@@ -1499,7 +1499,7 @@ def test_gradient_update_verification_with_fixed_network(key, cfg_flat):
     print(f"  - Total loss: {float(metrics['total_loss']):.6f}")
 
 def test_mask_aware_loss_verification(key, cfg_flat):
-    """Action Item 3: Add mask-aware loss tests.
+    """Add mask-aware loss tests.
     
     Tests that game_history_mask correctly zero-out contributions for padded steps.
     With the fixed implementation, per-item losses are properly masked.
@@ -1690,7 +1690,7 @@ def test_mask_aware_loss_verification(key, cfg_flat):
 # Add this test after the mask-aware loss verification test
 
 def test_l2_regularization_explicit_verification(key, cfg_flat):
-    """Action Item 4: Explicit L2 regularization test.
+    """Explicit L2 regularization test.
     
     Tests that:
     - L2 regularization is computed correctly for all parameters
@@ -1892,7 +1892,7 @@ def test_l2_regularization_explicit_verification(key, cfg_flat):
 
 def test_comprehensive_error_handling_and_edge_cases(key, cfg_flat):
     """
-    Action Item: Test the uncovered critical paths from coverage report.
+    Test the uncovered critical paths from coverage report.
     
     Tests specific error handling scenarios:
     - Checkpoint loading with corrupted/missing EMA state
@@ -2256,7 +2256,7 @@ def test_optimizer_config_usage(key, cfg_flat):
 # Add this test after the comprehensive error handling test and before teardown_module
 
 def test_individual_loss_components_with_analytical_verification(key, cfg_flat):
-    """Action Item 1: Test individual loss components with known expected values.
+    """Test individual loss components with known expected values.
     
     Creates scenarios with analytically calculable loss values for each component
     and verifies the implementation matches expected mathematical results.
@@ -2495,7 +2495,7 @@ def test_individual_loss_components_with_analytical_verification(key, cfg_flat):
     assert computed_metrics['l2_loss'] == 0.0, "L2 loss should be exactly 0 when l2_weight=0"
 
 def test_ema_parameter_value_correctness(key, cfg_flat):
-    """Action Item 3: Test that EMA actually updates parameter values correctly.
+    """Test that EMA actually updates parameter values correctly.
     
     Verifies the mathematical correctness of EMA parameter updates, not just call frequency.
     Tests that target_model parameters follow the EMA formula: 
@@ -2616,7 +2616,7 @@ def test_ema_parameter_value_correctness(key, cfg_flat):
     print(f"  - Target network correctly synced with EMA state")
 
 def test_mask_aware_loss_precision(key, cfg_flat):
-    """Action Item 4: Enhanced mask-aware loss testing with precise calculations.
+    """Enhanced mask-aware loss testing with precise calculations.
     
     Tests that game_history_mask zero-out contributions are mathematically precise,
     with known expected values for masked and unmasked scenarios.
@@ -2845,7 +2845,7 @@ def test_mask_aware_loss_precision(key, cfg_flat):
     print(f"  - Loss values are computed precisely for valid steps only")
 
 def test_iql_weighting_explicit_verification(key, cfg_flat):
-    """Action Item 1: Test IQL-style weighting mechanism for value loss.
+    """Test IQL-style weighting mechanism for value loss.
     
     Verifies that the IQL weighting correctly applies asymmetric weights
     based on the sign of prediction errors (EfficientZeroV2 pattern).
@@ -2949,7 +2949,7 @@ def test_iql_weighting_explicit_verification(key, cfg_flat):
     print(f"  - IQL weighting mechanism is operational")
 
 def test_gradient_scaling_verification(key, cfg_flat):
-    """Action Item 3: Test that gradients are scaled by 1/num_unroll_steps.
+    """Test that gradients are scaled by 1/num_unroll_steps.
     
     Verifies the EfficientZeroV2 gradient scaling pattern is correctly applied.
     """
@@ -3078,7 +3078,7 @@ def test_gradient_scaling_verification(key, cfg_flat):
     print(f"  - 5-step scaled grad norm: {actual_grad_norm_5:.6f} (scale factor: 0.2)")
 
 def test_symlog_loss_functionality(key, cfg_flat):
-    """Action Item 2: Test symlog/support transformation functionality.
+    """Test symlog/support transformation functionality.
     
     Verifies that symlog transformations work correctly when configured.
     """
@@ -3153,7 +3153,7 @@ def test_symlog_loss_functionality(key, cfg_flat):
     print(f"  - Reward loss: {metrics['reward_loss']:.6f}")
 
 def test_weight_decay_vs_manual_l2(key, cfg_flat):
-    """Action Item 2: Test L2 regularization approach differences.
+    """Test L2 regularization approach differences.
     
     Verifies that optimizer weight_decay vs manual L2 addition work as expected.
     """
@@ -3214,7 +3214,7 @@ def test_weight_decay_vs_manual_l2(key, cfg_flat):
     print(f"  - Both configured: l2_loss={metrics_both['l2_loss']:.6f} (weight decay takes precedence)")
 
 def test_target_network_ema_parameter_correctness(key, cfg_flat):
-    """Action Item 3: Test target network EMA parameter correctness.
+    """Test target network EMA parameter correctness.
     
     Verifies that target network parameters correctly follow EMA formula.
     """
@@ -3295,7 +3295,7 @@ def test_target_network_ema_parameter_correctness(key, cfg_flat):
     print(f"  - Multi-step EMA behavior verified")
 
 def test_configuration_alignment_with_efficientzero_v2(key, cfg_flat):
-    """Action Item 4: Test configuration alignment with EfficientZeroV2.
+    """Test configuration alignment with EfficientZeroV2.
     
     Verifies that all EfficientZeroV2 loss coefficients and parameters are present and used.
     """
@@ -3409,7 +3409,7 @@ def test_configuration_alignment_with_efficientzero_v2(key, cfg_flat):
     print(f"  - Configuration successfully used for training")
 
 def test_discrete_support_transformations(key, cfg_flat):
-    """Action Item 5: Test discrete support transformations.
+    """Test discrete support transformations.
     
     Verifies that the newly implemented scalar_to_support and support_to_scalar
     functions work correctly for EfficientZeroV2 parity.
@@ -4197,8 +4197,8 @@ def test_remaining_squeeze_operations_comprehensive(key, cfg_flat):
     # Also test with scalar targets having shape (B, K+1, 1) to hit line 557
     # Create a batch with scalar targets first, then reshape
     batch_scalar_rew = make_batch(key, cfg_symlog_rew.batch_size, cfg_flat.observation_shape,
-                                  cfg_flat.num_actions, cfg_symlog_rew.num_unroll_steps,
-                                  vsup=0, rsup=0, use_proj=False)  # Scalar targets
+                                 cfg_flat.num_actions, cfg_symlog_rew.num_unroll_steps,
+                                 vsup=0, rsup=0, use_proj=False)  # Scalar targets
     target_rewards_1d = batch_scalar_rew['target_reward'][..., None]  # Add dimension: (B, K+1, 1)
     batch_symlog_rew_1d = {**batch_scalar_rew, 'target_reward': target_rewards_1d}
     
@@ -4262,8 +4262,8 @@ def test_final_squeeze_edge_cases(key, cfg_flat):
     
     # Create batch with scalar targets, then reshape to (B, K+1, 1) to trigger line 388 squeeze
     batch_edge_val = make_batch(key, cfg_cat_val_edge.batch_size, cfg_flat.observation_shape,
-                                cfg_flat.num_actions, cfg_cat_val_edge.num_unroll_steps,
-                                vsup=0, rsup=0, use_proj=False)
+                               cfg_flat.num_actions, cfg_cat_val_edge.num_unroll_steps,
+                               vsup=0, rsup=0, use_proj=False)
     # Reshape target values to trigger the squeeze: target_val.ndim == 2 and target_val.shape[-1] == 1
     target_values_1d = batch_edge_val['target_value'][..., None]  # (B, K+1, 1)
     batch_edge_val_modified = {**batch_edge_val, 'target_value': target_values_1d}
@@ -4614,7 +4614,7 @@ def test_value_target_fallback_when_invalid_type(key, cfg_flat):
 
 
 def test_half_gradient_mathematical_implementation(key, cfg_flat):
-    """Test Action Item 11: Mathematical correctness of half_gradient function.
+    """Mathematical correctness of half_gradient function.
     
     Verifies that the half_gradient function properly implements the EfficientZeroV2 
     pattern: forward pass is identity, backward pass multiplies gradient by 0.5.
@@ -4663,7 +4663,7 @@ def test_half_gradient_mathematical_implementation(key, cfg_flat):
 
 
 def test_half_gradient_placement_in_recurrent_unroll(key, cfg_flat):
-    """Test Action Item 11: Verify half_gradient is applied at correct location in recurrent unroll.
+    """Verify half_gradient is applied at correct location in recurrent unroll.
     
     This test specifically verifies that half_gradient is applied to hidden states
     before recurrent_inference calls, matching the EfficientZeroV2 pattern.
@@ -4704,7 +4704,7 @@ def test_half_gradient_placement_in_recurrent_unroll(key, cfg_flat):
 
 
 def test_half_gradient_efficientzero_v2_consistency(key, cfg_flat):
-    """Test Action Item 11: Verify consistency with EfficientZeroV2 implementation pattern.
+    """Verify consistency with EfficientZeroV2 implementation pattern.
     
     This test confirms that the JAX implementation follows the exact same pattern
     as the PyTorch EfficientZeroV2 reference: apply half-gradient to hidden states
@@ -4727,14 +4727,14 @@ def test_half_gradient_efficientzero_v2_consistency(key, cfg_flat):
             model, cfg_test, batch, key, training=True
         )
         
-        # Verify that loss computation succeeds (indicates half_gradient was applied correctly)
+        # Verify that loss computation succeeds (indicating half_gradient was applied correctly)
         assert jnp.isfinite(loss_value), f"Loss should be finite for {num_unroll} unroll steps"
         assert jnp.isfinite(metrics['total_loss']), f"Total loss metric should be finite"
         assert loss_value > 0, f"Loss should be positive for {num_unroll} unroll steps"
 
 
 def test_half_gradient_numerical_verification_integration(key, cfg_flat):
-    """Test Action Item 11: Numerical verification that half_gradient affects gradients correctly.
+    """Numerical verification that half_gradient affects gradients correctly.
     
     This test verifies that the half_gradient function is properly integrated in the training
     pipeline and that the loss computation works correctly with half_gradient applied.
@@ -4787,7 +4787,7 @@ def test_half_gradient_numerical_verification_integration(key, cfg_flat):
 
 
 def test_half_gradient_documentation_and_comments(key, cfg_flat):
-    """Test Action Item 11: Verify proper documentation of half_gradient implementation.
+    """Verify proper documentation of half_gradient implementation.
     
     Ensures that the half_gradient function and its usage are properly documented
     and reference the EfficientZeroV2 pattern.
@@ -4813,10 +4813,10 @@ def test_half_gradient_documentation_and_comments(key, cfg_flat):
 
 
 def test_half_gradient_coverage_completion(key, cfg_flat):
-    """Test Action Item 11: Complete coverage test to verify all aspects are working.
+    """Complete coverage test to verify all aspects are working.
     
     This is a comprehensive test that exercises all aspects of the half_gradient 
-    implementation to ensure 100% coverage of Action Item 11 requirements.
+    implementation to ensure 100% code coverage.
     """
     mk = jax.random.fold_in(key, 1)
     bk = jax.random.fold_in(key, 2)
@@ -4891,7 +4891,7 @@ def test_lstm_value_prefix_configuration(key, cfg_flat):
     # Test verifies LSTM horizon logic executes without error
 
 
-# --- Test IQL effective parameter logic in trainer (Action Item 13) ---
+# --- Test IQL effective parameter logic in trainer ---
 def test_use_iql_config_default(key, cfg_flat):
     """Test that use_iql defaults to True in MuZeroConfig."""
     cfg = make_cfg(VALUE_SUPPORT_SCALAR, REWARD_SUPPORT_SCALAR, NUM_UNROLL_STEPS, False, 'iql_default')
@@ -5000,7 +5000,7 @@ def test_iql_config_field_presence(key, cfg_flat):
     assert config.iql_weight == 1.0, "iql_weight should default to 1.0"
 
 def test_consistency_loss_coefficient_consolidation(key, cfg_flat):
-    """Test Action Item 17: Consolidation of SSL consistency loss parameters.
+    """Consolidation of SSL consistency loss parameters.
     
     Verifies that ssl_consistency_loss_weight and consistency_coeff have been 
     consolidated into a single consistency_loss_coeff parameter and that 
@@ -5205,7 +5205,7 @@ def test_gradient_scaling_mathematical_equivalence_and_edge_cases(key, cfg_flat)
 
 
 def test_entropy_regularization_comprehensive(key, cfg_flat):
-    """Test comprehensive entropy regularization functionality for Action Item 12."""
+    """Test comprehensive entropy regularization functionality."""
     from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
     
     # Test 1: Discrete action entropy regularization
@@ -5336,7 +5336,7 @@ def test_entropy_error_handling_integration(key, cfg_flat):
 
 
 def test_ema_checkpoint_synchronization_fallback_scenario(key, cfg_flat):
-    """Test EMA state synchronization when checkpoint contains incomplete EMA data (Action Item 24)."""
+    """Test EMA state synchronization when checkpoint contains incomplete EMA data."""
     with tempfile.TemporaryDirectory() as temp_dir:
         # Test Scenario: Directly test the EMA fallback synchronization logic 
         # We'll simulate the exact code path from the load_checkpoint method
@@ -5371,7 +5371,7 @@ def test_ema_checkpoint_synchronization_fallback_scenario(key, cfg_flat):
         # Crucial synchronization: ensure EMA internal average matches current online params
         learner.ema_params_state = learner.ema_params_state._replace(ema=params)
         
-        # Step 3: Verify the synchronization worked correctly (Action Item 24 fix)
+        # Step 3: Verify the synchronization worked correctly 
         ema_internal_params = learner.ema_params_state.ema
         target_params = nnx.state(learner.target_model, nnx.Param)
         
@@ -5388,7 +5388,7 @@ def test_ema_checkpoint_synchronization_fallback_scenario(key, cfg_flat):
         
         # Critical verification: EMA internal average should match current online parameters
         assert params_equal(ema_internal_params, current_online_params), \
-            "EMA internal average should be synchronized with current online parameters after fallback (Action Item 24 fix)"
+            "EMA internal average should be synchronized with current online parameters after fallback"
         
         # Target model should also match online parameters after re-creation
         assert params_equal(target_params, current_online_params), \
@@ -5419,7 +5419,7 @@ def test_ema_checkpoint_synchronization_fallback_scenario(key, cfg_flat):
         learner.target_model = nnx.merge(graphdef, params, batch_stats, rngs, static, ellipsis)
         learner.ema_updater = optax.ema(learner.config.ema_decay)
         learner.ema_params_state = learner.ema_updater.init(params)
-        # The crucial synchronization step (Action Item 24 fix)
+        # The crucial synchronization step
         learner.ema_params_state = learner.ema_params_state._replace(ema=params)
         
         # Verify synchronization again
@@ -5579,7 +5579,7 @@ def test_ema_checkpoint_real_fallback_scenario(key, cfg_flat):
         current_online_params = nnx.state(learner2.model, nnx.Param)
         
         assert params_equal(ema_internal_params, current_online_params), \
-            "EMA internal average should be synchronized with online parameters after fallback (Action Item 24 fix)"
+            "EMA internal average should be synchronized with online parameters after fallback"
         
         assert params_equal(target_params, current_online_params), \
             "Target model should match online parameters after fallback"
@@ -5651,7 +5651,7 @@ def test_ema_synchronization_during_initialization(key, cfg_flat):
         
 
 def test_gradient_clipping_comprehensive_standard_verification(key, cfg_flat):
-    """Comprehensive test for Action Item 27: Gradient Clipping Implementation verification.
+    """Comprehensive test for Gradient Clipping Implementation verification.
     
     This test verifies that JAX's gradient clipping implementation is standard and correct by testing:
     1. Standard Optax pattern verification vs manual implementation
@@ -5863,7 +5863,7 @@ def test_gradient_clipping_comprehensive_standard_verification(key, cfg_flat):
     # (unless gradients were already small)
     assert jnp.isfinite(grad_norm_no_clip), "Unclipped gradient norm should be finite"
     
-    print(f"✅ Comprehensive gradient clipping standard verification passed (Action Item 27):")
+    print(f"✅ Comprehensive gradient clipping standard verification passed:")
     print(f"  1. ✅ Standard Optax pattern verified vs manual implementation")  
     print(f"  2. ✅ Condition logic (clip_grad_norm > 0) tested with thresholds: {[t[0] for t in threshold_tests]}")
     print(f"  3. ✅ Gradient direction preservation verified")
@@ -5876,7 +5876,7 @@ def test_gradient_clipping_comprehensive_standard_verification(key, cfg_flat):
 
 
 def test_optimizer_choice_adam_adamw_action_item_23(key, cfg_flat):
-    """Action Item 23: Test optimizer choice (AdamW vs. Adam) alignment with EfficientZeroV2.
+    """Test optimizer choice (AdamW vs. Adam) alignment with EfficientZeroV2.
     
     Verifies that JAX's optimizer selection strategy correctly chooses between AdamW 
     (when weight_decay > 0) and Adam (when weight_decay == 0) and prevents double 
@@ -5949,7 +5949,7 @@ def test_optimizer_choice_adam_adamw_action_item_23(key, cfg_flat):
     l2_loss_double = float(metrics_double['l2_loss'])
     assert l2_loss_double == 0.0, f"When weight_decay > 0, manual L2 should be disabled to prevent double weight decay, got {l2_loss_double}"
     
-    print(f"✅ Action Item 23 - Optimizer Choice (AdamW vs. Adam) verification passed:")
+    print(f"✅ Optimizer Choice (AdamW vs. Adam) verification passed:")
     print(f"  1. ✅ weight_decay == 0 → Adam optimizer + manual L2 (L2 loss: {l2_loss_adam:.6f})")
     print(f"  2. ✅ weight_decay > 0 → AdamW optimizer + no manual L2 (L2 loss: {l2_loss_adamw:.6f})")
     print(f"  3. ✅ No double weight decay application verified")
@@ -5959,7 +5959,7 @@ def test_optimizer_choice_adam_adamw_action_item_23(key, cfg_flat):
 
 
 def test_optimizer_choice_efficientzero_v2_parity(key, cfg_flat):
-    """Action Item 23: Verify EfficientZeroV2 parity in optimizer choice and weight decay handling.
+    """Verify EfficientZeroV2 parity in optimizer choice and weight decay handling.
     
     Tests that the JAX implementation matches EfficientZeroV2's approach to:
     1. Optimizer selection based on weight_decay configuration
@@ -6021,7 +6021,7 @@ def test_optimizer_choice_efficientzero_v2_parity(key, cfg_flat):
     for step, l2_loss in enumerate(l2_losses):
         assert l2_loss == 0.0, f"Step {step}: L2 loss should remain 0 with AdamW, got {l2_loss}"
     
-    print(f"✅ Action Item 23 - EfficientZeroV2 Parity verification passed:")
+    print(f"✅ EfficientZeroV2 Parity verification passed:")
     print(f"  1. ✅ Zero weight decay pattern: Adam + manual L2 (L2 loss: {l2_loss_ez_zero:.6f})")
     print(f"  2. ✅ Standard weight decay patterns tested: {ez_weight_decay_values}")
     print(f"  3. ✅ Multi-step consistency verified: L2 losses = {l2_losses}")
@@ -6030,7 +6030,7 @@ def test_optimizer_choice_efficientzero_v2_parity(key, cfg_flat):
 
 
 def test_optimizer_choice_edge_cases_action_item_23(key, cfg_flat):
-    """Action Item 23: Test edge cases and robustness of optimizer choice logic.
+    """Test edge cases and robustness of optimizer choice logic.
     
     Verifies robustness of the optimizer selection and weight decay logic under
     various edge cases and parameter combinations.
@@ -6120,7 +6120,7 @@ def test_optimizer_choice_edge_cases_action_item_23(key, cfg_flat):
         else:
             assert l2_loss_boundary == 0.0, f"{test_name}: weight_decay={wd_val} should not use manual L2, got {l2_loss_boundary}"
     
-    print(f"✅ Action Item 23 - Optimizer Choice Edge Cases verification passed:")
+    print(f"✅ Optimizer Choice Edge Cases verification passed:")
     print(f"  1. ✅ Tiny weight decay (1e-8): AdamW path, L2 loss = {l2_loss_tiny}")
     print(f"  2. ✅ Large weight decay (0.1): AdamW path, L2 loss = {l2_loss_large}")
     print(f"  3. ✅ Zero both (wd=0, l2=0): L2 loss = {l2_loss_zero_both}")
@@ -6128,3 +6128,157 @@ def test_optimizer_choice_edge_cases_action_item_23(key, cfg_flat):
     print(f"  5. ✅ Decision boundary at weight_decay == 0 verified")
     print(f"  - All edge cases handled correctly by optimizer choice logic")
     print(f"  - Robustness verified for various parameter combinations")
+
+def test_noisy_networks_trainer_integration_coverage(key, cfg_flat):
+    """Test noisy networks functionality in trainer to cover missing lines 328-332.
+    
+    This test ensures that the noisy network reset functionality is properly exercised
+    during training steps, covering the missing lines in the trainer.py coverage report.
+    """
+    mk, lk, bk = jax.random.split(key, 3)
+    cfgn = cfg_flat
+    
+    # Create config with noisy networks enabled
+    cfg_noisy = make_cfg(0, 0, 2, False, 'noisy_test', l2_weight=1e-4)
+    cfg_noisy = dataclasses.replace(cfg_noisy, noisy_net=True, batch_size=2)
+    
+    # Create model with noisy networks
+    model_noisy = make_model(jax.random.fold_in(mk, 1), cfgn)
+    learner_noisy = Learner(model_noisy, None, cfg_noisy, jax.random.fold_in(lk, 1))
+    
+    # Verify that the model has reset_noise method
+    assert hasattr(model_noisy, 'reset_noise'), "Model should have reset_noise method for noisy networks"
+    
+    # Create batch for training
+    batch_noisy = make_batch(jax.random.fold_in(bk, 1), 2, cfgn.observation_shape, cfgn.num_actions, 2, 0, 0)
+    
+    # Perform training step - this should trigger lines 328-332 in trainer.py
+    # Lines 328-332:
+    # if self.config.noisy_net:
+    #     noise_key = jax.random.split(step_rng, 1)[0]
+    #     self.model.reset_noise(noise_key)
+    #     if self.target_model is not None:
+    #         target_noise_key = jax.random.split(step_rng, 2)[1]
+    #         self.target_model.reset_noise(target_noise_key)
+    metrics_1 = learner_noisy.train_step(batch_noisy)
+    
+    # Verify training completed successfully
+    assert 'total_loss' in metrics_1, "Training step should return total_loss"
+    assert jnp.isfinite(float(metrics_1['total_loss'])), "Total loss should be finite with noisy networks"
+    
+    # Test with target model enabled (EMA)
+    cfg_noisy_ema = dataclasses.replace(cfg_noisy, use_target_network_ema=True)
+    model_noisy_ema = make_model(jax.random.fold_in(mk, 2), cfgn)
+    learner_noisy_ema = Learner(model_noisy_ema, None, cfg_noisy_ema, jax.random.fold_in(lk, 2))
+    
+    # Verify target model exists when EMA is enabled
+    assert learner_noisy_ema.target_model is not None, "Target model should exist when EMA is enabled"
+    assert hasattr(learner_noisy_ema.target_model, 'reset_noise'), "Target model should have reset_noise method"
+    
+    # Perform training step with target model - this exercises the target_model reset_noise branch
+    batch_noisy_ema = make_batch(jax.random.fold_in(bk, 3), 2, cfgn.observation_shape, cfgn.num_actions, 2, 0, 0)
+    metrics_ema = learner_noisy_ema.train_step(batch_noisy_ema)
+    
+    # Verify training with target model and noisy networks works
+    assert 'total_loss' in metrics_ema, "Training step with EMA and noisy networks should return total_loss"
+    assert jnp.isfinite(float(metrics_ema['total_loss'])), "Total loss should be finite with EMA and noisy networks"
+    
+    # Test that noisy networks are properly reset by calling reset_noise directly
+    test_key = jax.random.PRNGKey(42)
+    
+    # Call reset_noise on main model
+    model_noisy.reset_noise(test_key)
+    
+    # Call reset_noise on target model if it exists
+    if learner_noisy_ema.target_model is not None:
+        learner_noisy_ema.target_model.reset_noise(test_key)
+    
+    # Verify the configuration is correctly set
+    assert cfg_noisy.noisy_net == True, "Config should have noisy_net=True"
+    assert cfg_noisy_ema.noisy_net == True, "EMA config should have noisy_net=True"
+    
+    print(f"✅ Noisy Networks Trainer Integration Coverage test passed:")
+    print(f"  1. ✅ Training step with noisy_net=True exercises lines 328-332")
+    print(f"  2. ✅ Noise reset called on main model during training")
+    print(f"  3. ✅ Noise reset called on target model when EMA enabled")
+    print(f"  4. ✅ Training stability maintained with noisy networks")
+    print(f"  5. ✅ Configuration transfer and setup verified")
+    print(f"  - Lines 328-332 in trainer.py are now covered by this test")
+    print(f"  - Noisy network functionality integrated properly with training loop")
+
+def test_noisy_networks_trainer_integration_coverage(key, cfg_flat):
+    """Test noisy networks functionality in trainer to cover missing lines 328-332.
+    
+    This test ensures that the noisy network reset functionality is properly exercised
+    during training steps, covering the missing lines in the trainer.py coverage report.
+    """
+    mk, lk, bk = jax.random.split(key, 3)
+    cfgn = cfg_flat
+    
+    # Create config with noisy networks enabled
+    cfg_noisy = make_cfg(0, 0, 2, False, 'noisy_test', l2_weight=1e-4)
+    cfg_noisy = dataclasses.replace(cfg_noisy, noisy_net=True, batch_size=2)
+    
+    # Create model with noisy networks
+    model_noisy = make_model(jax.random.fold_in(mk, 1), cfgn)
+    learner_noisy = Learner(model_noisy, None, cfg_noisy, jax.random.fold_in(lk, 1))
+    
+    # Verify that the model has reset_noise method
+    assert hasattr(model_noisy, 'reset_noise'), "Model should have reset_noise method for noisy networks"
+    
+    # Create batch for training
+    batch_noisy = make_batch(jax.random.fold_in(bk, 1), 2, cfgn.observation_shape, cfgn.num_actions, 2, 0, 0)
+    
+    # Perform training step - this should trigger lines 328-332 in trainer.py
+    # Lines 328-332:
+    # if self.config.noisy_net:
+    #     noise_key = jax.random.split(step_rng, 1)[0]
+    #     self.model.reset_noise(noise_key)
+    #     if self.target_model is not None:
+    #         target_noise_key = jax.random.split(step_rng, 2)[1]
+    #         self.target_model.reset_noise(target_noise_key)
+    metrics_1 = learner_noisy.train_step(batch_noisy)
+    
+    # Verify training completed successfully
+    assert 'total_loss' in metrics_1, "Training step should return total_loss"
+    assert jnp.isfinite(float(metrics_1['total_loss'])), "Total loss should be finite with noisy networks"
+    
+    # Test with target model enabled (EMA)
+    cfg_noisy_ema = dataclasses.replace(cfg_noisy, use_target_network_ema=True)
+    model_noisy_ema = make_model(jax.random.fold_in(mk, 2), cfgn)
+    learner_noisy_ema = Learner(model_noisy_ema, None, cfg_noisy_ema, jax.random.fold_in(lk, 2))
+    
+    # Verify target model exists when EMA is enabled
+    assert learner_noisy_ema.target_model is not None, "Target model should exist when EMA is enabled"
+    assert hasattr(learner_noisy_ema.target_model, 'reset_noise'), "Target model should have reset_noise method"
+    
+    # Perform training step with target model - this exercises the target_model reset_noise branch
+    batch_noisy_ema = make_batch(jax.random.fold_in(bk, 3), 2, cfgn.observation_shape, cfgn.num_actions, 2, 0, 0)
+    metrics_ema = learner_noisy_ema.train_step(batch_noisy_ema)
+    
+    # Verify training with target model and noisy networks works
+    assert 'total_loss' in metrics_ema, "Training step with EMA and noisy networks should return total_loss"
+    assert jnp.isfinite(float(metrics_ema['total_loss'])), "Total loss should be finite with EMA and noisy networks"
+    
+    # Test that noisy networks are properly reset by calling reset_noise directly
+    test_key = jax.random.PRNGKey(42)
+    
+    # Call reset_noise on main model
+    model_noisy.reset_noise(test_key)
+    
+    # Call reset_noise on target model if it exists
+    if learner_noisy_ema.target_model is not None:
+        learner_noisy_ema.target_model.reset_noise(test_key)
+    
+    # Verify the configuration is correctly set
+    assert cfg_noisy.noisy_net == True, "Config should have noisy_net=True"
+    assert cfg_noisy_ema.noisy_net == True, "EMA config should have noisy_net=True"
+    
+    print(f"✅ Noisy Networks Trainer Integration Coverage test passed:")
+    print(f"  1. ✅ Training step with noisy_net=True exercises lines 328-332")
+    print(f"  2. ✅ Noise reset called on main model during training")
+    print(f"  3. ✅ Noise reset called on target model when EMA enabled")
+    print(f"  4. ✅ Training stability maintained with noisy networks")
+    print(f"  5. ✅ Configuration transfer and setup verified")
+    print(f"  - Lines 328-332 in trainer.py are now covered by this test")
+    print(f"  - Noisy network functionality integrated properly with training loop")

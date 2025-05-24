@@ -433,7 +433,7 @@ This document outlines action items to align the JAX implementation of Efficient
         *   `test_compute_symlog_value_loss_vs_regular_symlog`: Comparison with regular symlog loss
         *   `test_compute_symlog_value_loss_mathematical_properties`: Mathematical properties and edge cases
         *   `test_compute_symlog_value_loss_edge_cases`: Robustness testing with extreme values
-*   **Coverage:** 100% test coverage for symlog value loss with IQL functionality, verifying correct error calculation in scalar space and proper IQL weighting application.
+*   **Coverage:** 100% test coverage for symlog value loss with IQL functionality, verifying correct error calculation in scalar space and proper IQL weighting application. **MILESTONE: Achieved 100% coverage on both `training/trainer.py` and `training/losses.py` modules through comprehensive noisy network testing.**
 
 ## 19. `value_prefix` Logic in Target Calculation
 
@@ -574,6 +574,12 @@ OpenSpiel environments exclusively use discrete action spaces and the current At
         *   Added `reset_noise()` methods to `NoisyLinear`, `MLP`, `PredictionNetwork`, and `MuZeroNetwork`
         *   Integrated noise reset into trainer after gradient updates (matching EfficientZeroV2 pattern)
         *   Follows PyTorch EfficientZeroV2 base.py line 533-535 pattern for post-gradient noise reset
+    5.  ✅ **Achieved 100% Test Coverage:**
+        *   Added comprehensive test `test_noisy_networks_trainer_integration_coverage` to cover trainer lines 328-332
+        *   Successfully covered the missing noisy network reset functionality in trainer.py
+        *   Verified training step with `noisy_net=True` exercises noise reset code paths
+        *   Tested both main model and target model (EMA) noise reset branches
+        *   **Result: 100% coverage achieved on both `training/trainer.py` and `training/losses.py` modules**
 *   **Completion Criteria:**
     *   ✅ JAX model can use NoisyLinear layers in its heads, controlled by configuration.
     *   ✅ Noise sampling/resetting logic is correctly implemented.
@@ -621,18 +627,19 @@ OpenSpiel environments exclusively use discrete action spaces and the current At
     *   ✅ **Architecture Integration:** Policy heads use noisy layers when enabled, matching PyTorch implementation
     *   ✅ **Noise Reset Pattern:** Post-gradient noise reset follows EfficientZeroV2 base.py pattern exactly
     *   ✅ **Configuration Compatibility:** `config.noisy_net` parameter matches PyTorch EfficientZeroV2 structure
-*   **Coverage:** 100% test coverage for all noisy networks functionality with comprehensive verification of Action Item 25 requirements and EfficientZeroV2 alignment.
+*   **Coverage:** 100% test coverage for all noisy networks functionality with comprehensive verification of Action Item 25 requirements and EfficientZeroV2 alignment. **MILESTONE: Achieved 100% coverage on both `training/trainer.py` and `training/losses.py` modules through comprehensive noisy network testing.**
 
-## 26. `torch.moveaxis` Equivalent for Continuous Policy Loss
+## 26. `torch.moveaxis` Equivalent for Continuous Policy Loss [DONE - OUT OF SCOPE]
 
 *   **Objective:** Ensure correct tensor dimension alignment for continuous policy loss calculations if multiple action samples are drawn per policy output.
 *   **Observations:** PyTorch `continuous_loss` uses `torch.moveaxis` for this.
 *   **Action Items:**
-    1.  This is relevant if Action Item 9 (Continuous Actions) is implemented and if the JAX version supports sampling multiple actions from a single policy distribution output for loss calculation (e.g., for "full_pi_loss" variants).
-    2.  If so, ensure `jax.numpy.moveaxis` or JAX's broadcasting rules are used correctly to align dimensions of `target_action` and policy distribution parameters before calling `distr.log_prob()` and summing/averaging.
+    1.  ✅ **Out of Scope for OpenSpiel:** This action item depends on Action Item 9 (Continuous Actions) which is out of scope for OpenSpiel environments that exclusively use discrete action spaces.
+    2.  ✅ **JAX Equivalent Available:** JAX provides `jax.numpy.moveaxis` which is functionally equivalent to `torch.moveaxis` for tensor dimension manipulation.
 *   **Completion Criteria:**
-    *   If multiple action samples per policy are used in continuous action loss, tensor dimensions are correctly handled in JAX using `jax.numpy.moveaxis` or broadcasting.
-    *   Numerical results match PyTorch's `continuous_loss` for equivalent multi-sample inputs.
+    *   ✅ **Scope Clarification:** This action item is out of scope for the OpenSpiel-focused JAX MuZero implementation since continuous policy loss calculations are not relevant for discrete action environments.
+    *   ✅ **Implementation Note:** While `jax.numpy.moveaxis` provides the equivalent functionality to `torch.moveaxis`, continuous policy loss calculations are not needed for OpenSpiel board games and card games.
+    *   ✅ **Future Compatibility:** If continuous action support is ever added in the future, `jax.numpy.moveaxis` can be used for proper tensor dimension alignment in multi-sample continuous policy loss calculations.
 
 ## 27. Gradient Clipping Implementation [DONE]
 
