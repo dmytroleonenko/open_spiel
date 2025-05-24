@@ -61,13 +61,12 @@ class MuZeroConfig:
     policy_loss_weight: float = 1.0
     l2_weight: float = 1e-4
     use_projection: bool = False # Whether the model uses projection heads (for SSL)
-    ssl_consistency_loss_weight: float = 0.0 # Weight for self-supervised consistency loss
     
     # EfficientZeroV2 specific loss parameters
     use_iql: bool = True # Whether to use IQL asymmetric weighting for value loss
     iql_weight: float = 1.0 # IQL-style weighting for value loss (asymmetric weighting based on error sign)
     entropy_coeff: float = 0.0 # Entropy regularization coefficient
-    consistency_coeff: float = 2.0 # Consistency loss coefficient (alternative name for SSL)
+    consistency_loss_coeff: float = 2.0 # SSL/Consistency loss coefficient (EfficientZeroV2 parity)
     
     # Loss function types - for EfficientZeroV2 parity
     value_loss_type: str = "mse" # "mse", "symlog", or "categorical"
@@ -649,7 +648,7 @@ class Learner:
             per_sample_reward_loss += masked_r_loss
             
             # SSL Loss with stop_gradient (EfficientZeroV2 pattern)
-            if config.use_projection and config.ssl_consistency_loss_weight > 0 and \
+            if config.use_projection and config.consistency_loss_coeff > 0 and \
                predicted_projections is not None and initial_projection is not None and k_idx > 0: 
                 ssl_loss_step = losses_lib.compute_projection_consistency_loss(
                     predicted_projections[:, k_idx], 
@@ -681,8 +680,8 @@ class Learner:
         if config.entropy_coeff > 0:
             per_sample_combined_loss -= config.entropy_coeff * per_sample_entropy_loss  # Negative because we want to maximize entropy
         
-        if config.use_projection and config.ssl_consistency_loss_weight > 0:
-            per_sample_combined_loss += config.ssl_consistency_loss_weight * per_sample_ssl_loss
+        if config.use_projection and config.consistency_loss_coeff > 0:
+            per_sample_combined_loss += config.consistency_loss_coeff * per_sample_ssl_loss
             
         # Apply importance weighting (EfficientZeroV2 pattern: weighted_loss = (weights * loss).mean())
         final_loss = jnp.mean(importance_weights * per_sample_combined_loss) + l2_loss
@@ -736,7 +735,7 @@ class Learner:
         }
         if config.entropy_coeff > 0:
             metrics['entropy_loss'] = total_entropy_loss
-        if config.use_projection and config.ssl_consistency_loss_weight > 0:
+        if config.use_projection and config.consistency_loss_coeff > 0:
             metrics['ssl_loss'] = total_ssl_loss
         if priorities is not None:
             metrics['priorities'] = priorities
