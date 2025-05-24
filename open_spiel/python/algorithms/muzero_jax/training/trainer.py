@@ -72,6 +72,10 @@ class MuZeroConfig:
     value_loss_type: str = "mse" # "mse", "symlog", or "categorical"
     reward_loss_type: str = "mse" # "mse", "symlog", "kl", or "categorical"
     
+    # Action space configuration for entropy regularization
+    action_type: str = "discrete" # "discrete" or "continuous" - determines action space type
+    distribution_type: str = "categorical" # For discrete: "categorical", for continuous: "normal", "squashed_normal", etc.
+    
     # Symlog parameters
     use_symlog: bool = False # Whether to use symlog representation
     symlog_base: float = math.e # Base for symlog transformation (e for EfficientZeroV2 parity)
@@ -664,7 +668,12 @@ class Learner:
             
             # Entropy Loss for policy regularization (EfficientZeroV2 pattern)
             if config.entropy_coeff > 0:
-                entropy_loss_step = losses_lib.compute_policy_entropy(predicted_policy_logits[:, k_idx])
+                # Use general entropy function that supports both discrete and continuous actions
+                entropy_loss_step = losses_lib.compute_policy_entropy_general(
+                    predicted_policy_logits[:, k_idx], 
+                    action_type=config.action_type,
+                    distribution_type=config.distribution_type
+                )
                 masked_entropy_loss = entropy_loss_step * step_mask
                 per_sample_entropy_loss += masked_entropy_loss
 

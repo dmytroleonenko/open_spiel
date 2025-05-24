@@ -1081,4 +1081,257 @@ def test_additional_squeeze_operations():
     reward_loss_both = losses_lib.compute_scalar_reward_loss(pred_both_squeeze, target_both_squeeze)
     
     assert value_loss_both.shape == (3,)
-    assert reward_loss_both.shape == (3,) 
+    assert reward_loss_both.shape == (3,)
+
+
+# --- Test Enhanced Entropy Functions ---
+def test_compute_policy_entropy_enhanced():
+    """Test enhanced discrete policy entropy computation with edge cases."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    # Standard case
+    logits = jnp.array([[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]])
+    entropy = losses_lib.compute_policy_entropy(logits)
+    assert entropy.shape == (2,)
+    assert jnp.all(entropy >= 0.0)  # Entropy should be non-negative
+    
+    # High entropy case (uniform distribution)
+    uniform_logits = jnp.zeros((1, 4))  # Equal logits = uniform distribution
+    uniform_entropy = losses_lib.compute_policy_entropy(uniform_logits)
+    expected_uniform = jnp.log(4.0)  # log(num_actions) for uniform
+    assert jnp.allclose(uniform_entropy, expected_uniform, rtol=1e-5)
+    
+    # Low entropy case (deterministic distribution)
+    deterministic_logits = jnp.array([[10.0, 0.0, 0.0]])  # Very peaked
+    deterministic_entropy = losses_lib.compute_policy_entropy(deterministic_logits)
+    assert deterministic_entropy[0] < 0.1  # Should be very low
+    
+    # Test error handling
+    try:
+        invalid_logits = jnp.array([1.0, 2.0])  # 1D instead of 2D
+        losses_lib.compute_policy_entropy(invalid_logits)
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "2D" in str(e)
+
+
+def test_compute_continuous_policy_entropy_normal():
+    """Test continuous policy entropy for normal distribution."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Test normal distribution entropy
+    batch_size = 3
+    action_dim = 2
+    # Parameters: [means, log_stds]
+    distribution_params = jr.normal(key, (batch_size, 2 * action_dim))
+    
+    entropy = losses_lib.compute_continuous_policy_entropy(
+        distribution_params, distribution_type="normal"
+    )
+    assert entropy.shape == (batch_size,)
+    assert jnp.all(entropy > 0.0)  # Should be positive for reasonable std
+    
+    # Test with higher variance (should have higher entropy)
+    high_var_params = distribution_params.at[:, action_dim:].set(2.0)  # High log_stds
+    high_entropy = losses_lib.compute_continuous_policy_entropy(
+        high_var_params, distribution_type="normal"
+    )
+    assert jnp.all(high_entropy > entropy)
+    
+    # Test numerical stability with extreme log_stds
+    extreme_params = distribution_params.at[:, action_dim:].set(10.0)  # Very high
+    stable_entropy = losses_lib.compute_continuous_policy_entropy(
+        extreme_params, distribution_type="normal"
+    )
+    assert jnp.all(jnp.isfinite(stable_entropy))
+
+
+def test_compute_continuous_policy_entropy_squashed_normal():
+    """Test continuous policy entropy for squashed normal distribution."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Test squashed normal distribution entropy
+    batch_size = 2
+    action_dim = 3
+    distribution_params = jr.normal(key, (batch_size, 2 * action_dim))
+    
+    entropy = losses_lib.compute_continuous_policy_entropy(
+        distribution_params, distribution_type="squashed_normal"
+    )
+    assert entropy.shape == (batch_size,)
+    
+    # Should be lower than normal entropy due to squashing
+    normal_entropy = losses_lib.compute_continuous_policy_entropy(
+        distribution_params, distribution_type="normal"
+    )
+    assert jnp.all(entropy <= normal_entropy)
+
+
+def test_compute_continuous_policy_entropy_error_cases():
+    """Test error handling in continuous policy entropy."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Test invalid shape
+    try:
+        invalid_params = jr.normal(key, (3,))  # 1D instead of 2D
+        losses_lib.compute_continuous_policy_entropy(invalid_params, "normal")
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "2D" in str(e)
+    
+    # Test odd parameter dimension
+    try:
+        odd_params = jr.normal(key, (2, 5))  # Odd number of params
+        losses_lib.compute_continuous_policy_entropy(odd_params, "normal")
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "even" in str(e)
+    
+    # Test unsupported distribution
+    try:
+        params = jr.normal(key, (2, 4))
+        losses_lib.compute_continuous_policy_entropy(params, "unsupported")
+        assert False, "Should have raised NotImplementedError"
+    except NotImplementedError as e:
+        assert "unsupported" in str(e)
+
+
+def test_compute_policy_entropy_general_discrete():
+    """Test general entropy function with discrete actions."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    logits = jr.normal(key, (3, 5))
+    
+    # Test discrete entropy
+    entropy_discrete = losses_lib.compute_policy_entropy_general(
+        logits, action_type="discrete", distribution_type="categorical"
+    )
+    
+    # Should match direct discrete entropy computation
+    entropy_direct = losses_lib.compute_policy_entropy(logits)
+    assert jnp.allclose(entropy_discrete, entropy_direct)
+
+
+def test_compute_policy_entropy_general_continuous():
+    """Test general entropy function with continuous actions."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    distribution_params = jr.normal(key, (3, 4))  # 2 actions, means + log_stds
+    
+    # Test continuous entropy  
+    entropy_continuous = losses_lib.compute_policy_entropy_general(
+        distribution_params, action_type="continuous", distribution_type="normal"
+    )
+    
+    # Should match direct continuous entropy computation
+    entropy_direct = losses_lib.compute_continuous_policy_entropy(
+        distribution_params, distribution_type="normal"
+    )
+    assert jnp.allclose(entropy_continuous, entropy_direct)
+
+
+def test_compute_policy_entropy_general_error_handling():
+    """Test error handling in general entropy function."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    policy_output = jr.normal(key, (2, 4))
+    
+    # Test unsupported action type
+    try:
+        losses_lib.compute_policy_entropy_general(
+            policy_output, action_type="unsupported", distribution_type="normal"
+        )
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "action_type" in str(e)
+
+
+def test_entropy_mathematical_properties():
+    """Test mathematical properties of entropy functions."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Test that uniform discrete distribution has maximum entropy
+    num_actions = 5
+    uniform_logits = jnp.zeros((1, num_actions))
+    uniform_entropy = losses_lib.compute_policy_entropy(uniform_logits)
+    max_entropy = jnp.log(num_actions)
+    assert jnp.allclose(uniform_entropy, max_entropy, rtol=1e-5)
+    
+    # Test that deterministic distribution has minimum entropy
+    deterministic_logits = jnp.array([[-10.0, 10.0, -10.0]])  # Very peaked
+    deterministic_entropy = losses_lib.compute_policy_entropy(deterministic_logits)
+    assert deterministic_entropy[0] < 0.01  # Should be very close to 0
+    
+    # Test entropy monotonicity for continuous distributions
+    action_dim = 2
+    base_params = jnp.zeros((1, 2 * action_dim))
+    
+    # Low variance
+    low_std_params = base_params.at[0, action_dim:].set(-1.0)  # log_std = -1
+    low_entropy = losses_lib.compute_continuous_policy_entropy(
+        low_std_params, "normal"
+    )
+    
+    # High variance
+    high_std_params = base_params.at[0, action_dim:].set(1.0)  # log_std = 1
+    high_entropy = losses_lib.compute_continuous_policy_entropy(
+        high_std_params, "normal"
+    )
+    
+    assert high_entropy[0] > low_entropy[0]  # Higher variance should have higher entropy
+
+
+def test_entropy_integration_with_trainer_config():
+    """Test entropy functions work with trainer configuration patterns."""
+    from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
+    import jax.random as jr
+    
+    key = jr.key(42)
+    
+    # Test discrete action configuration
+    discrete_logits = jr.normal(key, (4, 6))
+    discrete_entropy = losses_lib.compute_policy_entropy_general(
+        discrete_logits,
+        action_type="discrete",
+        distribution_type="categorical"
+    )
+    assert discrete_entropy.shape == (4,)
+    assert jnp.all(discrete_entropy >= 0.0)
+    
+    # Test continuous action configuration
+    continuous_params = jr.normal(key, (4, 8))  # 4 actions * 2 params each
+    continuous_entropy = losses_lib.compute_policy_entropy_general(
+        continuous_params,
+        action_type="continuous", 
+        distribution_type="normal"
+    )
+    assert continuous_entropy.shape == (4,)
+    assert jnp.all(continuous_entropy > 0.0)
+    
+    # Test squashed normal configuration
+    squashed_entropy = losses_lib.compute_policy_entropy_general(
+        continuous_params,
+        action_type="continuous",
+        distribution_type="squashed_normal"
+    )
+    assert squashed_entropy.shape == (4,)
+    assert jnp.all(squashed_entropy <= continuous_entropy)  # Should be lower due to squashing 

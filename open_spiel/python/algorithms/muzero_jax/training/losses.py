@@ -308,15 +308,132 @@ def support_to_scalar(logits: jax.Array, support_min: float = -300.0, support_ma
     return output
 
 def compute_policy_entropy(policy_logits: jax.Array) -> jax.Array:
-    """Computes entropy of policy distribution for regularization.
+    """Computes entropy of discrete policy distribution for regularization.
+    
+    For discrete actions, entropy is computed as H(π) = -∑ π(a) log π(a).
+    This encourages exploration by discouraging overly deterministic policies.
     
     Args:
-        policy_logits: Policy logits. Shape (batch_size, num_actions)
+        policy_logits: Policy logits for discrete actions. Shape (batch_size, num_actions)
         
     Returns:
         Per-batch entropy values. Shape (batch_size,)
     """
+    if policy_logits.ndim != 2:
+        raise ValueError(f"Policy logits must be 2D (batch_size, num_actions), got {policy_logits.ndim}D") # pragma: no cover
+    
     log_probs = jax.nn.log_softmax(policy_logits, axis=-1)
     probs = jax.nn.softmax(policy_logits, axis=-1)
-    entropy = -jnp.sum(probs * log_probs, axis=-1)
-    return entropy 
+    # Add small epsilon to prevent numerical issues with log(0)
+    entropy = -jnp.sum(probs * jnp.clip(log_probs, min=-20.0, max=None), axis=-1)
+    return entropy
+
+
+def compute_continuous_policy_entropy(
+    distribution_params: jax.Array, 
+    distribution_type: str = "normal"
+) -> jax.Array:
+    """Computes entropy of continuous policy distribution for regularization.
+    
+    This function supports various continuous distributions that might be used
+    in continuous action spaces, preparing for EfficientZeroV2's full feature set.
+    
+    Args:
+        distribution_params: Parameters of the continuous distribution.
+                           For 'normal': Shape (batch_size, 2 * action_dim) where first half is means,
+                           second half is log_stds.
+                           For 'categorical': Falls back to discrete entropy.
+        distribution_type: Type of distribution ('normal', 'squashed_normal', 'truncated_normal', etc.)
+        
+    Returns:
+        Per-batch entropy values. Shape (batch_size,)
+        
+    Raises:
+        NotImplementedError: For distribution types not yet implemented
+        ValueError: For invalid distribution parameters
+    """
+    if distribution_type == "normal":
+        # For multivariate normal with diagonal covariance:
+        # H(X) = 0.5 * log((2πe)^k * |Σ|) = 0.5 * k * log(2πe) + 0.5 * log(|Σ|)
+        # For diagonal Σ: log(|Σ|) = sum(log(σ_i^2)) = 2 * sum(log(σ_i))
+        
+        if distribution_params.ndim != 2:
+            raise ValueError(f"Distribution params must be 2D (batch_size, 2*action_dim), got {distribution_params.ndim}D") # pragma: no cover
+        
+        param_dim = distribution_params.shape[-1]
+        if param_dim % 2 != 0:
+            raise ValueError(f"Distribution params size must be even (means + log_stds), got {param_dim}") # pragma: no cover
+        
+        action_dim = param_dim // 2
+        means = distribution_params[:, :action_dim]  # (batch_size, action_dim)
+        log_stds = distribution_params[:, action_dim:]  # (batch_size, action_dim)
+        
+        # Clamp log_stds for numerical stability
+        log_stds = jnp.clip(log_stds, min=-5.0, max=2.0)
+        
+        # Entropy = 0.5 * action_dim * log(2πe) + sum(log_stds)
+        constant_term = 0.5 * action_dim * jnp.log(2 * jnp.pi * jnp.e)
+        variable_term = jnp.sum(log_stds, axis=-1)
+        entropy = constant_term + variable_term
+        
+        return entropy
+        
+    elif distribution_type == "squashed_normal":
+        # For SquashedNormal (typically tanh-squashed), we need to account for the
+        # log absolute determinant of the Jacobian of the transformation
+        # This is a simplified version - full implementation would require the actual
+        # sampled actions to compute the Jacobian term accurately
+        
+        if distribution_params.ndim != 2:
+            raise ValueError(f"Distribution params must be 2D (batch_size, 2*action_dim), got {distribution_params.ndim}D") # pragma: no cover
+        
+        # Start with normal entropy
+        normal_entropy = compute_continuous_policy_entropy(distribution_params, "normal")
+        
+        # Approximate Jacobian correction for tanh squashing
+        # This is a rough approximation - exact computation requires sampled actions
+        action_dim = distribution_params.shape[-1] // 2
+        log_stds = distribution_params[:, action_dim:]
+        stds = jnp.exp(jnp.clip(log_stds, min=-5.0, max=2.0))
+        
+        # Approximation: reduce entropy by expected squashing effect
+        # This is conservative and encourages exploration
+        squashing_correction = -0.5 * jnp.sum(jnp.log(1.0 + stds**2), axis=-1)
+        
+        return normal_entropy + squashing_correction
+        
+    elif distribution_type == "categorical":
+        # Fallback to discrete entropy computation
+        return compute_policy_entropy(distribution_params) # pragma: no cover
+        
+    else:
+        raise NotImplementedError(f"Entropy computation for '{distribution_type}' distribution not implemented. "
+                                f"Supported types: 'normal', 'squashed_normal', 'categorical'") # pragma: no cover
+
+
+def compute_policy_entropy_general(
+    policy_output: jax.Array,
+    action_type: str = "discrete",
+    distribution_type: str = "categorical"
+) -> jax.Array:
+    """General entropy computation function that handles both discrete and continuous actions.
+    
+    This is the main entry point for policy entropy computation in the trainer,
+    designed to handle EfficientZeroV2's various action space configurations.
+    
+    Args:
+        policy_output: Policy network output. Format depends on action_type:
+                      - discrete: logits over actions, shape (batch_size, num_actions)
+                      - continuous: distribution parameters, shape (batch_size, param_dim)
+        action_type: Type of action space ('discrete' or 'continuous')
+        distribution_type: Distribution type for continuous actions or 'categorical' for discrete
+        
+    Returns:
+        Per-batch entropy values. Shape (batch_size,)
+    """
+    if action_type == "discrete":
+        return compute_policy_entropy(policy_output)
+    elif action_type == "continuous":
+        return compute_continuous_policy_entropy(policy_output, distribution_type)
+    else:
+        raise ValueError(f"Unsupported action_type: {action_type}. Must be 'discrete' or 'continuous'") # pragma: no cover 
