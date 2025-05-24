@@ -3100,9 +3100,9 @@ def test_symlog_loss_functionality(key, cfg_flat):
     targets_raw = jnp.array([1.5, -1.5, 4.0])        # Raw scalar targets
     
     # EfficientZeroV2 manual calculation: prediction already symlog, only transform target
-    # loss = 0.5 * (prediction - symlog(target)) ** 2
+    # loss = (prediction - symlog(target)) ** 2 (standard MSE without 0.5 factor)
     symlog_targ = symlog(targets_raw, base=2.0)
-    expected_loss = jnp.mean(0.5 * (predictions_symlog - symlog_targ) ** 2)
+    expected_loss = jnp.mean((predictions_symlog - symlog_targ) ** 2)
     
     # Function calculation
     actual_loss = jnp.mean(compute_symlog_loss(predictions_symlog, targets_raw, base=2.0))

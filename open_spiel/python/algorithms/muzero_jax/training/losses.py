@@ -138,9 +138,34 @@ def compute_symlog_loss(prediction: jax.Array, target: jax.Array, base: float = 
         base: Base for symlog transformation (default: e for EfficientZeroV2 parity)
     """
     # PyTorch EfficientZeroV2 pattern: prediction is already in symlog space
-    # loss = 0.5 * (prediction.squeeze() - symlog(target)) ** 2
+    # loss = mse_loss(prediction, symlog(target))
     symlog_target = symlog(target, base)
-    return 0.5 * scalar_mse_loss(prediction, symlog_target)
+    return scalar_mse_loss(prediction, symlog_target)
+
+def compute_symlog_value_loss(prediction: jax.Array, target: jax.Array, effective_iql_param: float = 1.0, base: float = jnp.e) -> jax.Array:
+    """Computes symlog value loss with IQL weighting (Action Item 18).
+    
+    For IQL weighting with symlog values, error calculation is performed in scalar space
+    by applying symexp to predictions, while the loss itself uses symlog space.
+    
+    Args:
+        prediction: Model predictions in symlog space
+        target: Target values in raw scalar space  
+        effective_iql_param: IQL weighting parameter (1.0 = fully asymmetric, 0.5 = symmetric)
+        base: Base for symlog transformation (default: e for EfficientZeroV2 parity)
+    """
+    # Compute base symlog loss
+    base_loss = compute_symlog_loss(prediction, target, base)
+    
+    # For IQL weighting: calculate error in scalar space using symexp on predictions
+    scalar_prediction = symexp(prediction, base)  # Convert symlog prediction to scalar
+    error = scalar_prediction - target  # Error in scalar space
+    value_sign = (error >= 0).astype(jnp.float32)  # 1 if overestimate, 0 if underestimate
+    
+    # Apply IQL weighting: higher weight for underestimates (value_sign=0)
+    weights = (1.0 - value_sign) * effective_iql_param + value_sign * (1.0 - effective_iql_param)
+    
+    return base_loss * weights
 
 def compute_kl_loss(logits: jax.Array, target_probs: jax.Array) -> jax.Array:
     """Computes KL divergence loss (EfficientZeroV2 pattern)."""

@@ -514,7 +514,8 @@ class Learner:
                     target_val = jnp.squeeze(target_val, axis=-1) # pragma: no cover
                 
                 # EfficientZeroV2 pattern: model outputs symlog-transformed values when symlog loss is used
-                v_loss = losses_lib.compute_symlog_loss(predicted_val, target_val, config.symlog_base)
+                # Action Item 18: Use symlog loss with IQL weighting for value prediction
+                v_loss = losses_lib.compute_symlog_value_loss(predicted_val, target_val, effective_iql_param, config.symlog_base)
                 
             else:  # MSE
                 # For MSE loss, ensure we have scalars
