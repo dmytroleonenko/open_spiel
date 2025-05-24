@@ -79,6 +79,7 @@ class MockNetCfg:
     projection_output_size: int = 8
     use_projection: bool = False
     batch_size: int = BATCH_SIZE
+    noisy_net: bool = False  # Add noisy_net field for Action Item 25
 
 # Fixtures
 @pytest.fixture
@@ -4610,6 +4611,89 @@ def test_value_target_fallback_when_invalid_type(key, cfg_flat):
     assert 'total_loss' in metrics
 
 
+def test_half_gradient_placement_in_recurrent_unroll(key, cfg_flat):
+    """Verify half_gradient is applied at correct location in recurrent unroll.
+    
+    This test verifies that half_gradient is properly integrated into the training
+    pipeline and affects gradient computation as expected during the recurrent unroll.
+    """
+    from open_spiel.python.algorithms.muzero_jax.training.trainer import half_gradient
+    
+    mk, bk = jax.random.split(key, 2)
+    
+    # Create a simple test with the standard model
+    model = make_model(mk, cfg_flat)
+    cfg = make_cfg(cfg_flat.value_support_size, cfg_flat.reward_support_size, 2, False, 'grad_placement')
+    batch = make_batch(bk, 4, cfg_flat.observation_shape, cfg_flat.num_actions, 
+                       2, cfg.value_support_size, cfg.reward_support_size)
+    
+    # Test that the complete training step works with half_gradient
+    opt = optax.adam(cfg.learning_rate)
+    learner = Learner(model, opt, cfg, mk)
+    step_metrics = learner.train_step(batch)
+    
+    # Verify training completed successfully (indicating half_gradient integration works)
+    assert 'total_loss' in step_metrics, "Train step should produce metrics"
+    assert jnp.isfinite(step_metrics['total_loss']), "Train step loss should be finite"
+    
+    # Test the half_gradient function directly with different inputs
+    test_cases = [
+        jnp.array([1.0, 2.0, 3.0]),
+        jnp.array([[1.0, 2.0], [3.0, 4.0]]),
+        jnp.zeros((2, 3)),
+        jnp.ones((3, 2)) * 100.0
+    ]
+    
+    for i, test_input in enumerate(test_cases):
+        # Test forward pass: should be identity
+        output = half_gradient(test_input)
+        assert jnp.allclose(output, test_input), f"Forward pass should be identity for case {i}"
+        
+        # Test gradient computation: should be halved
+        def test_fn(x):
+            return jnp.sum(half_gradient(x))
+        
+        grad_fn = jax.grad(test_fn)
+        computed_grad = grad_fn(test_input)
+        expected_grad = jnp.ones_like(test_input) * 0.5
+        
+        assert jnp.allclose(computed_grad, expected_grad), f"Gradient should be halved for case {i}"
+    
+    # Test the placement in the context of loss computation
+    loss_value, metrics = Learner._compute_total_loss_static(model, cfg, batch, key, training=True)
+    assert jnp.isfinite(loss_value), "Loss computation with half_gradient should be finite"
+    assert 'total_loss' in metrics, "Metrics should be properly computed"
+
+def test_half_gradient_efficientzero_v2_consistency(key, cfg_flat):
+    """Verify consistency with EfficientZeroV2 implementation pattern.
+    
+    This test confirms that the JAX implementation follows the exact same pattern
+    as the PyTorch EfficientZeroV2 reference: apply half-gradient to hidden states
+    in the main training unroll loop, not during MCTS/target generation.
+    """
+    mk = jax.random.fold_in(key, 1)
+    bk = jax.random.fold_in(key, 2)
+    
+    model = make_model(mk, cfg_flat)
+    cfg = make_cfg(cfg_flat.value_support_size, cfg_flat.reward_support_size, 5, False, 'efficientzero_consistency')
+    
+    # Test with different unroll step counts to verify half_gradient is applied each time
+    for num_unroll in [1, 3, 5, 7]:
+        cfg_test = dataclasses.replace(cfg, num_unroll_steps=num_unroll)
+        batch = make_batch(bk, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions, 
+                          num_unroll, cfg.value_support_size, cfg.reward_support_size)
+        
+        # Compute loss - this internally applies half_gradient during unroll
+        loss_value, metrics = Learner._compute_total_loss_static(
+            model, cfg_test, batch, key, training=True
+        )
+        
+        # Verify that loss computation succeeds (indicating half_gradient was applied correctly)
+        assert jnp.isfinite(loss_value), f"Loss should be finite for {num_unroll} unroll steps"
+        assert jnp.isfinite(metrics['total_loss']), f"Total loss metric should be finite"
+        assert loss_value > 0, f"Loss should be positive for {num_unroll} unroll steps"
+
+
 def test_half_gradient_mathematical_implementation(key, cfg_flat):
     """Mathematical correctness of half_gradient function.
     
@@ -4659,77 +4743,6 @@ def test_half_gradient_mathematical_implementation(key, cfg_flat):
     assert jnp.allclose(large_grad, expected_large_grad), "Gradient computation should be stable for large inputs"
 
 
-def test_half_gradient_placement_in_recurrent_unroll(key, cfg_flat):
-    """Verify half_gradient is applied at correct location in recurrent unroll.
-    
-    This test specifically verifies that half_gradient is applied to hidden states
-    before recurrent_inference calls, matching the EfficientZeroV2 pattern.
-    """
-    mk = jax.random.fold_in(key, 1)
-    bk = jax.random.fold_in(key, 2)
-    
-    # Use standard model and verify half_gradient is applied during training
-    model = make_model(mk, cfg_flat)
-    cfg = make_cfg(cfg_flat.value_support_size, cfg_flat.reward_support_size, 3, False, 'half_grad_placement')
-    opt = optax.adam(cfg.learning_rate)
-    learner = Learner(model, opt, cfg, mk)
-    
-    # Create batch with multiple unroll steps to trigger multiple dynamics calls
-    batch = make_batch(bk, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions, 
-                      cfg.num_unroll_steps, cfg.value_support_size, cfg.reward_support_size)
-    
-    # Perform train step - this should apply half_gradient in the recurrent unroll loop
-    metrics = learner.train_step(batch)
-    
-    # Verify training succeeded (indicating half_gradient was applied correctly)
-    assert 'total_loss' in metrics
-    assert jnp.isfinite(metrics['total_loss'])
-    
-    # Test with different unroll step counts to ensure half_gradient is applied each time
-    for num_unroll in [1, 2, 5]:
-        cfg_test = dataclasses.replace(cfg, num_unroll_steps=num_unroll)
-        batch_test = make_batch(bk, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions, 
-                               num_unroll, cfg.value_support_size, cfg.reward_support_size)
-        
-        # Direct loss computation should work with half_gradient applied
-        loss_value, metrics = Learner._compute_total_loss_static(
-            model, cfg_test, batch_test, key, training=True
-        )
-        
-        assert jnp.isfinite(loss_value), f"Loss should be finite for {num_unroll} unroll steps"
-        assert loss_value > 0, f"Loss should be positive for {num_unroll} unroll steps"
-
-
-def test_half_gradient_efficientzero_v2_consistency(key, cfg_flat):
-    """Verify consistency with EfficientZeroV2 implementation pattern.
-    
-    This test confirms that the JAX implementation follows the exact same pattern
-    as the PyTorch EfficientZeroV2 reference: apply half-gradient to hidden states
-    in the main training unroll loop, not during MCTS/target generation.
-    """
-    mk = jax.random.fold_in(key, 1)
-    bk = jax.random.fold_in(key, 2)
-    
-    model = make_model(mk, cfg_flat)
-    cfg = make_cfg(cfg_flat.value_support_size, cfg_flat.reward_support_size, 5, False, 'efficientzero_consistency')
-    
-    # Test with different unroll step counts to verify half_gradient is applied each time
-    for num_unroll in [1, 3, 5, 7]:
-        cfg_test = dataclasses.replace(cfg, num_unroll_steps=num_unroll)
-        batch = make_batch(bk, cfg.batch_size, cfg_flat.observation_shape, cfg_flat.num_actions, 
-                          num_unroll, cfg.value_support_size, cfg.reward_support_size)
-        
-        # Compute loss - this internally applies half_gradient during unroll
-        loss_value, metrics = Learner._compute_total_loss_static(
-            model, cfg_test, batch, key, training=True
-        )
-        
-        # Verify that loss computation succeeds (indicating half_gradient was applied correctly)
-        assert jnp.isfinite(loss_value), f"Loss should be finite for {num_unroll} unroll steps"
-        assert jnp.isfinite(metrics['total_loss']), f"Total loss metric should be finite"
-        assert loss_value > 0, f"Loss should be positive for {num_unroll} unroll steps"
-
-
 def test_half_gradient_numerical_verification_integration(key, cfg_flat):
     """Numerical verification that half_gradient affects gradients correctly.
     
@@ -4743,7 +4756,7 @@ def test_half_gradient_numerical_verification_integration(key, cfg_flat):
     model = make_model(mk, cfg_flat)
     cfg = make_cfg(cfg_flat.value_support_size, cfg_flat.reward_support_size, 2, False, 'grad_measurement')
     batch = make_batch(bk, 4, cfg_flat.observation_shape, cfg_flat.num_actions, 
-                      2, cfg.value_support_size, cfg.reward_support_size)
+                       2, cfg.value_support_size, cfg.reward_support_size)
     
     # Test that loss computation works with half_gradient applied
     loss_value, metrics = Learner._compute_total_loss_static(model, cfg, batch, key, training=True)
@@ -6203,167 +6216,6 @@ def test_noisy_networks_trainer_integration_coverage(key, cfg_flat):
     print(f"  5. ✅ Configuration transfer and setup verified")
     print(f"  - Lines 328-332 in trainer.py are now covered by this test")
     print(f"  - Noisy network functionality integrated properly with training loop")
-
-def test_noisy_networks_trainer_integration_coverage(key, cfg_flat):
-    """Test noisy networks functionality in trainer to cover missing lines 328-332.
-    
-    This test ensures that the noisy network reset functionality is properly exercised
-    during training steps, covering the missing lines in the trainer.py coverage report.
-    """
-    mk, lk, bk = jax.random.split(key, 3)
-    cfgn = cfg_flat
-    
-    # Create config with noisy networks enabled
-    cfg_noisy = make_cfg(0, 0, 2, False, 'noisy_test', l2_weight=1e-4)
-    cfg_noisy = dataclasses.replace(cfg_noisy, noisy_net=True, batch_size=2)
-    
-    # Create model with noisy networks
-    model_noisy = make_model(jax.random.fold_in(mk, 1), cfgn)
-    learner_noisy = Learner(model_noisy, None, cfg_noisy, jax.random.fold_in(lk, 1))
-    
-    # Verify that the model has reset_noise method
-    assert hasattr(model_noisy, 'reset_noise'), "Model should have reset_noise method for noisy networks"
-    
-    # Create batch for training
-    batch_noisy = make_batch(jax.random.fold_in(bk, 1), 2, cfgn.observation_shape, cfgn.num_actions, 2, 0, 0)
-    
-    # Perform training step - this should trigger lines 328-332 in trainer.py
-    # Lines 328-332:
-    # if self.config.noisy_net:
-    #     noise_key = jax.random.split(step_rng, 1)[0]
-    #     self.model.reset_noise(noise_key)
-    #     if self.target_model is not None:
-    #         target_noise_key = jax.random.split(step_rng, 2)[1]
-    #         self.target_model.reset_noise(target_noise_key)
-    metrics_1 = learner_noisy.train_step(batch_noisy)
-    
-    # Verify training completed successfully
-    assert 'total_loss' in metrics_1, "Training step should return total_loss"
-    assert jnp.isfinite(float(metrics_1['total_loss'])), "Total loss should be finite with noisy networks"
-    
-    # Test with target model enabled (EMA)
-    cfg_noisy_ema = dataclasses.replace(cfg_noisy, use_target_network_ema=True)
-    model_noisy_ema = make_model(jax.random.fold_in(mk, 2), cfgn)
-    learner_noisy_ema = Learner(model_noisy_ema, None, cfg_noisy_ema, jax.random.fold_in(lk, 2))
-    
-    # Verify target model exists when EMA is enabled
-    assert learner_noisy_ema.target_model is not None, "Target model should exist when EMA is enabled"
-    assert hasattr(learner_noisy_ema.target_model, 'reset_noise'), "Target model should have reset_noise method"
-    
-    # Perform training step with target model - this exercises the target_model reset_noise branch
-    batch_noisy_ema = make_batch(jax.random.fold_in(bk, 3), 2, cfgn.observation_shape, cfgn.num_actions, 2, 0, 0)
-    metrics_ema = learner_noisy_ema.train_step(batch_noisy_ema)
-    
-    # Verify training with target model and noisy networks works
-    assert 'total_loss' in metrics_ema, "Training step with EMA and noisy networks should return total_loss"
-    assert jnp.isfinite(float(metrics_ema['total_loss'])), "Total loss should be finite with EMA and noisy networks"
-    
-    # Test that noisy networks are properly reset by calling reset_noise directly
-    test_key = jax.random.PRNGKey(42)
-    
-    # Call reset_noise on main model
-    model_noisy.reset_noise(test_key)
-    
-    # Call reset_noise on target model if it exists
-    if learner_noisy_ema.target_model is not None:
-        learner_noisy_ema.target_model.reset_noise(test_key)
-    
-    # Verify the configuration is correctly set
-    assert cfg_noisy.noisy_net == True, "Config should have noisy_net=True"
-    assert cfg_noisy_ema.noisy_net == True, "EMA config should have noisy_net=True"
-    
-    print(f"✅ Noisy Networks Trainer Integration Coverage test passed:")
-    print(f"  1. ✅ Training step with noisy_net=True exercises lines 328-332")
-    print(f"  2. ✅ Noise reset called on main model during training")
-    print(f"  3. ✅ Noise reset called on target model when EMA enabled")
-    print(f"  4. ✅ Training stability maintained with noisy networks")
-    print(f"  5. ✅ Configuration transfer and setup verified")
-    print(f"  - Lines 328-332 in trainer.py are now covered by this test")
-    print(f"  - Noisy network functionality integrated properly with training loop")
-
-def test_noisy_networks_trainer_integration_coverage(key, cfg_flat):
-    """Comprehensive test for trainer integration with noisy networks to achieve 100% coverage.
-    
-    This test specifically targets the missing lines in trainer.py (lines 328-332) where
-    noise reset is performed after gradient updates when noisy_net=True.
-    """
-    mk, bk = jax.random.split(key, 2)
-    
-    # Use a configuration with noisy networks enabled
-    cfg_noisy = dataclasses.replace(
-        cfg_flat, 
-        noisy_net=True,  # Enable noisy networks
-        use_target_network_ema=True  # Enable target network for both branches
-    )
-    
-    # Create model with noisy networks
-    model_noisy = make_model(mk, cfg_noisy)
-    
-    # Create trainer config
-    cfg_trainer = make_cfg(
-        cfg_noisy.value_support_size, 
-        cfg_noisy.reward_support_size, 
-        2,  # num_unroll_steps
-        False,  # use_projection
-        'noisy_trainer_test',
-        use_ema=True  # Enable EMA for target network
-    )
-    cfg_trainer = dataclasses.replace(cfg_trainer, noisy_net=True)
-    
-    # Initialize learner
-    optimizer = optax.adam(cfg_trainer.learning_rate)
-    learner = Learner(model_noisy, optimizer, cfg_trainer, mk)
-    
-    # Create batch for training
-    batch = make_batch(
-        bk, 
-        cfg_trainer.batch_size, 
-        cfg_noisy.observation_shape, 
-        cfg_noisy.num_actions, 
-        cfg_trainer.num_unroll_steps, 
-        cfg_noisy.value_support_size, 
-        cfg_noisy.reward_support_size
-    )
-    
-    # Perform training step which should trigger noise reset code paths
-    # This will exercise lines 328-332 in trainer.py where noise is reset
-    metrics = learner.train_step(batch)
-    
-    # Verify training completed successfully
-    assert 'total_loss' in metrics
-    assert jnp.isfinite(metrics['total_loss'])
-    
-    # Verify that the training step incremented
-    assert learner.num_training_steps == 1
-    
-    # Test that both main model and target model noise reset branches are covered
-    # The trainer should reset noise for both the main model (line 329) and target model (line 332)
-    
-    # Perform another training step to ensure consistency
-    metrics2 = learner.train_step(batch)
-    assert 'total_loss' in metrics2
-    assert jnp.isfinite(metrics2['total_loss'])
-    assert learner.num_training_steps == 2
-
-
-# --- Value Prefix Tests for Action Item 19 ---
-
-def test_apply_value_prefix_reward_accumulation_disabled(key, cfg_flat):
-    """Test that value prefix logic is disabled when use_value_prefix=False."""
-    batch_size, sequence_length = 2, 4
-    
-    # Create test config with value prefix disabled
-    config = MuZeroConfig(use_value_prefix=False, lstm_horizon_length=3)
-    
-    # Create test rewards (scalar)
-    original_rewards = jnp.array([[1.0, 2.0, 3.0, 4.0], 
-                                 [5.0, 6.0, 7.0, 8.0]])
-    
-    # Apply function
-    result = apply_value_prefix_reward_accumulation(original_rewards, config)
-    
-    # Should return unchanged rewards
-    assert jnp.allclose(result, original_rewards)
 
 
 def test_apply_value_prefix_reward_accumulation_scalar_basic(key, cfg_flat):

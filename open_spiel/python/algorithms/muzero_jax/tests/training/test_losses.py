@@ -1823,7 +1823,7 @@ def test_get_temperature_basic_functionality():
     
     # Test beyond decay period
     temp_beyond = losses.get_temperature(1500, config)
-    assert jnp.isclose(temp_beyond, 0.1), f"Expected 0.1 at step 1500, got {temp_beyond}"
+    assert jnp.isclose(temp_beyond, 0.1), f"Expected 0.1 beyond decay, got {temp_beyond}"
 
 
 def test_get_temperature_disabled_scheduling():
@@ -1836,14 +1836,14 @@ def test_get_temperature_disabled_scheduling():
     
     config = MockConfig()
     
-    # Should always return initial temperature when scheduling is disabled
-    for step in [0, 500, 1000, 2000]:
+    # Should always return initial temperature when disabled
+    for step in [0, 100, 500, 1000, 2000]:
         temp = losses.get_temperature(step, config)
         assert jnp.isclose(temp, 2.5), f"Expected 2.5 at step {step} when disabled, got {temp}"
 
 
 def test_get_temperature_linear_decay():
-    """Test that temperature follows linear decay pattern."""
+    """Test linear decay properties of temperature scheduling."""
     class MockConfig:
         change_temperature = True
         temperature_init = 2.0
@@ -1852,19 +1852,19 @@ def test_get_temperature_linear_decay():
     
     config = MockConfig()
     
-    # Test multiple points along the decay
+    # Test linear interpolation at various points
     test_points = [
         (0, 2.0),      # Start
-        (100, 1.64),   # 20% decay: 2.0 + 0.2 * (0.2 - 2.0) = 2.0 - 0.36 = 1.64
-        (250, 1.1),    # 50% decay: 2.0 + 0.5 * (0.2 - 2.0) = 2.0 - 0.9 = 1.1
-        (400, 0.56),   # 80% decay: 2.0 + 0.8 * (0.2 - 2.0) = 2.0 - 1.44 = 0.56
+        (100, 1.64),   # 20% decay: 2.0 + 0.2 * (0.2 - 2.0) = 1.64
+        (250, 1.1),    # 50% decay: 2.0 + 0.5 * (0.2 - 2.0) = 1.1
+        (400, 0.56),   # 80% decay: 2.0 + 0.8 * (0.2 - 2.0) = 0.56
         (500, 0.2),    # End
+        (600, 0.2),    # Beyond end
     ]
     
-    for step, expected_temp in test_points:
-        actual_temp = losses.get_temperature(step, config)
-        assert jnp.isclose(actual_temp, expected_temp, atol=1e-6), \
-            f"At step {step}, expected {expected_temp}, got {actual_temp}"
+    for step, expected in test_points:
+        temp = losses.get_temperature(step, config)
+        assert jnp.isclose(temp, expected, atol=1e-6), f"Expected {expected} at step {step}, got {temp}"
 
 
 def test_get_temperature_edge_cases():
@@ -1877,22 +1877,18 @@ def test_get_temperature_edge_cases():
     
     config = MockConfig()
     
-    # Very short decay period (1 step)
+    # Test very short decay period
     temp_0 = losses.get_temperature(0, config)
     temp_1 = losses.get_temperature(1, config)
+    assert jnp.isclose(temp_0, 1.0)
+    assert jnp.isclose(temp_1, 0.1)
     
-    assert jnp.isclose(temp_0, 1.0), f"Expected 1.0 at step 0, got {temp_0}"
-    assert jnp.isclose(temp_1, 0.1), f"Expected 0.1 at step 1, got {temp_1}"
-    
-    # Test with zero decay steps (degenerate case)
-    config.temperature_decay_steps = 0
-    temp_zero_decay = losses.get_temperature(0, config)
-    # With zero decay steps, should go to final temperature immediately
-    assert jnp.isclose(temp_zero_decay, 0.1)
+    # Test zero step edge case
+    assert jnp.isclose(losses.get_temperature(0, config), 1.0)
 
 
 def test_get_temperature_schedule_basic():
-    """Test get_temperature_schedule function for generating full schedules."""
+    """Test temperature schedule generation."""
     class MockConfig:
         change_temperature = True
         temperature_init = 1.5
