@@ -50,7 +50,7 @@ def half_gradient(x: jax.Array) -> jax.Array:
 
 @dataclasses.dataclass(frozen=True)
 class MuZeroConfig:
-    """Configuration for the MuZero Learner."""
+    """Configuration for the MuZero Learner with EfficientZeroV2 alignment."""
     # Network and Loss
     value_support_size: int = 0 # Size of the support for categorical value, 0 for scalar
     reward_support_size: int = 0 # Size of the support for categorical reward, 0 for scalar
@@ -81,9 +81,15 @@ class MuZeroConfig:
     use_symlog: bool = False # Whether to use symlog representation
     symlog_base: float = math.e # Base for symlog transformation (e for EfficientZeroV2 parity)
 
-    # EfficientZeroV2 value target selection
-    value_target: str = "mixed" # "search", "sarsa", "mixed" - EfficientZeroV2 target selection
+    # EfficientZeroV2 value target selection and GAE/TD-Lambda parameters
+    value_target: str = "mixed" # "search", "sarsa", "mixed", "max" - EfficientZeroV2 target selection
+    value_target_type: str = "bootstrapped" # "GAE" or "bootstrapped" - method for value target computation
+    td_lambda: float = 0.95 # Lambda for GAE (Generalized Advantage Estimation)
+    auto_td_steps: int = 30000 # Adaptive TD steps based on sample age (EfficientZeroV2 feature)
+    gae_max_steps: int = 15 # Maximum steps for GAE computation (config.model.GAE_max_steps)
     mixed_value_target_switch_step: int = 100000 # When to switch from search to sarsa in mixed mode
+    start_use_mix_training_steps: int = 30000 # When to start using mixed training (config.train.start_use_mix_training_steps)
+    mixed_value_threshold: int = 5000 # Threshold for recent vs old samples (config.train.mixed_value_threshold)
     
     # Multiple value heads (v_num) support - EfficientZeroV2 feature
     v_num: int = 1 # Number of value heads for better value estimation
@@ -91,11 +97,70 @@ class MuZeroConfig:
     # Priority replay parameters - EfficientZeroV2 feature
     use_priority_replay: bool = True # Whether to use prioritized experience replay
     priority_exponent: float = 0.6 # Priority exponent (alpha in PER paper)
+    priority_beta: float = 0.4 # Priority importance sampling exponent (beta in PER paper)
     min_priority: float = 1e-6 # Minimum priority to prevent zero priorities
     
     # LSTM reward hidden state support - EfficientZeroV2 feature
     use_value_prefix: bool = False # Whether to use value prefix (LSTM reward prediction)
     lstm_horizon_length: int = 5 # Horizon for LSTM reward hidden state reset
+    lstm_hidden_size: int = 512 # LSTM hidden state size
+    
+    # Reanalysis parameters - EfficientZeroV2 feature
+    reanalyze_ratio: float = 1.0 # Fraction of batch to reanalyze with MCTS (config.train.reanalyze_ratio)
+    reanalyze_update_interval: int = 200 # How often to update model weights for reanalysis
+    self_play_update_interval: int = 100 # How often to update model weights for self-play
+    
+    # Training steps and data collection - EfficientZeroV2 parameters
+    training_steps: int = 100000 # Total training steps
+    offline_training_steps: int = 20000 # Offline training steps before self-play
+    start_transitions: int = 2000 # Minimum transitions before training starts
+    mini_batch_size: int = 256 # Mini-batch size for inference during training
+    
+    # Data collection parameters - EfficientZeroV2 feature
+    total_transitions: int = 100000 # Total transitions to collect
+    trajectory_size: int = 400 # Maximum trajectory length
+    buffer_size: int = 1000000 # Replay buffer size
+    
+    # Temperature scheduling - EfficientZeroV2 feature
+    change_temperature: bool = True # Whether to use temperature scheduling
+    temperature_init: float = 1.0 # Initial temperature for MCTS
+    temperature_final: float = 0.1 # Final temperature for MCTS
+    temperature_decay_steps: int = 50000 # Steps over which to decay temperature
+    
+    # MCTS parameters - EfficientZeroV2 feature
+    num_simulations: int = 16 # Number of MCTS simulations
+    c_visit: int = 50 # UCB visit count normalization constant
+    c_scale: float = 0.1 # UCB exploration constant scaling
+    c_base: int = 19652 # UCB base constant
+    c_init: float = 1.25 # UCB init constant
+    dirichlet_alpha: float = 0.3 # Dirichlet noise alpha for root exploration
+    explore_frac: float = 0.25 # Fraction of root prior to replace with Dirichlet noise
+    value_minmax_delta: float = 0.01 # Delta for value min-max normalization in MCTS
+    
+    # Continuous action parameters - EfficientZeroV2 feature
+    num_top_actions: int = 4 # Number of top actions to consider for continuous spaces
+    num_sampled_actions: int = 16 # Number of actions to sample for continuous spaces
+    
+    # Model architecture parameters - EfficientZeroV2 feature
+    noisy_net: bool = False # Whether to use noisy networks for exploration
+    use_batch_norm: bool = True # Whether to use batch normalization
+    state_norm: bool = False # Whether to normalize hidden states
+    init_zero: bool = True # Whether to initialize certain layers with zeros
+    
+    # Support transformation parameters - EfficientZeroV2 feature
+    support_min: float = -300.0 # Minimum value for discrete support
+    support_max: float = 300.0 # Maximum value for discrete support
+    support_scale: float = 1.0 # Scaling factor for support transformation
+    support_bins: int = 51 # Number of bins for discrete support (if using categorical)
+    epsilon: float = 0.001 # Epsilon for discrete support transformation
+    
+    # Additional EfficientZeroV2 loss coefficients
+    decorrelation_coeff: float = 0.01 # Decorrelation loss coefficient
+    off_diag_coeff: float = 5e-3 # Off-diagonal coefficient for decorrelation
+    
+    # Evaluation parameters - EfficientZeroV2 feature
+    eval_n_episode: int = 10 # Number of episodes for evaluation
+    eval_interval: int = 10000 # Steps between evaluations
 
     # Optimizer
     learning_rate: float = 1e-4
