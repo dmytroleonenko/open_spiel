@@ -368,18 +368,24 @@ def test_loss_static(key, img, val_cat, proj, use_ema, scalar_targets, cfg_flat,
 
     # Value Loss
     # Step 0
-    if cfgn_model.value_support_size > 0: # Categorical
+    if cfgn_model.value_support_size > 0: # Categorical - now uses KL divergence (EfficientZeroV2 pattern)
         tv0 = target_value_data[:, 0]
-        expected_value_loss_s0 = -jnp.sum(tv0 * jax.nn.log_softmax(v0_pred, axis=-1), axis=-1)
+        # KL divergence: sum(target * (log(target) - log_softmax(prediction)))
+        target_log_probs_s0 = jnp.log(jnp.clip(tv0, 1e-8, 1.0))
+        pred_log_probs_s0 = jax.nn.log_softmax(v0_pred, axis=-1)
+        expected_value_loss_s0 = jnp.sum(tv0 * (target_log_probs_s0 - pred_log_probs_s0), axis=-1)
     else: # Scalar (MSE)
         tv0 = target_value_data[:, 0]
         # Ensure scalar predictions are squeezed if value_support_size is 0 (implying scalar output)
         v0_pred_squeezed = jnp.squeeze(v0_pred, axis=-1) if v0_pred.shape[-1] == 1 else v0_pred
         expected_value_loss_s0 = (v0_pred_squeezed - tv0)**2
     # Step 1
-    if cfgn_model.value_support_size > 0: # Categorical
+    if cfgn_model.value_support_size > 0: # Categorical - now uses KL divergence (EfficientZeroV2 pattern)
         tv1 = target_value_data[:, 1]
-        expected_value_loss_s1 = -jnp.sum(tv1 * jax.nn.log_softmax(v1_pred, axis=-1), axis=-1)
+        # KL divergence: sum(target * (log(target) - log_softmax(prediction)))
+        target_log_probs_s1 = jnp.log(jnp.clip(tv1, 1e-8, 1.0))
+        pred_log_probs_s1 = jax.nn.log_softmax(v1_pred, axis=-1)
+        expected_value_loss_s1 = jnp.sum(tv1 * (target_log_probs_s1 - pred_log_probs_s1), axis=-1)
     else: # Scalar (MSE)
         tv1 = target_value_data[:, 1]
         v1_pred_squeezed = jnp.squeeze(v1_pred, axis=-1) if v1_pred.shape[-1] == 1 else v1_pred

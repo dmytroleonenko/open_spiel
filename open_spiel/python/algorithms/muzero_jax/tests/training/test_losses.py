@@ -97,12 +97,91 @@ def test_compute_scalar_value_loss_with_extra_dim():
 
 # --- Test compute_categorical_value_loss ---
 def test_compute_categorical_value_loss():
+    """Test categorical value loss uses KL divergence with IQL weighting (EfficientZeroV2 pattern)."""
     logits = jnp.array([[0., 0., 1.], [1., 0., 0.]]) # Batch 2, 3 classes
     targets = jnp.array([[0.1, 0.1, 0.8], [0.9, 0.05, 0.05]])
-    # With default effective_iql_param=0.5, expect symmetric weighting
-    base_loss = losses.cross_entropy_loss_with_logits(logits, targets)
-    expected_loss = base_loss * 0.5  # IQL weighting with symmetric parameter
+    
+    # Categorical value loss now uses KL divergence with IQL weighting
+    base_kl_loss = losses.compute_kl_loss(logits, targets)
+    
+    # With default effective_iql_param=0.5, all weights are 0.5 (symmetric)
+    num_atoms = logits.shape[-1]
+    support = jnp.linspace(-1.0, 1.0, num_atoms)
+    pred_probs = jax.nn.softmax(logits)
+    pred_value = jnp.sum(pred_probs * support, axis=-1)
+    target_value = jnp.sum(targets * support, axis=-1)
+    error = pred_value - target_value
+    value_sign = (error > 0).astype(jnp.float32)
+    weights = (1.0 - value_sign) * 0.5 + value_sign * 0.5  # All weights are 0.5
+    expected_loss = base_kl_loss * weights
+    
     assert jnp.allclose(losses.compute_categorical_value_loss(logits, targets), expected_loss)
+
+def test_categorical_value_loss_vs_cross_entropy():
+    """Verify that categorical value loss uses KL divergence, not cross-entropy."""
+    logits = jnp.array([[1.0, 0.0, 0.5], [0.0, 1.0, 0.0]])
+    targets = jnp.array([[0.6, 0.2, 0.2], [0.1, 0.8, 0.1]])
+    
+    categorical_value_loss = losses.compute_categorical_value_loss(logits, targets)
+    kl_loss = losses.compute_kl_loss(logits, targets) 
+    cross_entropy_loss = losses.cross_entropy_loss_with_logits(logits, targets)
+    
+    # Categorical value loss should be based on KL loss with IQL weighting, not cross-entropy
+    # First, verify that the base loss is KL, not cross-entropy
+    base_kl_loss = kl_loss
+    
+    # Compute IQL weights for default effective_iql_param=0.5
+    num_atoms = logits.shape[-1]
+    support = jnp.linspace(-1.0, 1.0, num_atoms)
+    pred_probs = jax.nn.softmax(logits)
+    pred_value = jnp.sum(pred_probs * support, axis=-1)
+    target_value = jnp.sum(targets * support, axis=-1)
+    error = pred_value - target_value
+    value_sign = (error > 0).astype(jnp.float32)
+    weights = (1.0 - value_sign) * 0.5 + value_sign * 0.5  # All weights are 0.5
+    expected_kl_based_loss = base_kl_loss * weights
+    
+    # Categorical value loss should match weighted KL loss, not cross-entropy
+    assert jnp.allclose(categorical_value_loss, expected_kl_based_loss)
+    assert not jnp.allclose(categorical_value_loss, cross_entropy_loss)
+    # Both should return per-batch losses
+    assert categorical_value_loss.shape == (2,)
+    assert cross_entropy_loss.shape == (2,)
+
+def test_categorical_value_loss_with_iql_weighting():
+    """Test that categorical value loss applies IQL weighting to KL divergence."""
+    # Create logits and targets that will have clear error signs  
+    logits = jnp.array([[10.0, 0.0, 0.0], [0.0, 0.0, 10.0]])  # Predict low vs high
+    targets = jnp.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])   # Target high vs low
+    
+    # Test with different IQL parameters
+    loss_symmetric = losses.compute_categorical_value_loss(logits, targets, effective_iql_param=0.5)
+    loss_asymmetric = losses.compute_categorical_value_loss(logits, targets, effective_iql_param=0.2)
+    
+    # Should be different due to IQL weighting
+    assert not jnp.allclose(loss_symmetric, loss_asymmetric)
+    assert loss_symmetric.shape == (2,)
+    assert loss_asymmetric.shape == (2,)
+    
+    # Manually verify IQL weighting is applied to KL loss
+    base_kl_loss = losses.compute_kl_loss(logits, targets)
+    
+    # Compute expected values to determine error sign
+    num_atoms = logits.shape[-1]
+    support = jnp.linspace(-1.0, 1.0, num_atoms)  # [-1.0, 0.0, 1.0]
+    
+    pred_probs = jax.nn.softmax(logits)
+    pred_value = jnp.sum(pred_probs * support, axis=-1)
+    target_value = jnp.sum(targets * support, axis=-1)
+    
+    error = pred_value - target_value
+    value_sign = (error > 0).astype(jnp.float32)
+    
+    # For 0.2 IQL parameter
+    expected_weights = (1.0 - value_sign) * 0.2 + value_sign * 0.8
+    expected_loss = base_kl_loss * expected_weights
+    
+    assert jnp.allclose(loss_asymmetric, expected_loss), f"Expected {expected_loss}, got {loss_asymmetric}"
 
 # --- Test compute_scalar_reward_loss ---
 def test_compute_scalar_reward_loss():
@@ -595,8 +674,8 @@ def test_categorical_value_loss_effective_iql_symmetric():
     # With symmetric parameter (0.5), both types of errors should get same weight
     loss_symmetric = losses.compute_categorical_value_loss(logits, targets, effective_iql_param=0.5)
     
-    # Manually compute expected symmetric loss
-    base_loss = losses.cross_entropy_loss_with_logits(logits, targets)
+    # Manually compute expected symmetric loss - now uses KL divergence
+    base_loss = losses.compute_kl_loss(logits, targets)
     
     # Compute expected values to determine error sign
     num_atoms = logits.shape[-1]
@@ -624,8 +703,8 @@ def test_categorical_value_loss_effective_iql_asymmetric():
     # With asymmetric parameter (0.2), positive and negative errors get different weights
     loss_asymmetric = losses.compute_categorical_value_loss(logits, targets, effective_iql_param=0.2)
     
-    # Manually compute expected asymmetric loss
-    base_loss = losses.cross_entropy_loss_with_logits(logits, targets)
+    # Manually compute expected asymmetric loss - now uses KL divergence
+    base_loss = losses.compute_kl_loss(logits, targets)
     
     # Compute expected values to determine error sign
     num_atoms = logits.shape[-1]

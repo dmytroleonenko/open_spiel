@@ -81,14 +81,18 @@ def compute_scalar_value_loss(value_prediction: jax.Array, target_value: jax.Arr
     return base_loss * weights
 
 def compute_categorical_value_loss(value_logits: jax.Array, target_value_distribution: jax.Array, effective_iql_param: float = 0.5) -> jax.Array:
-    """Computes value loss for categorical distributions using cross-entropy with IQL weighting.
+    """Computes value loss for categorical distributions using KL divergence with IQL weighting (EfficientZeroV2 pattern).
+    
+    This aligns with PyTorch's approach where categorical values use KL divergence for consistency
+    with the EfficientZeroV2 implementation, instead of cross-entropy.
     
     Args:
         value_logits: Predicted value logits
         target_value_distribution: Target value distribution
         effective_iql_param: Effective IQL parameter (0.5 for symmetric loss, other values for asymmetric)
     """
-    base_loss = cross_entropy_loss_with_logits(logits=value_logits, targets=target_value_distribution)
+    # EfficientZeroV2 pattern: use KL divergence for categorical value loss
+    base_loss = compute_kl_loss(logits=value_logits, target_probs=target_value_distribution)
     
     # Always apply IQL-style weighting (EfficientZeroV2 pattern)
     # For categorical case, compute expected values to determine error sign
