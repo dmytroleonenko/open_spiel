@@ -497,6 +497,18 @@ class Learner:
             # Simplified value loss computation - model outputs correct format
             if config.value_loss_type == "categorical":
                 # Model outputs logits, targets may need conversion to distributions
+                # Handle predicted value shape conversion for compatibility
+                if predicted_val.ndim == 1 or (predicted_val.ndim == 2 and predicted_val.shape[-1] == 1):
+                    # Predicted values are scalar, convert to support distribution
+                    if predicted_val.ndim == 2 and predicted_val.shape[-1] == 1: # pragma: no cover
+                        predicted_val = jnp.squeeze(predicted_val, axis=-1) # pragma: no cover
+                    predicted_val = losses_lib.scalar_to_support(
+                        predicted_val,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=config.value_support_size if config.value_support_size > 0 else 601
+                    )
+                
                 if target_val.ndim == 1 or (target_val.ndim == 2 and target_val.shape[-1] == 1):
                     # Target values are scalar, convert to support distribution
                     if target_val.ndim == 2 and target_val.shape[-1] == 1: # pragma: no cover
@@ -512,6 +524,10 @@ class Learner:
                 
             elif config.value_loss_type == "symlog":
                 # Model outputs symlog-transformed scalars, targets need to be scalars
+                # Handle predicted value shape conversion for compatibility
+                if predicted_val.ndim == 2 and predicted_val.shape[-1] == 1:
+                    predicted_val = jnp.squeeze(predicted_val, axis=-1)
+                    
                 if target_val.ndim > 1 and target_val.shape[-1] > 1: # pragma: no cover
                     # Target values are distributions, convert to scalars
                     target_val = losses_lib.support_to_scalar( # pragma: no cover
@@ -528,6 +544,18 @@ class Learner:
                 
             else:  # MSE
                 # Model outputs scalars, targets need to be scalars
+                # Handle predicted value shape conversion for compatibility
+                if predicted_val.ndim > 1 and predicted_val.shape[-1] > 1:
+                    # Predicted values are distributions, convert to scalars
+                    predicted_val = losses_lib.support_to_scalar(
+                        predicted_val,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=predicted_val.shape[-1]
+                    )
+                elif predicted_val.ndim == 2 and predicted_val.shape[-1] == 1: # pragma: no cover
+                    predicted_val = jnp.squeeze(predicted_val, axis=-1) # pragma: no cover
+                
                 if target_val.ndim > 1 and target_val.shape[-1] > 1:
                     # Target values are distributions, convert to scalars
                     target_val = losses_lib.support_to_scalar(
@@ -550,6 +578,18 @@ class Learner:
             # Simplified reward loss computation - model outputs correct format
             if config.reward_loss_type == "categorical":
                 # Model outputs logits, targets may need conversion to distributions
+                # Handle predicted reward shape conversion for compatibility
+                if predicted_rew.ndim == 1 or (predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1):
+                    # Predicted rewards are scalar, convert to support distribution
+                    if predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1: # pragma: no cover
+                        predicted_rew = jnp.squeeze(predicted_rew, axis=-1) # pragma: no cover
+                    predicted_rew = losses_lib.scalar_to_support(
+                        predicted_rew,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=config.reward_support_size if config.reward_support_size > 0 else 601
+                    )
+                
                 if target_rew.ndim == 1 or (target_rew.ndim == 2 and target_rew.shape[-1] == 1):
                     # Target rewards are scalar, convert to support distribution
                     if target_rew.ndim == 2 and target_rew.shape[-1] == 1: # pragma: no cover
@@ -565,6 +605,10 @@ class Learner:
                 
             elif config.reward_loss_type == "symlog":
                 # Model outputs symlog-transformed scalars, targets need to be scalars
+                # Handle predicted reward shape conversion for compatibility
+                if predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1:
+                    predicted_rew = jnp.squeeze(predicted_rew, axis=-1)
+                    
                 if target_rew.ndim > 1 and target_rew.shape[-1] > 1:
                     # Target rewards are distributions, convert to scalars
                     target_rew = losses_lib.support_to_scalar(
@@ -580,6 +624,18 @@ class Learner:
                 
             elif config.reward_loss_type == "kl":
                 # Model outputs logits, targets may need conversion to distributions
+                # Handle predicted reward shape conversion for compatibility
+                if predicted_rew.ndim == 1 or (predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1):
+                    # Predicted rewards are scalar, convert to support distribution
+                    if predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1: # pragma: no cover
+                        predicted_rew = jnp.squeeze(predicted_rew, axis=-1) # pragma: no cover
+                    predicted_rew = losses_lib.scalar_to_support(
+                        predicted_rew,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=config.reward_support_size if config.reward_support_size > 0 else 601
+                    )
+                
                 if target_rew.ndim == 1 or (target_rew.ndim == 2 and target_rew.shape[-1] == 1):
                     # Target rewards are scalar, convert to support distribution
                     if target_rew.ndim == 2 and target_rew.shape[-1] == 1: # pragma: no cover
@@ -595,6 +651,18 @@ class Learner:
                 
             else:  # MSE
                 # Model outputs scalars, targets need to be scalars
+                # Handle predicted reward shape conversion for compatibility
+                if predicted_rew.ndim > 1 and predicted_rew.shape[-1] > 1:
+                    # Predicted rewards are distributions, convert to scalars
+                    predicted_rew = losses_lib.support_to_scalar(
+                        predicted_rew,
+                        support_min=-300.0,
+                        support_max=300.0,
+                        num_atoms=predicted_rew.shape[-1]
+                    )
+                elif predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1: # pragma: no cover
+                    predicted_rew = jnp.squeeze(predicted_rew, axis=-1) # pragma: no cover
+                
                 if target_rew.ndim > 1 and target_rew.shape[-1] > 1:
                     # Target rewards are distributions, convert to scalars
                     target_rew = losses_lib.support_to_scalar(

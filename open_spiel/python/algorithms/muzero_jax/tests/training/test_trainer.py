@@ -123,9 +123,15 @@ def maybe_val(x):
     return x.value if isinstance(x, nnx.Variable) else x
 
 def make_cfg(vsup, rsup, steps, proj, suffix, use_ema=False, ssl_weight=0.0, l2_weight=1e-4, checkpoint_dir=None):
+    # Set loss types based on support sizes to match model architecture
+    value_loss_type = "categorical" if vsup > 0 else "mse"
+    reward_loss_type = "categorical" if rsup > 0 else "mse"
+    
     return MuZeroConfig(
         value_support_size=vsup,
         reward_support_size=rsup,
+        value_loss_type=value_loss_type,
+        reward_loss_type=reward_loss_type,
         discount_factor=0.99,
         num_unroll_steps=steps,
         td_steps=steps+1,
@@ -3127,9 +3133,9 @@ def test_symlog_loss_functionality(key, cfg_flat):
     # Create batch with known values
     batch = make_batch(bk, 2, cfgn.observation_shape, cfgn.num_actions, 1, 0, 0)
     
-    # Modify targets to test symlog
-    batch['target_value'] = jnp.array([[[1.0]], [[-2.0]]])  # Different values for symlog testing
-    batch['target_reward'] = jnp.array([[[0.5]], [[1.0]]])
+    # Modify targets to test symlog (shape should be (batch_size, num_unroll_steps+1))
+    batch['target_value'] = jnp.array([[1.0, 1.5], [-2.0, -1.5]])  # Different values for symlog testing
+    batch['target_reward'] = jnp.array([[0.5, 0.6], [1.0, 0.8]])
     
     # Run training step
     metrics = learner.train_step(batch)

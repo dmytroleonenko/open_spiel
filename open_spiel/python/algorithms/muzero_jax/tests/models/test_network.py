@@ -180,6 +180,25 @@ def base_config():
             self.num_hidden_units_fc = 64
             self.downsample_blocks = 0  # 0 means no downsampling
             self.downsample_channels = 16
+            
+            # Loss type configuration for model head output configuration
+            self.value_loss_type = "mse"  # Default to mse loss
+            self.reward_loss_type = "mse"  # Default to mse loss
+            self.symlog_base = math.e  # Base for symlog transformation
+            
+        def get_value_output_dim(self) -> int:
+            """Determines the correct output dimension for the value head based on loss type and support size."""
+            if self.value_loss_type == "categorical":
+                return self.value_support_size if self.value_support_size > 0 else 601
+            else:  # "mse" or "symlog"
+                return 1
+        
+        def get_reward_output_dim(self) -> int:
+            """Determines the correct output dimension for the reward head based on loss type and support size."""
+            if self.reward_loss_type in ["categorical", "kl"]:
+                return self.reward_support_size if self.reward_support_size > 0 else 601
+            else:  # "mse" or "symlog"
+                return 1
     return Config()
 
 @pytest.fixture
@@ -223,6 +242,8 @@ def action_embedding_config(base_config):
 def categorical_support_config(base_config):
     base_config.value_support_size = 601 # Example: -300 to 300
     base_config.reward_support_size = 601
+    base_config.value_loss_type = "categorical"
+    base_config.reward_loss_type = "categorical"
     return base_config
 
 @pytest.fixture
@@ -509,6 +530,24 @@ def dummy_config_image():
             self.projection_head_hidden_dim = 32
             self.projection_head_output_dim = 32
             self.batch_size = 2 # Added batch_size
+            # Loss type configuration
+            self.value_loss_type = "mse"
+            self.reward_loss_type = "mse"
+            self.symlog_base = math.e
+            
+        def get_value_output_dim(self) -> int:
+            """Determines the correct output dimension for the value head based on loss type and support size."""
+            if self.value_loss_type == "categorical":
+                return self.value_support_size if self.value_support_size > 0 else 601
+            else:  # "mse" or "symlog"
+                return 1
+        
+        def get_reward_output_dim(self) -> int:
+            """Determines the correct output dimension for the reward head based on loss type and support size."""
+            if self.reward_loss_type in ["categorical", "kl"]:
+                return self.reward_support_size if self.reward_support_size > 0 else 601
+            else:  # "mse" or "symlog"
+                return 1
     return Config()
 
 @pytest.fixture
@@ -538,6 +577,24 @@ def dummy_config_flat():
             self.projection_head_hidden_dim = 32
             self.projection_head_output_dim = 32
             self.batch_size = 2 # Added batch_size
+            # Loss type configuration
+            self.value_loss_type = "categorical"  # Since this config has support_size > 0
+            self.reward_loss_type = "categorical"  # Since this config has support_size > 0  
+            self.symlog_base = math.e
+            
+        def get_value_output_dim(self) -> int:
+            """Determines the correct output dimension for the value head based on loss type and support size."""
+            if self.value_loss_type == "categorical":
+                return self.value_support_size if self.value_support_size > 0 else 601
+            else:  # "mse" or "symlog"
+                return 1
+        
+        def get_reward_output_dim(self) -> int:
+            """Determines the correct output dimension for the reward head based on loss type and support size."""
+            if self.reward_loss_type in ["categorical", "kl"]:
+                return self.reward_support_size if self.reward_support_size > 0 else 601
+            else:  # "mse" or "symlog"
+                return 1
     return Config()
 
 def test_projection_network(dummy_config_image):
