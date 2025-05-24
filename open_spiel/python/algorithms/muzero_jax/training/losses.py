@@ -493,3 +493,102 @@ def compute_policy_entropy_general(
         return compute_continuous_policy_entropy(policy_output, distribution_type)
     else:
         raise ValueError(f"Unsupported action_type: {action_type}. Must be 'discrete' or 'continuous'") # pragma: no cover 
+
+# --- Temperature Scheduling for MCTS (Action Item 20) ---
+
+def get_temperature(training_step: int, config: Any) -> float:
+    """Computes temperature for MCTS based on current training step (EfficientZeroV2 pattern).
+    
+    This function replicates PyTorch's `agent.get_temperature(trained_steps)` functionality
+    for temperature scheduling in MCTS policy target generation and data collection.
+    
+    Args:
+        training_step: Current training step count
+        config: MuZeroConfig containing temperature scheduling parameters
+        
+    Returns:
+        Temperature value for MCTS at the current training step
+        
+    EfficientZeroV2 Pattern:
+        - Uses linear decay from temperature_init to temperature_final
+        - Decay occurs over temperature_decay_steps
+        - Temperature is clamped to not go below temperature_final
+        - Can be disabled by setting change_temperature=False
+    """
+    if not config.change_temperature:
+        # No temperature scheduling, return initial temperature
+        return config.temperature_init
+    
+    if training_step >= config.temperature_decay_steps:
+        # Decay period finished, return final temperature
+        return config.temperature_final
+    
+    # Linear decay from init to final over decay_steps
+    decay_fraction = training_step / config.temperature_decay_steps
+    temperature = config.temperature_init + decay_fraction * (config.temperature_final - config.temperature_init)
+    
+    # Ensure temperature doesn't go below final temperature
+    return jnp.maximum(temperature, config.temperature_final)
+
+
+def get_temperature_schedule(max_steps: int, config: Any) -> jax.Array:
+    """Generates a complete temperature schedule array for analysis/debugging.
+    
+    Args:
+        max_steps: Maximum number of training steps to generate schedule for
+        config: MuZeroConfig containing temperature scheduling parameters
+        
+    Returns:
+        Array of temperature values for each step from 0 to max_steps-1
+        
+    This function is useful for:
+        - Visualizing the temperature schedule
+        - Testing temperature scheduling behavior
+        - Analysis of temperature decay patterns
+    """
+    steps = jnp.arange(max_steps)
+    
+    if not config.change_temperature:
+        # No temperature scheduling, constant temperature
+        return jnp.full(max_steps, config.temperature_init)
+    
+    # Compute decay fraction for all steps
+    decay_fractions = steps / config.temperature_decay_steps
+    
+    # Linear interpolation between init and final temperatures
+    temperatures = config.temperature_init + decay_fractions * (config.temperature_final - config.temperature_init)
+    
+    # Clamp to not go below final temperature (for steps beyond decay period)
+    temperatures = jnp.maximum(temperatures, config.temperature_final)
+    
+    return temperatures
+
+
+def validate_temperature_config(config: Any) -> bool:
+    """Validates temperature configuration parameters.
+    
+    Args:
+        config: MuZeroConfig containing temperature parameters
+        
+    Returns:
+        True if configuration is valid, raises ValueError if invalid
+        
+    Validation checks:
+        - temperature_init > 0 (positive temperature)
+        - temperature_final > 0 (positive temperature) 
+        - temperature_decay_steps > 0 (positive decay duration)
+        - temperature_init >= temperature_final (decay should reduce temperature)
+    """
+    if config.temperature_init <= 0:
+        raise ValueError(f"temperature_init must be positive, got {config.temperature_init}")
+    
+    if config.temperature_final <= 0:
+        raise ValueError(f"temperature_final must be positive, got {config.temperature_final}")
+    
+    if config.temperature_decay_steps <= 0:
+        raise ValueError(f"temperature_decay_steps must be positive, got {config.temperature_decay_steps}")
+    
+    if config.temperature_init < config.temperature_final:
+        raise ValueError(f"temperature_init ({config.temperature_init}) should be >= temperature_final ({config.temperature_final}) for decay")
+    
+    return True 

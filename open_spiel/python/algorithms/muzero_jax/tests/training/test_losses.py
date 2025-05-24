@@ -1794,3 +1794,429 @@ def test_compute_symlog_value_loss_edge_cases():
     neg_loss = losses_lib.compute_symlog_value_loss(neg_pred, neg_target, 0.8)
     assert jnp.isfinite(neg_loss[0])
     assert neg_loss[0] >= 0.0
+
+# --- Test Temperature Scheduling Functions (Action Item 20) ---
+
+def test_get_temperature_basic_functionality():
+    """Test basic temperature scheduling functionality."""
+    # Mock config with temperature scheduling enabled
+    class MockConfig:
+        change_temperature = True
+        temperature_init = 1.0
+        temperature_final = 0.1
+        temperature_decay_steps = 1000
+    
+    config = MockConfig()
+    
+    # Test at start of training
+    temp_start = losses.get_temperature(0, config)
+    assert jnp.isclose(temp_start, 1.0), f"Expected 1.0 at step 0, got {temp_start}"
+    
+    # Test at middle of decay
+    temp_middle = losses.get_temperature(500, config)
+    expected_middle = 1.0 + 0.5 * (0.1 - 1.0)  # Linear interpolation at 50%
+    assert jnp.isclose(temp_middle, expected_middle), f"Expected {expected_middle} at step 500, got {temp_middle}"
+    
+    # Test at end of decay
+    temp_end = losses.get_temperature(1000, config)
+    assert jnp.isclose(temp_end, 0.1), f"Expected 0.1 at step 1000, got {temp_end}"
+    
+    # Test beyond decay period
+    temp_beyond = losses.get_temperature(1500, config)
+    assert jnp.isclose(temp_beyond, 0.1), f"Expected 0.1 at step 1500, got {temp_beyond}"
+
+
+def test_get_temperature_disabled_scheduling():
+    """Test temperature when scheduling is disabled."""
+    class MockConfig:
+        change_temperature = False
+        temperature_init = 2.5
+        temperature_final = 0.5
+        temperature_decay_steps = 1000
+    
+    config = MockConfig()
+    
+    # Should always return initial temperature when scheduling is disabled
+    for step in [0, 500, 1000, 2000]:
+        temp = losses.get_temperature(step, config)
+        assert jnp.isclose(temp, 2.5), f"Expected 2.5 at step {step} when disabled, got {temp}"
+
+
+def test_get_temperature_linear_decay():
+    """Test that temperature follows linear decay pattern."""
+    class MockConfig:
+        change_temperature = True
+        temperature_init = 2.0
+        temperature_final = 0.2
+        temperature_decay_steps = 500
+    
+    config = MockConfig()
+    
+    # Test multiple points along the decay
+    test_points = [
+        (0, 2.0),      # Start
+        (100, 1.64),   # 20% decay: 2.0 + 0.2 * (0.2 - 2.0) = 2.0 - 0.36 = 1.64
+        (250, 1.1),    # 50% decay: 2.0 + 0.5 * (0.2 - 2.0) = 2.0 - 0.9 = 1.1
+        (400, 0.56),   # 80% decay: 2.0 + 0.8 * (0.2 - 2.0) = 2.0 - 1.44 = 0.56
+        (500, 0.2),    # End
+    ]
+    
+    for step, expected_temp in test_points:
+        actual_temp = losses.get_temperature(step, config)
+        assert jnp.isclose(actual_temp, expected_temp, atol=1e-6), \
+            f"At step {step}, expected {expected_temp}, got {actual_temp}"
+
+
+def test_get_temperature_edge_cases():
+    """Test edge cases for temperature scheduling."""
+    class MockConfig:
+        change_temperature = True
+        temperature_init = 1.0
+        temperature_final = 0.1
+        temperature_decay_steps = 1
+    
+    config = MockConfig()
+    
+    # Very short decay period (1 step)
+    temp_0 = losses.get_temperature(0, config)
+    temp_1 = losses.get_temperature(1, config)
+    
+    assert jnp.isclose(temp_0, 1.0), f"Expected 1.0 at step 0, got {temp_0}"
+    assert jnp.isclose(temp_1, 0.1), f"Expected 0.1 at step 1, got {temp_1}"
+    
+    # Test with zero decay steps (degenerate case)
+    config.temperature_decay_steps = 0
+    temp_zero_decay = losses.get_temperature(0, config)
+    # With zero decay steps, should go to final temperature immediately
+    assert jnp.isclose(temp_zero_decay, 0.1)
+
+
+def test_get_temperature_schedule_basic():
+    """Test get_temperature_schedule function for generating full schedules."""
+    class MockConfig:
+        change_temperature = True
+        temperature_init = 1.5
+        temperature_final = 0.3
+        temperature_decay_steps = 10
+    
+    config = MockConfig()
+    max_steps = 15
+    
+    schedule = losses.get_temperature_schedule(max_steps, config)
+    
+    # Check shape
+    assert schedule.shape == (max_steps,), f"Expected shape ({max_steps},), got {schedule.shape}"
+    
+    # Check specific values
+    assert jnp.isclose(schedule[0], 1.5), f"Expected 1.5 at index 0, got {schedule[0]}"
+    assert jnp.isclose(schedule[5], 0.9), f"Expected 0.9 at index 5, got {schedule[5]}"  # 50% decay
+    assert jnp.isclose(schedule[10], 0.3), f"Expected 0.3 at index 10, got {schedule[10]}"
+    assert jnp.isclose(schedule[14], 0.3), f"Expected 0.3 at index 14, got {schedule[14]}"
+    
+    # Check that all values are monotonically decreasing or equal
+    for i in range(len(schedule) - 1):
+        assert schedule[i] >= schedule[i + 1], f"Temperature should not increase: {schedule[i]} > {schedule[i+1]} at step {i}"
+
+
+def test_get_temperature_schedule_disabled():
+    """Test temperature schedule when scheduling is disabled."""
+    class MockConfig:
+        change_temperature = False
+        temperature_init = 0.8
+        temperature_final = 0.2
+        temperature_decay_steps = 100
+    
+    config = MockConfig()
+    max_steps = 20
+    
+    schedule = losses.get_temperature_schedule(max_steps, config)
+    
+    # All values should be equal to temperature_init
+    expected_schedule = jnp.full(max_steps, 0.8)
+    assert jnp.allclose(schedule, expected_schedule), \
+        f"Expected constant schedule of {0.8}, got varying values"
+
+
+def test_get_temperature_schedule_beyond_decay():
+    """Test temperature schedule behavior beyond decay period."""
+    class MockConfig:
+        change_temperature = True
+        temperature_init = 2.0
+        temperature_final = 0.5
+        temperature_decay_steps = 5
+    
+    config = MockConfig()
+    max_steps = 10
+    
+    schedule = losses.get_temperature_schedule(max_steps, config)
+    
+    # First 5 steps should follow linear decay
+    expected_decay = jnp.linspace(2.0, 0.5, 6)[:-1]  # Exclude endpoint to get 5 values
+    assert jnp.allclose(schedule[:5], expected_decay, atol=1e-6)
+    
+    # Steps 5-9 should all be at final temperature
+    expected_final = jnp.full(5, 0.5)
+    assert jnp.allclose(schedule[5:], expected_final)
+
+
+def test_validate_temperature_config_valid():
+    """Test validation with valid temperature configurations."""
+    class ValidConfig:
+        temperature_init = 1.0
+        temperature_final = 0.1
+        temperature_decay_steps = 1000
+    
+    valid_config = ValidConfig()
+    
+    # Should return True for valid configuration
+    result = losses.validate_temperature_config(valid_config)
+    assert result is True
+
+
+def test_validate_temperature_config_invalid_cases():
+    """Test validation with invalid temperature configurations."""
+    # Test negative temperature_init
+    class InvalidInit:
+        temperature_init = -1.0
+        temperature_final = 0.1
+        temperature_decay_steps = 1000
+    
+    with pytest.raises(ValueError, match="temperature_init must be positive"):
+        losses.validate_temperature_config(InvalidInit())
+    
+    # Test zero temperature_init
+    class ZeroInit:
+        temperature_init = 0.0
+        temperature_final = 0.1
+        temperature_decay_steps = 1000
+    
+    with pytest.raises(ValueError, match="temperature_init must be positive"):
+        losses.validate_temperature_config(ZeroInit())
+    
+    # Test negative temperature_final
+    class InvalidFinal:
+        temperature_init = 1.0
+        temperature_final = -0.1
+        temperature_decay_steps = 1000
+    
+    with pytest.raises(ValueError, match="temperature_final must be positive"):
+        losses.validate_temperature_config(InvalidFinal())
+    
+    # Test zero temperature_final
+    class ZeroFinal:
+        temperature_init = 1.0
+        temperature_final = 0.0
+        temperature_decay_steps = 1000
+    
+    with pytest.raises(ValueError, match="temperature_final must be positive"):
+        losses.validate_temperature_config(ZeroFinal())
+    
+    # Test negative decay_steps
+    class InvalidDecay:
+        temperature_init = 1.0
+        temperature_final = 0.1
+        temperature_decay_steps = -100
+    
+    with pytest.raises(ValueError, match="temperature_decay_steps must be positive"):
+        losses.validate_temperature_config(InvalidDecay())
+    
+    # Test zero decay_steps
+    class ZeroDecay:
+        temperature_init = 1.0
+        temperature_final = 0.1
+        temperature_decay_steps = 0
+    
+    with pytest.raises(ValueError, match="temperature_decay_steps must be positive"):
+        losses.validate_temperature_config(ZeroDecay())
+    
+    # Test temperature_init < temperature_final (inverted decay)
+    class InvertedTemps:
+        temperature_init = 0.1
+        temperature_final = 1.0
+        temperature_decay_steps = 1000
+    
+    with pytest.raises(ValueError, match="temperature_init.*should be.*temperature_final.*for decay"):
+        losses.validate_temperature_config(InvertedTemps())
+
+
+def test_temperature_functions_with_real_config():
+    """Test temperature functions with realistic EfficientZeroV2 configuration."""
+    # Use actual MuZeroConfig from trainer module
+    from open_spiel.python.algorithms.muzero_jax.training.trainer import MuZeroConfig
+    
+    # Create config with EfficientZeroV2 defaults
+    config = MuZeroConfig(
+        change_temperature=True,
+        temperature_init=1.0,
+        temperature_final=0.1,
+        temperature_decay_steps=50000
+    )
+    
+    # Validate configuration
+    assert losses.validate_temperature_config(config) is True
+    
+    # Test temperature at key training milestones
+    temp_start = losses.get_temperature(0, config)
+    temp_25k = losses.get_temperature(25000, config)  # Halfway
+    temp_50k = losses.get_temperature(50000, config)  # End of decay
+    temp_100k = losses.get_temperature(100000, config)  # Beyond decay
+    
+    assert jnp.isclose(temp_start, 1.0)
+    assert jnp.isclose(temp_25k, 0.55)  # Halfway between 1.0 and 0.1
+    assert jnp.isclose(temp_50k, 0.1)
+    assert jnp.isclose(temp_100k, 0.1)
+    
+    # Test schedule generation for visualization/analysis
+    schedule = losses.get_temperature_schedule(10000, config)
+    assert schedule.shape == (10000,)
+    assert jnp.all(schedule >= 0.1)  # All temperatures should be >= final
+    assert jnp.all(schedule <= 1.0)  # All temperatures should be <= initial
+
+
+def test_temperature_schedule_mathematical_properties():
+    """Test mathematical properties of temperature scheduling."""
+    class TestConfig:
+        change_temperature = True
+        temperature_init = 3.0
+        temperature_final = 0.3
+        temperature_decay_steps = 100
+    
+    config = TestConfig()
+    
+    # Test individual temperature computation vs schedule generation consistency
+    max_steps = 150
+    schedule = losses.get_temperature_schedule(max_steps, config)
+    
+    for step in range(max_steps):
+        individual_temp = losses.get_temperature(step, config)
+        schedule_temp = schedule[step]
+        assert jnp.isclose(individual_temp, schedule_temp, atol=1e-6), \
+            f"Inconsistency at step {step}: individual={individual_temp}, schedule={schedule_temp}"
+    
+    # Test monotonicity
+    for i in range(len(schedule) - 1):
+        assert schedule[i] >= schedule[i + 1], \
+            f"Temperature should not increase from step {i} to {i+1}"
+    
+    # Test boundary conditions
+    assert jnp.isclose(schedule[0], config.temperature_init)
+    assert jnp.isclose(schedule[config.temperature_decay_steps], config.temperature_final)
+    assert jnp.all(schedule[config.temperature_decay_steps:] == config.temperature_final)
+
+
+def test_temperature_functions_efficientzero_v2_alignment():
+    """Test that temperature functions align with EfficientZeroV2 patterns."""
+    from open_spiel.python.algorithms.muzero_jax.training.trainer import MuZeroConfig
+    
+    # Test with different EfficientZeroV2-like configurations
+    configs = [
+        # Standard configuration
+        MuZeroConfig(
+            change_temperature=True,
+            temperature_init=1.0,
+            temperature_final=0.1,
+            temperature_decay_steps=50000
+        ),
+        # Fast decay configuration
+        MuZeroConfig(
+            change_temperature=True,
+            temperature_init=2.0,
+            temperature_final=0.05,
+            temperature_decay_steps=10000
+        ),
+        # Disabled temperature scheduling
+        MuZeroConfig(
+            change_temperature=False,
+            temperature_init=0.5,
+            temperature_final=0.1,
+            temperature_decay_steps=25000
+        ),
+    ]
+    
+    for i, config in enumerate(configs):
+        # Validate each configuration
+        assert losses.validate_temperature_config(config) is True, f"Config {i} should be valid"
+        
+        # Test temperature computation
+        temp_0 = losses.get_temperature(0, config)
+        temp_mid = losses.get_temperature(config.temperature_decay_steps // 2, config)
+        temp_end = losses.get_temperature(config.temperature_decay_steps, config)
+        
+        if config.change_temperature:
+            # Should follow decay pattern
+            assert jnp.isclose(temp_0, config.temperature_init)
+            assert temp_mid <= config.temperature_init and temp_mid >= config.temperature_final
+            assert jnp.isclose(temp_end, config.temperature_final)
+        else:
+            # Should remain constant at initial temperature
+            assert jnp.isclose(temp_0, config.temperature_init)
+            assert jnp.isclose(temp_mid, config.temperature_init)
+            assert jnp.isclose(temp_end, config.temperature_init)
+
+
+def test_temperature_scheduling_action_item_20_completion():
+    """Comprehensive test verifying Action Item 20 completion criteria."""
+    from open_spiel.python.algorithms.muzero_jax.training.trainer import MuZeroConfig
+    
+    # 1. Test that temperature scheduling is implemented
+    config = MuZeroConfig()
+    
+    # Verify temperature scheduling parameters exist in config
+    assert hasattr(config, 'change_temperature'), "Config should have change_temperature parameter"
+    assert hasattr(config, 'temperature_init'), "Config should have temperature_init parameter"  
+    assert hasattr(config, 'temperature_final'), "Config should have temperature_final parameter"
+    assert hasattr(config, 'temperature_decay_steps'), "Config should have temperature_decay_steps parameter"
+    
+    # 2. Test that temperature functions are accessible and work
+    temp = losses.get_temperature(1000, config)
+    assert isinstance(temp, (float, jnp.ndarray)), "get_temperature should return numeric value"
+    
+    schedule = losses.get_temperature_schedule(100, config)
+    assert isinstance(schedule, jnp.ndarray), "get_temperature_schedule should return JAX array"
+    assert schedule.shape == (100,), "Schedule should have correct shape"
+    
+    # 3. Test that temperature is configurable
+    modified_config = MuZeroConfig(
+        change_temperature=False,
+        temperature_init=1.5,
+        temperature_final=0.05,
+        temperature_decay_steps=25000
+    )
+    
+    temp_disabled = losses.get_temperature(10000, modified_config)
+    assert jnp.isclose(temp_disabled, 1.5), "Should respect disabled temperature scheduling"
+    
+    # 4. Test validation functionality
+    assert losses.validate_temperature_config(config) is True
+    assert losses.validate_temperature_config(modified_config) is True
+    
+    # 5. Test that functions handle EfficientZeroV2 patterns correctly
+    ez2_config = MuZeroConfig(
+        change_temperature=True,
+        temperature_init=1.0,
+        temperature_final=0.1,
+        temperature_decay_steps=50000  # Typical EfficientZeroV2 setting
+    )
+    
+    # Test at key milestones
+    temp_start = losses.get_temperature(0, ez2_config)
+    temp_quarter = losses.get_temperature(12500, ez2_config)
+    temp_half = losses.get_temperature(25000, ez2_config)
+    temp_end = losses.get_temperature(50000, ez2_config)
+    temp_beyond = losses.get_temperature(75000, ez2_config)
+    
+    # Verify expected decay pattern
+    assert jnp.isclose(temp_start, 1.0)
+    assert 0.7 < temp_quarter < 0.8  # Should be decreasing
+    assert jnp.isclose(temp_half, 0.55)  # Linear midpoint
+    assert jnp.isclose(temp_end, 0.1)
+    assert jnp.isclose(temp_beyond, 0.1)  # Should clamp at final temperature
+    
+    print("✅ Action Item 20 completion criteria verified:")
+    print("  - Temperature scheduling function implemented (get_temperature)")
+    print("  - Schedule generation function implemented (get_temperature_schedule)")
+    print("  - Configuration validation implemented (validate_temperature_config)")
+    print("  - EfficientZeroV2 temperature parameters available in MuZeroConfig")
+    print("  - Linear decay pattern correctly implemented")
+    print("  - Configurable via change_temperature flag")
+    print("  - Ready for integration with MCTS when implemented")
