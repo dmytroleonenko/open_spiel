@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 import flax.experimental.nnx as nnx # Using experimental for NNX
 from open_spiel.python.algorithms.muzero_jax.models.layers import (
-    conv3x3, ResidualBlock, FCResidualBlock, MLP
+    conv3x3, ResidualBlock, FCResidualBlock, MLP, NoisyLinear
 )
 from open_spiel.python.algorithms.muzero_jax.models.network import DownSample # For testing DownSample if needed later
 
@@ -174,6 +174,175 @@ def test_mlp_init_zero_warning_path(rngs_fixture):
     # AND the loop for some reason failed to find any Linear layer, which
     # shouldn't happen. We will mark the `else` in layers.py with `pragma: no cover`.
     pass
+
+# --- Test NoisyLinear ---
+def test_noisy_linear_basic(rngs_fixture):
+    """Test basic NoisyLinear functionality."""
+    in_features, out_features = 10, 5
+    layer = NoisyLinear(in_features, out_features, std_init=0.5, rngs=rngs_fixture)
+    
+    batch_size = 3
+    dummy_input = jnp.ones((batch_size, in_features))
+    
+    # Test forward pass
+    output = layer(dummy_input)
+    assert output.shape == (batch_size, out_features)
+    
+    # Check parameter shapes
+    assert layer.weight_mu.value.shape == (out_features, in_features)
+    assert layer.weight_sigma.value.shape == (out_features, in_features)
+    assert layer.weight_epsilon.value.shape == (out_features, in_features)
+    assert layer.bias_mu.value.shape == (out_features,)
+    assert layer.bias_sigma.value.shape == (out_features,)
+    assert layer.bias_epsilon.value.shape == (out_features,)
+
+def test_noisy_linear_no_bias(rngs_fixture):
+    """Test NoisyLinear without bias."""
+    in_features, out_features = 8, 4
+    layer = NoisyLinear(in_features, out_features, use_bias=False, rngs=rngs_fixture)
+    
+    batch_size = 2
+    dummy_input = jnp.ones((batch_size, in_features))
+    
+    # Test forward pass
+    output = layer(dummy_input)
+    assert output.shape == (batch_size, out_features)
+    
+    # Check bias parameters are None
+    assert layer.bias_mu is None
+    assert layer.bias_sigma is None
+    assert layer.bias_epsilon.value is None
+
+def test_noisy_linear_reset_noise(rngs_fixture):
+    """Test noise reset functionality."""
+    in_features, out_features = 6, 3
+    layer = NoisyLinear(in_features, out_features, rngs=rngs_fixture)
+    
+    # Store initial noise values
+    initial_weight_epsilon = layer.weight_epsilon.value.copy()
+    initial_bias_epsilon = layer.bias_epsilon.value.copy()
+    
+    # Reset noise with different key
+    new_key = jax.random.PRNGKey(42)
+    layer.reset_noise(new_key)
+    
+    # Check that noise has changed
+    assert not jnp.allclose(initial_weight_epsilon, layer.weight_epsilon.value)
+    assert not jnp.allclose(initial_bias_epsilon, layer.bias_epsilon.value)
+
+def test_noisy_linear_factorized_noise(rngs_fixture):
+    """Test that factorized noise structure is correct."""
+    in_features, out_features = 4, 2
+    layer = NoisyLinear(in_features, out_features, rngs=rngs_fixture)
+    
+    # Generate some manual factorized noise to compare
+    key = jax.random.PRNGKey(123)
+    layer.reset_noise(key)
+    
+    # Verify that weight epsilon has expected factorized structure
+    # Note: we can't exactly replicate the internal generation but can verify shapes
+    assert layer.weight_epsilon.value.shape == (out_features, in_features)
+    
+    # Verify noise scaling function
+    test_values = jnp.array([-2.0, -0.5, 0.0, 0.5, 2.0])
+    scaled = layer._scale_noise(test_values)
+    expected = jnp.sign(test_values) * jnp.sqrt(jnp.abs(test_values))
+    assert jnp.allclose(scaled, expected)
+
+def test_noisy_linear_std_init_parameter(rngs_fixture):
+    """Test that std_init parameter affects initialization correctly."""
+    in_features, out_features = 3, 2
+    std_init = 0.1
+    layer = NoisyLinear(in_features, out_features, std_init=std_init, rngs=rngs_fixture)
+    
+    # Check sigma initialization
+    expected_weight_sigma = std_init / jnp.sqrt(in_features)
+    expected_bias_sigma = std_init / jnp.sqrt(out_features)
+    
+    assert jnp.allclose(layer.weight_sigma.value, expected_weight_sigma)
+    assert jnp.allclose(layer.bias_sigma.value, expected_bias_sigma)
+
+def test_noisy_linear_output_variance(rngs_fixture):
+    """Test that different noise leads to different outputs."""
+    in_features, out_features = 5, 3
+    layer = NoisyLinear(in_features, out_features, rngs=rngs_fixture)
+    
+    batch_size = 2
+    dummy_input = jnp.ones((batch_size, in_features))
+    
+    # Get output with initial noise
+    output1 = layer(dummy_input)
+    
+    # Reset noise and get new output
+    layer.reset_noise(jax.random.PRNGKey(999))
+    output2 = layer(dummy_input)
+    
+    # Outputs should be different due to different noise
+    assert not jnp.allclose(output1, output2, atol=1e-6)
+
+# --- Test MLP with noisy networks ---
+def test_mlp_with_noisy_networks(rngs_fixture):
+    """Test MLP with noisy linear layers."""
+    input_size, output_size = 10, 4
+    hidden_sizes = [8, 6]
+    
+    mlp = MLP(input_size, hidden_sizes, output_size, noisy=True, rngs=rngs_fixture)
+    
+    batch_size = 2
+    dummy_input = jnp.ones((batch_size, input_size))
+    
+    # Test forward pass
+    output = mlp(dummy_input, training=True)
+    assert output.shape == (batch_size, output_size)
+    
+    # Check that noisy layers were created
+    noisy_layers = [layer for layer in mlp.layers if isinstance(layer, NoisyLinear)]
+    assert len(noisy_layers) == len(hidden_sizes) + 1  # +1 for output layer
+
+def test_mlp_reset_noise_functionality(rngs_fixture):
+    """Test MLP noise reset functionality."""
+    input_size, output_size = 6, 2
+    hidden_sizes = [4]
+    
+    # Test with noisy MLP
+    noisy_mlp = MLP(input_size, hidden_sizes, output_size, noisy=True, rngs=rngs_fixture)
+    
+    # Store initial noise values
+    initial_noise_values = []
+    for layer in noisy_mlp.layers:
+        if isinstance(layer, NoisyLinear):
+            initial_noise_values.append(layer.weight_epsilon.value.copy())
+    
+    # Reset noise
+    noisy_mlp.reset_noise(jax.random.PRNGKey(789))
+    
+    # Check that noise changed
+    changed_count = 0
+    noise_idx = 0
+    for layer in noisy_mlp.layers:
+        if isinstance(layer, NoisyLinear):
+            if not jnp.allclose(initial_noise_values[noise_idx], layer.weight_epsilon.value):
+                changed_count += 1
+            noise_idx += 1
+    
+    assert changed_count == len(initial_noise_values)
+    
+    # Test with non-noisy MLP (should not error)
+    regular_mlp = MLP(input_size, hidden_sizes, output_size, noisy=False, rngs=rngs_fixture)
+    regular_mlp.reset_noise(jax.random.PRNGKey(123))  # Should do nothing
+
+def test_mlp_noisy_parameter_coverage(rngs_fixture):
+    """Test that noisy parameter is stored and used correctly."""
+    input_size, output_size = 4, 2
+    hidden_sizes = [3]
+    
+    # Test noisy=True
+    noisy_mlp = MLP(input_size, hidden_sizes, output_size, noisy=True, rngs=rngs_fixture)
+    assert noisy_mlp.noisy == True
+    
+    # Test noisy=False
+    regular_mlp = MLP(input_size, hidden_sizes, output_size, noisy=False, rngs=rngs_fixture)
+    assert regular_mlp.noisy == False
 
 # Example of testing DownSample (if it were in layers.py and needed more tests)
 # def test_downsample_module(rngs_fixture):

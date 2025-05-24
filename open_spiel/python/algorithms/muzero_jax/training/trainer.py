@@ -207,6 +207,8 @@ def create_network_config_from_muzero_config(
         value_loss_type=muzero_config.value_loss_type,
         reward_loss_type=muzero_config.reward_loss_type,
         symlog_base=muzero_config.symlog_base,
+        # Transfer noisy network config
+        noisy_net=muzero_config.noisy_net,
         **kwargs
     )
 
@@ -318,6 +320,16 @@ class Learner:
         
         # Update model parameters using nnx.Optimizer
         self.optimizer.update(grads)
+        
+        # Reset noise in noisy networks after parameter update (EfficientZeroV2 pattern)
+        # This matches PyTorch EfficientZeroV2 base.py line 533-535 where reset_noise() 
+        # is called after gradient updates
+        if self.config.noisy_net:
+            noise_key = jax.random.split(step_rng, 1)[0]
+            self.model.reset_noise(noise_key)
+            if self.target_model is not None:
+                target_noise_key = jax.random.split(step_rng, 2)[1]
+                self.target_model.reset_noise(target_noise_key)
         
         # Add gradient and parameter norms to metrics
         metrics['grad_norm'] = optax.global_norm(grads)

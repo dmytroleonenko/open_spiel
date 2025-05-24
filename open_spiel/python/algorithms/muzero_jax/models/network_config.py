@@ -26,6 +26,8 @@ class MuZeroNetworkConfig:
     projection_head_output_dim: int = 64
     # Batch norm
     use_batch_norm: bool = True
+    # Noisy networks for exploration
+    noisy_net: bool = False
     # Added for DummyDynamicsNetwork
     action_embedding_dim: int = 32
     # Loss types - configures model head output format to match loss function expectations

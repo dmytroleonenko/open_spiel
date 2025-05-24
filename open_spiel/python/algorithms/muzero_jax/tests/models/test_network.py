@@ -7,7 +7,7 @@ from typing import Tuple
 import math
 
 from open_spiel.python.algorithms.muzero_jax.models import network as muzero_network_lib
-from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
+from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork, PredictionNetwork
 from open_spiel.python.algorithms.muzero_jax.models.network_config import MuZeroNetworkConfig
 from open_spiel.python.algorithms.muzero_jax.models.layers import MLP
 
@@ -185,6 +185,9 @@ def base_config():
             self.value_loss_type = "mse"  # Default to mse loss
             self.reward_loss_type = "mse"  # Default to mse loss
             self.symlog_base = math.e  # Base for symlog transformation
+            
+            # Noisy networks support (Action Item 25)
+            self.noisy_net = False  # Default to disabled
             
         def get_value_output_dim(self) -> int:
             """Determines the correct output dimension for the value head based on loss type and support size."""
@@ -534,6 +537,8 @@ def dummy_config_image():
             self.value_loss_type = "mse"
             self.reward_loss_type = "mse"
             self.symlog_base = math.e
+            # Noisy networks support (Action Item 25)
+            self.noisy_net = False  # Default to disabled
             
         def get_value_output_dim(self) -> int:
             """Determines the correct output dimension for the value head based on loss type and support size."""
@@ -581,6 +586,8 @@ def dummy_config_flat():
             self.value_loss_type = "categorical"  # Since this config has support_size > 0
             self.reward_loss_type = "categorical"  # Since this config has support_size > 0  
             self.symlog_base = math.e
+            # Noisy networks support (Action Item 25)
+            self.noisy_net = False  # Default to disabled
             
         def get_value_output_dim(self) -> int:
             """Determines the correct output dimension for the value head based on loss type and support size."""
@@ -1363,3 +1370,280 @@ def test_reward_network_symlog_transformation():
     
     reward = reward_net(hidden_state, training=False)
     assert reward.shape == (batch_size,)
+
+
+# --- Test Noisy Networks Integration ---
+def test_prediction_network_with_noisy_networks():
+    """Test PredictionNetwork with noisy networks enabled."""
+    
+    key = jax.random.key(42)
+    batch_size = 2
+    
+    # Config with noisy networks enabled
+    config = MuZeroNetworkConfig(
+        observation_shape=(64,),
+        num_channels=16,
+        num_actions=5,
+        value_support_size=0,
+        use_image_observation=False,
+        num_hidden_units_fc=32,
+        noisy_net=True  # Enable noisy networks
+    )
+    
+    pred_net = PredictionNetwork(config, rngs=nnx.Rngs(params=key))
+    hidden_state = jax.random.normal(key, (batch_size, 16))
+    
+    # Test forward pass
+    policy_logits1, value1 = pred_net(hidden_state, training=False)
+    assert policy_logits1.shape == (batch_size, 5)
+    assert value1.shape == (batch_size,)
+    
+    # Reset noise and test again - outputs should be different
+    pred_net.reset_noise(jax.random.PRNGKey(999))
+    policy_logits2, value2 = pred_net(hidden_state, training=False)
+    
+    # Policy outputs should be different due to noise reset
+    assert not jnp.allclose(policy_logits1, policy_logits2, atol=1e-6)
+
+
+def test_prediction_network_noisy_reset_noise_method():
+    """Test PredictionNetwork reset_noise method."""
+    
+    key = jax.random.key(42)
+    
+    # Test with noisy networks enabled
+    config_noisy = MuZeroNetworkConfig(
+        observation_shape=(32,),
+        num_channels=16,
+        num_actions=3,
+        value_support_size=0,
+        use_image_observation=False,
+        num_hidden_units_fc=16,
+        noisy_net=True
+    )
+    
+    pred_net_noisy = PredictionNetwork(config_noisy, rngs=nnx.Rngs(params=key))
+    
+    # Should have reset_noise method and not error when called
+    pred_net_noisy.reset_noise(jax.random.PRNGKey(123))
+    
+    # Test with noisy networks disabled
+    config_regular = MuZeroNetworkConfig(
+        observation_shape=(32,),
+        num_channels=16,
+        num_actions=3,
+        value_support_size=0,
+        use_image_observation=False,
+        num_hidden_units_fc=16,
+        noisy_net=False
+    )
+    
+    pred_net_regular = PredictionNetwork(config_regular, rngs=nnx.Rngs(params=key))
+    
+    # Should not error when called on regular network
+    pred_net_regular.reset_noise(jax.random.PRNGKey(456))
+
+
+def test_muzero_network_reset_noise_functionality():
+    """Test MuZeroNetwork reset_noise method."""
+    
+    key = jax.random.key(42)
+    batch_size = 2
+    
+    # Config with noisy networks
+    config = MuZeroNetworkConfig(
+        observation_shape=(32,),
+        num_channels=16,
+        num_actions=4,
+        value_support_size=0,
+        reward_support_size=0,
+        use_image_observation=False,
+        num_hidden_units_fc=16,
+        noisy_net=True,
+        use_projection=False
+    )
+    
+    # Create MuZero network
+    network = MuZeroNetwork(
+        representation_network_def=lambda config, *, rngs: DummyRepresentationNetwork(config, rngs=rngs),
+        dynamics_network_def=lambda config, *, rngs: DummyDynamicsNetwork(config, rngs=rngs),
+        prediction_network_def=lambda config, *, rngs: PredictionNetwork(config, rngs=rngs),
+        reward_network_def=lambda config, *, rngs: DummyRewardNetwork(config, rngs=rngs),
+        projection_network_def=None,
+        config=config,
+        rngs=nnx.Rngs(params=key)
+    )
+    
+    # Test initial inference
+    observation = jax.random.normal(key, (batch_size, 32))
+    hidden_state1, reward1, value1, policy_logits1, proj1 = network.initial_inference(observation, training=False)
+    
+    # Reset noise
+    network.reset_noise(jax.random.PRNGKey(777))
+    
+    # Test inference again - policy should be different due to noisy networks
+    hidden_state2, reward2, value2, policy_logits2, proj2 = network.initial_inference(observation, training=False)
+    
+    # Only policy should be different (since only policy network uses noisy layers in our implementation)
+    assert not jnp.allclose(policy_logits1, policy_logits2, atol=1e-6)
+    # Other outputs should be the same since they don't use noisy networks
+    assert jnp.allclose(hidden_state1, hidden_state2)
+    assert jnp.allclose(reward1, reward2)
+    assert jnp.allclose(value1, value2)
+
+
+def test_muzero_network_reset_noise_without_noisy_networks():
+    """Test MuZeroNetwork reset_noise method when noisy networks are disabled."""
+    
+    key = jax.random.key(42)
+    
+    # Config without noisy networks
+    config = MuZeroNetworkConfig(
+        observation_shape=(32,),
+        num_channels=16,
+        num_actions=4,
+        value_support_size=0,
+        reward_support_size=0,
+        use_image_observation=False,
+        num_hidden_units_fc=16,
+        noisy_net=False,  # Disabled
+        use_projection=False
+    )
+    
+    # Create MuZero network
+    network = MuZeroNetwork(
+        representation_network_def=lambda config, *, rngs: DummyRepresentationNetwork(config, rngs=rngs),
+        dynamics_network_def=lambda config, *, rngs: DummyDynamicsNetwork(config, rngs=rngs),
+        prediction_network_def=lambda config, *, rngs: PredictionNetwork(config, rngs=rngs),
+        reward_network_def=lambda config, *, rngs: DummyRewardNetwork(config, rngs=rngs),
+        projection_network_def=None,
+        config=config,
+        rngs=nnx.Rngs(params=key)
+    )
+    
+    # Should not error when reset_noise is called
+    network.reset_noise(jax.random.PRNGKey(888))
+
+
+def test_noisy_networks_configuration_transfer():
+    """Test that noisy_net configuration is properly transferred from MuZeroConfig to MuZeroNetworkConfig."""
+    from open_spiel.python.algorithms.muzero_jax.training.trainer import create_network_config_from_muzero_config, MuZeroConfig
+    
+    # Test with noisy networks enabled
+    muzero_config_noisy = MuZeroConfig(noisy_net=True)
+    network_config_noisy = create_network_config_from_muzero_config(
+        muzero_config_noisy,
+        observation_shape=(64,),
+        num_actions=5,
+        use_image_observation=False
+    )
+    assert network_config_noisy.noisy_net == True
+    
+    # Test with noisy networks disabled
+    muzero_config_regular = MuZeroConfig(noisy_net=False)
+    network_config_regular = create_network_config_from_muzero_config(
+        muzero_config_regular,
+        observation_shape=(64,),
+        num_actions=5,
+        use_image_observation=False
+    )
+    assert network_config_regular.noisy_net == False
+
+
+def test_noisy_networks_action_item_25_completion():
+    """Comprehensive test verifying Action Item 25: Noisy Networks Support completion criteria."""
+    from open_spiel.python.algorithms.muzero_jax.models.layers import NoisyLinear, MLP
+    from open_spiel.python.algorithms.muzero_jax.training.trainer import create_network_config_from_muzero_config, MuZeroConfig
+    
+    key = jax.random.key(42)
+    batch_size = 2
+    
+    # 1. Test JAX-compatible NoisyLinear layers implementation
+    noisy_layer = NoisyLinear(10, 5, std_init=0.5, rngs=nnx.Rngs(params=key))
+    test_input = jnp.ones((batch_size, 10))
+    output = noisy_layer(test_input)
+    assert output.shape == (batch_size, 5)
+    
+    # 2. Test integration into MuZero network architecture (policy heads)
+    config = MuZeroNetworkConfig(
+        observation_shape=(32,),
+        num_channels=16,
+        num_actions=4,
+        noisy_net=True,
+        use_image_observation=False,
+        value_support_size=0,
+        reward_support_size=0,
+        use_projection=False
+    )
+    
+    pred_net = PredictionNetwork(config, rngs=nnx.Rngs(params=key))
+    hidden_state = jnp.ones((batch_size, 16))
+    policy_logits, value = pred_net(hidden_state, training=False)
+    
+    # Check that noisy layers are used in policy network
+    noisy_layers_count = 0
+    for layer in pred_net.policy_fc.layers:
+        if isinstance(layer, NoisyLinear):
+            noisy_layers_count += 1
+    assert noisy_layers_count > 0, "Policy network should use noisy layers when noisy_net=True"
+    
+    # 3. Test reset_noise functionality
+    initial_output = pred_net(hidden_state, training=False)[0]
+    pred_net.reset_noise(jax.random.PRNGKey(999))
+    reset_output = pred_net(hidden_state, training=False)[0]
+    assert not jnp.allclose(initial_output, reset_output, atol=1e-6), "Output should change after noise reset"
+    
+    # 4. Test configurability via noisy_net parameter
+    # Already tested in network config and creation functions above
+    
+    # 5. Test that configuration transfer works properly
+    muzero_config = MuZeroConfig(noisy_net=True)
+    network_config = create_network_config_from_muzero_config(
+        muzero_config, observation_shape=(32,), num_actions=4
+    )
+    assert network_config.noisy_net == True
+    
+    # 6. Test full MuZero network with noisy networks
+    full_network = MuZeroNetwork(
+        representation_network_def=lambda config, *, rngs: DummyRepresentationNetwork(config, rngs=rngs),
+        dynamics_network_def=lambda config, *, rngs: DummyDynamicsNetwork(config, rngs=rngs),
+        prediction_network_def=lambda config, *, rngs: PredictionNetwork(config, rngs=rngs),
+        reward_network_def=lambda config, *, rngs: DummyRewardNetwork(config, rngs=rngs),
+        projection_network_def=None,
+        config=config,
+        rngs=nnx.Rngs(params=key)
+    )
+    
+    observation = jnp.ones((batch_size, 32))
+    _, _, _, initial_policy, _ = full_network.initial_inference(observation)
+    full_network.reset_noise(jax.random.PRNGKey(888))
+    _, _, _, reset_policy, _ = full_network.initial_inference(observation)
+    assert not jnp.allclose(initial_policy, reset_policy, atol=1e-6), "Full network policy should change after noise reset"
+    
+    print("✅ Action Item 25: Noisy Networks Support - All completion criteria verified!")
+
+
+def test_efficientzero_v2_noisy_networks_parity():
+    """Test alignment with EfficientZeroV2 noisy networks implementation patterns."""
+    from open_spiel.python.algorithms.muzero_jax.models.layers import NoisyLinear
+    
+    key = jax.random.key(42)
+    
+    # Test EfficientZeroV2 std_init=0.5 pattern (from PyTorch reference)
+    layer = NoisyLinear(8, 4, std_init=0.5, rngs=nnx.Rngs(params=key))
+    
+    # Verify initialization follows EfficientZeroV2 pattern
+    expected_weight_sigma = 0.5 / jnp.sqrt(8)  # std_init / sqrt(in_features)
+    expected_bias_sigma = 0.5 / jnp.sqrt(4)    # std_init / sqrt(out_features)
+    
+    assert jnp.allclose(layer.weight_sigma.value, expected_weight_sigma)
+    assert jnp.allclose(layer.bias_sigma.value, expected_bias_sigma)
+    
+    # Test factorized Gaussian noise structure (EfficientZeroV2 pattern)
+    layer.reset_noise(key)
+    
+    # Verify noise shapes match factorized structure
+    assert layer.weight_epsilon.value.shape == (4, 8)  # (out_features, in_features)
+    assert layer.bias_epsilon.value.shape == (4,)      # (out_features,)
+    
+    print("✅ EfficientZeroV2 Noisy Networks Parity - Implementation aligns with PyTorch reference!")

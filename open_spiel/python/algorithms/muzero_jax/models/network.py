@@ -213,7 +213,7 @@ class PredictionNetwork(nnx.Module):
             self.policy_conv = nnx.Conv(self.config.num_channels, self.config.num_channels, kernel_size=(1,1), rngs=rngs)
             self.policy_bn = nnx.BatchNorm(self.config.num_channels, use_running_average=True, rngs=rngs)
             flatten_size_policy = self.config.spatial_extents[0] * self.config.spatial_extents[1] * self.config.num_channels
-            self.policy_fc = MLP(flatten_size_policy, self.config.fc_prediction_layers, self.config.num_actions, rngs=rngs)
+            self.policy_fc = MLP(flatten_size_policy, self.config.fc_prediction_layers, self.config.num_actions, noisy=self.config.noisy_net, rngs=rngs)
 
             self.value_conv = nnx.Conv(self.config.num_channels, 1, kernel_size=(1,1), rngs=rngs)
             self.value_bn = nnx.BatchNorm(1, use_running_average=True, rngs=rngs)
@@ -226,6 +226,7 @@ class PredictionNetwork(nnx.Module):
             self.policy_fc = MLP(input_size=self.config.num_channels,
                                  hidden_sizes=self.config.fc_prediction_layers,
                                  output_size=self.config.num_actions,
+                                 noisy=self.config.noisy_net,
                                  rngs=policy_rngs)
             # Configure value head output dimension based on loss type
             value_output_dim = self.config.get_value_output_dim()
@@ -234,6 +235,11 @@ class PredictionNetwork(nnx.Module):
                                 hidden_sizes=self.config.fc_prediction_layers, 
                                 output_size=value_output_dim,
                                 rngs=value_rngs)
+
+    def reset_noise(self, rng_key: jax.Array) -> None:
+        """Reset noise in policy network if using noisy networks."""
+        if self.config.noisy_net:
+            self.policy_fc.reset_noise(rng_key)
 
     def __call__(self, hidden_state: jax.Array, training: bool) -> tuple[jax.Array, jax.Array]:
         if self.config.use_image_observation:
@@ -411,6 +417,11 @@ class MuZeroNetwork(nnx.Module):
 
     def prediction(self, hidden_state: jax.Array, training: bool) -> tuple[jax.Array, jax.Array]:
         return self.prediction_network(hidden_state, training=training)
+
+    def reset_noise(self, rng_key: jax.Array) -> None:
+        """Reset noise in all networks if using noisy networks."""
+        if hasattr(self.prediction_network, 'reset_noise'):
+            self.prediction_network.reset_noise(rng_key)
 
     def initial_inference(self, observation: jax.Array, training: bool = False) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array | None]:
         """Representation + Prediction + Reward for the first step."""
