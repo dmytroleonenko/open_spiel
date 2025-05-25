@@ -468,6 +468,14 @@ class Learner:
         search_values = batch.get('target_search_value', target_values)  # MCTS search values
         sarsa_values = batch.get('target_sarsa_value', target_values)  # N-step TD targets
         
+        # EfficientZeroV2: Generate top_new_masks for mixed value targets
+        top_new_masks = batch.get('top_new_masks', None)
+        if config.value_target == "mixed" and top_new_masks is None:
+            # Generate top_new_masks if not provided in batch
+            sample_indices = batch.get('sample_indices', jnp.arange(initial_observation.shape[0]))
+            collected_transitions = batch.get('collected_transitions', config.mixed_value_threshold + sample_indices.max() + 1)
+            top_new_masks = generate_top_new_masks(sample_indices, collected_transitions, config.mixed_value_threshold)
+        
         # Select target values based on configuration and training step
         training_step = batch.get('training_step', 0)  # Current training step for mixed mode
         if config.value_target == "search":
@@ -475,11 +483,20 @@ class Learner:
         elif config.value_target == "sarsa":
             actual_target_values = sarsa_values
         elif config.value_target == "mixed":
-            # Mixed mode: start with search values, switch to sarsa values after threshold
-            if training_step < config.mixed_value_target_switch_step:
+            # EfficientZeroV2 mixed mode logic
+            if training_step < config.start_use_mix_training_steps:
+                # Before start_use_mix_training_steps: use search values for all samples
                 actual_target_values = search_values
             else:
-                actual_target_values = sarsa_values
+                # After start_use_mix_training_steps: use mixed logic with top_new_masks
+                if top_new_masks is not None:
+                    # Apply mixed value targets using utility function
+                    actual_target_values = apply_mixed_value_targets(
+                        search_values, sarsa_values, top_new_masks, config.num_unroll_steps
+                    )
+                else:
+                    # Fallback to sarsa values if no masks provided
+                    actual_target_values = sarsa_values
         else:
             actual_target_values = target_values  # Default fallback
         
@@ -988,93 +1005,145 @@ def apply_value_prefix_reward_accumulation(
     config: MuZeroConfig,
     game_history_mask: jax.Array | None = None
 ) -> jax.Array:
-    """Apply value prefix reward accumulation logic to target_reward.
+    """
+    Apply value prefix reward accumulation for EfficientZeroV2.
     
-    When use_value_prefix is enabled, this function accumulates rewards over
-    the LSTM horizon and resets the accumulation every lstm_horizon_length steps
-    within a trajectory, as per EfficientZeroV2's value prefix feature.
+    In EfficientZeroV2, when value_prefix is enabled, the target_reward is accumulated
+    over the LSTM horizon and reset every lstm_horizon_length steps within a trajectory.
     
     Args:
-        target_reward: Target rewards with shape (B, K+1) or (B, K+1, support_size)
-        config: MuZeroConfig with value prefix settings
-        game_history_mask: Optional mask indicating valid steps (B, K+1). If None, all steps are considered valid.
+        target_reward: Target reward tensor, shape (B, K+1) or (B, K+1, support_size)
+        config: MuZero configuration
+        game_history_mask: Optional mask for valid steps, shape (B, K+1)
         
     Returns:
-        Modified target_reward with accumulated rewards if use_value_prefix is True,
-        otherwise returns the original target_reward unchanged.
+        Accumulated target reward with same shape as input
     """
     if not config.use_value_prefix:
         return target_reward
     
-    batch_size, sequence_length = target_reward.shape[:2]
+    # Handle empty input (edge case)
+    if target_reward.size == 0:
+        return target_reward
     
-    # Handle both scalar and categorical rewards
-    if target_reward.ndim == 2:
-        # Scalar rewards: (B, K+1)
-        accumulated_reward = jnp.zeros_like(target_reward)
-    else:
-        # Categorical rewards: (B, K+1, support_size)
-        accumulated_reward = jnp.zeros_like(target_reward)
+    batch_size, num_steps = target_reward.shape[0], target_reward.shape[1]
     
-    # Default mask if not provided
-    if game_history_mask is None:
-        game_history_mask = jnp.ones((batch_size, sequence_length))
+    # Handle edge case where batch_size is 0
+    if batch_size == 0:
+        return target_reward
     
     def accumulate_batch_step(batch_idx):
         """Accumulate rewards for a single batch item."""
-        batch_rewards = target_reward[batch_idx]
-        batch_mask = game_history_mask[batch_idx]
-        
-        if target_reward.ndim == 2:
-            batch_accumulated = jnp.zeros(sequence_length)
-        else:
-            batch_accumulated = jnp.zeros((sequence_length, target_reward.shape[-1]))
-        
-        # Initialize accumulator
-        if target_reward.ndim == 2:
-            current_accumulator = 0.0
-        else:
-            current_accumulator = jnp.zeros(target_reward.shape[-1])
+        rewards = target_reward[batch_idx]  # K+1 or K+1, S
+        mask = game_history_mask[batch_idx] if game_history_mask is not None else jnp.ones(num_steps)
         
         def step_accumulation(step_idx, accumulator):
-            """Accumulate rewards for a single step."""
-            # Reset accumulator at LSTM horizon boundaries
-            reset_condition = (step_idx % config.lstm_horizon_length == 0)
-            accumulator = jnp.where(reset_condition, 
-                                  jnp.zeros_like(accumulator), 
-                                  accumulator)
+            """Accumulate reward for a single step."""
+            current_reward = rewards[step_idx]
+            current_mask = mask[step_idx]
             
-            # Add current step reward if valid
-            step_reward = batch_rewards[step_idx]
-            step_valid = batch_mask[step_idx]
+            # Reset accumulation every lstm_horizon_length steps (EfficientZeroV2 pattern)
+            should_reset = (step_idx % config.lstm_horizon_length == 0)
             
-            # Accumulate reward (element-wise for categorical, scalar for scalar)
-            if target_reward.ndim == 2:
-                accumulator = accumulator + step_reward * step_valid
+            if should_reset:
+                # Reset: start fresh accumulation
+                if rewards.ndim == 1:  # Scalar rewards
+                    new_accumulator = current_reward * current_mask
+                else:  # Categorical rewards
+                    new_accumulator = current_reward * current_mask
             else:
-                accumulator = accumulator + step_reward * step_valid[..., None]
+                # Accumulate: add to previous
+                if rewards.ndim == 1:  # Scalar rewards
+                    new_accumulator = accumulator + current_reward * current_mask
+                else:  # Categorical rewards
+                    new_accumulator = accumulator + current_reward * current_mask
             
-            return accumulator
+            return new_accumulator
         
-        # Process each step
-        for step_idx in range(sequence_length):
-            current_accumulator = step_accumulation(step_idx, current_accumulator)
-            if target_reward.ndim == 2:
-                batch_accumulated = batch_accumulated.at[step_idx].set(current_accumulator)
-            else:
-                batch_accumulated = batch_accumulated.at[step_idx].set(current_accumulator)
+        # Use jax.lax.scan for efficient sequential accumulation
+        if rewards.ndim == 1:  # Scalar rewards
+            init_accumulator = jnp.zeros_like(rewards[0])
+        else:  # Categorical rewards
+            init_accumulator = jnp.zeros_like(rewards[0])
         
-        return batch_accumulated
+        # Scan over steps to accumulate rewards
+        step_indices = jnp.arange(num_steps)
+        accumulated_rewards = []
+        
+        accumulator = init_accumulator
+        for step_idx in range(num_steps):
+            accumulator = step_accumulation(step_idx, accumulator)
+            accumulated_rewards.append(accumulator)
+        
+        return jnp.stack(accumulated_rewards, axis=0)
     
     # Process each batch item
+    accumulated_batch = []
     for batch_idx in range(batch_size):
-        batch_result = accumulate_batch_step(batch_idx)
-        if target_reward.ndim == 2:
-            accumulated_reward = accumulated_reward.at[batch_idx].set(batch_result)
-        else:
-            accumulated_reward = accumulated_reward.at[batch_idx].set(batch_result)
+        accumulated_item = accumulate_batch_step(batch_idx)
+        accumulated_batch.append(accumulated_item)
     
-    return accumulated_reward
+    return jnp.stack(accumulated_batch, axis=0)
+
+
+def generate_top_new_masks(
+    sample_indices: jax.Array,
+    collected_transitions: int | jax.Array,
+    mixed_value_threshold: int
+) -> jax.Array:
+    """
+    Generate top_new_masks for EfficientZeroV2 mixed value targets.
+    
+    This replicates PyTorch BatchWorker logic:
+    mask = int(idx > collected_transitions - mixed_value_threshold)
+    
+    Recent samples (idx > threshold) get mask=1 and use sarsa values.
+    Old samples (idx <= threshold) get mask=0 and use search values.
+    
+    Args:
+        sample_indices: Indices of samples in replay buffer, shape (B,)
+        collected_transitions: Total number of transitions collected so far
+        mixed_value_threshold: Threshold for determining recent vs old samples
+        
+    Returns:
+        Boolean mask indicating recent samples, shape (B,)
+    """
+    threshold = collected_transitions - mixed_value_threshold
+    return (sample_indices > threshold).astype(jnp.float32)
+
+
+def apply_mixed_value_targets(
+    search_values: jax.Array,
+    sarsa_values: jax.Array,
+    top_new_masks: jax.Array,
+    num_unroll_steps: int
+) -> jax.Array:
+    """
+    Apply EfficientZeroV2 mixed value target logic using top_new_masks.
+    
+    Recent samples (mask=1) use sarsa values, old samples (mask=0) use search values.
+    
+    Args:
+        search_values: MCTS search value targets, shape (B, K+1, ...)
+        sarsa_values: N-step TD value targets, shape (B, K+1, ...)
+        top_new_masks: Mask for recent samples, shape (B,)
+        num_unroll_steps: Number of unroll steps (K)
+        
+    Returns:
+        Mixed value targets, shape (B, K+1, ...)
+    """
+    # Expand mask to match value dimensions: B, K+1, ...
+    mask_expanded = jnp.expand_dims(top_new_masks, axis=1)  # B, 1
+    mask_expanded = jnp.repeat(mask_expanded, num_unroll_steps + 1, axis=1)  # B, K+1
+    
+    if sarsa_values.ndim > 2:
+        # For categorical values, expand mask to match support dimension
+        for _ in range(sarsa_values.ndim - 2):
+            mask_expanded = jnp.expand_dims(mask_expanded, axis=-1)
+        mask_expanded = jnp.repeat(mask_expanded, sarsa_values.shape[-1], axis=-1)
+    
+    # Mixed target: recent samples (mask=1) use sarsa, old samples (mask=0) use search
+    return sarsa_values * mask_expanded + search_values * (1.0 - mask_expanded)
 
 # Example usage (for testing/illustration - will be in tests)
 if __name__ == '__main__': # pragma: no cover

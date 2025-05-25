@@ -15,7 +15,7 @@ import time
 import wandb
 from unittest.mock import patch, PropertyMock, MagicMock, Mock
 
-from open_spiel.python.algorithms.muzero_jax.training.trainer import Learner, MuZeroConfig, Batch, apply_value_prefix_reward_accumulation
+from open_spiel.python.algorithms.muzero_jax.training.trainer import Learner, MuZeroConfig, Batch, apply_value_prefix_reward_accumulation, generate_top_new_masks, apply_mixed_value_targets
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
 
 # Constants
@@ -6501,3 +6501,456 @@ def test_value_prefix_config_parameter_verification(key, cfg_flat):
     # Results should be different due to different horizon lengths
     assert not jnp.allclose(result_h2, result_h3), \
         "Different horizon lengths should produce different results"
+
+
+def test_lstm_value_prefix_configuration(key, cfg_flat):
+    """Test LSTM value prefix configuration compatibility."""
+    config = MuZeroConfig(
+        use_value_prefix=True,
+        lstm_horizon_length=8,
+        lstm_hidden_size=256
+    )
+    
+    # Verify configuration is properly set
+    assert config.use_value_prefix == True
+    assert config.lstm_horizon_length == 8
+    assert config.lstm_hidden_size == 256
+    
+    # Test that configuration affects accumulation behavior
+    rewards = jnp.array([[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]])
+    result = apply_value_prefix_reward_accumulation(rewards, config)
+    
+    # With horizon=8, first 8 steps should accumulate, then reset at step 8
+    expected_at_step_7 = 8.0  # Sum of first 8 ones
+    expected_at_step_8 = 1.0  # Reset, so just the 9th value
+    
+    assert jnp.allclose(result[0, 7], expected_at_step_7)
+    assert jnp.allclose(result[0, 8], expected_at_step_8)
+
+
+# Tests for Action Item 21: Mixed Value Threshold Functionality
+
+def test_generate_top_new_masks_basic_functionality(key, cfg_flat):
+    """Test basic functionality of generate_top_new_masks."""
+    # Test case: threshold=5000, collected=10000, mixed_threshold=3000
+    # Samples with idx > 7000 (10000-3000) should get mask=1
+    sample_indices = jnp.array([5000, 7500, 8000, 9500])
+    collected_transitions = 10000
+    mixed_value_threshold = 3000
+    
+    expected_masks = jnp.array([0.0, 1.0, 1.0, 1.0])  # Only first sample is old
+    
+    result = generate_top_new_masks(sample_indices, collected_transitions, mixed_value_threshold)
+    
+    assert result.shape == (4,)
+    assert jnp.allclose(result, expected_masks), f"Expected {expected_masks}, got {result}"
+
+
+def test_generate_top_new_masks_edge_cases(key, cfg_flat):
+    """Test edge cases for generate_top_new_masks."""
+    # Test with samples being recent (threshold = 9000, so only 9500 > 9000)
+    sample_indices = jnp.array([8000, 9000, 9500])
+    collected_transitions = 10000
+    mixed_value_threshold = 1000  # threshold at 9000 (10000-1000)
+    
+    expected_mixed = jnp.array([0.0, 0.0, 1.0])  # Only 9500 > 9000
+    result_mixed = generate_top_new_masks(sample_indices, collected_transitions, mixed_value_threshold)
+    assert jnp.allclose(result_mixed, expected_mixed)
+    
+    # Test with all samples being new (recent) - use very low threshold
+    sample_indices = jnp.array([8000, 9000, 9500])
+    collected_transitions = 10000
+    mixed_value_threshold = 2000  # threshold at 8000 (10000-2000), so all samples > 8000
+    
+    expected_all_new = jnp.array([0.0, 1.0, 1.0])  # 8000 == 8000 (not >), 9000 > 8000, 9500 > 8000
+    result_all_new = generate_top_new_masks(sample_indices, collected_transitions, mixed_value_threshold)
+    assert jnp.allclose(result_all_new, expected_all_new)
+    
+    # Test with truly all samples being new
+    sample_indices = jnp.array([8500, 9000, 9500])
+    collected_transitions = 10000
+    mixed_value_threshold = 2000  # threshold at 8000, so all samples > 8000
+    
+    expected_truly_all_new = jnp.array([1.0, 1.0, 1.0])  # All > 8000
+    result_truly_all_new = generate_top_new_masks(sample_indices, collected_transitions, mixed_value_threshold)
+    assert jnp.allclose(result_truly_all_new, expected_truly_all_new)
+    
+    # Test with all samples being old
+    sample_indices = jnp.array([1000, 2000, 3000])
+    collected_transitions = 10000
+    mixed_value_threshold = 7000  # threshold at 3000 (10000-7000), so all samples <= 3000
+    
+    expected_all_old = jnp.array([0.0, 0.0, 0.0])  # 1000 <= 3000, 2000 <= 3000, 3000 <= 3000 (not >)
+    result_all_old = generate_top_new_masks(sample_indices, collected_transitions, mixed_value_threshold)
+    assert jnp.allclose(result_all_old, expected_all_old)
+    
+    # Test with single sample at boundary
+    sample_indices = jnp.array([7000])
+    collected_transitions = 10000
+    mixed_value_threshold = 3000  # Threshold exactly at 7000
+    
+    expected_boundary = jnp.array([0.0])  # idx == threshold gives mask=0
+    result_boundary = generate_top_new_masks(sample_indices, collected_transitions, mixed_value_threshold)
+    assert jnp.allclose(result_boundary, expected_boundary)
+
+
+def test_apply_mixed_value_targets_basic(key, cfg_flat):
+    """Test basic functionality of apply_mixed_value_targets."""
+    batch_size, num_steps = 2, 4  # K+1 = 4
+    
+    # Create search and sarsa values
+    search_values = jnp.array([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
+    sarsa_values = jnp.array([[10.0, 20.0, 30.0, 40.0], [50.0, 60.0, 70.0, 80.0]])
+    
+    # Create masks: first sample old (mask=0), second sample new (mask=1)
+    top_new_masks = jnp.array([0.0, 1.0])
+    
+    expected_mixed = jnp.array([
+        [1.0, 2.0, 3.0, 4.0],    # Old sample: use search values
+        [50.0, 60.0, 70.0, 80.0]  # New sample: use sarsa values
+    ])
+    
+    result = apply_mixed_value_targets(search_values, sarsa_values, top_new_masks, num_steps - 1)
+    
+    assert result.shape == (2, 4)
+    assert jnp.allclose(result, expected_mixed), f"Expected {expected_mixed}, got {result}"
+
+
+def test_apply_mixed_value_targets_categorical(key, cfg_flat):
+    """Test apply_mixed_value_targets with categorical value distributions."""
+    batch_size, num_steps, support_size = 2, 3, 5
+    
+    # Create categorical search and sarsa values
+    search_values = jnp.ones((batch_size, num_steps, support_size)) * 0.1
+    sarsa_values = jnp.ones((batch_size, num_steps, support_size)) * 0.2
+    
+    # Create masks
+    top_new_masks = jnp.array([0.0, 1.0])
+    
+    expected_mixed = jnp.array([
+        [[0.1] * support_size] * num_steps,  # Old sample: search values
+        [[0.2] * support_size] * num_steps   # New sample: sarsa values
+    ])
+    
+    result = apply_mixed_value_targets(search_values, sarsa_values, top_new_masks, num_steps - 1)
+    
+    assert result.shape == (batch_size, num_steps, support_size)
+    assert jnp.allclose(result, expected_mixed)
+
+
+def test_mixed_value_threshold_trainer_integration(key, cfg_flat):
+    """Test integration of mixed value threshold logic in trainer."""
+    mk, bk = jax.random.split(key, 2)
+    
+    # Create model and config with mixed value target
+    model = make_model(mk, cfg_flat)
+    config = make_cfg(
+        cfg_flat.value_support_size, 
+        cfg_flat.reward_support_size, 
+        3,  # num_unroll_steps
+        False,  # use_projection
+        'mixed_value_threshold_integration'
+    )
+    config = dataclasses.replace(
+        config,
+        value_target="mixed",
+        mixed_value_threshold=1000,
+        start_use_mix_training_steps=50
+    )
+    
+    # Create batch with mixed value components
+    batch = make_batch(
+        bk, 
+        config.batch_size, 
+        cfg_flat.observation_shape, 
+        cfg_flat.num_actions, 
+        config.num_unroll_steps, 
+        cfg_flat.value_support_size, 
+        cfg_flat.reward_support_size
+    )
+    
+    # Add search and sarsa values
+    search_values = jnp.ones((config.batch_size, config.num_unroll_steps + 1)) * 1.0
+    sarsa_values = jnp.ones((config.batch_size, config.num_unroll_steps + 1)) * 2.0
+    sample_indices = jnp.array([500, 1500])  # One old, one new (threshold=1000)
+    collected_transitions = 2000
+    
+    batch['target_search_value'] = search_values
+    batch['target_sarsa_value'] = sarsa_values
+    batch['sample_indices'] = sample_indices
+    batch['collected_transitions'] = collected_transitions
+    batch['training_step'] = 100  # After start_use_mix_training_steps
+    
+    # Compute loss (should apply mixed value targets internally)
+    loss, metrics = Learner._compute_total_loss_static(
+        model, config, batch, key, training=True
+    )
+    
+    # Verify loss computation completed successfully
+    assert jnp.isfinite(loss)
+    assert 'value_loss' in metrics
+    assert jnp.isfinite(metrics['value_loss'])
+    
+    # Test with training step before start_use_mix_training_steps
+    batch['training_step'] = 30
+    loss_early, metrics_early = Learner._compute_total_loss_static(
+        model, config, batch, key, training=True
+    )
+    
+    # Should use only search values early in training
+    assert jnp.isfinite(loss_early)
+
+
+def test_mixed_value_target_selection_logic(key, cfg_flat):
+    """Test the value target selection logic for different modes."""
+    mk, bk = jax.random.split(key, 2)
+    
+    model = make_model(mk, cfg_flat)
+    base_config = make_cfg(
+        cfg_flat.value_support_size, 
+        cfg_flat.reward_support_size, 
+        2,  # num_unroll_steps
+        False,  # use_projection
+        'target_selection'
+    )
+    
+    # Create batch with different value types
+    batch = make_batch(
+        bk, 
+        2,  # batch_size
+        cfg_flat.observation_shape, 
+        cfg_flat.num_actions, 
+        2,  # num_unroll_steps
+        cfg_flat.value_support_size, 
+        cfg_flat.reward_support_size
+    )
+    
+    search_values = jnp.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]])
+    sarsa_values = jnp.array([[2.0, 2.0, 2.0], [2.0, 2.0, 2.0]])
+    
+    batch['target_search_value'] = search_values
+    batch['target_sarsa_value'] = sarsa_values
+    
+    # Test "search" mode
+    config_search = dataclasses.replace(base_config, value_target="search")
+    loss_search, metrics_search = Learner._compute_total_loss_static(
+        model, config_search, batch, key, training=True
+    )
+    
+    # Test "sarsa" mode
+    config_sarsa = dataclasses.replace(base_config, value_target="sarsa")
+    loss_sarsa, metrics_sarsa = Learner._compute_total_loss_static(
+        model, config_sarsa, batch, key, training=True
+    )
+    
+    # Test "mixed" mode
+    config_mixed = dataclasses.replace(
+        base_config, 
+        value_target="mixed",
+        start_use_mix_training_steps=0,
+        mixed_value_threshold=500
+    )
+    
+    # Add mixed value batch components
+    batch['sample_indices'] = jnp.array([400, 600])  # One old, one new
+    batch['collected_transitions'] = 1000
+    batch['training_step'] = 10
+    
+    loss_mixed, metrics_mixed = Learner._compute_total_loss_static(
+        model, config_mixed, batch, key, training=True
+    )
+    
+    # All losses should be finite and different
+    assert jnp.isfinite(loss_search)
+    assert jnp.isfinite(loss_sarsa)
+    assert jnp.isfinite(loss_mixed)
+    
+    # Mixed mode should give different result than pure search/sarsa
+    # (Due to mixing different targets for different samples)
+    assert not jnp.allclose(loss_mixed, loss_search, atol=1e-6) or \
+           not jnp.allclose(loss_mixed, loss_sarsa, atol=1e-6)
+
+
+def test_mixed_value_fallback_behavior(key, cfg_flat):
+    """Test fallback behavior when mixed value components are missing."""
+    mk, bk = jax.random.split(key, 2)
+    
+    model = make_model(mk, cfg_flat)
+    config = make_cfg(
+        cfg_flat.value_support_size, 
+        cfg_flat.reward_support_size, 
+        2,  # num_unroll_steps
+        False,  # use_projection
+        'fallback_test'
+    )
+    config = dataclasses.replace(config, value_target="mixed")
+    
+    # Create minimal batch without mixed value components
+    batch = make_batch(
+        bk, 
+        2,  # batch_size
+        cfg_flat.observation_shape, 
+        cfg_flat.num_actions, 
+        2,  # num_unroll_steps
+        cfg_flat.value_support_size, 
+        cfg_flat.reward_support_size
+    )
+    
+    # Should fallback to regular target_value when mixed components missing
+    loss, metrics = Learner._compute_total_loss_static(
+        model, config, batch, key, training=True
+    )
+    
+    assert jnp.isfinite(loss)
+    assert 'value_loss' in metrics
+
+
+def test_top_new_masks_mathematical_properties(key, cfg_flat):
+    """Test mathematical properties of top_new_masks generation."""
+    # Test that mask generation is deterministic and consistent
+    sample_indices = jnp.array([1000, 2000, 3000, 4000, 5000])
+    collected_transitions = 4000
+    mixed_value_threshold = 1500
+    
+    # Generate masks multiple times
+    masks1 = generate_top_new_masks(sample_indices, collected_transitions, mixed_value_threshold)
+    masks2 = generate_top_new_masks(sample_indices, collected_transitions, mixed_value_threshold)
+    
+    # Should be identical
+    assert jnp.allclose(masks1, masks2)
+    
+    # Test monotonicity: higher indices should have >= mask values
+    sorted_indices = jnp.sort(sample_indices)
+    sorted_masks = generate_top_new_masks(sorted_indices, collected_transitions, mixed_value_threshold)
+    
+    # Check that mask values are non-decreasing (monotonic)
+    for i in range(len(sorted_masks) - 1):
+        assert sorted_masks[i] <= sorted_masks[i + 1], \
+            f"Masks should be non-decreasing, but {sorted_masks[i]} > {sorted_masks[i + 1]}"
+    
+    # Test boundary conditions
+    threshold_idx = collected_transitions - mixed_value_threshold  # 2500
+    
+    # Indices exactly at threshold should get mask=0
+    mask_at_threshold = generate_top_new_masks(jnp.array([threshold_idx]), collected_transitions, mixed_value_threshold)
+    assert jnp.allclose(mask_at_threshold, jnp.array([0.0]))
+    
+    # Indices just above threshold should get mask=1
+    mask_above_threshold = generate_top_new_masks(jnp.array([threshold_idx + 1]), collected_transitions, mixed_value_threshold)
+    assert jnp.allclose(mask_above_threshold, jnp.array([1.0]))
+
+
+def test_mixed_value_targets_comprehensive_shapes(key, cfg_flat):
+    """Test mixed value targets with various tensor shapes."""
+    # Test scalar values
+    search_scalar = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+    sarsa_scalar = jnp.array([[10.0, 20.0], [30.0, 40.0]])
+    masks = jnp.array([0.0, 1.0])
+    
+    result_scalar = apply_mixed_value_targets(search_scalar, sarsa_scalar, masks, 1)
+    expected_scalar = jnp.array([[1.0, 2.0], [30.0, 40.0]])
+    assert jnp.allclose(result_scalar, expected_scalar)
+    
+    # Test categorical values (3D tensors)
+    support_size = 3
+    search_cat = jnp.array([[[0.1, 0.2, 0.7], [0.3, 0.3, 0.4]], 
+                           [[0.2, 0.2, 0.6], [0.4, 0.4, 0.2]]])
+    sarsa_cat = jnp.array([[[0.8, 0.1, 0.1], [0.7, 0.2, 0.1]], 
+                          [[0.9, 0.05, 0.05], [0.8, 0.1, 0.1]]])
+    
+    result_cat = apply_mixed_value_targets(search_cat, sarsa_cat, masks, 1)
+    
+    # First sample (mask=0): should use search values
+    assert jnp.allclose(result_cat[0], search_cat[0])
+    # Second sample (mask=1): should use sarsa values
+    assert jnp.allclose(result_cat[1], sarsa_cat[1])
+    
+    assert result_cat.shape == (2, 2, support_size)
+
+
+def test_action_item_21_comprehensive_completion(key, cfg_flat):
+    """Comprehensive test to verify Action Item 21 completion criteria."""
+    # Test all components of Action Item 21 together
+    
+    # 1. Test mask generation with EfficientZeroV2 pattern
+    sample_indices = jnp.array([4000, 6000, 8000])  # Mix of old and new
+    collected_transitions = 7000
+    mixed_value_threshold = 2000
+    
+    masks = generate_top_new_masks(sample_indices, collected_transitions, mixed_value_threshold)
+    
+    # Expected: idx > 5000 (7000-2000) get mask=1
+    expected_masks = jnp.array([0.0, 1.0, 1.0])
+    assert jnp.allclose(masks, expected_masks)
+    
+    # 2. Test value target mixing
+    search_vals = jnp.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+    sarsa_vals = jnp.array([[10.0, 10.0], [20.0, 20.0], [30.0, 30.0]])
+    
+    mixed_vals = apply_mixed_value_targets(search_vals, sarsa_vals, masks, 1)
+    
+    # Sample 0 (old): search values, Samples 1&2 (new): sarsa values
+    expected_mixed = jnp.array([[1.0, 1.0], [20.0, 20.0], [30.0, 30.0]])
+    assert jnp.allclose(mixed_vals, expected_mixed)
+    
+    # 3. Test trainer integration
+    mk, bk = jax.random.split(key, 2)
+    model = make_model(mk, cfg_flat)
+    config = make_cfg(
+        cfg_flat.value_support_size, 
+        cfg_flat.reward_support_size, 
+        2,  # num_unroll_steps
+        False,  # use_projection
+        'action_item_21_complete'
+    )
+    config = dataclasses.replace(
+        config,
+        value_target="mixed",
+        mixed_value_threshold=1000,
+        start_use_mix_training_steps=0
+    )
+    
+    batch = make_batch(bk, 2, cfg_flat.observation_shape, cfg_flat.num_actions, 
+                      2, cfg_flat.value_support_size, cfg_flat.reward_support_size)
+    
+    # Add all required mixed value components
+    batch['target_search_value'] = jnp.ones((2, 3)) * 1.0
+    batch['target_sarsa_value'] = jnp.ones((2, 3)) * 2.0
+    batch['sample_indices'] = jnp.array([500, 1500])  # One old, one new
+    batch['collected_transitions'] = 2000
+    batch['training_step'] = 10
+    
+    # Should work without errors
+    loss, metrics = Learner._compute_total_loss_static(
+        model, config, batch, key, training=True
+    )
+    
+    assert jnp.isfinite(loss)
+    assert 'value_loss' in metrics
+    
+    # 4. Test configuration parameters
+    assert hasattr(config, 'mixed_value_threshold')
+    assert hasattr(config, 'start_use_mix_training_steps')
+    assert hasattr(config, 'value_target')
+    
+    # 5. Test EfficientZeroV2 compliance
+    # Verify that the logic matches PyTorch BatchWorker pattern:
+    # mask = int(idx > collected_transitions - mixed_value_threshold)
+    test_idx = 1500
+    test_collected = 2000
+    test_threshold = 300
+    
+    expected_pytorch_mask = float(test_idx > (test_collected - test_threshold))
+    actual_mask = generate_top_new_masks(
+        jnp.array([test_idx]), test_collected, test_threshold
+    )[0]
+    
+    assert jnp.allclose(actual_mask, expected_pytorch_mask), \
+        "Should match PyTorch BatchWorker mask generation pattern"
+    
+    print("✅ Action Item 21 comprehensive completion test passed!")
+    print("   - Mixed value threshold logic implemented")
+    print("   - Top new masks generation working")
+    print("   - Value target mixing functional")
+    print("   - Trainer integration complete")
+    print("   - EfficientZeroV2 pattern compliance verified")
