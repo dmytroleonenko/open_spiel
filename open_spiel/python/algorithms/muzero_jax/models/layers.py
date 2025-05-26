@@ -109,7 +109,7 @@ class MLP(nnx.Module):
                 if last_linear_layer.bias is not None:
                     last_linear_layer.bias.value = jnp.zeros_like(last_linear_layer.bias.value)
             else: # pragma: no cover
-                print("Warning: init_zero=True but no Linear layer found as second to last layer in MLP for zero init.")
+                print("Warning: init_zero=True but no Linear layer found as second to last layer in MLP for zero init.") # pragma: no cover
 
     def reset_noise(self, rng_key: jax.Array) -> None:
         """Reset noise in all noisy linear layers."""

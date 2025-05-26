@@ -7,6 +7,7 @@ pytest>=7.0.0      # For testing
 coverage>=6.0      # For test coverage reporting
 hydra-core>=1.3    # For configuration management
 wandb>=0.19        # For experiment tracking
+pytest-xdist>=3.6
 
 # OpenSpiel is assumed to be installed in the environment already (part of the broader project)
 # For specific GPU/TPU, ensure correct JAX installation, e.g.:

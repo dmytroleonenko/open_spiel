@@ -1,0 +1,338 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# **MCP Nuanced Tools: Strategic Usage Guide for LLM Coding Agents**
+
+## **🎯 Core Principle: Prefer Structured Python Analysis Over Raw File Reading**
+
+**CRITICAL FOR LLM AGENTS**: When working with Python code, **ALWAYS prefer MCP nuanced tools over generic file reading tools**. These tools provide parsed, structured, semantic information rather than raw text, enabling better code understanding and analysis.
+
+**🚨 IMPORTANT PATH CONVENTIONS**:
+- **`mcp_nuanced_initialize_graph(repo_path, project_root)`: The `repo_path` argument MUST be an ABSOLUTE path.** (Example: `/Users/dev/my_project`)
+- **`project_root` parameter: MANDATORY absolute path to the project root for path resolution.**
+- **ALL OTHER TOOLS: Any `file_path`, `source_file`, `dest_file` arguments MUST be RELATIVE to the project_root established by `initialize_graph`.**
+- **🔍 INTELLIGENT PATH RESOLUTION**: If a file isn't found at the expected project_root-relative location, tools will search the repository and suggest the correct path.
+
+Example: If `initialize_graph("/project/my_app", "/project")` is called, then `list_file_definitions("my_app/src/main.py")` refers to `/project/my_app/src/main.py`.
+
+---
+
+## **📋 Complete Tool Inventory & Strategic Usage**
+
+### **🔍 Code Discovery & Exploration Tools**
+
+#### **1. `mcp_nuanced_list_file_definitions(file_path)`** ⭐ **PREFERRED OVER FILE READING**
+**Instead of**: Reading entire files to see what's defined  
+**Use this when**:
+- ✅ Exploring a new Python file's contents
+- ✅ Getting overview of available functions/classes
+- ✅ Understanding file structure before diving deeper
+- ✅ Planning which functions to analyze further
+- ✅ Quick inventory of what's available in a module
+
+**Returns**: Structured JSON with functions (args, return types, docstrings), classes, constants, imports
+
+```python
+# ❌ DON'T: Read entire file just to see what functions exist
+read_file(target_file="utils.py")
+
+# ✅ DO: Initialize repository first, then get structured overview
+mcp_nuanced_initialize_graph(repo_path="/path/to/your/project", project_root="/path/to/your/project")
+mcp_nuanced_list_file_definitions(file_path="utils.py")  # Relative to project_root
+```
+
+#### **2. `mcp_nuanced_get_function_source(file_path, function_name)`** ⭐ **PREFERRED OVER FILE READING**
+**Instead of**: Reading files and manually finding function boundaries  
+**Use this when**:
+- ✅ Need complete source of a specific function
+- ✅ Analyzing function implementation details
+- ✅ Understanding function signature and decorators
+- ✅ Extracting function for documentation or analysis
+- ✅ Getting precise line numbers for a function
+
+**Returns**: Complete function source with decorators, line numbers, metadata
+
+```python
+# ❌ DON'T: Read file and manually search for function
+read_file(target_file="trainer.py", start_line=1, end_line=100)  # Guessing
+
+# ✅ DO: Initialize repository first, then get exact function source
+mcp_nuanced_initialize_graph(repo_path="/path/to/your/project", project_root="/path/to/your/project")
+mcp_nuanced_get_function_source(file_path="trainer.py", function_name="train_step")  # Relative to project_root
+```
+
+---
+
+### **🔗 Dependency & Relationship Analysis Tools**
+
+#### **3. `mcp_nuanced_get_function_call_graph(file_path, function_name)`**
+**Use this when**:
+- ✅ Understanding what a function calls (its dependencies)
+- ✅ Finding what calls a function (its dependents)  
+- ✅ Tracing execution flow and call chains
+- ✅ Planning test mocking strategies
+- ✅ Debugging call relationships
+
+#### **4. `mcp_nuanced_analyze_dependencies(file_path OR module_name)`**
+**Use this when**:
+- ✅ Understanding module-level coupling
+- ✅ Assessing refactoring impact scope
+- ✅ Finding all code that uses a specific file/module
+- ✅ Planning breaking changes
+- ✅ Understanding system architecture
+
+#### **5. `mcp_nuanced_analyze_function_imports(file_path, function_name)`** ⭐ **NEW**
+**Use this when**:
+- ✅ Planning to move a function (what imports does it need?)
+- ✅ Understanding function's external dependencies
+- ✅ Identifying local vs external references
+- ✅ Detecting missing imports or undefined references
+
+---
+
+### **⚠️ Impact Analysis & Safety Tools**
+
+#### **6. `mcp_nuanced_analyze_change_impact(file_path, function_name)`**
+**Use this when**:
+- ✅ **BEFORE modifying any function** (safety assessment)
+- ✅ Planning refactoring (understand blast radius)
+- ✅ Risk assessment for changes
+- ✅ Identifying what tests might break
+- ✅ Understanding criticality of a function
+
+---
+
+### **🔄 Function Movement & Refactoring Tools**
+
+#### **7. `mcp_nuanced_preview_function_move(source_file, function_name, dest_file)`** ⭐ **NEW**
+**Use this when**:
+- ✅ Planning to reorganize code structure
+- ✅ Understanding move impact before making changes
+- ✅ Identifying what files need import updates
+- ✅ Checking for naming conflicts in destination
+
+#### **8. `mcp_nuanced_move_function(source_file, function_name, dest_file, dry_run)`** ⭐ **NEW**
+**Use this when**:
+- ✅ Actually performing function moves between files
+- ✅ Automatically handling import dependencies
+- ✅ Getting comprehensive report of changes made
+
+---
+
+### **📄 Code Extraction Tools**
+
+#### **9. `mcp_nuanced_get_code_by_lines(file_path, line_ranges)`** ⭐ **NEW**
+**Use this when**:
+- ✅ Extracting specific code sections by line numbers
+- ✅ Analyzing specific code sections with function context
+- ✅ Understanding what functions contain specific line ranges
+- ✅ Getting targeted code snippets for analysis
+
+---
+
+### **⚙️ Setup & Management Tools**
+
+#### **10. `mcp_nuanced_initialize_graph(repo_path, project_root)`**
+**🚨 ALWAYS START WITH THIS** - **REQUIRED** before using **ANY** other tools
+- Sets the repository root for analysis and project_root for relative path resolution
+- All file paths in subsequent tools are relative to the specified project_root
+- **🔄 AUTOMATIC UPDATES** - code graph stays current as `*.py` files change (transparent file watching)
+- **🔍 INTELLIGENT PATH RESOLUTION** - if files aren't found, tools will search and suggest correct paths
+
+#### **11. `mcp_nuanced_list_repositories()` & `mcp_nuanced_switch_repository()`**
+**Use for**: Managing multiple codebases in same session
+
+---
+
+## **🧠 Decision Matrix: Which Tool When?**
+
+### **"I want to understand what's in this Python file"**
+```
+0th: mcp_nuanced_initialize_graph(repo_path, project_root)          # REQUIRED FIRST STEP
+1st: mcp_nuanced_list_file_definitions(file_path)         # Get structured overview (relative to project_root)
+2nd: mcp_nuanced_get_function_source(...)                 # Dive into specific functions
+❌ AVOID: read_file() for exploration
+```
+
+### **"I need to see a specific function's code"**
+```
+0th: mcp_nuanced_initialize_graph(repo_path, project_root)          # REQUIRED FIRST STEP
+✅ USE: mcp_nuanced_get_function_source(file_path, function_name)  # file_path relative to project_root
+❌ AVOID: read_file() and manual searching
+```
+
+### **"I want to modify this function"**
+```
+0th: mcp_nuanced_initialize_graph(repo_path, project_root)                     # REQUIRED FIRST STEP
+1st: mcp_nuanced_analyze_change_impact(file_path, function_name)      # Safety check (file_path relative to project_root)
+2nd: mcp_nuanced_get_function_call_graph(...)                        # Understand dependencies  
+3rd: mcp_nuanced_analyze_function_imports(...)                       # Check imports needed
+Then: Make informed changes
+```
+
+### **"I need to move/reorganize functions"**
+```
+0th: mcp_nuanced_initialize_graph(repo_path, project_root)                  # REQUIRED FIRST STEP
+1st: mcp_nuanced_preview_function_move(...)                       # Plan the move (paths relative to project_root)
+2nd: mcp_nuanced_move_function(..., dry_run=True)                 # Dry run
+3rd: mcp_nuanced_move_function(..., dry_run=False)                # Execute move
+```
+
+### **"I'm exploring a new codebase"**
+```
+1st: mcp_nuanced_initialize_graph(repo_path, project_root)
+2nd: mcp_nuanced_list_file_definitions(key_files)     # Survey main files
+3rd: mcp_nuanced_analyze_dependencies(main_modules)   # Understand architecture
+4th: mcp_nuanced_get_function_call_graph(key_funcs)   # Dive into specifics
+```
+
+### **"I need to analyze specific code sections"**
+```
+0th: mcp_nuanced_initialize_graph(repo_path, project_root)          # REQUIRED FIRST STEP
+1st: mcp_nuanced_get_code_by_lines(file_path, line_ranges) # Extract specific lines
+2nd: mcp_nuanced_get_function_source(...)                 # Analyze specific functions
+3rd: mcp_nuanced_analyze_function_imports(...)            # Check dependencies
+```
+
+---
+
+## **🚀 Advanced Workflow Patterns for LLM Agents**
+
+### **Pattern 1: Complete Function Analysis**
+```python
+# Full understanding of a function
+0. mcp_nuanced_initialize_graph(repo_path, project_root)                       # REQUIRED FIRST
+1. mcp_nuanced_get_function_source(file_path, function_name)          # Get complete source (relative to project_root)
+2. mcp_nuanced_analyze_function_imports(file_path, function_name)     # Understand dependencies  
+3. mcp_nuanced_get_function_call_graph(file_path, function_name)      # See relationships
+4. mcp_nuanced_analyze_change_impact(file_path, function_name)        # Assess criticality
+```
+
+### **Pattern 2: Safe Refactoring Pipeline**
+```python
+# Before making any changes
+0. mcp_nuanced_initialize_graph(repo_path, project_root)       # REQUIRED FIRST
+1. mcp_nuanced_analyze_change_impact(...)            # Understand impact (paths relative to project_root)
+2. mcp_nuanced_analyze_dependencies(...)             # Check module dependencies
+3. mcp_nuanced_preview_function_move(...)            # If moving functions
+4. Execute changes with full knowledge
+```
+
+### **Pattern 3: Code Architecture Understanding**
+```python
+# Understanding system design
+0. mcp_nuanced_initialize_graph(repo_path, project_root)       # REQUIRED FIRST
+1. mcp_nuanced_list_file_definitions(main_files)     # Survey key files (paths relative to project_root)
+2. mcp_nuanced_analyze_dependencies(modules)         # Understand coupling
+3. mcp_nuanced_get_function_call_graph(...)          # Trace key flows
+```
+
+### **Pattern 4: Code Section Analysis**
+```python
+# Analyzing specific code sections
+0. mcp_nuanced_initialize_graph(repo_path, project_root)              # REQUIRED FIRST
+1. mcp_nuanced_get_code_by_lines(file_path, line_ranges)     # Extract specific lines
+2. mcp_nuanced_get_function_source(...)                     # Get complete function context
+3. mcp_nuanced_analyze_function_imports(...)                # Understand dependencies
+4. mcp_nuanced_get_function_call_graph(...)                 # See relationships
+```
+
+---
+
+## **🔍 Intelligent Path Resolution System**
+
+### **How It Works**
+When you provide a file path that doesn't exist at the expected project_root-relative location, the tools will:
+
+1. **Search the repository** for files with the same name
+2. **Calculate the correct project_root-relative path** for found files
+3. **Provide helpful error messages** with suggestions
+4. **Show exactly where the file was searched** for transparency
+
+### **Example Error Messages**
+```
+File not found at: '/working/dir/src/utils.py'
+
+However, I found a file at: 'project/src/utils.py'
+
+The correct path relative to your initialized project_root is: 'project/src/utils.py'
+
+Please use the correct path: 'project/src/utils.py'
+```
+
+### **Benefits**
+- **No more guessing** about correct paths
+- **Clear guidance** when paths are wrong
+- **Automatic discovery** of similar files
+- **Consistent behavior** across all tools
+
+---
+
+## **⚡ Performance & Efficiency Guidelines**
+
+### **Structured Data > Raw Text**
+- MCP nuanced tools return **parsed, structured data** (JSON)
+- File reading returns **raw text** requiring manual parsing
+- Structured data enables **better reasoning** and **fewer errors**
+
+### **Semantic Understanding > Text Searching**
+- Tools understand **Python syntax** and **semantics**
+- They know about **decorators**, **imports**, **function boundaries**
+- They provide **context-aware analysis**
+
+### **Targeted Analysis > Broad Reading**
+- Get **exactly what you need** without processing irrelevant content
+- **Faster** than reading large files
+- **More accurate** than manual text parsing
+
+---
+
+## **🎯 Key Decision Rules for LLM Agents**
+
+### **ALWAYS prefer MCP nuanced tools when**:
+- ✅ Working with Python files
+- ✅ Need function-level analysis
+- ✅ Understanding code relationships
+- ✅ Planning modifications
+- ✅ Exploring codebase structure
+- ✅ Extracting specific code sections
+
+### **Use file reading tools only when**:
+- ❌ Working with non-Python files
+- ❌ Need to see exact formatting/whitespace
+- ❌ Reading configuration files
+- ❌ Analyzing text content (not code structure)
+
+### **Combine tools strategically**:
+- Start with **overview tools** (`list_file_definitions`)
+- Progress to **specific analysis** (`get_function_source`, `analyze_function_imports`)
+- Use **relationship tools** for understanding (`get_function_call_graph`, `analyze_dependencies`)
+- Apply **safety tools** before changes (`analyze_change_impact`, `preview_function_move`)
+
+---
+
+## **💡 Pro Tips for Maximum Effectiveness**
+
+1. **🚨 ALWAYS initialize the graph first** - `mcp_nuanced_initialize_graph(repo_path, cwd)` is REQUIRED before ANY other tool
+2. **Understand path resolution** - All file paths are relative to the initialized CWD
+3. **Use intelligent path resolution** - Don't worry about exact paths; tools will help you find the right ones
+4. **Use structured data** - Parse the JSON responses for better reasoning
+5. **Combine multiple tools** - Each provides different perspectives
+6. **Check impact before changing** - Use safety tools to avoid breaking code
+7. **Prefer semantic analysis** - Let tools understand Python structure for you
+8. **Think in workflows** - Chain tools together for comprehensive analysis
+9. **🧪 Virtual Environment Support** - Tools automatically detect and use project virtual environments
+
+## **🚨 Critical Reminders for LLM Agents**
+
+- **NEVER** use other MCP nuanced tools without initializing the repository first.
+- **PATH CONVENTIONS ARE KEY**:
+    - `initialize_graph(repo_path, project_root)`: Both `repo_path` and `project_root` MUST be ABSOLUTE paths, `project_root` is mandatory.
+    - All other tools: `file_path`, `test_path`, etc., MUST be RELATIVE to the initialized project_root.
+- **🔍 INTELLIGENT PATH RESOLUTION**: If files aren't found, tools will search and suggest correct paths - pay attention to error messages!
+- If you see "No active repository" errors, you likely forgot to initialize OR used a relative path for initialization.
+- **🔄 AUTO-UPDATES**: The code graph automatically stays current when Python files change (transparent background watching)
+
+**Remember**: These tools are designed specifically for Python code analysis with intelligent path resolution. They understand syntax, semantics, and relationships that generic file reading cannot provide. Use them as your primary code analysis interface! 

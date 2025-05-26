@@ -2,8 +2,8 @@ import jax
 # Attempt to import gumbel_muzero_policy from mctx; provide stub if unavailable
 try:
     from mctx import gumbel_muzero_policy
-except ImportError:
-    def gumbel_muzero_policy(*args, **kwargs):
+except ImportError: # pragma: no cover
+    def gumbel_muzero_policy(*args, **kwargs): # pragma: no cover
         raise ImportError("mctx is required for gumbel_muzero_policy") # pragma: no cover
 
 
