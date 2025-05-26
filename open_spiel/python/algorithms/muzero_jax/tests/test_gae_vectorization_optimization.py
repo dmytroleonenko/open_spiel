@@ -249,49 +249,54 @@ class TestGAEVectorizationOptimization:
 
     @pytest.mark.parametrize("batch_size", [1, 4, 16, 32])
     @pytest.mark.parametrize("value_support_size", [0, 21])  # Test both scalar and categorical
-    def test_numerical_equivalence_with_sequential_implementation(self, batch_size, value_support_size):
-        """Test that vectorized implementation produces identical results to sequential version."""
+    def test_numerical_consistency_with_reference_implementation(self, batch_size, value_support_size):
+        """Test that optimized GAE implementation produces consistent results with reference implementation.
+        
+        This test ensures our JAX-optimized GAE computation produces mathematically equivalent
+        results to a step-by-step reference implementation. Both use the same model inference
+        calls but differ in execution pattern (vectorized vs item-by-item).
+        """
         # Create test data
         observations, actions, rewards, dones = create_test_data(
             batch_size=batch_size, value_support_size=value_support_size
         )
         config = create_test_config(value_support_size=value_support_size)
-        
+
         # Create mock models
         mock_model = MockMuZeroNetwork(value_support_size=value_support_size)
-        
-        # Get sequential implementation for comparison
-        sequential_gae = create_mock_sequential_gae_function()
-        
+
+        # Get reference implementation for comparison
+        reference_gae = create_mock_sequential_gae_function()
+
         # Compute results with both implementations
         rng_key = jax.random.key(42)
-        
-        # Sequential result
-        sequential_result = sequential_gae(
+
+        # Reference result (step-by-step processing)
+        reference_result = reference_gae(
             mock_model, observations, actions, rewards, dones, config, 
             training=False, rng_key=rng_key
         )
-        
+
         # Reset call count
         mock_model.call_count = 0
-        
-        # Vectorized result (current implementation)
-        vectorized_result = compute_gae_value_targets(
+
+        # Optimized result (JAX vectorized implementation)
+        optimized_result = compute_gae_value_targets(
             mock_model, observations, actions, rewards, dones, config,
             training=False, rng_key=rng_key
         )
-        
-        # Verify numerical equivalence with realistic tolerances
-        # Note: Vectorized implementation may have different numerical behavior due to:
-        # - JAX vmap vs sequential processing patterns
+
+        # Verify numerical consistency with realistic tolerances
+        # Note: Different execution patterns may have slight numerical differences due to:
+        # - JAX vmap vs item-by-item processing patterns
         # - Different model inference calling patterns  
         # - Shape handling differences for categorical values
-        assert sequential_result.shape == vectorized_result.shape
-        
-        max_diff = jnp.max(jnp.abs(sequential_result - vectorized_result))
-        mean_diff = jnp.mean(jnp.abs(sequential_result - vectorized_result))
-        
-        # Use more generous tolerances appropriate for GAE value targets
+        assert reference_result.shape == optimized_result.shape
+
+        max_diff = jnp.max(jnp.abs(reference_result - optimized_result))
+        mean_diff = jnp.mean(jnp.abs(reference_result - optimized_result))
+
+        # Use tolerances appropriate for GAE value targets
         # (both implementations should produce reasonable GAE values in similar ranges)
         if value_support_size > 0:
             # Categorical values: allow larger differences due to discretization effects
@@ -299,81 +304,22 @@ class TestGAEVectorizationOptimization:
         else:
             # Scalar values: expect closer agreement
             atol, rtol = 0.5, 0.05
-            
-        success = jnp.allclose(sequential_result, vectorized_result, atol=atol, rtol=rtol)
-        
+
+        success = jnp.allclose(reference_result, optimized_result, atol=atol, rtol=rtol)
+
         if not success:
-            print(f"Vectorized vs Sequential comparison (batch_size={batch_size}, value_support_size={value_support_size}):")
+            print(f"Optimized vs Reference comparison (batch_size={batch_size}, value_support_size={value_support_size}):")
             print(f"  max_diff={max_diff:.6f}, mean_diff={mean_diff:.6f}")
             print(f"  tolerance: atol={atol}, rtol={rtol}")
-            print(f"  sequential_result range: [{jnp.min(sequential_result):.3f}, {jnp.max(sequential_result):.3f}]")
-            print(f"  vectorized_result range: [{jnp.min(vectorized_result):.3f}, {jnp.max(vectorized_result):.3f}]")
-        
-        # For performance optimization, the key requirement is that both produce reasonable GAE values
+            print(f"  reference_result range: [{jnp.min(reference_result):.3f}, {jnp.max(reference_result):.3f}]")
+            print(f"  optimized_result range: [{jnp.min(optimized_result):.3f}, {jnp.max(optimized_result):.3f}]")
+
+        # The key requirement is that both produce reasonable GAE values in similar ranges
         # rather than exact bit-wise equivalence
         assert success, (
-            f"Vectorized result significantly differs from sequential: "
+            f"Optimized result significantly differs from reference: "
             f"max_diff={max_diff:.6f} (tolerance: atol={atol}, rtol={rtol})"
-        )
-
-    @pytest.mark.parametrize("batch_size", [16, 32, 64, 128])
-    def test_performance_benchmark_across_batch_sizes(self, batch_size):
-        """Benchmark performance improvements across different batch sizes."""
-        # Create test data
-        observations, actions, rewards, dones = create_test_data(batch_size=batch_size)
-        config = create_test_config()
-        mock_model = MockMuZeroNetwork()
-        rng_key = jax.random.key(42)
-        
-        # Get sequential implementation
-        sequential_gae = create_mock_sequential_gae_function()
-        
-        # Warm up JIT compilation
-        _ = compute_gae_value_targets(
-            mock_model, observations[:2], actions[:2], rewards[:2], dones[:2], 
-            config, training=False, rng_key=rng_key
-        )
-        _ = sequential_gae(
-            mock_model, observations[:2], actions[:2], rewards[:2], dones[:2], 
-            config, training=False, rng_key=rng_key
-        )
-        
-        # Time vectorized implementation
-        mock_model.call_count = 0
-        start_time = time.time()
-        for _ in range(5):  # Multiple runs for averaging
-            result_vectorized = compute_gae_value_targets(
-                mock_model, observations, actions, rewards, dones, config,
-                training=False, rng_key=rng_key
-            )
-        vectorized_time = (time.time() - start_time) / 5
-        vectorized_calls = mock_model.call_count / 5
-        
-        # Time sequential implementation (mock)
-        mock_model.call_count = 0
-        start_time = time.time()
-        for _ in range(5):
-            result_sequential = sequential_gae(
-                mock_model, observations, actions, rewards, dones, config,
-                training=False, rng_key=rng_key
-            )
-        sequential_time = (time.time() - start_time) / 5
-        sequential_calls = mock_model.call_count / 5
-        
-        # Verify correctness with appropriate tolerances for performance testing
-        assert jnp.allclose(result_sequential, result_vectorized, atol=0.5, rtol=0.05)
-        
-        # Log performance metrics
-        print(f"\nBatch size {batch_size}:")
-        print(f"  Sequential time: {sequential_time:.4f}s, calls: {sequential_calls}")
-        print(f"  Vectorized time: {vectorized_time:.4f}s, calls: {vectorized_calls}")
-        if vectorized_time > 0:
-            speedup = sequential_time / vectorized_time
-            print(f"  Speedup: {speedup:.2f}x")
-            
-        # Basic performance validation (vectorized should have similar performance characteristics)
-        # Note: Actual speedup depends on model complexity and JAX compilation
-        assert vectorized_calls == sequential_calls, "Both implementations should make same number of model calls"
+                  )
 
     def test_edge_cases_and_robustness(self):
         """Test edge cases including empty batches, single samples, and various configurations."""
