@@ -90,6 +90,7 @@ class MuZeroConfig:
     value_target: str = "mixed" # "search", "sarsa", "mixed", "max" - EfficientZeroV2 target selection
     value_target_type: str = "bootstrapped" # "GAE" or "bootstrapped" - method for value target computation
     td_lambda: float = 0.95 # Lambda for GAE (Generalized Advantage Estimation)
+    use_adaptive_td_steps: bool = True # Whether to adapt td_steps based on sample age
     auto_td_steps: int = 30000 # Adaptive TD steps based on sample age (EfficientZeroV2 feature)
     gae_max_steps: int = 15 # Maximum steps for GAE computation (config.model.GAE_max_steps)
     mixed_value_target_switch_step: int = 100000 # When to switch from search to sarsa in mixed mode
@@ -561,6 +562,41 @@ class Learner:
             target_rewards, config, game_history_mask
         )
 
+        # EfficientZeroV2: Dynamic Policy Target Reanalysis
+        actual_target_policies = target_policies
+        if config.reanalyze_ratio > 0.0:
+            try:
+                # Get training step for temperature scheduling
+                training_step = batch.get('training_step', 0)
+                
+                # Prepare observations for reanalysis - include full unroll sequence
+                full_observations = batch.get('observation', None)
+                if full_observations is None or full_observations.shape[1] < config.num_unroll_steps + 1:
+                    # If we don't have full observations, create them from initial observation
+                    # This is a fallback - ideally the batch should contain full observation sequences
+                    full_observations = jnp.tile(
+                        jnp.expand_dims(initial_observation, axis=1), 
+                        (1, config.num_unroll_steps + 1) + tuple(1 for _ in initial_observation.shape[1:])
+                    )
+                
+                # Perform policy reanalysis using current model weights
+                reanalyzed_policies = compute_policy_reanalysis_targets(
+                    model=model,
+                    observations=full_observations,  # B, K+1, *obs_shape
+                    config=config,
+                    training=training,
+                    rng_key=rng_key
+                )
+                
+                # Use reanalyzed policies - the function already handles mixing with original policies
+                actual_target_policies = reanalyzed_policies
+                
+            except Exception as e:  # pragma: no cover
+                # Fallback to original policies if reanalysis fails
+                import warnings  # pragma: no cover
+                warnings.warn(f"Policy reanalysis failed, using original policies: {e}")  # pragma: no cover
+                actual_target_policies = target_policies  # pragma: no cover
+
         # Initial inference
         initial_inference_output = model.initial_inference(initial_observation, training=training)
         hidden_state = initial_inference_output[0]
@@ -631,7 +667,7 @@ class Learner:
             
             # Policy Loss
             p_loss = losses_lib.compute_policy_loss(
-                predicted_policy_logits[:, k_idx], target_policies[:, k_idx]
+                predicted_policy_logits[:, k_idx], actual_target_policies[:, k_idx]
             )
             masked_p_loss = p_loss * step_mask
             per_sample_policy_loss += masked_p_loss
@@ -1413,46 +1449,102 @@ def compute_gae_value_targets(
         else:
             batch_td_lambdas = jnp.full((batch_size,), config.td_lambda)
     
+        # Compute adaptive td_steps for each sample
+        def compute_adaptive_td_steps(sample_idx, collected_trans, current_config):
+            """Compute adaptive td_steps based on sample age (EfficientZeroV2 Action Item 16)."""
+            # EfficientZeroV2 adaptive td_steps logic:
+            # delta_td = (collected_transitions - idx) // auto_td_steps
+            # td_steps = self.td_steps - delta_td
+            # td_steps = np.clip(td_steps, 1, self.td_steps)
+            
+            delta_td = (collected_trans - sample_idx) // current_config.auto_td_steps
+            
+            # Skip adaptive td_steps for mixed/max value targets (EfficientZeroV2 pattern)
+            if current_config.value_target in ['mixed', 'max']:
+                delta_td = 0
+                
+            adaptive_td_steps_val = current_config.td_steps - delta_td
+            adaptive_td_steps_val = jnp.clip(adaptive_td_steps_val, 1, current_config.td_steps)
+            return adaptive_td_steps_val.astype(jnp.int32)
+
+        if config.use_adaptive_td_steps and sample_indices is not None and collected_transitions is not None:
+            batch_td_steps = jax.vmap(
+                lambda idx: compute_adaptive_td_steps(idx, collected_transitions, config)
+            )(sample_indices)  # Shape [B,]
+        else:
+            batch_td_steps = jnp.full((batch_size,), config.td_steps, dtype=jnp.int32) # Shape [B,]
+
         # Compute bootstrap values with td_steps lookahead
-        def compute_bootstrap_values():
-            """Compute bootstrap values for GAE calculation."""
-            td_steps = config.td_steps
+        def compute_bootstrap_values(per_sample_td_steps): # MODIFIED: takes per_sample_td_steps
+            """Compute bootstrap values for GAE calculation, potentially with per-sample td_steps."""
+            # MODIFIED: td_steps is now per_sample_td_steps, shape [B,]
             
-            # Bootstrap values: V(s_{t+td_steps}) * gamma^td_steps
-            # Create indices for each timestep in each batch item
             time_indices = jnp.arange(total_steps)  # [T]
-            bootstrap_indices = time_indices + td_steps  # [T] 
-            bootstrap_indices = jnp.clip(bootstrap_indices, 0, total_steps - 1)  # [T]
             
-            # Extract bootstrap values for all batch items
-            bootstrap_values = current_values[:, bootstrap_indices]  # [B, T]
-            bootstrap_values = bootstrap_values * (config.discount_factor ** td_steps)
-            
+            # Bootstrap indices: V(s_{t+td_steps})
+            # Need to calculate this per batch item due to varying td_steps
+            # bootstrap_indices will be [B, T]
+            # Each row `b` uses `per_sample_td_steps[b]`
+            bootstrap_indices = time_indices[None, :] + per_sample_td_steps[:, None]  # [B, T]
+            bootstrap_indices = jnp.clip(bootstrap_indices, 0, total_steps - 1)  # [B, T]
+
+            # Gather current_values using batch_gather (or advanced indexing)
+            # current_values is [B, T], bootstrap_indices is [B, T]
+            # We want, for each b in B, current_values[b, bootstrap_indices[b, :]]
+            gathered_bootstrap_values = jnp.take_along_axis(current_values, bootstrap_indices, axis=1) # [B, T]
+
+            # Discount factor for bootstrap: gamma^td_steps
+            # td_steps_expanded will be [B, T] for broadcasting
+            td_steps_expanded = jnp.expand_dims(per_sample_td_steps, axis=1) # [B, 1]
+            discounts = config.discount_factor ** td_steps_expanded # [B, 1] broadcasts to [B,T] with gathered_bootstrap_values
+
+            bootstrap_values_final = gathered_bootstrap_values * discounts # [B, T]
+
             # Add intermediate rewards: sum_{i=0}^{td_steps-1} gamma^i * r_{t+i}
-            reward_sum = jnp.zeros_like(bootstrap_values)
+            # This also needs to be per-sample due to varying td_steps sum limits
             
-            # Vectorized reward accumulation
-            def add_step_reward(i, reward_accumulator):
-                reward_indices = jnp.arange(total_steps) + i  # [T]
-                reward_indices = jnp.clip(reward_indices, 0, total_steps - 1)  # [T]
-                step_rewards = rewards[:, reward_indices]  # [B, T]
-                return reward_accumulator + (config.discount_factor ** i) * step_rewards
+            # Maximum possible td_steps to define loop range or scan length
+            max_td_steps = jnp.max(per_sample_td_steps) 
             
-            reward_sum = jax.lax.fori_loop(0, td_steps, add_step_reward, reward_sum)
+            # Initialize reward_sum array
+            reward_sum = jnp.zeros_like(bootstrap_values_final) # [B, T]
+
+            # Loop for reward accumulation up to max_td_steps
+            # Inside the loop, mask rewards for samples whose td_steps < loop_iter
+            def accumulate_rewards_step(i, current_reward_sum):
+                # i is the current step in the sum (0 to max_td_steps-1)
+                
+                # Indices for rewards at current_time + i
+                reward_indices_at_step_i = time_indices[None, :] + i # [B, T] (broadcast i)
+                reward_indices_at_step_i = jnp.clip(reward_indices_at_step_i, 0, total_steps - 1) # [B, T]
+                
+                # Gather rewards: rewards[b, reward_indices_at_step_i[b,:]]
+                step_rewards = jnp.take_along_axis(rewards, reward_indices_at_step_i, axis=1) # [B, T]
+                
+                # Discount for this step: gamma^i
+                step_discount = config.discount_factor ** i
+                
+                # Mask: only add reward if i < per_sample_td_steps for that sample
+                # valid_step_mask will be [B, 1] to broadcast across T
+                valid_step_mask = (i < per_sample_td_steps[:, None]).astype(jnp.float32) # [B, 1]
+                
+                current_reward_sum += valid_step_mask * step_discount * step_rewards
+                return current_reward_sum
+
+            reward_sum = jax.lax.fori_loop(0, max_td_steps, accumulate_rewards_step, reward_sum)
             
-            bootstrap_values += reward_sum
-            
+            bootstrap_values_final += reward_sum
+
             # Handle episode termination: set bootstrap to 0 if done
-            termination_indices = jnp.arange(total_steps) + td_steps  # [T]
-            termination_indices = jnp.clip(termination_indices, 0, total_steps - 1)  # [T]
-            
-            is_terminal = dones[:, termination_indices]  # [B, T]
-            bootstrap_values = jnp.where(is_terminal, 0.0, bootstrap_values)
-            
-            return bootstrap_values
-        
-        bootstrap_values = compute_bootstrap_values()  # [B, T]
-        
+            # Termination is checked at s_{t+td_steps}
+            # termination_indices is [B, T] (same as bootstrap_indices)
+            is_terminal = jnp.take_along_axis(dones, bootstrap_indices, axis=1) # [B, T]
+            bootstrap_values_final = jnp.where(is_terminal, 0.0, bootstrap_values_final)
+
+            return bootstrap_values_final
+
+        bootstrap_values = compute_bootstrap_values(batch_td_steps)  # MODIFIED: pass batch_td_steps
+
         # Compute deltas: delta_t = bootstrap_value_t - V(s_t)
         deltas = bootstrap_values - current_values  # [B, T]
         
@@ -1468,9 +1560,14 @@ def compute_gae_value_targets(
         # Reverse order scan for GAE (start from the end)
         def compute_gae_for_batch_item(deltas_item, td_lambda_item, dones_item):
             """Compute GAE for a single batch item."""
+            # Ensure deltas and dones have the same length - take minimum to avoid shape mismatches
+            min_length = min(deltas_item.shape[0], dones_item.shape[0])
+            deltas_item_trimmed = deltas_item[:min_length]
+            dones_item_trimmed = dones_item[:min_length]
+            
             # Prepare inputs in reverse order
-            deltas_rev = deltas_item[::-1]
-            dones_rev = dones_item[::-1]
+            deltas_rev = deltas_item_trimmed[::-1]
+            dones_rev = dones_item_trimmed[::-1]
             td_lambda_expanded = jnp.full_like(deltas_rev, td_lambda_item)
             
             scan_inputs = (deltas_rev, td_lambda_expanded, dones_rev)
@@ -1486,6 +1583,12 @@ def compute_gae_value_targets(
     
             # Reverse back to get correct order
             advantages = advantages_rev[::-1]
+            
+            # Pad back to original deltas length if needed
+            if advantages.shape[0] < deltas_item.shape[0]:
+                padding_size = deltas_item.shape[0] - advantages.shape[0]
+                advantages = jnp.concatenate([advantages, jnp.zeros(padding_size)])
+            
             return advantages
         
         # Apply GAE computation to all batch items

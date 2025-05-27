@@ -134,15 +134,65 @@ mcp_nuanced_get_function_source(file_path="trainer.py", function_name="train_ste
 
 ### **⚙️ Setup & Management Tools**
 
-#### **10. `mcp_nuanced_initialize_graph(repo_path, project_root)`**
-**🚨 ALWAYS START WITH THIS** - **REQUIRED** before using **ANY** other tools
+#### **10. `mcp_nuanced_list_repositories()`** ⭐ **CHECK FIRST**
+**🚨 ALWAYS START WITH THIS** - Check for existing initialized repositories before initializing new ones
+- Lists all currently initialized repositories with their project roots
+- Shows which repository is currently active (marked with *)
+- Helps avoid unnecessary re-initialization of repositories
+
+#### **11. `mcp_nuanced_initialize_graph(repo_path, project_root)`**
+**🚨 REQUIRED** before using **ANY** other tools (if repository not already initialized)
 - Sets the repository root for analysis and project_root for relative path resolution
 - All file paths in subsequent tools are relative to the specified project_root
 - **🔄 AUTOMATIC UPDATES** - code graph stays current as `*.py` files change (transparent file watching)
 - **🔍 INTELLIGENT PATH RESOLUTION** - if files aren't found, tools will search and suggest correct paths
 
-#### **11. `mcp_nuanced_list_repositories()` & `mcp_nuanced_switch_repository()`**
-**Use for**: Managing multiple codebases in same session
+#### **12. `mcp_nuanced_switch_repository(repo_path)`**
+**Use for**: Switching between multiple initialized repositories in same session
+
+---
+
+## **📋 Repository Management Strategy**
+
+### **🚨 ALWAYS START HERE: Check for Existing Repositories**
+
+Before initializing any repository, **ALWAYS** check what's already available:
+
+```python
+# Step 1: Always check first
+mcp_nuanced_list_repositories()
+
+# This shows:
+# - All initialized repositories with their project roots  
+# - Which repository is currently active (marked with *)
+# - Avoids unnecessary re-initialization
+```
+
+### **Decision Tree for Repository Setup:**
+
+```
+1. Run mcp_nuanced_list_repositories()
+2. Is your target repository already listed?
+   ├─ YES: Use mcp_nuanced_switch_repository(repo_path) to activate it
+   └─ NO:  Use mcp_nuanced_initialize_graph(repo_path, project_root) to initialize it
+
+3. Proceed with your analysis tools
+```
+
+### **Benefits of Checking First:**
+- ✅ **Avoids redundant initialization** (saves time and resources)
+- ✅ **Reuses existing code graphs** (maintains file watching and updates)
+- ✅ **Shows available context** (helps agents understand what's available)
+- ✅ **Enables multi-repository workflows** (easy switching between projects)
+
+### **Example Repository Check Output:**
+```
+Initialized repositories:
+* /Users/dev/my_project (Project Root: /Users/dev/my_project)
+  /Users/dev/other_project (Project Root: /Users/dev/other_project)
+
+* indicates active repository
+```
 
 ---
 
@@ -150,39 +200,44 @@ mcp_nuanced_get_function_source(file_path="trainer.py", function_name="train_ste
 
 ### **"I want to understand what's in this Python file"**
 ```
-0th: mcp_nuanced_initialize_graph(repo_path, project_root)          # REQUIRED FIRST STEP
-1st: mcp_nuanced_list_file_definitions(file_path)         # Get structured overview (relative to project_root)
-2nd: mcp_nuanced_get_function_source(...)                 # Dive into specific functions
+0th: mcp_nuanced_list_repositories()                      # CHECK FOR EXISTING REPOS FIRST
+1st: mcp_nuanced_initialize_graph(repo_path, project_root) OR mcp_nuanced_switch_repository(repo_path)
+2nd: mcp_nuanced_list_file_definitions(file_path)         # Get structured overview (relative to project_root)
+3rd: mcp_nuanced_get_function_source(...)                 # Dive into specific functions
 ❌ AVOID: read_file() for exploration
 ```
 
 ### **"I need to see a specific function's code"**
 ```
-0th: mcp_nuanced_initialize_graph(repo_path, project_root)          # REQUIRED FIRST STEP
+0th: mcp_nuanced_list_repositories()                      # CHECK FOR EXISTING REPOS FIRST
+1st: mcp_nuanced_initialize_graph(repo_path, project_root) OR mcp_nuanced_switch_repository(repo_path)
 ✅ USE: mcp_nuanced_get_function_source(file_path, function_name)  # file_path relative to project_root
 ❌ AVOID: read_file() and manual searching
 ```
 
 ### **"I want to modify this function"**
 ```
-0th: mcp_nuanced_initialize_graph(repo_path, project_root)                     # REQUIRED FIRST STEP
-1st: mcp_nuanced_analyze_change_impact(file_path, function_name)      # Safety check (file_path relative to project_root)
-2nd: mcp_nuanced_get_function_call_graph(...)                        # Understand dependencies  
-3rd: mcp_nuanced_analyze_function_imports(...)                       # Check imports needed
+0th: mcp_nuanced_list_repositories()                                  # CHECK FOR EXISTING REPOS FIRST
+1st: mcp_nuanced_initialize_graph(repo_path, project_root) OR mcp_nuanced_switch_repository(repo_path)
+2nd: mcp_nuanced_analyze_change_impact(file_path, function_name)      # Safety check (file_path relative to project_root)
+3rd: mcp_nuanced_get_function_call_graph(...)                        # Understand dependencies  
+4th: mcp_nuanced_analyze_function_imports(...)                       # Check imports needed
 Then: Make informed changes
 ```
 
 ### **"I need to move/reorganize functions"**
 ```
-0th: mcp_nuanced_initialize_graph(repo_path, project_root)                  # REQUIRED FIRST STEP
-1st: mcp_nuanced_preview_function_move(...)                       # Plan the move (paths relative to project_root)
-2nd: mcp_nuanced_move_function(..., dry_run=True)                 # Dry run
-3rd: mcp_nuanced_move_function(..., dry_run=False)                # Execute move
+0th: mcp_nuanced_list_repositories()                              # CHECK FOR EXISTING REPOS FIRST
+1st: mcp_nuanced_initialize_graph(repo_path, project_root) OR mcp_nuanced_switch_repository(repo_path)
+2nd: mcp_nuanced_preview_function_move(...)                       # Plan the move (paths relative to project_root)
+3rd: mcp_nuanced_move_function(..., dry_run=True)                 # Dry run
+4th: mcp_nuanced_move_function(..., dry_run=False)                # Execute move
 ```
 
 ### **"I'm exploring a new codebase"**
 ```
-1st: mcp_nuanced_initialize_graph(repo_path, project_root)
+0th: mcp_nuanced_list_repositories()                  # CHECK FOR EXISTING REPOS FIRST
+1st: mcp_nuanced_initialize_graph(repo_path, project_root) OR mcp_nuanced_switch_repository(repo_path)
 2nd: mcp_nuanced_list_file_definitions(key_files)     # Survey main files
 3rd: mcp_nuanced_analyze_dependencies(main_modules)   # Understand architecture
 4th: mcp_nuanced_get_function_call_graph(key_funcs)   # Dive into specifics
@@ -190,10 +245,11 @@ Then: Make informed changes
 
 ### **"I need to analyze specific code sections"**
 ```
-0th: mcp_nuanced_initialize_graph(repo_path, project_root)          # REQUIRED FIRST STEP
-1st: mcp_nuanced_get_code_by_lines(file_path, line_ranges) # Extract specific lines
-2nd: mcp_nuanced_get_function_source(...)                 # Analyze specific functions
-3rd: mcp_nuanced_analyze_function_imports(...)            # Check dependencies
+0th: mcp_nuanced_list_repositories()                              # CHECK FOR EXISTING REPOS FIRST
+1st: mcp_nuanced_initialize_graph(repo_path, project_root) OR mcp_nuanced_switch_repository(repo_path)
+2nd: mcp_nuanced_get_code_by_lines(file_path, line_ranges) # Extract specific lines
+3rd: mcp_nuanced_get_function_source(...)                 # Analyze specific functions
+4th: mcp_nuanced_analyze_function_imports(...)            # Check dependencies
 ```
 
 ---
@@ -203,40 +259,44 @@ Then: Make informed changes
 ### **Pattern 1: Complete Function Analysis**
 ```python
 # Full understanding of a function
-0. mcp_nuanced_initialize_graph(repo_path, project_root)                       # REQUIRED FIRST
-1. mcp_nuanced_get_function_source(file_path, function_name)          # Get complete source (relative to project_root)
-2. mcp_nuanced_analyze_function_imports(file_path, function_name)     # Understand dependencies  
-3. mcp_nuanced_get_function_call_graph(file_path, function_name)      # See relationships
-4. mcp_nuanced_analyze_change_impact(file_path, function_name)        # Assess criticality
+0. mcp_nuanced_list_repositories()                                    # CHECK FOR EXISTING REPOS FIRST
+1. mcp_nuanced_initialize_graph(repo_path, project_root) OR mcp_nuanced_switch_repository(repo_path)
+2. mcp_nuanced_get_function_source(file_path, function_name)          # Get complete source (relative to project_root)
+3. mcp_nuanced_analyze_function_imports(file_path, function_name)     # Understand dependencies  
+4. mcp_nuanced_get_function_call_graph(file_path, function_name)      # See relationships
+5. mcp_nuanced_analyze_change_impact(file_path, function_name)        # Assess criticality
 ```
 
 ### **Pattern 2: Safe Refactoring Pipeline**
 ```python
 # Before making any changes
-0. mcp_nuanced_initialize_graph(repo_path, project_root)       # REQUIRED FIRST
-1. mcp_nuanced_analyze_change_impact(...)            # Understand impact (paths relative to project_root)
-2. mcp_nuanced_analyze_dependencies(...)             # Check module dependencies
-3. mcp_nuanced_preview_function_move(...)            # If moving functions
-4. Execute changes with full knowledge
+0. mcp_nuanced_list_repositories()                   # CHECK FOR EXISTING REPOS FIRST
+1. mcp_nuanced_initialize_graph(repo_path, project_root) OR mcp_nuanced_switch_repository(repo_path)
+2. mcp_nuanced_analyze_change_impact(...)            # Understand impact (paths relative to project_root)
+3. mcp_nuanced_analyze_dependencies(...)             # Check module dependencies
+4. mcp_nuanced_preview_function_move(...)            # If moving functions
+5. Execute changes with full knowledge
 ```
 
 ### **Pattern 3: Code Architecture Understanding**
 ```python
 # Understanding system design
-0. mcp_nuanced_initialize_graph(repo_path, project_root)       # REQUIRED FIRST
-1. mcp_nuanced_list_file_definitions(main_files)     # Survey key files (paths relative to project_root)
-2. mcp_nuanced_analyze_dependencies(modules)         # Understand coupling
-3. mcp_nuanced_get_function_call_graph(...)          # Trace key flows
+0. mcp_nuanced_list_repositories()                   # CHECK FOR EXISTING REPOS FIRST
+1. mcp_nuanced_initialize_graph(repo_path, project_root) OR mcp_nuanced_switch_repository(repo_path)
+2. mcp_nuanced_list_file_definitions(main_files)     # Survey key files (paths relative to project_root)
+3. mcp_nuanced_analyze_dependencies(modules)         # Understand coupling
+4. mcp_nuanced_get_function_call_graph(...)          # Trace key flows
 ```
 
 ### **Pattern 4: Code Section Analysis**
 ```python
 # Analyzing specific code sections
-0. mcp_nuanced_initialize_graph(repo_path, project_root)              # REQUIRED FIRST
-1. mcp_nuanced_get_code_by_lines(file_path, line_ranges)     # Extract specific lines
-2. mcp_nuanced_get_function_source(...)                     # Get complete function context
-3. mcp_nuanced_analyze_function_imports(...)                # Understand dependencies
-4. mcp_nuanced_get_function_call_graph(...)                 # See relationships
+0. mcp_nuanced_list_repositories()                          # CHECK FOR EXISTING REPOS FIRST
+1. mcp_nuanced_initialize_graph(repo_path, project_root) OR mcp_nuanced_switch_repository(repo_path)
+2. mcp_nuanced_get_code_by_lines(file_path, line_ranges)     # Extract specific lines
+3. mcp_nuanced_get_function_source(...)                     # Get complete function context
+4. mcp_nuanced_analyze_function_imports(...)                # Understand dependencies
+5. mcp_nuanced_get_function_call_graph(...)                 # See relationships
 ```
 
 ---
@@ -327,12 +387,14 @@ Please use the correct path: 'project/src/utils.py'
 
 ## **🚨 Critical Reminders for LLM Agents**
 
-- **NEVER** use other MCP nuanced tools without initializing the repository first.
+- **🚨 ALWAYS START WITH `mcp_nuanced_list_repositories()`** to check for existing repositories before initializing new ones.
+- **NEVER** use other MCP nuanced tools without either initializing a repository first OR switching to an existing one.
 - **PATH CONVENTIONS ARE KEY**:
     - `initialize_graph(repo_path, project_root)`: Both `repo_path` and `project_root` MUST be ABSOLUTE paths, `project_root` is mandatory.
     - All other tools: `file_path`, `test_path`, etc., MUST be RELATIVE to the initialized project_root.
 - **🔍 INTELLIGENT PATH RESOLUTION**: If files aren't found, tools will search and suggest correct paths - pay attention to error messages!
-- If you see "No active repository" errors, you likely forgot to initialize OR used a relative path for initialization.
+- If you see "No active repository" errors, you likely forgot to initialize OR check existing repositories first.
 - **🔄 AUTO-UPDATES**: The code graph automatically stays current when Python files change (transparent background watching)
+- **💡 EFFICIENCY TIP**: Reuse existing repositories when possible - they maintain their code graphs and file watchers across sessions.
 
-**Remember**: These tools are designed specifically for Python code analysis with intelligent path resolution. They understand syntax, semantics, and relationships that generic file reading cannot provide. Use them as your primary code analysis interface! 
+**Remember**: These tools are designed specifically for Python code analysis with intelligent path resolution. They understand syntax, semantics, and relationships that generic file reading cannot provide. Use them as your primary code analysis interface!
