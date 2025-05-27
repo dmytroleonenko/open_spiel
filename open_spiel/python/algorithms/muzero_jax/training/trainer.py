@@ -26,17 +26,47 @@ Params = nnx.State # PyTree of Param Variable instances or their values
 ModelBatchStats = nnx.State # PyTree of BatchStat Variable instances or their values
 ModelOtherState = nnx.State # PyTree of other Variable instances (like Rngs) or their values
 
-# Updated Batch definition for EfficientZeroV2 parity:
-# 'observation': (B, *obs_shape) - initial observation at index 0
+# Updated Batch definition for EfficientZeroV2 parity with complete field support:
+# Core MuZero fields (required):
+# 'observation': (B, K+1, *obs_shape) - observations for initial + K unroll steps  
 # 'action': (B, K) - actions taken for K unroll steps (a_0 to a_{K-1})
 # 'target_reward': (B, K+1) or (B, K+1, support_size) - r_0 to r_K
 # 'target_value': (B, K+1) or (B, K+1, support_size) - v_0 to v_K
 # 'target_policy': (B, K+1, num_actions) - p_0 to p_K
 # 'game_history_mask': (B, K+1) - 1 if valid step, 0 if padding
-# EfficientZeroV2 specific:
-# 'weights': (B,) - importance sampling weights from prioritized replay
+
+# EfficientZeroV2 importance sampling and prioritized replay (optional):
+# 'weights': (B,) - importance sampling weights from prioritized replay (default: 1.0)
 # 'indices': (B,) - buffer indices for priority updates
 # 'priorities': (B,) - current priorities (for priority updates)
+
+# EfficientZeroV2 dynamic target computation fields (optional):
+# 'target_search_value': (B, K+1) or (B, K+1, support_size) - MCTS search values
+# 'target_sarsa_value': (B, K+1) or (B, K+1, support_size) - N-step TD targets
+# 'sample_indices': (B,) - buffer sample indices for adaptive td_lambda/td_steps
+# 'collected_transitions': scalar - total transitions collected (for adaptive parameters)
+# 'training_step': scalar - current training step (for mixed value target scheduling)
+
+# EfficientZeroV2 mixed value target fields (optional, computed if not provided):
+# 'top_new_masks': (B,) - masks for mixed value target selection (0=old sample, 1=new sample)
+
+# EfficientZeroV2 GAE dynamic computation fields (optional):
+# 'extra_observations': (B, K+1+extra, *obs_shape) - extended observations for GAE bootstrapping
+# 'extra_actions': (B, K+extra) - extended actions for GAE computation
+# 'extra_rewards': (B, K+1+extra) - extended rewards for GAE computation  
+# 'extra_dones': (B, K+1+extra) - episode termination flags for GAE computation
+
+# EfficientZeroV2 policy reanalysis fields (optional):
+# 'batch_actions': (B, K+1, num_sampled_actions, num_actions) - sampled actions for continuous policy loss
+# 'batch_best_actions': (B, K+1, num_actions) or (B, K+1) - best actions for simple policy loss
+# 'policy_masks': (B, K+1) - masks for policy reanalysis (1=reanalyzed, 0=original)
+# 'reanalyzed_values': (B, K+1) - values from policy reanalysis
+
+# EfficientZeroV2 value prefix/LSTM fields (optional):
+# 'value_prefix': (B, K+1) - accumulated rewards over LSTM horizon (if use_value_prefix=True)
+
+# Additional compatibility fields (optional):
+# Any other fields from PyTorch BatchWorker that might be needed for specific features
 Batch = Dict[str, jax.Array]
 Metrics = Dict[str, jax.Array]
 
