@@ -63,6 +63,63 @@ mcp_nuanced_initialize_graph(repo_path="/path/to/your/project", project_root="/p
 mcp_nuanced_get_function_source(file_path="trainer.py", function_name="train_step")  # Relative to project_root
 ```
 
+#### **2a. `mcp_nuanced_get_function_line_ranges(file_path, function_name=None, function_names=None)`** ⭐ **NEW**
+**Instead of**: Reading function source just to get line numbers
+**Use this when**:
+- ✅ Need only the line range (start-end) for one or more functions
+- ✅ Want a fast mapping of function names to their line ranges
+- ✅ Need to extract or analyze code sections by function boundaries
+- ✅ Handle cases where functions are defined multiple times in the same file
+
+**Arguments:**
+- `file_path`: Path to the Python file (relative to project root)
+- `function_name`: Name of a single function (optional)
+- `function_names`: List of function names (optional)
+
+**Returns:** JSON with `{ "success": True, "file_path": ..., "ranges": { "foo": "10-25", ... } }`
+- **Single definition**: `{ "ranges": { "foo": "10-25" } }`
+- **Multiple definitions**: `{ "ranges": { "foo": ["10-25", "30-45"] } }`
+
+**Example:**
+```python
+# ✅ DO: Get line ranges for one or more functions
+mcp_nuanced_get_function_line_ranges(file_path="utils.py", function_names=["foo", "bar"])
+# Output: { "ranges": { "foo": "10-25", "bar": ["30-45", "60-75"] } }
+# Note: "foo" has one definition, "bar" has multiple definitions
+```
+
+#### **2b. `mcp_nuanced_remove_functions(file_path, function_name=None, function_names=None)`** ⭐ **NEW**
+**Instead of**: Manually editing files to delete functions
+**Use this when**:
+- ✅ Need to remove one or more functions from a Python file
+- ✅ Want to safely delete all instances of functions (handles multiple definitions)
+- ✅ Cleaning up code by removing unused or deprecated functions
+- ✅ Refactoring by removing functions that will be moved elsewhere
+
+**Arguments:**
+- `file_path`: Path to the Python file (relative to project root)
+- `function_name`: Name of a single function to remove (optional)
+- `function_names`: List of function names to remove (optional)
+
+**Returns:** JSON with removal statistics and success status
+- `success`: Whether the operation succeeded
+- `functions_removed`: Number of function definitions actually removed (can be > requested if functions are defined multiple times)
+- `functions_requested`: Number of unique function names requested for removal
+
+**Example:**
+```python
+# ✅ DO: Remove specific functions from a file
+mcp_nuanced_remove_functions(file_path="utils.py", function_names=["old_helper", "deprecated_func"])
+# Output: { "success": true, "functions_removed": 3, "functions_requested": 2 }
+# Note: "old_helper" was defined twice, so 3 total definitions were removed
+```
+
+**Safety Notes:**
+- ⚠️ **DESTRUCTIVE OPERATION** - Always use version control before removing functions
+- ✅ Removes ALL instances if a function is defined multiple times
+- ✅ Handles decorators properly (removes them with the function)
+- ✅ Preserves file formatting and other content
+
 ---
 
 ### **🔗 Dependency & Relationship Analysis Tools**
@@ -112,12 +169,14 @@ mcp_nuanced_get_function_source(file_path="trainer.py", function_name="train_ste
 - ✅ Understanding move impact before making changes
 - ✅ Identifying what files need import updates
 - ✅ Checking for naming conflicts in destination
+- ✅ **Automatically creates destination file if it doesn't exist**
 
 #### **8. `mcp_nuanced_move_function(source_file, function_name, dest_file, dry_run)`** ⭐ **NEW**
 **Use this when**:
 - ✅ Actually performing function moves between files
 - ✅ Automatically handling import dependencies
 - ✅ Getting comprehensive report of changes made
+- ✅ **Automatically creates destination file if it doesn't exist**
 
 ---
 
@@ -232,6 +291,8 @@ Then: Make informed changes
 2nd: mcp_nuanced_preview_function_move(...)                       # Plan the move (paths relative to project_root)
 3rd: mcp_nuanced_move_function(..., dry_run=True)                 # Dry run
 4th: mcp_nuanced_move_function(..., dry_run=False)                # Execute move
+
+Note: Destination files are automatically created if they don't exist!
 ```
 
 ### **"I'm exploring a new codebase"**
@@ -252,6 +313,14 @@ Then: Make informed changes
 4th: mcp_nuanced_analyze_function_imports(...)            # Check dependencies
 ```
 
+### **"I want to know the line range of a function or functions"**
+```
+0th: mcp_nuanced_list_repositories()                      # CHECK FOR EXISTING REPOS FIRST
+1st: mcp_nuanced_initialize_graph(repo_path, project_root) OR mcp_nuanced_switch_repository(repo_path)
+2nd: mcp_nuanced_get_function_line_ranges(file_path, function_name or function_names)  # Get line range(s)
+❌ AVOID: get_function_source() if you only need line numbers
+```
+
 ---
 
 ## **🚀 Advanced Workflow Patterns for LLM Agents**
@@ -261,10 +330,11 @@ Then: Make informed changes
 # Full understanding of a function
 0. mcp_nuanced_list_repositories()                                    # CHECK FOR EXISTING REPOS FIRST
 1. mcp_nuanced_initialize_graph(repo_path, project_root) OR mcp_nuanced_switch_repository(repo_path)
-2. mcp_nuanced_get_function_source(file_path, function_name)          # Get complete source (relative to project_root)
-3. mcp_nuanced_analyze_function_imports(file_path, function_name)     # Understand dependencies  
-4. mcp_nuanced_get_function_call_graph(file_path, function_name)      # See relationships
-5. mcp_nuanced_analyze_change_impact(file_path, function_name)        # Assess criticality
+2. mcp_nuanced_get_function_line_ranges(file_path, function_name)      # Get line range only (fast)
+3. mcp_nuanced_get_function_source(file_path, function_name)           # Get complete source (relative to project_root)
+4. mcp_nuanced_analyze_function_imports(file_path, function_name)      # Understand dependencies  
+5. mcp_nuanced_get_function_call_graph(file_path, function_name)       # See relationships
+6. mcp_nuanced_analyze_change_impact(file_path, function_name)         # Assess criticality
 ```
 
 ### **Pattern 2: Safe Refactoring Pipeline**
@@ -389,6 +459,7 @@ Please use the correct path: 'project/src/utils.py'
 
 - **🚨 ALWAYS START WITH `mcp_nuanced_list_repositories()`** to check for existing repositories before initializing new ones.
 - **NEVER** use other MCP nuanced tools without either initializing a repository first OR switching to an existing one.
+- **ALWAYS** try to initialize graph over small part of the project. For example not the whole openspiel project root but open_spiel/python/algorithms/muzero_jax part
 - **PATH CONVENTIONS ARE KEY**:
     - `initialize_graph(repo_path, project_root)`: Both `repo_path` and `project_root` MUST be ABSOLUTE paths, `project_root` is mandatory.
     - All other tools: `file_path`, `test_path`, etc., MUST be RELATIVE to the initialized project_root.
@@ -397,4 +468,4 @@ Please use the correct path: 'project/src/utils.py'
 - **🔄 AUTO-UPDATES**: The code graph automatically stays current when Python files change (transparent background watching)
 - **💡 EFFICIENCY TIP**: Reuse existing repositories when possible - they maintain their code graphs and file watchers across sessions.
 
-**Remember**: These tools are designed specifically for Python code analysis with intelligent path resolution. They understand syntax, semantics, and relationships that generic file reading cannot provide. Use them as your primary code analysis interface!
+**Remember**: These tools are designed specifically for Python code analysis with intelligent path resolution. They understand syntax, semantics, and relationships that generic file reading cannot provide. Use them as your primary code analysis interface! 

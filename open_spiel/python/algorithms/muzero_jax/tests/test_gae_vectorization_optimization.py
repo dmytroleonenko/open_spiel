@@ -50,6 +50,8 @@ class MockMuZeroNetwork:
             obs_sum = jnp.sum(observations, axis=tuple(range(1, observations.ndim)))
             value_idx = (obs_sum % self.value_support_size).astype(jnp.int32)
             value = jax.nn.one_hot(value_idx, self.value_support_size)
+            # Debug print
+            # print(f"initial_inference: value_support_size={self.value_support_size}, value.shape={value.shape}")
         else:
             # Scalar value
             value = jnp.sum(observations, axis=tuple(range(1, observations.ndim))) % 5.0
@@ -74,6 +76,8 @@ class MockMuZeroNetwork:
             state_action_sum = jnp.sum(hidden_state, axis=1) + actions
             value_idx = (state_action_sum % self.value_support_size).astype(jnp.int32)
             value = jax.nn.one_hot(value_idx, self.value_support_size)
+            # Debug print
+            # print(f"recurrent_inference: value_support_size={self.value_support_size}, value.shape={value.shape}")
         else:
             # Scalar value  
             value = (jnp.sum(hidden_state, axis=1) + actions) % 5.0
@@ -223,6 +227,7 @@ def create_test_config(value_support_size=0):
         support_min=-10.0,
         support_max=10.0,
         auto_td_steps=1000,
+        value_support_size=value_support_size,
     )
 
 

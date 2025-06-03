@@ -74,4 +74,5 @@ gmon.out
 *.dylib
 .coverage
 **/nuanced-graph.json
-**/.testmondata
+**/.testmondata*
+.coverage.*
