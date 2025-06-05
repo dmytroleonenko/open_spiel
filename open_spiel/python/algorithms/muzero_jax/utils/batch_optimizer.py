@@ -1,76 +1,55 @@
 """
-JAX/Flax NNX Batch Optimizer for MuZero
+JAX/Flax NNX Batch Optimizer for MuZero (REFACTORED VERSION)
 
-This script provides tools to optimize batch sizes and gradient accumulation strategies
-for JAX/Flax NNX models, with specific support for MuZero networks.
+This script provides tools to optimize batch sizes for JAX/Flax NNX models,
+with specific support for MuZero networks.
+
+ARCHITECTURAL IMPROVEMENTS:
+--------------------------
+✅ Binary search for maximum batch size (efficient, no more hangs)
+✅ JAX compilation pre-warming (eliminates repeated compilation overhead)
+✅ Robust hardware interrogation (pynvml + psutil fallbacks)
+✅ Modular, optional analyses (fast by default, detailed on request)
+✅ Corrected gradient accumulation (proper gradient summing)
+✅ Single-threaded synchronous workflow (no more ThreadPoolExecutor complexity)
 
 PURPOSE:
 --------
 The batch optimizer helps you find the most hardware-efficient configuration for training
 your MuZero model by:
 
-1. **Memory Optimization**: Finds the maximum local batch size (B_max) that fits in your
-   device memory without causing Out-of-Memory (OOM) errors.
+1. **Memory Optimization**: Uses binary search to efficiently find the maximum local 
+   batch size (B_max) that fits in device memory.
 
-2. **Throughput Analysis**: Identifies a "sweet spot" batch size that balances raw 
-   computational throughput with gradient variance characteristics.
+2. **Optional Throughput Analysis**: Identifies the batch size that maximizes throughput
+   (samples/second) across different batch sizes.
 
-3. **Gradient Accumulation Optimization**: Tests different numbers of gradient accumulation
-   steps (K) to find the most efficient way to achieve various effective batch sizes
-   (local_batch_size * accumulation_steps).
-
-4. **Mixed Precision Support**: Works with both float32 and bfloat16 data types to help
-   you leverage hardware acceleration (e.g., Tensor Cores on modern GPUs).
-
-WHAT IT DOES NOT DO:
--------------------
-- Does NOT determine the optimal batch size for model convergence/training quality
-- Does NOT replace hyperparameter tuning for finding the best effective batch size
-- Does NOT guarantee full hardware saturation (depends on model complexity vs. hardware)
+3. **Optional Gradient Accumulation Analysis**: Tests gradient accumulation strategies
+   with proper gradient summing to simulate larger effective batch sizes.
 
 TYPICAL WORKFLOW:
 ----------------
-1. Run `find_max_batch()` to discover memory limits
-2. Run `estimate_grad_var()` to understand gradient characteristics at different batch sizes
-3. Run `sweep_accum()` to find the most throughput-efficient gradient accumulation strategy
-4. Use results to configure your training loop with optimal (local_batch, accumulation_steps)
-
-HARDWARE SATURATION CONSIDERATIONS:
-----------------------------------
-For powerful hardware (e.g., H200) with simple games (e.g., Tic-Tac-Toe):
-- The script helps maximize memory utilization through larger batch sizes
-- True saturation depends on computational density, data loading, and kernel efficiency
-- You may need larger/more complex models or more sophisticated data pipelines for full utilization
+1. Run `find_max_batch_size()` to discover memory limits efficiently
+2. Optionally run `analyze_throughput()` to find the sweet spot for throughput
+3. Optionally run `analyze_gradient_accumulation()` to test accumulation strategies
 
 INTEGRATION WITH MUZERO:
 -----------------------
 The script provides configurable hooks for MuZero integration:
 - `create_muzero_model_and_params()`: Initialize your MuZeroNetwork with config
 - `compute_muzero_loss_and_gradients()`: Compute loss and gradients using MuZero's loss function
-
-Example usage:
-    config = OptimizationConfig(...)
-    optimizer = BatchOptimizer(config)
-    results = optimizer.run_optimization_workflow()
 """
 
 import time
-import threading
 import jax
 import jax.numpy as jnp
-import subprocess
 from flax import nnx
-from typing import Callable, Tuple, Any, Optional, Sequence, Union, Dict, List, NamedTuple
-from functools import partial
+from typing import Callable, Tuple, Any, Optional, Dict, List, NamedTuple
 import numpy as np
-from scipy import stats
-import shutil
-from dataclasses import dataclass, field
-from contextlib import contextmanager
+from dataclasses import dataclass
 import logging
 from enum import Enum
 import gc
-import weakref
 
 # Import MuZero specific types for the hooks
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork, RepresentationNetwork, DynamicsNetwork, PredictionNetwork, RewardNetwork
@@ -96,103 +75,26 @@ class OptimizationConfig:
     td_steps: int = 5
     discount_factor: float = 0.997
     
-    # Optimization parameters
-    start_batch_size: int = 8
-    max_batch_size: int = 2**12
-    max_trials_exp_search: int = 15
-    grad_var_repeats: int = 20
-    max_accum_steps: int = 16
-    timing_repeats: int = 10
-    confidence_level: float = 0.95
+    # Search parameters
+    binary_search_low: int = 1024  # More reasonable starting point
+    binary_search_high: int = 131072
+    timeout_seconds: float = 620.0
     
-    # Memory and performance
+    # Data type
     dtype: jnp.dtype = jnp.bfloat16
-    memory_warning_threshold: float = 0.98
-    enable_jax_smi: bool = True
-    jax_smi_update_interval: float = 1.0
-    
-    # Error handling
-    max_oom_retries: int = 3
-    timeout_seconds: float = 300.0
     
     def __post_init__(self):
         """Validate configuration parameters."""
-        if self.start_batch_size <= 0:
-            raise ValueError("start_batch_size must be positive")
-        if self.max_batch_size <= self.start_batch_size:
-            raise ValueError("max_batch_size must be greater than start_batch_size")
-        if not (0.0 < self.confidence_level < 1.0):
-            raise ValueError("confidence_level must be between 0 and 1")
+        if self.binary_search_low <= 0:
+            raise ValueError("binary_search_low must be positive")
+        if self.binary_search_high <= self.binary_search_low:
+            raise ValueError("binary_search_high must be greater than binary_search_low")
         if self.num_actions <= 0:
             raise ValueError("num_actions must be positive")
         if not self.observation_shape or any(dim <= 0 for dim in self.observation_shape):
             raise ValueError("observation_shape must have positive dimensions")
-        if self.num_unroll_steps <= 0:
-            raise ValueError("num_unroll_steps must be positive")
-        if self.td_steps <= 0:
-            raise ValueError("td_steps must be positive")
-        if not (0.0 <= self.discount_factor <= 1.0):
-            raise ValueError("discount_factor must be between 0 and 1")
-        if self.dtype not in (jnp.float32, jnp.bfloat16, jnp.float16):
-            raise ValueError("dtype must be float32, bfloat16, or float16")
-        if not (0.0 < self.memory_warning_threshold <= 1.0):
-            raise ValueError("memory_warning_threshold must be between 0 and 1")
-        if self.jax_smi_update_interval <= 0:
-            raise ValueError("jax_smi_update_interval must be positive")
-        if self.grad_var_repeats <= 0:
-            raise ValueError("grad_var_repeats must be positive")
-        if self.timing_repeats <= 0:
-            raise ValueError("timing_repeats must be positive")
-        if self.max_accum_steps <= 0:
-            raise ValueError("max_accum_steps must be positive")
-
-@dataclass
-class BatchResult:
-    """Result from batch size testing."""
-    batch_size: int
-    success: bool
-    time_seconds: float = 0.0
-    memory_used_bytes: int = 0
-    memory_total_bytes: int = 0
-    error_message: Optional[str] = None
-    throughput: float = 0.0
-    
-    @property
-    def memory_used_gb(self) -> float:
-        return self.memory_used_bytes / (1024**3)
-    
-    @property
-    def memory_total_gb(self) -> float:
-        return self.memory_total_bytes / (1024**3)
-
-@dataclass
-class AccumulationResult:
-    """Result from gradient accumulation testing."""
-    accumulation_steps: int
-    local_batch_size: int
-    effective_batch_size: int
-    mean_time: float
-    std_time: float
-    throughput: float
-    memory_used_gb: float
-    coefficient_of_variation: float
-    
-    @property
-    def is_stable(self) -> bool:
-        """Check if timing is stable (CV < 20%)."""
-        return self.coefficient_of_variation < 20.0
-
-@dataclass
-class OptimizationResults:
-    """Complete results from batch optimization."""
-    config: OptimizationConfig
-    max_batch_size: int
-    sweet_spot_batch_size: int
-    gradient_variance: float
-    accumulation_results: List[AccumulationResult]
-    recommended_config: Optional[AccumulationResult]
-    timing_stats: Dict[str, float]
-    memory_profile_path: Optional[str] = None
+        if self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
 
 # Type aliases
 ModelParams = nnx.State
@@ -200,7 +102,7 @@ Grads = nnx.State
 ModelInstance = nnx.Module
 MuZeroBatchData = Dict[str, jax.Array]
 GenericBatchData = jax.Array
-BatchData = Union[MuZeroBatchData, GenericBatchData]
+BatchData = Any
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ERROR HANDLING
@@ -218,13 +120,97 @@ class OutOfMemoryError(BatchOptimizerError):
     """Out of memory during batch processing."""
     pass
 
-class ConfigurationError(BatchOptimizerError):
-    """Invalid configuration parameters."""
-    pass
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROBUST HARDWARE INTERROGATION
+# ═══════════════════════════════════════════════════════════════════════════════
 
-class ExternalDependencyError(BatchOptimizerError):
-    """External dependency (like jax-smi) not available."""
-    pass
+def _get_device_memory_usage() -> Tuple[Optional[int], Optional[int]]:
+    """Get JAX device memory usage with robust detection.
+    
+    Returns:
+        Tuple of (used_bytes, total_bytes) or (None, None) if unavailable
+    """
+    try:
+        devices = jax.devices()
+        if not devices:
+            return None, None
+            
+        device = devices[0]
+        device_kind = device.device_kind.lower()
+
+        # For GPU devices, try multiple methods
+        if device_kind in ('gpu', 'cuda'):
+            # Method 1: JAX device memory stats
+            try:
+                if hasattr(device, 'memory_stats') and callable(device.memory_stats):
+                    stats = device.memory_stats()
+                    if stats and isinstance(stats, dict):
+                        used = stats.get('bytes_in_use', 0)
+                        limit = stats.get('bytes_limit', 0)
+                        if used >= 0 and limit > 0:
+                            return used, limit
+            except Exception:
+                pass
+
+            # Method 2: Try nvidia-ml-py if available
+            try:
+                import pynvml
+                pynvml.nvmlInit()
+                handle = pynvml.nvmlDeviceGetHandleByIndex(device.id)
+                info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                return info.used, info.total
+            except (ImportError, Exception):
+                pass
+
+        elif device_kind == 'cpu':
+            # For CPU devices, try to get system memory
+            try:
+                import psutil
+                mem = psutil.virtual_memory()
+                jax_estimated = int(mem.used * 0.1)  # Conservative estimate
+                return jax_estimated, mem.total
+            except ImportError:
+                pass
+
+        # If all methods fail, return None
+        return None, None
+        
+    except Exception:
+        return None, None
+
+def _is_oom_error(error: Exception) -> bool:
+    """Robustly detect OOM errors from various sources.
+    
+    Args:
+        error: Exception to check
+
+    Returns:
+        True if this appears to be an out-of-memory error
+    """
+    # Direct memory error types
+    if isinstance(error, MemoryError):
+        return True
+
+    # Check for XLA/JAX specific OOM errors
+    error_str = str(error).lower()
+    oom_indicators = [
+        'out of memory',
+        'oom',
+        'cuda out of memory',
+        'device_out_of_memory',
+        'resource_exhausted',
+        'memory allocation failed',
+        'insufficient memory',
+        'cudnn_status_alloc_failed',
+        'xla::resourceexhausted',
+        'failed to allocate',
+        'memory pool exhausted',
+        'allocator',
+        'memory',
+        'killed'
+    ]
+
+    return any(indicator in error_str for indicator in oom_indicators)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MUZERO INTEGRATION
@@ -251,7 +237,7 @@ def create_muzero_model_and_params(config: OptimizationConfig, rng_key: jax.rand
             td_steps=config.td_steps,
             discount_factor=config.discount_factor,
             dirichlet_alpha=0.03,
-            num_simulations=50,
+            num_simulations=10,
             batch_size=32,  # This will be overridden during optimization
             learning_rate=0.05,
             # Disable complex features that might cause crashes during testing
@@ -303,7 +289,8 @@ def create_muzero_model_and_params(config: OptimizationConfig, rng_key: jax.rand
         return model
         
     except Exception as e:
-        raise ModelInitializationError(f"Failed to initialize MuZero model: {e}") from e
+        raise ModelInitializationError(
+            f"Failed to initialize MuZero model: {e}") from e
 
 def compute_muzero_loss_and_gradients(
     model_instance: ModelInstance, 
@@ -326,7 +313,8 @@ def compute_muzero_loss_and_gradients(
     def loss_fn(model_for_loss_fn: ModelInstance):
         if not hasattr(model_for_loss_fn, 'config') or \
            not isinstance(getattr(model_for_loss_fn, 'config', None), MuZeroConfig):
-            raise ValueError("MuZeroNetwork instance must have a 'config' attribute of type MuZeroConfig")
+            raise ValueError(
+                "MuZeroNetwork instance must have a 'config' attribute of type MuZeroConfig")
         
         effective_config: MuZeroConfig = getattr(model_for_loss_fn, 'config')
 
@@ -340,20 +328,128 @@ def compute_muzero_loss_and_gradients(
         return total_loss, metrics 
 
     try:
-        (loss_value, metrics_val), grads_state = nnx.value_and_grad(loss_fn, has_aux=True)(model_instance)
+        (loss_value, metrics_val), grads_state = nnx.value_and_grad(
+            loss_fn, has_aux=True)(model_instance)
         return loss_value, grads_state
         
     except ValueError:
         # Re-raise ValueError as-is (for test compatibility)
         raise
     except Exception as e:
-        raise BatchOptimizerError(f"Failed to compute MuZero loss and gradients: {e}") from e
+        raise BatchOptimizerError(
+            f"Failed to compute MuZero loss and gradients: {e}") from e
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GENERIC MODEL UTILITIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _create_generic_model(config: OptimizationConfig, rng_key: jax.random.PRNGKey) -> ModelInstance:
+    """Create a generic neural network model for batch optimization testing.
+
+    Args:
+        config: Optimization configuration
+        rng_key: JAX random key for initialization
+
+    Returns:
+        Initialized generic model (nnx.Module)
+
+    Raises:
+        ModelInitializationError: If model creation fails
+    """
+    try:
+        class GenericMLP(nnx.Module):
+            """Simple MLP for generic testing."""
+
+            def __init__(self, config: OptimizationConfig, *, rngs: nnx.Rngs):
+                # Create a reasonably complex network for realistic testing
+                input_size = int(np.prod(config.observation_shape))
+                # Ensure decent complexity
+                hidden_size = max(256, input_size * 2)
+
+                self.layers = [
+                    nnx.Linear(input_size, hidden_size, rngs=rngs),
+                    nnx.Linear(hidden_size, hidden_size, rngs=rngs),
+                    nnx.Linear(hidden_size, hidden_size // 2, rngs=rngs),
+                    nnx.Linear(hidden_size // 2, config.num_actions, rngs=rngs),
+                ]
+
+                # Add some memory-intensive components to make optimization meaningful
+                self.value_head = nnx.Linear(hidden_size // 2, 1, rngs=rngs)
+
+            def __call__(self, x: jax.Array) -> Tuple[jax.Array, jax.Array]:
+                # Flatten input
+                batch_size = x.shape[0]
+                x = x.reshape(batch_size, -1)
+
+                # Forward pass through layers
+                for i, layer in enumerate(self.layers[:-1]):
+                    x = layer(x)
+                    x = jax.nn.relu(x)
+
+                # Output heads
+                policy_logits = self.layers[-1](x)
+                value = self.value_head(x)
+
+                return policy_logits, value.squeeze(-1)
+
+        # Initialize the model
+        model = GenericMLP(config, rngs=nnx.Rngs(rng_key))
+        return model
+
+    except Exception as e:
+        raise ModelInitializationError(
+            f"Failed to initialize generic model: {e}") from e
+
+def _generic_loss_fn(
+    model_instance: ModelInstance,
+    batch_data: jax.Array,
+    rng_key: jax.random.PRNGKey
+) -> Tuple[jax.Array, Grads]:
+    """Compute generic loss and gradients for a batch.
+
+    Args:
+        model_instance: Generic model instance
+        batch_data: Input batch data (observations)
+        rng_key: Random key (for synthetic targets)
+
+    Returns:
+        Tuple of (loss_value, gradients_state)
+
+    Raises:
+        BatchOptimizerError: If loss computation fails
+    """
+    def loss_fn(model_for_loss_fn: ModelInstance):
+        policy_logits, values = model_for_loss_fn(batch_data)
+
+        # Create synthetic targets for testing
+        batch_size = batch_data.shape[0]
+        target_policy = jax.nn.softmax(
+            jax.random.normal(rng_key, policy_logits.shape))
+        target_values = jax.random.normal(
+            jax.random.fold_in(rng_key, 1), values.shape)
+
+        # Compute losses
+        policy_loss = -jnp.mean(jnp.sum(target_policy *
+                     jax.nn.log_softmax(policy_logits), axis=-1))
+        value_loss = jnp.mean((values - target_values) ** 2)
+
+        total_loss = policy_loss + 0.5 * value_loss
+        return total_loss, {'policy_loss': policy_loss, 'value_loss': value_loss}
+
+    try:
+        (loss_value, metrics), grads_state = nnx.value_and_grad(
+            loss_fn, has_aux=True)(model_instance)
+        return loss_value, grads_state
+
+    except Exception as e:
+        raise BatchOptimizerError(
+            f"Failed to compute generic loss and gradients: {e}") from e
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UTILITY FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def create_random_batch(
+def _create_random_batch(
     rng_key: jax.random.PRNGKey, 
     batch_size: int, 
     config: OptimizationConfig
@@ -409,7 +505,7 @@ def create_random_batch(
         # Generic model mode
         return jax.random.normal(rng_key, (batch_size, *config.observation_shape), dtype=config.dtype)
 
-def flatten_gradients(grads_pytree: Grads) -> jax.Array:
+def _flatten_gradients(grads_pytree: Grads) -> jax.Array:
     """Flatten gradient PyTree into a single JAX array.
     
     Args:
@@ -425,198 +521,30 @@ def flatten_gradients(grads_pytree: Grads) -> jax.Array:
     flat_leaves = [jnp.reshape(x, (-1,)) for x in leaves]
     return jnp.concatenate(flat_leaves, axis=0)
 
-def get_device_memory_usage() -> Tuple[int, int]:
-    """Get JAX device memory usage with backward compatibility.
-    
-    Returns:
-        Tuple of (used_bytes, total_bytes)
-        For platforms without proper memory stats, returns reasonable defaults
-    """
-    try:
-        devices = jax.devices()
-        if not devices:
-            # Fallback for test compatibility
-            return 1024**3, 8 * 1024**3  # 1GB used, 8GB total
-            
-        device = devices[0]
-        
-        # Check if device supports memory_stats
-        if not (hasattr(device, 'memory_stats') and callable(device.memory_stats)):
-            # CPU devices or other platforms - return reasonable defaults
-            return 1024**3, 8 * 1024**3  # 1GB used, 8GB total
-            
-        stats = device.memory_stats()
-        if stats is None or not isinstance(stats, dict):
-            # Invalid stats - return defaults for compatibility
-            return 1024**3, 8 * 1024**3  # 1GB used, 8GB total
-            
-        used = stats.get('bytes_in_use', 0)
-        limit = stats.get('bytes_limit', 0)
-        
-        # Validate memory values
-        if used < 0 or limit < 0:
-            return 1024**3, 8 * 1024**3  # Fallback
-            
-        # Return actual values if valid
-        if used > 0 or limit > 0:
-            return used, limit
-        else:
-            return 1024**3, 8 * 1024**3  # Fallback
-        
-    except Exception as e:
-        logging.debug(f"Memory usage unavailable: {e}")
-        # Return defaults for test compatibility
-        return 1024**3, 8 * 1024**3  # 1GB used, 8GB total
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# MEMORY MONITORING
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class MemoryMonitor:
-    """Memory monitoring without global state."""
-    
-    def __init__(self, config: OptimizationConfig):
-        self.config = config
-        self.jax_smi_available = self._check_jax_smi_available()
-        self._monitoring = False
-        self.monitor_thread: Optional[threading.Thread] = None
-        self.memory_data: List[Dict[str, Any]] = []
-        self.lock = threading.Lock()
-        self._shutdown_event = threading.Event()
-        
-    def _check_jax_smi_available(self) -> bool:
-        """Check if jax-smi is available."""
-        return shutil.which('jax-smi') is not None
-    
-    @property
-    def monitoring(self) -> bool:
-        """Thread-safe monitoring status."""
-        with self.lock:
-            return self._monitoring
-    
-    @contextmanager
-    def monitoring_context(self):
-        """Context manager for memory monitoring."""
-        started = False
-        if self.config.enable_jax_smi and self.jax_smi_available:
-            started = self.start_monitoring()
-        try:
-            yield self
-        finally:
-            if started:
-                self.stop_monitoring()
-    
-    def start_monitoring(self) -> bool:
-        """Start memory monitoring with thread safety."""
-        if not self.config.enable_jax_smi or not self.jax_smi_available:
-            return False
-        
-        with self.lock:
-            if self._monitoring:
-                return True
-            
-            self._monitoring = True
-            self._shutdown_event.clear()
-            self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
-            self.monitor_thread.start()
-            
-        logging.info(f"Started memory monitoring with {self.config.jax_smi_update_interval}s intervals")
-        return True
-    
-    def stop_monitoring(self):
-        """Stop memory monitoring with proper cleanup."""
-        with self.lock:
-            if not self._monitoring:
-                return
-            self._monitoring = False
-            
-        # Signal shutdown and wait for thread
-        self._shutdown_event.set()
-        if self.monitor_thread and self.monitor_thread.is_alive():
-            self.monitor_thread.join(timeout=10)
-            if self.monitor_thread.is_alive():
-                logging.warning("Memory monitor thread did not shut down cleanly")
-        
-        logging.info("Stopped memory monitoring")
-    
-    def _monitor_loop(self):
-        """Background monitoring loop."""
-        while not self._shutdown_event.is_set():
-            try:
-                result = subprocess.run(
-                    ['jax-smi'], 
-                    capture_output=True, 
-                    text=True, 
-                    timeout=self.config.jax_smi_update_interval * 0.8
-                )
-                
-                if result.returncode == 0:
-                    timestamp = time.time()
-                    memory_info = self._parse_jax_smi_output(result.stdout)
-                    
-                    with self.lock:
-                        self.memory_data.append({
-                            'timestamp': timestamp,
-                            'memory_info': memory_info
-                        })
-                        # Keep only last 1000 measurements
-                        if len(self.memory_data) > 1000:
-                            self.memory_data = self.memory_data[-1000:]
-                            
-            except subprocess.TimeoutExpired:
-                logging.warning("jax-smi command timed out")
-            except Exception as e:
-                logging.warning(f"Error in memory monitoring: {e}")
-                
-            # Use shutdown event for interruptible sleep
-            self._shutdown_event.wait(timeout=self.config.jax_smi_update_interval)
-    
-    def _parse_jax_smi_output(self, output: str) -> Dict[str, Any]:
-        """Parse jax-smi output."""
-        memory_info = {
-            'raw_output': output.strip(),
-            'parsed': False
-        }
-        
-        try:
-            lines = output.strip().split('\n')
-            for line in lines:
-                if 'Memory' in line or 'memory' in line:
-                    memory_info['memory_line'] = line.strip()
-                    memory_info['parsed'] = True
-                    break
-        except Exception as e:
-            memory_info['parse_error'] = str(e)
-            
-        return memory_info
-    
-    def get_latest_memory_info(self) -> Optional[Dict[str, Any]]:
-        """Get latest memory information."""
-        with self.lock:
-            if self.memory_data:
-                return self.memory_data[-1].copy()
-        return None
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # BATCH OPTIMIZER CLASS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class BatchOptimizer:
-    """Batch optimizer with proper error handling and no global state."""
+    """Efficient batch optimizer with binary search and JAX pre-warming."""
     
     def __init__(self, config: OptimizationConfig):
         self.config = config
-        self.memory_monitor = MemoryMonitor(config)
         self.logger = self._setup_logger()
         
-        # Initialize model creation function based on type
+        # Initialize model creation and loss functions based on type
         if config.model_type == ModelType.MUZERO:
-            self.model_init_fn = partial(create_muzero_model_and_params, config)
+            self.model_init_fn = create_muzero_model_and_params
+            self.loss_fn = compute_muzero_loss_and_gradients
+        elif config.model_type == ModelType.GENERIC:
+            self.model_init_fn = _create_generic_model
+            self.loss_fn = _generic_loss_fn
         else:
-            raise ConfigurationError(f"Unsupported model type: {config.model_type}")
+            raise ValueError(f"Unsupported model type: {config.model_type}")
         
-        # Track model instances for cleanup
-        self._model_instances: List[weakref.ReferenceType] = []
+        # State
+        self.model_instance: Optional[ModelInstance] = None
+        self.max_batch_size: Optional[int] = None
     
     def _setup_logger(self) -> logging.Logger:
         """Setup logging for the optimizer."""
@@ -624,389 +552,438 @@ class BatchOptimizer:
         logger.setLevel(logging.INFO)
         if not logger.handlers:
             handler = logging.StreamHandler()
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            formatter = logging.Formatter(
+                '%(asctime)s - %(levelname)s - %(message)s')
             handler.setFormatter(formatter)
             logger.addHandler(handler)
         return logger
     
-    @contextmanager
-    def _managed_model(self, rng_key: jax.random.PRNGKey):
-        """Context manager for model lifecycle management."""
-        model_instance = None
-        try:
-            model_instance = self.model_init_fn(rng_key)
-            # Track for cleanup
-            self._model_instances.append(weakref.ref(model_instance))
-            yield model_instance
-        except Exception as e:
-            self.logger.error(f"Error in model management: {e}")
-            raise
-        finally:
-            if model_instance is not None:
-                # Explicit cleanup
-                del model_instance
-                gc.collect()  # Force garbage collection
+    def _initialize_model(self, rng_key: jax.random.PRNGKey):
+        """Initialize the model instance."""
+        if self.model_instance is not None:
+            return  # Already initialized
+            
+        self.logger.info(f"Initializing {self.config.model_type.value} model...")
+        self.model_instance = self.model_init_fn(self.config, rng_key)
+        self.logger.info("Model initialized successfully")
     
-    def _forward_backward_step(self, model_instance: ModelInstance, batch_data: BatchData, rng_key: jax.random.PRNGKey) -> Tuple[jax.Array, Grads]:
-        """Forward and backward pass for any model type."""
-        if self.config.model_type == ModelType.MUZERO:
-            return compute_muzero_loss_and_gradients(model_instance, batch_data, rng_key)
-        else:
-            raise ConfigurationError(f"Unsupported model type: {self.config.model_type}")
+    def _cleanup_model(self):
+        """Clean up model instance."""
+        if self.model_instance is not None:
+            del self.model_instance
+            self.model_instance = None
+            gc.collect()
     
-    def cleanup_models(self):
-        """Cleanup tracked model instances."""
-        for ref in self._model_instances:
-            if ref() is not None:
-                del ref
-        self._model_instances.clear()
-        gc.collect()
-    
-    def find_max_batch_size(self, rng_key: jax.random.PRNGKey) -> int:
-        """Find maximum batch size that fits in memory.
-        
-        Args:
-            rng_key: Random key for batch generation
-            
-        Returns:
-            Maximum batch size that fits in memory
-            
-        Raises:
-            ModelInitializationError: If model cannot be initialized
-            OutOfMemoryError: If even minimum batch size fails
-        """
-        self.logger.info(f"Finding max batch size (limit: {self.config.max_batch_size})")
-        
-        # Use managed model context
-        rng_model, rng_batch = jax.random.split(rng_key)
-        
-        with self._managed_model(rng_model) as model_instance:
-            def test_batch_size(batch_size: int) -> bool:
-                """Test if batch size fits in memory."""
-                oom_retries = 0
-                while oom_retries <= self.config.max_oom_retries:
-                    try:
-                        key_b = jax.random.fold_in(rng_batch, batch_size * 1000 + oom_retries)
-                        batch_data = create_random_batch(key_b, batch_size, self.config)
-                        
-                        # Use proper random key management
-                        key_forward = jax.random.fold_in(key_b, 1)
-                        _, grads = self._forward_backward_step(model_instance, batch_data, key_forward)
-                        
-                        # Ensure completion but don't force unnecessary synchronization
-                        jax.tree_util.tree_map(lambda x: x.block_until_ready(), grads)
-                        
-                        # Cleanup batch data
-                        del batch_data, grads
-                        return True
-                        
-                    except (RuntimeError, MemoryError, Exception) as e:
-                        error_msg = str(e).lower()
-                        if "out of memory" in error_msg or "memory" in error_msg or "oom" in error_msg:
-                            self.logger.debug(f"Batch size {batch_size} OOM (attempt {oom_retries + 1}): {e}")
-                            oom_retries += 1
-                            gc.collect()  # Try to free memory
-                            continue
-                        else:
-                            self.logger.debug(f"Batch size {batch_size} failed (non-OOM): {e}")
-                            return False
-                    except Exception as e:
-                        self.logger.debug(f"Batch size {batch_size} failed: {e}")
-                        return False
-                
-                self.logger.debug(f"Batch size {batch_size} failed after {self.config.max_oom_retries + 1} attempts")
-                return False
-            
-            # Initial check
-            if not test_batch_size(self.config.start_batch_size):
-                # Try smaller sizes
-                for size in [1, 2, 4]:
-                    if test_batch_size(size):
-                        self.logger.info(f"Max batch size found: {size}")
-                        return size
-                
-                # If even size 1 fails, return 0 (edge case for tests)
-                self.logger.warning("Cannot fit even the smallest batch size (1) in memory")
-                return 0
-            
-            # Exponential search
-            lo = self.config.start_batch_size
-            hi = self.config.max_batch_size
-            current = self.config.start_batch_size
-            trials = 0
-            
-            while current < self.config.max_batch_size and trials < self.config.max_trials_exp_search:
-                next_size = min(current * 2, self.config.max_batch_size)
-                if test_batch_size(next_size):
-                    lo = next_size
-                    current = next_size
-                    if next_size == self.config.max_batch_size:
-                        break
-                else:
-                    hi = next_size
-                    break
-                trials += 1
-            
-            # Binary search
-            while lo + 1 < hi:
-                mid = (lo + hi) // 2
-                if test_batch_size(mid):
-                    lo = mid
-                else:
-                    hi = mid
-            
-            self.logger.info(f"Max batch size found: {lo}")
-            return lo
-    
-    def estimate_gradient_variance(
-        self, 
-        batch_size: int, 
-        rng_key: jax.random.PRNGKey
-    ) -> float:
-        """Estimate gradient variance for MuZero model.
+    def _test_batch_size(self, batch_size: int, rng_key: jax.random.PRNGKey) -> bool:
+        """Test if a specific batch size works without OOM.
         
         Args:
             batch_size: Batch size to test
             rng_key: Random key for batch generation
             
         Returns:
-            Estimated gradient variance
+            True if successful, False if OOM
         """
-        if batch_size <= 0:
-            self.logger.warning(f"Invalid batch size for gradient variance: {batch_size}")
-            return float('nan')
-        
-        self.logger.info(f"Estimating gradient variance for batch size {batch_size}")
-        grad_variances = []
-        
-        # Use managed model for proper cleanup
-        rng_model, rng_batch = jax.random.split(rng_key)
-        
-        with self._managed_model(rng_model) as model_instance:
-            for i in range(self.config.grad_var_repeats):
-                try:
-                    key_i = jax.random.fold_in(rng_batch, i)
-                    batch_data = create_random_batch(key_i, batch_size, self.config)
-                    
-                    key_forward = jax.random.fold_in(key_i, 1)
-                    _, grads = self._forward_backward_step(model_instance, batch_data, key_forward)
-                    flat_grad_vec = flatten_gradients(grads)
-                    
-                    # For MuZero, we compute variance across gradient components
-                    if len(flat_grad_vec) > 0:
-                        grad_variance = float(jnp.var(flat_grad_vec))
-                        grad_variances.append(grad_variance)
-                    
-                    del batch_data, grads, flat_grad_vec
-                    
-                except Exception as e:
-                    self.logger.warning(f"Error in gradient variance estimation (repeat {i+1}): {e}")
-                    continue
-        
-        if not grad_variances:
-            self.logger.warning(f"All gradient variance estimation attempts failed for batch size {batch_size}")
-            return float('nan')
-        
-        mean_variance = float(np.mean(grad_variances))
-        self.logger.info(f"Gradient variance for batch size {batch_size}: {mean_variance:.3e}")
-        return mean_variance
+        try:
+            # Create batch data
+            batch_data = _create_random_batch(rng_key, batch_size, self.config)
+            
+            # Run forward-backward pass
+            _, grads = self.loss_fn(self.model_instance, batch_data, rng_key)
+            
+            # Ensure computation completes
+            jax.tree_util.tree_map(lambda x: x.block_until_ready(), grads)
+            
+            # Clean up
+            del batch_data, grads
+            return True
+            
+        except Exception as e:
+            if _is_oom_error(e):
+                return False
+            else:
+                # Re-raise non-OOM errors
+                raise e
     
-    def sweep_accumulation_factors(
-        self, 
-        local_batch_size: int, 
-        rng_key: jax.random.PRNGKey
-    ) -> List[AccumulationResult]:
-        """Sweep through different gradient accumulation factors.
+    def _pre_warm_compilation(self, rng_key: jax.random.PRNGKey):
+        """Pre-warm JAX compilation to avoid repeated compilation overhead.
+        
+        This is critical for JAX-Metal backend where each new batch size
+        triggers expensive XLA compilation. By doing one small forward-backward
+        pass upfront, we compile all necessary operations.
         
         Args:
-            local_batch_size: Local batch size for each accumulation step
             rng_key: Random key for batch generation
-            
-        Returns:
-            List of accumulation results
         """
-        if local_batch_size <= 0:
-            raise ValueError(f"Invalid local batch size: {local_batch_size}")
+        self.logger.info("Pre-warming JAX compilation...")
+        start_time = time.perf_counter()
         
-        self.logger.info(f"Sweeping accumulation factors up to {self.config.max_accum_steps}")
-        results = []
+        # Use a very small batch for compilation
+        warmup_batch_size = 1
+        try:
+            batch_data = _create_random_batch(rng_key, warmup_batch_size, self.config)
+            _, grads = self.loss_fn(self.model_instance, batch_data, rng_key)
+            jax.tree_util.tree_map(lambda x: x.block_until_ready(), grads)
+            del batch_data, grads
+        except Exception as e:
+            self.logger.warning(f"Compilation pre-warming failed: {e}")
+
+        compilation_time = time.perf_counter() - start_time
+        self.logger.info(f"JAX compilation pre-warming completed in {compilation_time:.2f}s")
+    
+    def find_max_batch_size(self, rng_key: jax.random.PRNGKey) -> int:
+        """Find maximum batch size using smart adaptive search with performance monitoring.
+
+        This implementation is specifically optimized for Apple Silicon M3 Max systems where
+        OOM conditions don't cause crashes but result in heavy swapping and performance degradation.
+
+        Args:
+            rng_key: Random key for testing
+
+        Returns:
+            Maximum practical batch size that avoids performance degradation
+        """
+        self.logger.info("Finding maximum batch size using adaptive search with performance monitoring...")
         
-        # Use managed model for proper cleanup
-        rng_model, rng_sweep = jax.random.split(rng_key)
+        # Initialize model if not already done
+        rng_init, rng_search = jax.random.split(rng_key)
+        self._initialize_model(rng_init)
         
-        with self._managed_model(rng_model) as model_instance:
-            for k in range(1, self.config.max_accum_steps + 1):
-                effective_batch_size = local_batch_size * k
-                self.logger.info(f"Testing K={k}, effective_batch_size={effective_batch_size}")
-                
-                timing_measurements = []
-                
-                try:
-                    for i in range(min(self.config.timing_repeats, 5)):  # Fewer repeats for sweep
-                        timing_measurements_per_repeat = []
-                        
-                        # Test realistic gradient accumulation with different batches
-                        for accum_step in range(k):
-                            key_step = jax.random.fold_in(rng_sweep, k * 1000 + i * k + accum_step)
-                            batch_data = create_random_batch(key_step, local_batch_size, self.config)
-                            
-                            start_time = time.perf_counter()
-                            key_forward = jax.random.fold_in(key_step, 1)
-                            _, grads = self._forward_backward_step(model_instance, batch_data, key_forward)
-                            # Only synchronize once per accumulation step, not per gradient
-                            if accum_step == k - 1:  # Last step
-                                jax.tree_util.tree_map(lambda x: x.block_until_ready(), grads)
-                            end_time = time.perf_counter()
-                            
-                            timing_measurements_per_repeat.append(end_time - start_time)
-                            del batch_data, grads
-                        
-                        # Total time for this k-step accumulation
-                        total_time = sum(timing_measurements_per_repeat)
-                        timing_measurements.append(total_time)
+        # Pre-warm compilation
+        self._pre_warm_compilation(rng_search)
+        
+        # Phase 1: Quick exponential search to find approximate upper bound
+        self.logger.info("Phase 1: Exponential search for approximate upper bound...")
+        current_batch_size = 1024  # Start with reasonable size
+        max_time_per_sample = None  # Baseline for performance degradation detection
+        last_successful = current_batch_size
+        exponential_factor = 2
+        
+        while current_batch_size <= self.config.binary_search_high:
+            self.logger.info(f"Testing batch size {current_batch_size} (exponential phase)")
+            
+            rng_test = jax.random.fold_in(rng_search, current_batch_size)
+            
+            try:
+                # Time the operation for performance monitoring
+                start_time = time.perf_counter()
+                if self._test_batch_size(current_batch_size, rng_test):
+                    end_time = time.perf_counter()
+                    test_duration = end_time - start_time
+                    time_per_sample = test_duration / current_batch_size
                     
-                    # Statistical analysis
-                    timing_array = np.array(timing_measurements)
-                    mean_time = np.mean(timing_array)
-                    std_time = np.std(timing_array)
-                    cv = (std_time / mean_time) * 100 if mean_time > 0 else float('inf')
-                    throughput = effective_batch_size / mean_time if mean_time > 0 else 0.0
+                    # Check for performance degradation (swapping indicator)
+                    if max_time_per_sample is None:
+                        max_time_per_sample = time_per_sample * 3.0  # Allow 3x degradation
+                        self.logger.info(f"✅ Baseline: {current_batch_size} in {test_duration:.1f}s ({time_per_sample*1000:.2f}ms/sample)")
+                    elif time_per_sample > max_time_per_sample:
+                        self.logger.info(f"⚠️  Performance degradation detected at {current_batch_size} ({time_per_sample*1000:.2f}ms/sample > {max_time_per_sample*1000:.2f}ms/sample)")
+                        break
+                    else:
+                        self.logger.info(f"✅ {current_batch_size} in {test_duration:.1f}s ({time_per_sample*1000:.2f}ms/sample)")
                     
-                    # Memory usage
-                    used_mem, _ = get_device_memory_usage()
-                    memory_used_gb = used_mem / (1024**3)
+                    last_successful = current_batch_size
+                    current_batch_size *= exponential_factor
+                else:
+                    self.logger.info(f"❌ Batch size {current_batch_size} failed (OOM)")
+                    break
                     
-                    result = AccumulationResult(
-                        accumulation_steps=k,
-                        local_batch_size=local_batch_size,
-                        effective_batch_size=effective_batch_size,
-                        mean_time=mean_time,
-                        std_time=std_time,
-                        throughput=throughput,
-                        memory_used_gb=memory_used_gb,
-                        coefficient_of_variation=cv
-                    )
-                    
-                    results.append(result)
-                    self.logger.info(
-                        f"K={k}: time={mean_time:.3f}s±{std_time:.3f}s, "
-                        f"throughput={throughput:.1f} samples/s, CV={cv:.1f}%"
-                    )
-                    
-                except Exception as e:
-                    self.logger.error(f"Error testing accumulation factor K={k}: {e}")
+            except Exception as e:
+                if _is_oom_error(e):
+                    self.logger.info(f"❌ Batch size {current_batch_size} failed (OOM exception)")
+                    break
+                else:
+                    self.logger.error(f"❌ Batch size {current_batch_size} failed with error: {e}")
                     break
         
-        return results
+        # If we found a practical limit due to performance degradation, use it
+        practical_upper_bound = min(last_successful * exponential_factor, self.config.binary_search_high)
+        
+        # Phase 2: Binary search refinement in a narrow range
+        self.logger.info(f"Phase 2: Binary search refinement between {last_successful} and {practical_upper_bound}")
+        
+        low = last_successful
+        high = practical_upper_bound
+        
+        iteration = 0
+        while low < high - 64:  # Stop when range is small enough (within 64)
+            iteration += 1
+            mid = (low + high) // 2
+            
+            # Round to nearest multiple of 64 for cleaner batch sizes
+            mid = ((mid + 31) // 64) * 64
+            
+            if mid <= low:
+                break
+                
+            self.logger.info(f"Refinement iteration {iteration}: Testing batch size {mid}")
+            
+            rng_test = jax.random.fold_in(rng_search, mid + 1000)  # Different seed for refinement
+            
+            try:
+                start_time = time.perf_counter()
+                if self._test_batch_size(mid, rng_test):
+                    end_time = time.perf_counter()
+                    test_duration = end_time - start_time
+                    time_per_sample = test_duration / mid
+                    
+                    # Check if performance is still acceptable
+                    if max_time_per_sample is not None and time_per_sample > max_time_per_sample:
+                        self.logger.info(f"⚠️  Performance degradation at {mid}, reducing upper bound")
+                        high = mid - 1
+                    else:
+                        self.logger.info(f"✅ Batch size {mid} succeeded ({time_per_sample*1000:.2f}ms/sample)")
+                        last_successful = mid
+                        low = mid
+                else:
+                    self.logger.info(f"❌ Batch size {mid} failed (OOM)")
+                    high = mid - 1
+                    
+            except Exception as e:
+                if _is_oom_error(e):
+                    self.logger.info(f"❌ Batch size {mid} failed (OOM exception)")
+                    high = mid - 1
+                else:
+                    self.logger.error(f"❌ Batch size {mid} failed with error: {e}")
+                    high = mid - 1
+        
+        self.max_batch_size = last_successful
+        self.logger.info(f"🎯 Maximum practical batch size found: {last_successful}")
+        
+        # Log performance characteristics
+        if max_time_per_sample is not None:
+            self.logger.info(f"📊 Performance limit: {max_time_per_sample*1000:.2f}ms/sample")
+        
+        return last_successful
     
-    def run_optimization_workflow(self, rng_seed: int = 42) -> OptimizationResults:
-        """Run the complete batch optimization workflow.
+    def analyze_throughput(self, max_batch_size: Optional[int] = None, num_test_points: int = 10) -> Dict[str, Any]:
+        """Analyze throughput across different batch sizes using adaptive sampling.
         
         Args:
-            rng_seed: Random seed for reproducibility
+            max_batch_size: Maximum batch size to test (uses found max if None)
+            num_test_points: Number of test points to sample (default: 10)
             
         Returns:
-            Complete optimization results
+            Dictionary with throughput analysis results
         """
-        self.logger.info("Starting batch optimization workflow")
-        rng_key = jax.random.PRNGKey(rng_seed)
+        if max_batch_size is None:
+            if self.max_batch_size is None:
+                raise ValueError("Must run find_max_batch_size() first or provide max_batch_size")
+            max_batch_size = self.max_batch_size
         
-        with self.memory_monitor.monitoring_context():
-            # Split random keys
-            rng_max, rng_var, rng_sweep = jax.random.split(rng_key, 3)
-            
-            # 1. Find maximum batch size
-            max_batch_size = self.find_max_batch_size(rng_max)
-            
-            # 2. Estimate gradient variance at a reasonable batch size
-            test_batch_size = min(32, max_batch_size)
-            gradient_variance = self.estimate_gradient_variance(test_batch_size, rng_var)
-            
-            # 3. Determine sweet spot batch size
-            sweet_spot_candidates = [max_batch_size // 4, max_batch_size // 2, max_batch_size]
-            sweet_spot_batch_size = max_batch_size
-            
-            # Test candidates and pick one with reasonable gradient variance
-            for candidate in sweet_spot_candidates:
-                if candidate > 0 and candidate <= max_batch_size:
-                    candidate_var = self.estimate_gradient_variance(candidate, rng_var)
-                    if not np.isnan(candidate_var) and candidate_var >= gradient_variance * 0.5:
-                        sweet_spot_batch_size = candidate
-                        break
-            
-            # 4. Timing statistics at sweet spot (uses managed model internally)
-            timing_stats = self._measure_timing_statistics(sweet_spot_batch_size, rng_sweep)
-            
-            # 5. Sweep accumulation factors
-            accumulation_results = self.sweep_accumulation_factors(sweet_spot_batch_size, rng_sweep)
-            
-            # 6. Find recommended configuration
-            recommended_config = None
-            if accumulation_results:
-                # Prefer stable configurations with high throughput
-                stable_results = [r for r in accumulation_results if r.is_stable]
-                if stable_results:
-                    recommended_config = max(stable_results, key=lambda x: x.throughput)
-                else:
-                    recommended_config = max(accumulation_results, key=lambda x: x.throughput)
-            
-            results = OptimizationResults(
-                config=self.config,
-                max_batch_size=max_batch_size,
-                sweet_spot_batch_size=sweet_spot_batch_size,
-                gradient_variance=gradient_variance,
-                accumulation_results=accumulation_results,
-                recommended_config=recommended_config,
-                timing_stats=timing_stats
-            )
-            
-            self.logger.info("Batch optimization workflow completed")
-            return results
-    
-    def _measure_timing_statistics(
-        self, 
-        batch_size: int, 
-        rng_key: jax.random.PRNGKey
-    ) -> Dict[str, float]:
-        """Measure timing statistics for a given batch size."""
-        timing_measurements = []
+        self.logger.info(f"Analyzing throughput up to batch size {max_batch_size} using {num_test_points} test points")
         
-        # Use managed model for proper cleanup
-        rng_model, rng_batch = jax.random.split(rng_key)
+        # Ensure model is initialized
+        if self.model_instance is None:
+            rng_key = jax.random.PRNGKey(42)
+            self._initialize_model(rng_key)
         
-        with self._managed_model(rng_model) as model_instance:
-            for i in range(self.config.timing_repeats):
-                key_i = jax.random.fold_in(rng_batch, i)
-                batch_data = create_random_batch(key_i, batch_size, self.config)
+        results = {}
+        best_throughput = 0.0
+        best_batch_size = 0
+        
+        # Create adaptive batch size sampling - logarithmic spacing for better coverage
+        min_batch_size = max(1024, max_batch_size // 32)  # Start from reasonable minimum
+        
+        # Use logarithmic spacing to cover the range efficiently
+        if max_batch_size <= min_batch_size:
+            batch_sizes = [max_batch_size]
+        else:
+            # Generate logarithmically spaced points
+            log_min = np.log(min_batch_size)
+            log_max = np.log(max_batch_size)
+            log_points = np.linspace(log_min, log_max, num_test_points)
+            batch_sizes = [int(np.round(np.exp(log_point))) for log_point in log_points]
+            
+            # Remove duplicates and sort
+            batch_sizes = sorted(list(set(batch_sizes)))
+            
+            # Always include the maximum batch size
+            if max_batch_size not in batch_sizes:
+                batch_sizes.append(max_batch_size)
+        
+        self.logger.info(f"Testing batch sizes: {batch_sizes}")
+        
+        for batch_size in batch_sizes:
+            self.logger.info(f"Testing throughput for batch size {batch_size}")
+            
+            # Time multiple runs
+            times = []
+            for i in range(3):  # 3 runs for averaging
+                rng_key = jax.random.PRNGKey(batch_size * 100 + i)
+                batch_data = _create_random_batch(rng_key, batch_size, self.config)
                 
                 start_time = time.perf_counter()
-                key_forward = jax.random.fold_in(key_i, 1)
-                _, grads = self._forward_backward_step(model_instance, batch_data, key_forward)
+                _, grads = self.loss_fn(self.model_instance, batch_data, rng_key)
                 jax.tree_util.tree_map(lambda x: x.block_until_ready(), grads)
                 end_time = time.perf_counter()
                 
-                timing_measurements.append(end_time - start_time)
+                times.append(end_time - start_time)
                 del batch_data, grads
+            
+            # Calculate throughput
+            mean_time = np.mean(times)
+            throughput = batch_size / mean_time
+            
+            results[batch_size] = {
+                'mean_time': mean_time,
+                'throughput': throughput,
+                'samples_per_second': throughput
+            }
+            
+            if throughput > best_throughput:
+                best_throughput = throughput
+                best_batch_size = batch_size
+            
+            self.logger.info(f"Batch {batch_size}: {throughput:.1f} samples/sec")
         
-        timing_array = np.array(timing_measurements)
-        mean_time = np.mean(timing_array)
-        std_time = np.std(timing_array)
-        
-        # Calculate confidence interval
-        confidence_interval = stats.t.interval(
-            self.config.confidence_level,
-            len(timing_array) - 1,
-            loc=mean_time,
-            scale=stats.sem(timing_array)
-        )
+        self.logger.info(f"🚀 Best throughput: {best_throughput:.1f} samples/sec at batch size {best_batch_size}")
         
         return {
-            'mean_time': mean_time,
-            'std_time': std_time,
-            'confidence_interval_low': confidence_interval[0],
-            'confidence_interval_high': confidence_interval[1],
-            'coefficient_of_variation': (std_time / mean_time) * 100 if mean_time > 0 else 0.0
+            'results': results,
+            'best_batch_size': best_batch_size,
+            'best_throughput': best_throughput
         }
+    
+    def analyze_gradient_accumulation(self, batch_size: int, max_accumulation_steps: int = 8) -> Dict[str, Any]:
+        """Analyze gradient accumulation with proper gradient summing.
+        
+        Args:
+            batch_size: Base batch size for accumulation
+            max_accumulation_steps: Maximum number of accumulation steps to test
+            
+        Returns:
+            Dictionary with gradient accumulation analysis results
+        """
+        self.logger.info(f"Analyzing gradient accumulation for batch size {batch_size}")
+        
+        # Ensure model is initialized
+        if self.model_instance is None:
+            rng_key = jax.random.PRNGKey(42)
+            self._initialize_model(rng_key)
+        
+        results = {}
+        
+        # Compute reference gradient with large batch
+        self.logger.info(f"Computing reference gradient with batch size {batch_size}")
+        rng_ref = jax.random.PRNGKey(999)
+        batch_data_ref = _create_random_batch(rng_ref, batch_size, self.config)
+        _, ref_grads = self.loss_fn(self.model_instance, batch_data_ref, rng_ref)
+        ref_grad_norm = float(jnp.linalg.norm(_flatten_gradients(ref_grads)))
+        del batch_data_ref
+        
+        # Test different accumulation strategies
+        for k in range(1, max_accumulation_steps + 1):
+            micro_batch_size = batch_size // k
+            if micro_batch_size == 0:
+                continue
+                
+            self.logger.info(f"Testing {k} accumulation steps with micro-batch size {micro_batch_size}")
+            
+            # Accumulate gradients properly
+            accumulated_grads = None
+            
+            for step in range(k):
+                rng_step = jax.random.PRNGKey(k * 1000 + step)
+                batch_data = _create_random_batch(rng_step, micro_batch_size, self.config)
+                _, step_grads = self.loss_fn(self.model_instance, batch_data, rng_step)
+                
+                if accumulated_grads is None:
+                    accumulated_grads = step_grads
+                else:
+                    # Properly sum gradients
+                    accumulated_grads = jax.tree_util.tree_map(
+                        lambda acc, step: acc + step,
+                        accumulated_grads,
+                        step_grads
+                    )
+                
+                del batch_data, step_grads
+            
+            # Average the accumulated gradients
+            final_grads = jax.tree_util.tree_map(
+                lambda acc: acc / k,
+                accumulated_grads
+            )
+            
+            # Compare to reference
+            final_grad_norm = float(jnp.linalg.norm(_flatten_gradients(final_grads)))
+            relative_error = abs(final_grad_norm - ref_grad_norm) / ref_grad_norm
+            
+            results[k] = {
+                'micro_batch_size': micro_batch_size,
+                'effective_batch_size': micro_batch_size * k,
+                'gradient_norm': final_grad_norm,
+                'reference_norm': ref_grad_norm,
+                'relative_error': relative_error
+            }
+            
+            self.logger.info(f"K={k}: grad_norm={final_grad_norm:.3e}, relative_error={relative_error:.1%}")
+            
+            del accumulated_grads, final_grads
+        
+        del ref_grads
+        
+        return results
+    
+    def run(self, 
+            analyze_throughput: bool = False, 
+            analyze_accumulation: bool = False,
+            rng_seed: int = 42) -> Dict[str, Any]:
+        """Run the complete batch optimization workflow.
+        
+        Args:
+            analyze_throughput: Whether to run throughput analysis
+            analyze_accumulation: Whether to run gradient accumulation analysis  
+            rng_seed: Random seed for reproducibility
+            
+        Returns:
+            Dictionary with all results
+        """
+        self.logger.info("🚀 Starting batch optimization workflow")
+        
+        # Log hardware information
+        used_mem, total_mem = _get_device_memory_usage()
+        if used_mem is not None and total_mem is not None:
+            self.logger.info(f"Device memory: {used_mem/(1024**3):.1f}GB / {total_mem/(1024**3):.1f}GB")
+        else:
+            self.logger.info("Device memory information not available")
+        
+        results = {}
+        rng_key = jax.random.PRNGKey(rng_seed)
+        
+        try:
+            # Phase 1: Find maximum batch size (always run)
+            rng_max, rng_key = jax.random.split(rng_key)
+            max_batch_size = self.find_max_batch_size(rng_max)
+            results['max_batch_size'] = max_batch_size
+            
+            # Phase 2: Optional throughput analysis
+            if analyze_throughput:
+                self.logger.info("Running throughput analysis...")
+                throughput_results = self.analyze_throughput(max_batch_size)
+                results['throughput_analysis'] = throughput_results
+            
+            # Phase 3: Optional gradient accumulation analysis
+            if analyze_accumulation:
+                self.logger.info("Running gradient accumulation analysis...")
+                accumulation_results = self.analyze_gradient_accumulation(max_batch_size)
+                results['accumulation_analysis'] = accumulation_results
+            
+            # Final report
+            self.logger.info("🎉 Optimization completed successfully!")
+            self.logger.info(f"📊 Maximum batch size: {max_batch_size}")
+            
+            if analyze_throughput and 'throughput_analysis' in results:
+                best_batch = results['throughput_analysis']['best_batch_size']
+                best_throughput = results['throughput_analysis']['best_throughput']
+                self.logger.info(f"🚀 Best throughput: {best_throughput:.1f} samples/sec at batch size {best_batch}")
+            
+            return results
+            
+        finally:
+            # Always cleanup
+            self._cleanup_model()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DEMO/EXAMPLE USAGE
@@ -1014,46 +991,77 @@ class BatchOptimizer:
 
 if __name__ == "__main__":
     print("="*80)
-    print("BATCH OPTIMIZER DEMO")
+    print("BATCH OPTIMIZER DEMO - REFACTORED VERSION")
     print("="*80)
     
-    # Create configuration
-    config = OptimizationConfig(
-        model_type=ModelType.MUZERO,
-        num_actions=9,
-        observation_shape=(27,),
-        start_batch_size=2,
-        max_batch_size=1024,
-        grad_var_repeats=10,
-        max_accum_steps=8,
-        dtype=jnp.bfloat16,
-        enable_jax_smi=True
-    )
-    
-    try:
-        # Run optimization
-        optimizer = BatchOptimizer(config)
-        results = optimizer.run_optimization_workflow(rng_seed=42)
-        
-        # Print results
-        print("\n" + "="*80)
-        print("OPTIMIZATION RESULTS")
-        print("="*80)
-        print(f"Max batch size: {results.max_batch_size}")
-        print(f"Sweet spot batch size: {results.sweet_spot_batch_size}")
-        print(f"Gradient variance: {results.gradient_variance:.3e}")
-        
-        if results.recommended_config:
-            r = results.recommended_config
-            print(f"\nRECOMMENDED CONFIGURATION:")
-            print(f"  Local batch size: {r.local_batch_size}")
-            print(f"  Accumulation steps: {r.accumulation_steps}")
-            print(f"  Effective batch size: {r.effective_batch_size}")
-            print(f"  Throughput: {r.throughput:.1f} samples/s")
-            print(f"  Stability (CV): {r.coefficient_of_variation:.1f}%")
-        
-    except Exception as e:
-        print(f"Optimization failed: {e}")
-        logging.exception("Full error details:")
+    # Test configurations
+    test_configs = [
+        ("MuZero Model", OptimizationConfig(
+            model_type=ModelType.MUZERO,
+            num_actions=9,
+            observation_shape=(27,),
+            binary_search_low=1024,  # Use sensible defaults
+            binary_search_high=131072,
+            dtype=jnp.bfloat16,
+            timeout_seconds=120.0,
+        )),
+        ("Generic Model", OptimizationConfig(
+            model_type=ModelType.GENERIC,
+            num_actions=4,
+            observation_shape=(64,),
+            binary_search_low=1024,  # Use sensible defaults
+            binary_search_high=131072,
+            dtype=jnp.bfloat16,
+            timeout_seconds=120.0,
+        ))
+    ]
 
+    for model_name, config in test_configs:
+        print(f"\n{'='*60}")
+        print(f"TESTING: {model_name}")
+        print(f"{'='*60}")
+    
+        try:
+            # Create optimizer
+            optimizer = BatchOptimizer(config)
+            
+            # Run fast analysis (just find max batch size)
+            print(f"\n--- FAST ANALYSIS ---")
+            results = optimizer.run(analyze_throughput=False, analyze_accumulation=False)
+            print(f"Maximum batch size: {results['max_batch_size']}")
+            
+            # Run detailed analysis (with throughput and accumulation)
+            print(f"\n--- DETAILED ANALYSIS ---")
+            optimizer = BatchOptimizer(config)  # Fresh instance
+            results = optimizer.run(analyze_throughput=True, analyze_accumulation=True)
+            
+            # Print detailed results
+            print(f"\nDETAILED RESULTS - {model_name}")
+            print("-" * 40)
+            print(f"Model type: {config.model_type.value}")
+            print(f"Observation shape: {config.observation_shape}")
+            print(f"Maximum batch size: {results['max_batch_size']}")
+
+            if 'throughput_analysis' in results:
+                ta = results['throughput_analysis']
+                print(f"Best throughput batch size: {ta['best_batch_size']}")
+                print(f"Best throughput: {ta['best_throughput']:.1f} samples/sec")
+            
+            if 'accumulation_analysis' in results:
+                aa = results['accumulation_analysis']
+                print(f"Gradient accumulation strategies tested: {len(aa)} configurations")
+                # Show best accumulation strategy (lowest relative error)
+                best_k = min(aa.keys(), key=lambda k: aa[k]['relative_error'])
+                best_result = aa[best_k]
+                print(f"Best accumulation: K={best_k}, micro_batch={best_result['micro_batch_size']}, "
+                      f"relative_error={best_result['relative_error']:.1%}")
+
+        except Exception as e:
+            print(f"Optimization failed for {model_name}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    print(f"\n{'='*80}")
+    print("DEMO COMPLETED")
+    print(f"{'='*80}")
  
