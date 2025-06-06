@@ -654,7 +654,7 @@ class BatchOptimizer:
         
         # Phase 1: Quick exponential search to find approximate upper bound
         self.logger.info("Phase 1: Exponential search for approximate upper bound...")
-        current_batch_size = 1024  # Start with reasonable size
+        current_batch_size = self.config.binary_search_low  # Start from config
         max_time_per_sample = None  # Baseline for performance degradation detection
         last_successful = current_batch_size
         exponential_factor = 2

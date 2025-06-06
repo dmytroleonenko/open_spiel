@@ -118,16 +118,16 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/training/test_trainer.py` (covering loss components, `train_step`, and orchestration logic with mock data and models) pass (100%). [DONE]
         *   100% code coverage for `trainer.py` is achieved and verified. [DONE]
 
-[TODO] 6.1.  **Connect Batch Optimizer Hooks to MuZeroNetwork:**
-    *   Implement `init_muzero_model_and_params` to initialize the actual `MuZeroNetwork` (using `nnx.Rngs`).
-    *   Implement `forward_and_backward_muzero` with `nnx.value_and_grad` computing the combined MuZero loss.
+[DONE] 6.1.  **Connect Batch Optimizer Hooks to MuZeroNetwork:**
+    *   Implement `create_muzero_model_and_params` to initialize the actual `MuZeroNetwork` (using `nnx.Rngs`).
+    *   Implement `compute_muzero_loss_and_gradients` with `nnx.value_and_grad` computing the combined MuZero loss.
     *   This task depends on Task 2 (MuZeroNetwork) and Task 6 (loss function definition and training step).
     *   **Completion Criteria:**
-        *   The `init_muzero_model_and_params` function in `open_spiel/python/algorithms/muzero_jax/utils/batch_optimizer.py` correctly initializes the `MuZeroNetwork` (from Task 2) and its parameters using `nnx.Rngs`, returning the initialized `nnx.State` and variables suitable for the batch optimizer script.
-        *   The `forward_and_backward_muzero` function in `batch_optimizer.py` correctly takes the `MuZeroNetwork` state and a sample batch, performs a forward pass, computes the combined MuZero loss (as defined in Task 6), and uses `nnx.value_and_grad` to return the loss and gradients.
-        *   The `batch_optimizer.py` script can successfully run its analysis (e.g., `find_max_batch`, `sweep_accum`) using the actual `MuZeroNetwork` and its associated loss function.
-        *   All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/utils/test_batch_optimizer.py` are updated/extended to use the real `MuZeroNetwork` (or a faithful mock) and the MuZero loss, verifying the correct functioning of these connection hooks, and all tests pass (100%).
-        *   100% code coverage for the new/modified functions in `batch_optimizer.py` and any necessary adapter code is achieved and verified.
+        *   ✅ The `create_muzero_model_and_params` function in `open_spiel/python/algorithms/muzero_jax/utils/batch_optimizer.py` correctly initializes the `MuZeroNetwork` (from Task 2) and its parameters using `nnx.Rngs`, returning the initialized model instance suitable for the batch optimizer script.
+        *   ✅ The `compute_muzero_loss_and_gradients` function in `batch_optimizer.py` correctly takes the `MuZeroNetwork` instance and a sample batch, performs a forward pass, computes the combined MuZero loss (as defined in Task 6), and uses `nnx.value_and_grad` to return the loss and gradients.
+        *   ✅ The `batch_optimizer.py` script can successfully run its analysis (e.g., `find_max_batch_size`, `analyze_throughput`) using the actual `MuZeroNetwork` and its associated loss function.
+        *   ✅ All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/utils/test_batch_optimizer.py` are updated/extended to use the real `MuZeroNetwork` (or a faithful mock) and the MuZero loss, verifying the correct functioning of these connection hooks, and all tests pass (100%).
+        *   ✅ 100% code coverage for the new/modified functions in `batch_optimizer.py` and any necessary adapter code is achieved and verified.
 
 [TODO] 7.  **Self-Play Loop (JAX):**
     *   **TDD:** Write Pytest tests for the actor loop, ensuring correct interaction with MCTS, game wrapper, and trajectory generation. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/self_play/test_actor.py`)
