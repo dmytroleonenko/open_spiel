@@ -76,6 +76,7 @@ class TestActor:
         assert actor.game_wrapper == mock_game_wrapper
         assert actor.replay_buffer == mock_replay_buffer
         assert actor.config == mock_config
+        assert actor.current_params is None
 
     def test_actor_parameter_validation(self, mock_config, mock_muzero_network):
         """Test that the actor validates initialization parameters."""
@@ -202,11 +203,14 @@ class TestActor:
              patch.object(actor, 'load_network_parameters') as mock_load_params:
             
             mock_get_latest.return_value = "/path/to/checkpoints/latest.ckpt"
-            mock_load_params.return_value = {'test': 'params'}
+            mock_params = {'test': 'params'}
+            mock_load_params.return_value = mock_params
             
             result = actor.maybe_load_latest_parameters(checkpoint_dir)
             assert result is True
             mock_load_params.assert_called_once_with("/path/to/checkpoints/latest.ckpt")
+            # Check that parameters were stored
+            assert actor.current_params == mock_params
             
         # Test when checkpoint exists but loading fails
         with patch('open_spiel.python.algorithms.muzero_jax.self_play.actor.get_latest_checkpoint') as mock_get_latest, \
@@ -589,3 +593,48 @@ class TestActor:
         assert len(trajectory['observations']) == 0
         assert len(trajectory['actions']) == 0
         assert len(trajectory['rewards']) == 0
+
+    def test_actor_mcts_uses_loaded_parameters(self, mock_config, mock_muzero_network):
+        """Test that MCTS receives the loaded network parameters."""
+        from open_spiel.python.algorithms.muzero_jax.self_play.actor import Actor
+        
+        mock_mcts = Mock(spec=MCTS)
+        mock_game_wrapper = Mock(spec=GameWrapper)
+        mock_replay_buffer = Mock(spec=TrajectoryBuffer)
+        
+        actor = Actor(
+            network=mock_muzero_network,
+            mcts=mock_mcts,
+            game_wrapper=mock_game_wrapper,
+            replay_buffer=mock_replay_buffer,
+            config=mock_config
+        )
+        
+        # Load some parameters
+        test_params = {'test': 'loaded_params'}
+        actor.current_params = test_params
+        
+        # Setup game wrapper for simple episode
+        mock_game_wrapper.reset.return_value = jnp.array([1, 0, 0, 1, 1, 0, 0, 1, 0])
+        mock_game_wrapper.is_terminal.side_effect = [False, True]  # One step then terminal
+        mock_game_wrapper.is_chance_node.return_value = False
+        mock_game_wrapper.current_observation.return_value = jnp.array([1, 0, 0, 1, 1, 0, 0, 1, 0])
+        mock_game_wrapper.legal_actions.return_value = [0, 1, 2]
+        mock_game_wrapper.step.return_value = (None, [1.0], True)
+        
+        # Setup MCTS mock to capture the params it receives
+        def capture_mcts_params(params, rng_key, root, recurrent_fn, **kwargs):
+            # Store the params that were passed to MCTS
+            capture_mcts_params.received_params = params
+            mock_output = Mock()
+            mock_output.action_weights = jnp.array([0.1, 0.6, 0.3])
+            return mock_output
+        
+        mock_mcts.run.side_effect = capture_mcts_params
+        
+        rng_key = jax.random.PRNGKey(42)
+        actor.play_episode(rng_key)
+        
+        # Verify that MCTS received the loaded parameters
+        assert hasattr(capture_mcts_params, 'received_params')
+        assert capture_mcts_params.received_params == test_params

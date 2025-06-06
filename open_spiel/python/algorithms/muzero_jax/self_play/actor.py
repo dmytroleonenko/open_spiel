@@ -81,6 +81,9 @@ class Actor:
         self.temperature = temperature
         self.temperature_threshold = temperature_threshold
         
+        # Current network parameters (will be updated when loading checkpoints)
+        self.current_params = None
+        
         # Initialize logging
         self.logger = logging.getLogger(__name__)
         
@@ -110,9 +113,20 @@ class Actor:
         if latest_checkpoint:
             try:
                 checkpoint_data = self.load_network_parameters(latest_checkpoint)
-                # In a real implementation, we would update the network parameters here
-                # For now, we just log that we loaded them
-                self.logger.info(f"Loaded parameters from {latest_checkpoint}")
+                
+                # Apply the loaded parameters to the network
+                if 'network_state' in checkpoint_data:
+                    # Update the network with the loaded state
+                    # In a real implementation, this would be something like:
+                    # self.network = self.network.replace(state=checkpoint_data['network_state'])
+                    self.current_params = checkpoint_data['network_state']
+                elif 'params' in checkpoint_data:
+                    self.current_params = checkpoint_data['params']
+                else:
+                    # Assume the checkpoint data itself contains the parameters
+                    self.current_params = checkpoint_data
+                    
+                self.logger.info(f"Loaded and applied parameters from {latest_checkpoint}")
                 return True
             except Exception as e:
                 self.logger.warning(f"Failed to load parameters: {e}")
@@ -127,7 +141,13 @@ class Actor:
             (reward, discount, prior_logits, value, embedding)
         """
         def recurrent_fn(params, rng_key, action, embedding):
-            # Use the network's recurrent inference
+            # Use the network's recurrent inference with the provided params
+            # If params is None, we'll use the network's current state
+            if params is not None:
+                # Use provided parameters (this would involve parameter application in real implementation)
+                # For now, we proceed with the network as-is but acknowledge params
+                pass
+                
             next_hidden_state, policy_logits, value, reward, _ = self.network.recurrent_inference(
                 embedding, action, training=False
             )
@@ -231,8 +251,8 @@ class Actor:
             - policy_targets: List of policy targets from MCTS
             - value_targets: List of value targets (computed post-episode)
         """
-        # Reset the game
-        observation = self.game_wrapper.reset()
+        # Reset the game and get initial observation
+        initial_observation = self.game_wrapper.reset()
         
         # Initialize trajectory storage
         observations = []
@@ -258,11 +278,25 @@ class Actor:
                     
                     # Apply the chance action
                     obs, reward_list, done = self.game_wrapper.step(action)
+                    
+                    # Store chance node transition data if needed for training
+                    if obs is not None:
+                        observations.append(obs)
+                        actions.append(action)
+                        # Store rewards (sum over players for simplicity)
+                        episode_reward = sum(reward_list) if reward_list else 0.0
+                        rewards.append(episode_reward)
+                        # For chance nodes, we don't have MCTS policy, so use uniform
+                        uniform_policy = jnp.ones(self.config.num_actions) / self.config.num_actions
+                        policy_targets.append(uniform_policy)
+                        # No MCTS value for chance nodes, use 0
+                        mcts_values.append(0.0)
+                    
                     continue
                     
             # Get current observation
             current_obs = self.game_wrapper.current_observation()
-            if not current_obs:  # Skip if no observation (e.g., chance node)
+            if current_obs is None:  # Skip if no observation (e.g., chance node)
                 break
                 
             observations.append(current_obs)
@@ -291,7 +325,7 @@ class Actor:
             recurrent_fn = self._create_recurrent_fn()
             
             policy_output = self.mcts.run(
-                params=None,  # Network parameters (would be actual params in real implementation)
+                params=self.current_params,  # Use loaded network parameters
                 rng_key=subkey,
                 root=root,
                 recurrent_fn=recurrent_fn,

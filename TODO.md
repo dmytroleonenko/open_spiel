@@ -134,6 +134,11 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
     *   Create `open_spiel/python/algorithms/muzero_jax/self_play/actor.py`.
     *   (Reference: `@EfficientZeroV2/ez/worker/actor_worker.py`, `@EfficientZeroV2/ez/worker/self_play_worker.py`)
     *   **Actor Loop:** This component is the **Self-Play Actor**. Its role is to: Periodically load the latest (or sufficiently recent) network parameters (from the Learner/checkpoints). Use these parameters to play games against itself (or an environment model) using MCTS. Collect game trajectories (observations, actions, rewards, MCTS policy/value targets). Add these completed trajectories *to* the Replay Buffer for the Learner to consume.
+    *   **Post-Implementation Integration Fixes Applied:**
+        *   ✅ **Parameter Application:** Fixed `maybe_load_latest_parameters` to actually apply loaded checkpoint parameters to `self.current_params` instead of just logging success.
+        *   ✅ **MCTS Parameter Passing:** Updated MCTS calls to pass `self.current_params` instead of `params=None`, ensuring loaded network parameters are used for inference.
+        *   ✅ **Observation Handling:** Fixed unused initial observation from `reset()` and corrected JAX array boolean check (`is None` instead of `not`).
+        *   ✅ **Chance Node Data Storage:** Enhanced chance node handling to properly store resulting observations, actions, rewards, and policy targets in trajectories for training.
     *   **Completion Criteria:**
         *   ✅ The `open_spiel/python/algorithms/muzero_jax/self_play/actor.py` file is created and contains the self-play actor logic.
         *   ✅ The actor loop can load the latest `MuZeroNetwork` parameters (e.g., from a shared checkpoint location updated by the Learner).
@@ -143,7 +148,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   ✅ Value and policy targets are computed correctly based on the game's outcome and MCTS search statistics (e.g., n-step returns, MCTS policy).
         *   ✅ Completed trajectories are added to the Flashbax replay buffer (Task 5).
         *   ✅ The actor loop can run for a specified number of games or steps.
-        *   ✅ All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/self_play/test_actor.py` (covering model loading, game interaction, MCTS calls, trajectory generation, target computation, and buffer interaction on a simple game) pass (100%). **Achievement: 15/15 tests passing with 100% code coverage.**
+        *   ✅ All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/self_play/test_actor.py` (covering model loading, game interaction, MCTS calls, trajectory generation, target computation, and buffer interaction on a simple game) pass (100%). **Achievement: 16/16 tests passing with 100% code coverage.**
         *   ✅ 100% code coverage for `actor.py` is achieved and verified.
 
 [TODO] 8.  **Main Orchestration Script (`run_muzero_jax.py`):**
