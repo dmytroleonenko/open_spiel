@@ -1,0 +1,1 @@
+# Test package for self_play module 
