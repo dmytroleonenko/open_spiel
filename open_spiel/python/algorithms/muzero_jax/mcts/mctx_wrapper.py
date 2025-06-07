@@ -53,25 +53,20 @@ class MCTS:
         Returns:
             A mctx PolicyOutput with fields (action, action_weights, search_tree).
         """
-        # Wrap rng_key to allow equality comparison in tests
-        class _KeyWrapper:
-            def __init__(self, key):
-                self._key = key
-            def __eq__(self, other):
-                return other is self._key
-            def __repr__(self):
-                return f"_KeyWrapper({self._key!r})" # pragma: no cover
-        wrapped_key = _KeyWrapper(rng_key)
-        return gumbel_muzero_policy(
-            params=params,
-            rng_key=wrapped_key,
-            root=root,
-            recurrent_fn=recurrent_fn,
-            num_simulations=self.num_simulations,
-            invalid_actions=invalid_actions,
-            max_depth=max_depth,
-            loop_fn=loop_fn,
-            qtransform=qtransform,
-            max_num_considered_actions=self.max_num_considered_actions,
-            gumbel_scale=self.gumbel_scale,
-        ) 
+        # Build kwargs, only including qtransform if it's not None
+        kwargs = {
+            'params': params,
+            'rng_key': rng_key,
+            'root': root,
+            'recurrent_fn': recurrent_fn,
+            'num_simulations': self.num_simulations,
+            'invalid_actions': invalid_actions,
+            'max_depth': max_depth,
+            'loop_fn': loop_fn,
+            'max_num_considered_actions': self.max_num_considered_actions,
+            'gumbel_scale': self.gumbel_scale,
+        }
+        if qtransform is not None:
+            kwargs['qtransform'] = qtransform
+            
+        return gumbel_muzero_policy(**kwargs) 

@@ -10,14 +10,7 @@ import logging
 from typing import Dict, Any, Optional
 import jax
 import flax.nnx as nnx
-
-# Try to import Orbax, provide fallback if not available
-try:
-    import orbax.checkpoint as ocp
-    ORBAX_AVAILABLE = True
-except ImportError:
-    ORBAX_AVAILABLE = False
-    logging.warning("Orbax not available, using mock checkpointing")
+import orbax.checkpoint as ocp
 
 
 def save_checkpoint(
@@ -40,31 +33,23 @@ def save_checkpoint(
     Returns:
         Path to the saved checkpoint
     """
-    if not ORBAX_AVAILABLE:
-        # Mock implementation for testing
-        checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{step}")
-        os.makedirs(checkpoint_dir, exist_ok=True)
-        # Create a dummy file to indicate checkpoint exists
-        with open(checkpoint_path, 'w') as f:
-            f.write(f"Mock checkpoint at step {step}")
-        return checkpoint_path
-    
-    # Real Orbax implementation would go here
     os.makedirs(checkpoint_dir, exist_ok=True)
-    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{step}")
     
-    # For now, create a simple file-based checkpoint
+    # Create checkpoint data structure
     checkpoint_data = {
-        'step': step,
         'model_state': model_state,
         'optimizer_state': optimizer_state,
-        'metadata': metadata or {}
+        'step': step,
     }
     
-    # In a real implementation, this would use Orbax to save the checkpoint
-    # For now, just create a marker file
-    with open(checkpoint_path, 'w') as f:
-        f.write(f"Checkpoint at step {step}")
+    if metadata:
+        checkpoint_data['metadata'] = metadata
+    
+    # Use Orbax checkpointer to save
+    checkpointer = ocp.Checkpointer(ocp.StandardCheckpointHandler())
+    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{step}")
+    
+    checkpointer.save(checkpoint_path, args=ocp.args.StandardSave(checkpoint_data))
     
     return checkpoint_path
 
@@ -85,23 +70,12 @@ def load_checkpoint(checkpoint_path: str) -> Dict[str, Any]:
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
     
-    if not ORBAX_AVAILABLE:
-        # Mock implementation for testing
-        return {
-            'step': 0,
-            'model_state': {},
-            'optimizer_state': {},
-            'metadata': {}
-        }
+    checkpointer = ocp.Checkpointer(ocp.StandardCheckpointHandler())
     
-    # Real Orbax implementation would go here
-    # For now, return mock data
-    return {
-        'step': 0,
-        'model_state': {},
-        'optimizer_state': {},
-        'metadata': {}
-    }
+    # Load without specifying target structure (unsafe but works for testing)
+    checkpoint_data = checkpointer.restore(checkpoint_path)
+    
+    return checkpoint_data
 
 
 def get_latest_checkpoint(checkpoint_dir: str) -> Optional[str]:
@@ -117,7 +91,7 @@ def get_latest_checkpoint(checkpoint_dir: str) -> Optional[str]:
     if not os.path.exists(checkpoint_dir):
         return None
     
-    # Look for checkpoint files
+    # Look for checkpoint files/directories
     checkpoint_files = [
         f for f in os.listdir(checkpoint_dir) 
         if f.startswith('checkpoint_')
@@ -127,45 +101,97 @@ def get_latest_checkpoint(checkpoint_dir: str) -> Optional[str]:
         return None
     
     # Sort by step number and return the latest
-    checkpoint_files.sort(key=lambda x: int(x.split('_')[1]) if '_' in x else 0)
+    def extract_step(checkpoint_name):
+        try:
+            return int(checkpoint_name.split('_')[1])
+        except (IndexError, ValueError):
+            return 0
+    
+    checkpoint_files.sort(key=extract_step)
     latest_checkpoint = checkpoint_files[-1]
     
     return os.path.join(checkpoint_dir, latest_checkpoint)
 
 
-def create_checkpoint_manager(checkpoint_dir: str, max_to_keep: int = 5) -> Any:
+def create_checkpoint_manager(checkpoint_dir: str, max_to_keep: int = 5) -> ocp.CheckpointManager:
     """
-    Create a checkpoint manager for automatic checkpoint management.
+    Create a real Orbax checkpoint manager for automatic checkpoint management.
     
     Args:
         checkpoint_dir: Directory for checkpoints
         max_to_keep: Maximum number of checkpoints to keep
         
     Returns:
-        Checkpoint manager instance
+        Orbax CheckpointManager instance
     """
-    if not ORBAX_AVAILABLE:
-        # Return a mock manager
-        class MockCheckpointManager:
-            def __init__(self, checkpoint_dir, max_to_keep):
-                self.checkpoint_dir = checkpoint_dir
-                self.max_to_keep = max_to_keep
-                
-            def save(self, step, items):
-                return save_checkpoint(
-                    self.checkpoint_dir, 
-                    step, 
-                    items.get('model_state'), 
-                    items.get('optimizer_state'),
-                    items.get('metadata')
-                )
-                
-            def restore(self, step):
-                checkpoint_path = os.path.join(self.checkpoint_dir, f"checkpoint_{step}")
-                return load_checkpoint(checkpoint_path)
-        
-        return MockCheckpointManager(checkpoint_dir, max_to_keep)
-    
-    # Real Orbax checkpoint manager would be created here
     os.makedirs(checkpoint_dir, exist_ok=True)
-    return None  # Placeholder
+    
+    options = ocp.CheckpointManagerOptions(
+        max_to_keep=max_to_keep,
+        save_interval_steps=1,  # Save every step by default
+        enable_async_checkpointing=True,
+        cleanup_tmp_directories=True,
+    )
+    
+    manager = ocp.CheckpointManager(checkpoint_dir, options=options)
+    
+    return manager
+
+
+def save_composite_checkpoint(
+    checkpoint_dir: str,
+    step: int,
+    items: Dict[str, Any]
+) -> str:
+    """
+    Save a composite checkpoint with multiple items.
+    
+    Args:
+        checkpoint_dir: Directory to save checkpoints
+        step: Training step number
+        items: Dictionary of items to save (model_state, optimizer_state, metadata, etc.)
+        
+    Returns:
+        Path to the saved checkpoint
+    """
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    # Create composite save args
+    save_args = {}
+    for key, value in items.items():
+        if key == 'metadata':
+            save_args[key] = ocp.args.JsonSave(value)
+        else:
+            save_args[key] = ocp.args.StandardSave(value)
+    
+    checkpointer = ocp.Checkpointer(ocp.CompositeCheckpointHandler())
+    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{step}")
+    
+    checkpointer.save(checkpoint_path, args=ocp.args.Composite(**save_args))
+    
+    return checkpoint_path
+
+
+def load_composite_checkpoint(
+    checkpoint_path: str,
+    item_names: Optional[list] = None
+) -> Dict[str, Any]:
+    """
+    Load a composite checkpoint.
+    
+    Args:
+        checkpoint_path: Path to the checkpoint
+        item_names: Optional list of item names to restore
+        
+    Returns:
+        Dictionary containing loaded checkpoint items
+    """
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+    
+    checkpointer = ocp.Checkpointer(ocp.CompositeCheckpointHandler())
+    
+    # Restore without specifying structure (unsafe but works for testing)
+    checkpoint_data = checkpointer.restore(checkpoint_path)
+    
+    return checkpoint_data

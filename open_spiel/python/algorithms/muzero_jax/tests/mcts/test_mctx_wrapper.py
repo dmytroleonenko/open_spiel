@@ -1,4 +1,5 @@
 import jax
+import jax.numpy as jnp
 import pytest
 from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import MCTS, gumbel_muzero_policy
 
@@ -34,7 +35,7 @@ def test_mcts_run_calls_gumbel_policy(monkeypatch):
     )
     assert result == 'fake_result'
     assert called['params'] == params
-    assert called['rng_key'] == rng_key
+    assert jnp.array_equal(called['rng_key'], rng_key)
     assert called['root'] == root
     assert called['recurrent_fn'] == recurrent_fn
     assert called['num_simulations'] == num_simulations

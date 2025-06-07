@@ -148,7 +148,7 @@ class Actor:
                 # For now, we proceed with the network as-is but acknowledge params
                 pass
                 
-            next_hidden_state, policy_logits, value, reward, _ = self.network.recurrent_inference(
+            next_hidden_state, reward, value, policy_logits, _ = self.network.recurrent_inference(
                 embedding, action, training=False
             )
             
@@ -156,7 +156,16 @@ class Actor:
             # This will be handled by the game termination logic
             discount = jnp.ones_like(value)
             
-            return reward, discount, policy_logits, value, next_hidden_state
+            # Create RecurrentFnOutput as expected by mctx
+            from mctx._src.base import RecurrentFnOutput
+            step = RecurrentFnOutput(
+                reward=reward,
+                discount=discount,
+                prior_logits=policy_logits,
+                value=value
+            )
+            
+            return step, next_hidden_state
             
         return recurrent_fn
         
@@ -262,9 +271,14 @@ class Actor:
         mcts_values = []
         
         step = 0
+        max_steps = self.game_wrapper._game.max_game_length() + 1
         rng_key, subkey = jax.random.split(rng_key)
         
         while not self.game_wrapper.is_terminal():
+            if step >= max_steps:
+                logging.error(f"Episode in {self.game_wrapper._game.get_type().short_name} "
+                              f"exceeded max steps ({max_steps}), breaking loop.")
+                break
             # Handle chance nodes
             if self.game_wrapper.is_chance_node():
                 # For chance nodes, sample from the chance outcomes
@@ -303,22 +317,23 @@ class Actor:
             
             # Get initial inference from network
             obs_array = jnp.array([current_obs])  # Add batch dimension
-            hidden_state, policy_logits, value, reward, _ = self.network.initial_inference(
+            hidden_state, reward, value, policy_logits, _ = self.network.initial_inference(
                 obs_array, training=False
             )
             
-            # Create root for MCTS
-            root = type('Root', (), {
-                'prior_logits': policy_logits[0],  # Remove batch dimension
-                'value': value[0],
-                'embedding': hidden_state[0]
-            })()
+            # Create root for MCTS using mctx.RootFnOutput
+            from mctx._src.base import RootFnOutput
+            root = RootFnOutput(
+                prior_logits=policy_logits,  # Keep batch dimension for mctx
+                value=value,
+                embedding=hidden_state
+            )
             
             # Get legal actions and create invalid actions mask
             legal_actions = self.game_wrapper.legal_actions()
-            invalid_actions = jnp.ones(self.config.num_actions, dtype=bool)
+            invalid_actions = jnp.ones((1, self.config.num_actions), dtype=bool)  # Add batch dimension
             legal_actions_array = jnp.array(legal_actions)
-            invalid_actions = invalid_actions.at[legal_actions_array].set(False)
+            invalid_actions = invalid_actions.at[0, legal_actions_array].set(False)
             
             # Run MCTS
             rng_key, subkey = jax.random.split(rng_key)

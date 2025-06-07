@@ -1,0 +1,125 @@
+# MuZero JAX Configuration for OpenSpiel
+# Inspired by EfficientZeroV2 configuration structure
+
+# Experiment configuration
+exp_config:
+  tag: "MuZero-JAX"
+  debug: false
+  seed: 42
+
+# Output and logging
+output:
+  save_path: "results/${game.name}/"
+  checkpoint_interval: 1000
+  log_interval: 100
+
+# Game configuration
+game:
+  name: "tic_tac_toe"
+  # Observation shape will be auto-detected from the game
+  # Action space size will be auto-detected from the game
+
+# Training configuration
+training:
+  # Core hyperparameters
+  learning_rate: 0.001
+  batch_size: 32
+  training_steps: 10000
+  warmup_steps: 1000
+  
+  # Loss configuration
+  value_loss_weight: 1.0
+  policy_loss_weight: 1.0
+  reward_loss_weight: 1.0
+  l2_regularization: 1e-4
+  
+  # Training dynamics
+  discount: 0.997
+  num_unroll_steps: 5
+  td_steps: 5
+  
+  # Target network
+  target_network_update_interval: 200
+  target_network_tau: 0.005  # EMA coefficient for target network updates
+
+# MCTS configuration
+mcts:
+  num_simulations: 50
+  c1: 1.25
+  c2: 19652
+  discount: 0.997
+  temperature_init: 1.0
+  temperature_final: 0.1
+  temperature_decay_steps: 10000
+  dirichlet_alpha: 0.3
+  exploration_fraction: 0.25
+
+# Replay buffer configuration
+replay_buffer:
+  capacity: 100000
+  min_size_to_sample: 2000
+  priority_alpha: 0.6
+  priority_beta_start: 0.4
+  priority_beta_steps: 100000
+
+# Network architecture
+network:
+  hidden_size: 256
+  num_layers: 2
+  use_layer_norm: true
+  activation: "relu"
+  
+  # ResNet configuration for image-based games
+  resnet_blocks: 2
+  downsample_factor: 1
+  
+  # Support for scalar/categorical value/reward predictions
+  support_size: 601  # For categorical value/reward prediction
+  min_value: -300
+  max_value: 300
+
+# Actor configuration (self-play)
+actors:
+  num_actors: 4
+  episodes_per_actor: 100
+  max_episode_length: 1000
+  checkpoint_sync_interval: 100
+
+# Distributed training (for future use)
+distributed:
+  use_distributed: false
+  world_size: 1
+  
+# Resource management for single TPU/GPU
+resource_management:
+  device: "auto"  # "cpu", "gpu", "tpu", or "auto"
+  sequential_training: true  # If true, alternate between self-play and training phases
+  training_phase_steps: 10  # Steps to train before switching to self-play
+  selfplay_phase_episodes: 5  # Episodes to generate before switching to training
+
+# Logging and monitoring
+wandb:
+  enabled: true
+  project: "muzero-jax-openspiel"
+  entity: null
+  tags: []
+  notes: ""
+
+# Evaluation
+evaluation:
+  enabled: true
+  interval: 1000
+  num_episodes: 10
+  deterministic: true
+  save_recordings: false
+
+# Hydra configuration
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+# Default overrides (can be overridden via command line or game-specific configs)
+defaults:
+  - _self_
+  - game: tic_tac_toe 

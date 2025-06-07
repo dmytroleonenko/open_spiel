@@ -143,6 +143,7 @@ def test_gae_data_flow_compatibility():
     config = MuZeroConfig(
         num_actions=6,
         num_unroll_steps=3,
+        batch_size=2,  # Match the test batch size
         value_target_type="GAE",
         gae_max_steps=5
     )
@@ -173,6 +174,7 @@ def test_policy_reanalysis_data_flow_compatibility():
     config = MuZeroConfig(
         num_actions=6,
         num_unroll_steps=3,
+        batch_size=2,  # Match the test batch size
         reanalyze_ratio=0.8
     )
     
@@ -200,6 +202,7 @@ def test_mixed_value_targets_data_flow_compatibility():
     config = MuZeroConfig(
         num_actions=6,
         num_unroll_steps=3,
+        batch_size=2,  # Match the test batch size
         value_target="mixed",
         mixed_value_threshold=500
     )
@@ -232,6 +235,7 @@ def test_value_prefix_support():
     config = MuZeroConfig(
         num_actions=6,
         num_unroll_steps=3,
+        batch_size=2,  # Match the test batch size
         use_value_prefix=True,
         lstm_horizon_length=5
     )
@@ -252,6 +256,7 @@ def test_categorical_support_compatibility():
     config = MuZeroConfig(
         num_actions=6,
         num_unroll_steps=3,
+        batch_size=2,  # Match the test batch size
         value_support_size=21,
         reward_support_size=11,
         value_loss_type="categorical",
@@ -280,6 +285,7 @@ def test_continuous_action_fields():
     config = MuZeroConfig(
         num_actions=6,
         num_unroll_steps=3,
+        batch_size=2,  # Match the test batch size
         num_sampled_actions=16,
         reanalyze_ratio=0.5
     )

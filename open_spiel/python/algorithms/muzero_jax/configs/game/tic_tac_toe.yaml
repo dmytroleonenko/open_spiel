@@ -1,0 +1,42 @@
+# @package _global_
+# Tic-Tac-Toe specific configuration
+
+game:
+  name: "tic_tac_toe"
+
+# Tic-tac-toe specific training settings
+training:
+  learning_rate: 0.01
+  batch_size: 16
+  training_steps: 5000
+  warmup_steps: 500
+
+# MCTS settings tuned for tic-tac-toe
+mcts:
+  num_simulations: 25
+  temperature_init: 1.0
+  temperature_final: 0.0
+  temperature_decay_steps: 2000
+
+# Smaller replay buffer for simple game
+replay_buffer:
+  capacity: 10000
+  min_size_to_sample: 500
+
+# Network architecture for tic-tac-toe
+network:
+  hidden_size: 128
+  num_layers: 2
+  support_size: 101
+  min_value: -50
+  max_value: 50
+
+# Fewer actors needed for simple game
+actors:
+  num_actors: 2
+  episodes_per_actor: 50
+
+# More frequent evaluation for faster feedback
+evaluation:
+  interval: 500
+  num_episodes: 20 

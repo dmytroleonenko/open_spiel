@@ -344,6 +344,42 @@ def test_mlp_noisy_parameter_coverage(rngs_fixture):
     regular_mlp = MLP(input_size, hidden_sizes, output_size, noisy=False, rngs=rngs_fixture)
     assert regular_mlp.noisy == False
 
+def test_mlp_reset_noise_edge_case_no_noisy_layers(rngs_fixture):
+    """Test reset_noise when MLP is marked as noisy but has no NoisyLinear layers.
+    
+    This test covers the edge case where self.noisy=True but no noisy layers
+    are found, triggering the return statement on line 122.
+    """
+    # Create a custom MLP that is marked as noisy but manually replace layers with regular ones
+    mlp = MLP(input_size=4, hidden_sizes=[3], output_size=2, noisy=True, rngs=rngs_fixture)
+    
+    # Manually replace all NoisyLinear layers with regular Linear layers
+    # to create the edge case where noisy=True but no noisy layers exist
+    new_layers = []
+    for layer in mlp.layers:
+        if isinstance(layer, NoisyLinear):
+            # Replace with regular Linear layer with same dimensions
+            regular_linear = nnx.Linear(
+                in_features=layer.in_features,
+                out_features=layer.out_features,
+                use_bias=layer.use_bias,
+                rngs=rngs_fixture
+            )
+            new_layers.append(regular_linear)
+        else:
+            new_layers.append(layer)
+    
+    mlp.layers = new_layers
+    
+    # Verify setup: mlp.noisy is True but no NoisyLinear layers exist
+    assert mlp.noisy == True
+    noisy_layers = [layer for layer in mlp.layers if isinstance(layer, NoisyLinear)]
+    assert len(noisy_layers) == 0
+    
+    # This should trigger the return statement on line 122
+    # (the early return when no noisy layers are found)
+    mlp.reset_noise(jax.random.PRNGKey(456))  # Should return early without error
+
 # Example of testing DownSample (if it were in layers.py and needed more tests)
 # def test_downsample_module(rngs_fixture):
 #     in_channels = 3

@@ -81,13 +81,18 @@ def discover_test_cases_from_file(test_file: str) -> List[str]:
         "--quiet",
         "--tb=no",
         "-p", "no:xdist",
-        "-p", "no:testmon"
+        "-p", "no:testmon",
+        "--override-ini=addopts=",  # Clear any addopts from pytest.ini
+        "--override-ini=markers="   # Clear markers to avoid issues
     ]
     
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            print(f"❌ Failed to collect test cases from {test_file}: {result.stderr}")
+            print(f"❌ Failed to collect test cases from {test_file}:")
+            print(f"STDERR: {result.stderr}")
+            print(f"STDOUT: {result.stdout}")
+            print(f"Command: {' '.join(cmd)}")
             return []
         
         # Parse the output to extract test case node IDs
@@ -148,13 +153,18 @@ def discover_test_cases(test_dir: str) -> List[str]:
         "--quiet",
         "--tb=no",
         "-p", "no:xdist",
-        "-p", "no:testmon"
+        "-p", "no:testmon",
+        "--override-ini=addopts=",  # Clear any addopts from pytest.ini
+        "--override-ini=markers="   # Clear markers to avoid issues
     ]
     
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if result.returncode != 0:
-            print(f"❌ Failed to collect test cases: {result.stderr}")
+            print(f"❌ Failed to collect test cases:")
+            print(f"STDERR: {result.stderr}")
+            print(f"STDOUT: {result.stdout}")
+            print(f"Command: {' '.join(cmd)}")
             return []
         
         # Parse the output to extract test case node IDs
