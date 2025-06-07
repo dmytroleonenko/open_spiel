@@ -1,3 +1,13 @@
-from .replay_buffer import ReplayBuffer, PrioritizedReplayBuffer
+from .replay_buffer import (
+    ReplayBuffer, 
+    PrioritizedReplayBuffer,
+    TrajectoryBuffer,
+    PrioritizedTrajectoryBuffer
+)
 
-__all__ = ['ReplayBuffer', 'PrioritizedReplayBuffer'] 
+__all__ = [
+    'ReplayBuffer', 
+    'PrioritizedReplayBuffer', 
+    'TrajectoryBuffer',
+    'PrioritizedTrajectoryBuffer'
+] 

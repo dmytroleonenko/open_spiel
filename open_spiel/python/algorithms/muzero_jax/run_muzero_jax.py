@@ -242,19 +242,32 @@ class MuZeroOrchestrator:
         
     def setup_replay_buffer(self, observation_shape, num_actions):
         """Initialize the replay buffer."""
+        # Determine max trajectory length from config or use default
+        max_trajectory_length = getattr(self.config.replay_buffer, 'max_trajectory_length', 200)
+        
         if hasattr(self.config.replay_buffer, 'priority_alpha') and self.config.replay_buffer.priority_alpha > 0:
             # Use prioritized replay buffer
             self.replay_buffer = PrioritizedTrajectoryBuffer(
                 capacity=self.config.replay_buffer.capacity,
+                observation_shape=observation_shape,
+                num_actions=num_actions,
                 alpha=self.config.replay_buffer.priority_alpha,
+                max_trajectory_length=max_trajectory_length
             )
-            logger.info("Using prioritized replay buffer")
+            logger.info(f"Using prioritized replay buffer with alpha={self.config.replay_buffer.priority_alpha}")
         else:
             # Use standard replay buffer
             self.replay_buffer = TrajectoryBuffer(
                 capacity=self.config.replay_buffer.capacity,
+                observation_shape=observation_shape,
+                num_actions=num_actions,
+                max_trajectory_length=max_trajectory_length
             )
             logger.info("Using standard replay buffer")
+        
+        logger.info(f"Replay buffer initialized: capacity={self.config.replay_buffer.capacity}, "
+                   f"obs_shape={observation_shape}, num_actions={num_actions}, "
+                   f"max_traj_length={max_trajectory_length}")
             
     def setup_learner(self):
         """Initialize the learner."""
@@ -294,7 +307,25 @@ class MuZeroOrchestrator:
         self.actors = []
         num_actors = self.config.actors.num_actors
         
-        # Create MCTS instance for actors
+        # Create bootstrap actor for initial trajectory generation
+        from open_spiel.python.algorithms.muzero_jax.self_play.bootstrap_actor import (
+            BootstrapActor, BootstrapConfig
+        )
+        
+        bootstrap_config = BootstrapConfig(
+            num_simulations=self.muzero_config.num_simulations,
+            c_puct=getattr(self.config.bootstrap, 'c_puct', 1.25),
+            n_step_return=self.muzero_config.td_steps,
+            discount_factor=self.muzero_config.discount_factor,
+        )
+        
+        self.bootstrap_actor = BootstrapActor(
+            game_wrapper=GameWrapper(self.config.game.name),
+            replay_buffer=self.replay_buffer,
+            config=bootstrap_config,
+        )
+        
+        # Create MuZero actors for later use (when network is trained)
         mcts = MCTS(
             num_simulations=self.muzero_config.num_simulations,
             max_num_considered_actions=self.game_wrapper.num_distinct_actions(),
@@ -313,7 +344,13 @@ class MuZeroOrchestrator:
             )
             self.actors.append(actor)
             
-        logger.info(f"Initialized {num_actors} actors")
+        # Track whether we're in bootstrap phase
+        self.use_bootstrap = getattr(self.config.bootstrap, 'enabled', True)
+        self.bootstrap_episodes_generated = 0
+        self.min_bootstrap_episodes = getattr(self.config.bootstrap, 'min_episodes', 50)
+        
+        logger.info(f"Initialized bootstrap actor and {num_actors} MuZero actors")
+        logger.info(f"Will use bootstrap actor for first {self.min_bootstrap_episodes} episodes")
         
     def run_training_phase(self) -> Dict[str, Any]:
         """Run a training phase and return metrics."""
@@ -326,11 +363,49 @@ class MuZeroOrchestrator:
                 logger.info(f"Buffer size ({len(self.replay_buffer)}) below minimum ({self.muzero_config.start_transitions}), skipping training")  # pragma: no cover
                 break
                 
+            # Generate random key for sampling
+            self.rng_key, sample_key = jax.random.split(self.rng_key)
+            
+            # Sample batch from replay buffer
+            if isinstance(self.replay_buffer, PrioritizedTrajectoryBuffer):
+                # For prioritized replay, get trajectories, indices, and importance weights
+                trajectory_list, sampled_indices, importance_weights = self.replay_buffer.sample_batch(
+                    self.config.training.batch_size, 
+                    rng_key=sample_key
+                )
+            else:
+                # For standard replay, only get trajectories
+                trajectory_list = self.replay_buffer.sample_batch(
+                    self.config.training.batch_size,
+                    rng_key=sample_key
+                )
+                sampled_indices = None
+                importance_weights = None
+            
+            # Convert list of trajectories to proper batch format
+            batch = self._convert_trajectories_to_batch(trajectory_list, sampled_indices, importance_weights)
+            
             # Perform training step
-            metrics = self.learner.train_step()
+            metrics = self.learner.train_step(batch)
             metrics_list.append(metrics)
             steps_trained += 1
             self.training_step += 1
+            
+            # Update priorities if using prioritized replay
+            if isinstance(self.replay_buffer, PrioritizedTrajectoryBuffer) and 'priorities' in metrics and sampled_indices is not None:
+                try:
+                    # Extract priorities from metrics (should be computed from TD errors)
+                    new_priorities = jnp.array(metrics['priorities'])
+                    
+                    # Ensure priorities are positive and valid
+                    new_priorities = jnp.maximum(new_priorities, self.muzero_config.min_priority)
+                    
+                    # Update priorities in the replay buffer using JAX arrays
+                    self.replay_buffer.update_priorities(sampled_indices, new_priorities)
+                    
+                    logger.debug(f"Updated {len(sampled_indices)} priorities, mean priority: {jnp.mean(new_priorities):.6f}")
+                except Exception as e:
+                    logger.warning(f"Failed to update priorities: {e}")
             
             # Log metrics
             if self.training_step % self.config.output.log_interval == 0:
@@ -357,36 +432,152 @@ class MuZeroOrchestrator:
         else:
             return {'steps_trained': 0}
             
+    def _convert_trajectories_to_batch(self, trajectories: List[Dict], indices: Optional[np.ndarray] = None, weights: Optional[np.ndarray] = None) -> Dict:
+        """Convert list of trajectories to batched format expected by trainer.
+        
+        Args:
+            trajectories: List of trajectory dictionaries
+            indices: Buffer indices for priority replay (optional)
+            weights: Importance sampling weights for priority replay (optional)
+            
+        Returns:
+            Batch dictionary with all necessary fields for training
+        """
+        if not trajectories:
+            raise ValueError("Cannot create batch from empty trajectory list")
+        
+        # Get dimensions
+        batch_size = len(trajectories)
+        max_length = max(len(traj['actions']) for traj in trajectories)
+        observation_shape = trajectories[0]['observations'][0].shape
+        num_actions = self.game_wrapper.num_distinct_actions()
+        
+        # Initialize batch arrays with padding
+        batch_observations = np.zeros((batch_size, max_length, *observation_shape))
+        batch_actions = np.zeros((batch_size, max_length), dtype=np.int32)
+        batch_target_rewards = np.zeros((batch_size, max_length))  
+        batch_target_values = np.zeros((batch_size, max_length))
+        batch_target_policies = np.zeros((batch_size, max_length, num_actions))
+        batch_masks = np.zeros((batch_size, max_length), dtype=np.float32)
+        
+        # Fill batch arrays
+        for i, trajectory in enumerate(trajectories):
+            traj_length = len(trajectory['actions'])
+            
+            # Fill observations (pad with last observation if needed)
+            for j in range(max_length):
+                if j < len(trajectory['observations']):
+                    batch_observations[i, j] = trajectory['observations'][j]
+                else:
+                    # Pad with last observation
+                    batch_observations[i, j] = trajectory['observations'][-1]
+            
+            # Fill actions, rewards, values, policies (pad with zeros)
+            batch_actions[i, :traj_length] = trajectory['actions']
+            batch_target_rewards[i, :traj_length] = trajectory['rewards']
+            batch_target_values[i, :traj_length] = trajectory['value_targets']
+            
+            for j in range(traj_length):
+                batch_target_policies[i, j] = trajectory['policy_targets'][j]
+            
+            # Set mask (1.0 for valid steps, 0.0 for padding)
+            batch_masks[i, :traj_length] = 1.0
+        
+        # Create base batch dictionary
+        batch = {
+            'observation': jnp.array(batch_observations),
+            'action': jnp.array(batch_actions),
+            'target_reward': jnp.array(batch_target_rewards),
+            'target_value': jnp.array(batch_target_values),
+            'target_policy': jnp.array(batch_target_policies),
+            'game_history_mask': jnp.array(batch_masks),
+        }
+        
+        # Add priority replay fields if provided
+        if indices is not None:
+            batch['indices'] = jnp.array(indices)
+        if weights is not None:
+            batch['weights'] = jnp.array(weights)
+            
+        return batch
+
     def run_selfplay_phase(self) -> Dict[str, Any]:
         """Run a self-play phase and return metrics."""
         episodes_played = 0
         total_episode_length = 0
         
-        # Update actor parameters from latest checkpoint
-        for actor in self.actors:
-            actor.maybe_load_latest_parameters(str(self.checkpoint_dir))
+        # Determine which actor to use
+        if self.use_bootstrap:
+            # Check if we should transition: need both min episodes AND enough transitions for training
+            if (self.bootstrap_episodes_generated >= self.min_bootstrap_episodes and 
+                len(self.replay_buffer) >= self.muzero_config.start_transitions):
+                logger.info(f"Transitioning from bootstrap to MuZero actors after "
+                           f"{self.bootstrap_episodes_generated} bootstrap episodes and "
+                           f"{len(self.replay_buffer)} transitions in buffer")
+                self.use_bootstrap = False
+                
+        if self.use_bootstrap:
+            # Use bootstrap actor for initial trajectory generation
+            logger.info(f"Using bootstrap actor (plain MCTS) for episode generation "
+                       f"({self.bootstrap_episodes_generated}/{self.min_bootstrap_episodes})")
             
-        for _ in range(self.orchestration_config.selfplay_phase_episodes):
-            # Round-robin through actors
-            actor = self.actors[episodes_played % len(self.actors)]
+            for _ in range(self.orchestration_config.selfplay_phase_episodes):
+                # Continue bootstrap until we have enough transitions for training
+                # (The transition check above will handle the switch to MuZero actors)
+                    
+                # Play episode with bootstrap actor
+                self.rng_key, episode_key = jax.random.split(self.rng_key)
+                episode_data = self.bootstrap_actor.play_episode(episode_key)
+                
+                # Add episode data to replay buffer
+                self.replay_buffer.add_trajectory(episode_data)
+                
+                # Extract episode length from episode data
+                episode_length = len(episode_data.get('observations', []))
+                episodes_played += 1
+                total_episode_length += episode_length
+                self.total_episodes += 1
+                self.bootstrap_episodes_generated += 1
+                
+                # Log episode metrics
+                if self.total_episodes % self.config.output.log_interval == 0:
+                    self.log_episode_metrics(episode_length)
+                    
+        else:
+            # Use MuZero actors with trained network
+            logger.info("Using MuZero actors with neural network guidance")
             
-            # Play episode
-            self.rng_key, episode_key = jax.random.split(self.rng_key)
-            episode_data = actor.play_episode(episode_key)
-            # Extract episode length from episode data
-            episode_length = len(episode_data.get('observations', []))
-            episodes_played += 1
-            total_episode_length += episode_length
-            self.total_episodes += 1
-            
-            # Log episode metrics
-            if self.total_episodes % self.config.output.log_interval == 0:
-                self.log_episode_metrics(episode_length)
+            # Update actor parameters from latest checkpoint
+            for actor in self.actors:
+                actor.maybe_load_latest_parameters(str(self.checkpoint_dir))
+                
+            for _ in range(self.orchestration_config.selfplay_phase_episodes):
+                # Round-robin through actors
+                actor = self.actors[episodes_played % len(self.actors)]
+                
+                # Play episode
+                self.rng_key, episode_key = jax.random.split(self.rng_key)
+                episode_data = actor.play_episode(episode_key)
+                
+                # Add episode data to replay buffer
+                self.replay_buffer.add_trajectory(episode_data)
+                
+                # Extract episode length from episode data
+                episode_length = len(episode_data.get('observations', []))
+                episodes_played += 1
+                total_episode_length += episode_length
+                self.total_episodes += 1
+                
+                # Log episode metrics
+                if self.total_episodes % self.config.output.log_interval == 0:
+                    self.log_episode_metrics(episode_length)
                 
         return {
             'episodes_played': episodes_played,
             'avg_episode_length': total_episode_length / max(episodes_played, 1),
-            'buffer_size': len(self.replay_buffer)
+            'buffer_size': len(self.replay_buffer),
+            'using_bootstrap': self.use_bootstrap,
+            'bootstrap_episodes_generated': self.bootstrap_episodes_generated
         }
         
     def log_training_metrics(self, metrics: Dict[str, Any]):

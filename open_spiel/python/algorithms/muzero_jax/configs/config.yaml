@@ -90,6 +90,12 @@ actors:
   max_episode_length: 1000
   checkpoint_sync_interval: 100
 
+# Bootstrap configuration
+bootstrap:
+  enabled: true
+  min_episodes: 50  # Minimum episodes to generate with plain MCTS before switching to MuZero
+  c_puct: 1.25     # UCT exploration constant for plain MCTS
+
 # Distributed training (for future use)
 distributed:
   use_distributed: false
@@ -104,7 +110,7 @@ resource_management:
 
 # Logging and monitoring
 wandb:
-  enabled: true
+  enabled: false
   project: "muzero-jax-openspiel"
   entity: null
   tags: []
