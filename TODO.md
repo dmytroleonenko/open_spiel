@@ -151,7 +151,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   ✅ All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/self_play/test_actor.py` (covering model loading, game interaction, MCTS calls, trajectory generation, target computation, and buffer interaction on a simple game) pass (100%). **Achievement: 16/16 tests passing with 100% code coverage.**
         *   ✅ 100% code coverage for `actor.py` is achieved and verified.
 
-[TODO] 8.  **Main Orchestration Script (`run_muzero_jax.py`):**
+[DONE] 8.  **Main Orchestration Script (`run_muzero_jax.py`):**
     *   **TDD:** Write integration tests for the local setup (actor, learner, Flashbax buffer communication). (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_run_muzero_jax.py`)
     *   Initialize Flashbax buffers (in-memory and Vault persistence), start actor(s) (local), start training.
     *   Manage configuration using Hydra (inspired by `@EfficientZeroV2/ez/train.py`).

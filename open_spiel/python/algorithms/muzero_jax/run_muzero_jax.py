@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
+import flax.nnx as nnx
 import numpy as np
 import hydra
 import wandb
@@ -47,6 +48,7 @@ from open_spiel.python.algorithms.muzero_jax.utils.checkpointing import (
     create_checkpoint_manager,
     get_latest_checkpoint
 )
+from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import MCTS
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -208,16 +210,33 @@ class MuZeroOrchestrator:
     def setup_network(self, observation_shape, num_actions):
         """Initialize the MuZero network."""
         # Create network configuration
+        # OpenSpiel games are always state-based, never image-based (following EfficientZeroV2 approach)
         self.network_config = create_network_config_from_muzero_config(
             self.muzero_config, 
             observation_shape, 
             num_actions,
-            use_image_observation=len(observation_shape) == 3,  # Assume images if 3D
+            use_image_observation=False,  # OpenSpiel games are state-based, not image-based
+        )
+        
+        # Import the network definitions
+        from open_spiel.python.algorithms.muzero_jax.models.network import (
+            RepresentationNetwork, DynamicsNetwork, PredictionNetwork, 
+            RewardNetwork, ProjectionNetwork
         )
         
         # Initialize network with random parameters
         self.rng_key, network_key = jax.random.split(self.rng_key)
-        self.network = MuZeroNetwork(self.network_config, rngs=network_key)
+        rngs = nnx.Rngs(params=network_key)
+        
+        self.network = MuZeroNetwork(
+            representation_network_def=RepresentationNetwork,
+            dynamics_network_def=DynamicsNetwork,
+            prediction_network_def=PredictionNetwork,
+            reward_network_def=RewardNetwork,
+            projection_network_def=ProjectionNetwork if self.muzero_config.use_projection else None,
+            config=self.network_config,
+            rngs=rngs
+        )
         
         logger.info(f"Network initialized with config: {self.network_config}")
         
@@ -227,19 +246,13 @@ class MuZeroOrchestrator:
             # Use prioritized replay buffer
             self.replay_buffer = PrioritizedTrajectoryBuffer(
                 capacity=self.config.replay_buffer.capacity,
-                observation_shape=observation_shape,
-                num_actions=num_actions,
                 alpha=self.config.replay_buffer.priority_alpha,
-                beta=self.config.replay_buffer.priority_beta_start,
-                beta_steps=self.config.replay_buffer.priority_beta_steps,
             )
             logger.info("Using prioritized replay buffer")
         else:
             # Use standard replay buffer
             self.replay_buffer = TrajectoryBuffer(
                 capacity=self.config.replay_buffer.capacity,
-                observation_shape=observation_shape,
-                num_actions=num_actions,
             )
             logger.info("Using standard replay buffer")
             
@@ -281,13 +294,22 @@ class MuZeroOrchestrator:
         self.actors = []
         num_actors = self.config.actors.num_actors
         
+        # Create MCTS instance for actors
+        mcts = MCTS(
+            num_simulations=self.muzero_config.num_simulations,
+            max_num_considered_actions=self.game_wrapper.num_distinct_actions(),
+            gumbel_scale=1.0
+        )
+        
         for i in range(num_actors):
             actor = Actor(
+                network=self.network,
+                mcts=mcts,
                 game_wrapper=GameWrapper(self.config.game.name),
-                buffer=self.replay_buffer,
+                replay_buffer=self.replay_buffer,
                 config=self.muzero_config,
-                checkpoint_dir=str(self.checkpoint_dir),
-                actor_id=i
+                n_step_return=self.muzero_config.td_steps,
+                discount_factor=self.muzero_config.discount_factor,
             )
             self.actors.append(actor)
             
@@ -342,14 +364,17 @@ class MuZeroOrchestrator:
         
         # Update actor parameters from latest checkpoint
         for actor in self.actors:
-            actor.maybe_load_latest_parameters()
+            actor.maybe_load_latest_parameters(str(self.checkpoint_dir))
             
         for _ in range(self.orchestration_config.selfplay_phase_episodes):
             # Round-robin through actors
             actor = self.actors[episodes_played % len(self.actors)]
             
             # Play episode
-            episode_length = actor.play_episode()
+            self.rng_key, episode_key = jax.random.split(self.rng_key)
+            episode_data = actor.play_episode(episode_key)
+            # Extract episode length from episode data
+            episode_length = len(episode_data.get('observations', []))
             episodes_played += 1
             total_episode_length += episode_length
             self.total_episodes += 1
@@ -402,26 +427,32 @@ class MuZeroOrchestrator:
         
         # Create evaluation actor with deterministic policy
         eval_game_wrapper = GameWrapper(self.config.game.name)
+        eval_mcts = MCTS(
+            num_simulations=self.muzero_config.num_simulations,
+            max_num_considered_actions=eval_game_wrapper.num_distinct_actions(),
+            gumbel_scale=1.0
+        )
         eval_actor = Actor(
+            network=self.network,
+            mcts=eval_mcts,
             game_wrapper=eval_game_wrapper,
-            buffer=None,  # Don't add to replay buffer
+            replay_buffer=None,  # Don't add to replay buffer
             config=self.muzero_config,
-            checkpoint_dir=str(self.checkpoint_dir),
-            actor_id=-1  # Special ID for evaluation
+            n_step_return=self.muzero_config.td_steps,
+            discount_factor=self.muzero_config.discount_factor,
         )
         
         # Load latest parameters
-        eval_actor.maybe_load_latest_parameters()
+        eval_actor.maybe_load_latest_parameters(str(self.checkpoint_dir))
         
         # Run evaluation episodes
         episode_lengths = []
         episode_rewards = []
         
         for _ in range(self.config.evaluation.num_episodes):
-            episode_length = eval_actor.play_episode(
-                add_to_buffer=False,
-                deterministic=self.config.evaluation.deterministic
-            )
+            self.rng_key, eval_key = jax.random.split(self.rng_key)
+            episode_data = eval_actor.play_episode(eval_key)
+            episode_length = len(episode_data.get('observations', []))
             episode_lengths.append(episode_length)
             # Note: episode rewards would need to be tracked separately
             

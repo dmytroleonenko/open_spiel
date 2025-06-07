@@ -195,6 +195,16 @@ class Actor:
             # Greedy action selection
             action = jnp.argmax(action_weights)
             
+        # CRITICAL FIX: If the selected action is illegal, find the best legal action
+        # This can happen when action_weights are uniform (untrained network)
+        # Get legal actions from the current game state
+        legal_actions = self.game_wrapper.legal_actions()
+        
+        if int(action) not in legal_actions:
+            # Simple fallback: just use the first legal action
+            action = legal_actions[0] if legal_actions else 0
+            self.logger.info(f"Step {step}: Using fallback legal action: {action}")
+            
         # Policy target is the normalized action weights (visit counts)
         policy_target = self._compute_policy_target(action_weights)
         
@@ -301,7 +311,8 @@ class Actor:
                         episode_reward = sum(reward_list) if reward_list else 0.0
                         rewards.append(episode_reward)
                         # For chance nodes, we don't have MCTS policy, so use uniform
-                        uniform_policy = jnp.ones(self.config.num_actions) / self.config.num_actions
+                        num_actions = self.game_wrapper.num_distinct_actions()
+                        uniform_policy = jnp.ones(num_actions) / num_actions
                         policy_targets.append(uniform_policy)
                         # No MCTS value for chance nodes, use 0
                         mcts_values.append(0.0)
@@ -331,9 +342,13 @@ class Actor:
             
             # Get legal actions and create invalid actions mask
             legal_actions = self.game_wrapper.legal_actions()
-            invalid_actions = jnp.ones((1, self.config.num_actions), dtype=bool)  # Add batch dimension
+            num_actions = self.game_wrapper.num_distinct_actions()  # Use game wrapper's action count
+            invalid_actions = jnp.ones((1, num_actions), dtype=bool)  # Add batch dimension
             legal_actions_array = jnp.array(legal_actions)
             invalid_actions = invalid_actions.at[0, legal_actions_array].set(False)
+            
+            # Debug logging
+            self.logger.info(f"Step {step}: Legal actions: {legal_actions}, Total actions: {num_actions}")
             
             # Run MCTS
             rng_key, subkey = jax.random.split(rng_key)
@@ -349,6 +364,16 @@ class Actor:
             
             # Select action and get policy target
             action, policy_target = self._select_action(policy_output, step)
+            
+            # Debug logging for action selection
+            self.logger.info(f"Step {step}: Selected action: {action}, Legal actions: {legal_actions}")
+            
+            # Validate that selected action is legal
+            if action not in legal_actions:
+                self.logger.error(f"Selected illegal action {action}! Legal actions: {legal_actions}")
+                # Fall back to first legal action
+                action = legal_actions[0] if legal_actions else 0
+                self.logger.info(f"Falling back to legal action: {action}")
             
             # Store MCTS value for target computation
             mcts_values.append(float(value[0]))

@@ -26,6 +26,7 @@ training:
   batch_size: 32
   training_steps: 10000
   warmup_steps: 1000
+  gradient_accumulation_steps: 1  # For large effective batch sizes
   
   # Loss configuration
   value_loss_weight: 1.0
@@ -41,6 +42,10 @@ training:
   # Target network
   target_network_update_interval: 200
   target_network_tau: 0.005  # EMA coefficient for target network updates
+  
+  # Logging and checkpointing frequency
+  checkpoint_frequency: 1000
+  log_frequency: 100
 
 # MCTS configuration
 mcts:

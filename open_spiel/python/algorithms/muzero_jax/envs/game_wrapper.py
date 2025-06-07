@@ -1,4 +1,5 @@
 import pyspiel
+import numpy as np
 
 class GameWrapper:
     """
@@ -13,10 +14,20 @@ class GameWrapper:
         is_chance_node() -> bool: Return True if current state is a chance node.
         chance_outcomes() -> list[tuple[int, float]]: Return list of (action, probability) pairs for chance outcomes.
         is_terminal() -> bool: Return True if the current state is terminal.
+        observation_shape: tuple: Shape of the observation tensor.
     """
     def __init__(self, game_name: str):
         self._game = pyspiel.load_game(game_name)
+        # Get observation shape from the game - but use flat observation for OpenSpiel games
+        # Following EfficientZeroV2's approach: OpenSpiel games are treated as state-based, not image-based
+        raw_shape = self._game.observation_tensor_shape()
+        self._observation_shape = (int(np.prod(raw_shape)),)  # Flatten to 1D like EfficientZeroV2
         self.reset()
+
+    @property
+    def observation_shape(self) -> tuple:
+        """Return the shape of the observation tensor."""
+        return self._observation_shape
 
     def reset(self) -> list:
         """Reset the game to initial state and return the initial observation."""
@@ -24,7 +35,9 @@ class GameWrapper:
         # For chance nodes, observation_tensor is not available
         if self._state.is_chance_node():
             return []
-        return list(self._state.observation_tensor())
+        # Return flat observation as EfficientZeroV2 does for state-based games
+        obs = self._state.observation_tensor()
+        return list(obs)  # Keep as flat list
 
     def step(self, action: int) -> tuple[list, list, bool]:
         """Apply action to the environment and return (observation, rewards, done)."""
@@ -45,7 +58,7 @@ class GameWrapper:
             return [], [], False # done is False because it's a chance node, not terminal.
         
         # Non-terminal, non-chance player node
-        observation = list(self._state.observation_tensor())
+        observation = list(self._state.observation_tensor())  # Keep as flat list
         rewards = list(self._state.rewards()) # Rewards are valid at player states
         return observation, rewards, False
 
