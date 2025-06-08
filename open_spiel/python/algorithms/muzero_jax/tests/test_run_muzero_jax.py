@@ -650,6 +650,7 @@ class TestMuZeroOrchestrator:
                 "learning_rate": 0.001,
                 "batch_size": 1,
                 "training_steps": 2,
+                "start_transitions": 1,
                 "discount": 0.99,
                 "num_unroll_steps": 2,
                 "td_steps": 3,
@@ -685,6 +686,11 @@ class TestMuZeroOrchestrator:
             "actors": {
                 "num_actors": 1
             },
+            "bootstrap": {
+                "enabled": True,
+                "min_episodes": 2,
+                "c_puct": 1.25
+            },
             "evaluation": {
                 "interval": 10,
                 "num_episodes": 1
@@ -710,6 +716,7 @@ class TestMuZeroOrchestrator:
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.Learner') as mock_learner, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.Actor') as mock_actor, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.TrajectoryBuffer') as mock_buffer, \
+             patch('open_spiel.python.algorithms.muzero_jax.self_play.bootstrap_actor.BootstrapActor') as mock_bootstrap_actor, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.create_muzero_config_for_game') as mock_config_creator, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.create_network_config_from_muzero_config') as mock_network_config_creator, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.get_latest_checkpoint') as mock_get_checkpoint:
@@ -731,9 +738,28 @@ class TestMuZeroOrchestrator:
             
             # Mock actor
             mock_actor_instance = Mock()
-            mock_actor_instance.play_episode.return_value = 10  # Episode length
+            mock_episode_data = {
+                'observations': [jnp.zeros(27) for _ in range(10)],  # 10 observations
+                'actions': [0] * 10,
+                'rewards': [0.0] * 10,
+                'policy_targets': [jnp.ones(9) / 9] * 10,
+                'value_targets': [0.0] * 10
+            }
+            mock_actor_instance.play_episode.return_value = mock_episode_data
             mock_actor_instance.maybe_load_latest_parameters.return_value = None
             mock_actor.return_value = mock_actor_instance
+            
+            # Mock bootstrap actor
+            mock_bootstrap_actor_instance = Mock()
+            mock_bootstrap_episode_data = {
+                'observations': [jnp.zeros(27) for _ in range(8)],  # 8 observations
+                'actions': [0] * 8,
+                'rewards': [0.0] * 8,
+                'policy_targets': [jnp.ones(9) / 9] * 8,
+                'value_targets': [0.0] * 8
+            }
+            mock_bootstrap_actor_instance.play_episode.return_value = mock_bootstrap_episode_data
+            mock_bootstrap_actor.return_value = mock_bootstrap_actor_instance
             
             # Mock buffer
             mock_buffer_instance = Mock()
@@ -770,12 +796,14 @@ class TestMuZeroOrchestrator:
                 'learner': mock_learner,
                 'actor': mock_actor,
                 'buffer': mock_buffer,
+                'bootstrap_actor': mock_bootstrap_actor,
                 'config_creator': mock_config_creator,
                 'network_config_creator': mock_network_config_creator,
                 'get_checkpoint': mock_get_checkpoint,
                 'learner_instance': mock_learner_instance,
                 'actor_instance': mock_actor_instance,
-                'buffer_instance': mock_buffer_instance
+                'buffer_instance': mock_buffer_instance,
+                'bootstrap_actor_instance': mock_bootstrap_actor_instance
             }
 
     def test_orchestrator_initialization(self, mock_orchestrator_setup):
@@ -816,9 +844,10 @@ class TestMuZeroOrchestrator:
             # Should return metrics
             assert isinstance(metrics, dict)
             assert 'episodes_played' in metrics
+            assert 'using_bootstrap' in metrics
             
-            # Actor should have been called
-            mocks['actor_instance'].play_episode.assert_called()
+            # Bootstrap actor should have been called (since we start with bootstrap=True)
+            mocks['bootstrap_actor_instance'].play_episode.assert_called()
 
     def test_run_training_phase(self, mock_orchestrator_setup):
         """Test the training phase execution."""
@@ -907,6 +936,7 @@ class TestMuZeroOrchestrator:
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.Learner'), \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.Actor'), \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.TrajectoryBuffer'), \
+             patch('open_spiel.python.algorithms.muzero_jax.self_play.bootstrap_actor.BootstrapActor') as mock_bootstrap_actor, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.create_muzero_config_for_game') as mock_create_config, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.create_network_config_from_muzero_config'), \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.get_latest_checkpoint'):
@@ -916,6 +946,10 @@ class TestMuZeroOrchestrator:
             mock_game_wrapper_instance.observation_shape = (27,)
             mock_game_wrapper_instance.num_distinct_actions.return_value = 9
             mock_game_wrapper.return_value = mock_game_wrapper_instance
+            
+            # Mock bootstrap actor
+            mock_bootstrap_actor_instance = Mock()
+            mock_bootstrap_actor.return_value = mock_bootstrap_actor_instance
             
             # Create a real MuZeroConfig instance for the test
             real_config = create_muzero_config_for_game("tic_tac_toe")
@@ -941,6 +975,7 @@ class TestMuZeroOrchestrator:
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.Learner'), \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.Actor'), \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.PrioritizedTrajectoryBuffer') as mock_prioritized_buffer, \
+             patch('open_spiel.python.algorithms.muzero_jax.self_play.bootstrap_actor.BootstrapActor') as mock_bootstrap_actor, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.create_muzero_config_for_game') as mock_create_config, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.create_network_config_from_muzero_config'), \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.get_latest_checkpoint'):
@@ -950,6 +985,10 @@ class TestMuZeroOrchestrator:
             mock_game_wrapper_instance.observation_shape = (27,)
             mock_game_wrapper_instance.num_distinct_actions.return_value = 9
             mock_game_wrapper.return_value = mock_game_wrapper_instance
+            
+            # Mock bootstrap actor
+            mock_bootstrap_actor_instance = Mock()
+            mock_bootstrap_actor.return_value = mock_bootstrap_actor_instance
             
             # Create a real MuZeroConfig instance for the test
             real_config = create_muzero_config_for_game("tic_tac_toe")
@@ -977,6 +1016,7 @@ class TestMuZeroOrchestrator:
                  patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.MuZeroNetwork'), \
                  patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.Actor'), \
                  patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.TrajectoryBuffer'), \
+                 patch('open_spiel.python.algorithms.muzero_jax.self_play.bootstrap_actor.BootstrapActor') as mock_bootstrap_actor, \
                  patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.create_muzero_config_for_game') as mock_create_config, \
                  patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.create_network_config_from_muzero_config'), \
                  patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.Learner') as mock_learner_class:
@@ -986,6 +1026,10 @@ class TestMuZeroOrchestrator:
                 mock_game_wrapper_instance.observation_shape = (27,)
                 mock_game_wrapper_instance.num_distinct_actions.return_value = 9
                 mock_game_wrapper.return_value = mock_game_wrapper_instance
+                
+                # Mock bootstrap actor
+                mock_bootstrap_actor_instance = Mock()
+                mock_bootstrap_actor.return_value = mock_bootstrap_actor_instance
                 
                 # Create a real MuZeroConfig instance for the test
                 real_config = create_muzero_config_for_game("tic_tac_toe")
@@ -1009,6 +1053,7 @@ class TestMuZeroOrchestrator:
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.Learner') as mock_learner, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.Actor'), \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.TrajectoryBuffer'), \
+             patch('open_spiel.python.algorithms.muzero_jax.self_play.bootstrap_actor.BootstrapActor') as mock_bootstrap_actor, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.create_muzero_config_for_game') as mock_create_config, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.create_network_config_from_muzero_config'), \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.get_latest_checkpoint') as mock_get_checkpoint:
@@ -1018,6 +1063,10 @@ class TestMuZeroOrchestrator:
             mock_game_wrapper_instance.observation_shape = (27,)
             mock_game_wrapper_instance.num_distinct_actions.return_value = 9
             mock_game_wrapper.return_value = mock_game_wrapper_instance
+            
+            # Mock bootstrap actor
+            mock_bootstrap_actor_instance = Mock()
+            mock_bootstrap_actor.return_value = mock_bootstrap_actor_instance
             
             # Create a real MuZeroConfig instance for the test
             real_config = create_muzero_config_for_game("tic_tac_toe")
@@ -1053,7 +1102,14 @@ class TestMuZeroOrchestrator:
             mock_eval_game_wrapper.return_value = mock_eval_game_wrapper_instance
             
             mock_eval_actor_instance = Mock()
-            mock_eval_actor_instance.play_episode.return_value = 15  # Mock episode length
+            mock_eval_episode_data = {
+                'observations': [jnp.zeros(27) for _ in range(15)],  # 15 observations for episode length
+                'actions': [0] * 15,
+                'rewards': [0.0] * 15,
+                'policy_targets': [jnp.ones(9) / 9] * 15,
+                'value_targets': [0.0] * 15
+            }
+            mock_eval_actor_instance.play_episode.return_value = mock_eval_episode_data
             mock_eval_actor_instance.maybe_load_latest_parameters.return_value = None
             mock_eval_actor.return_value = mock_eval_actor_instance
             
@@ -1070,8 +1126,8 @@ class TestMuZeroOrchestrator:
             # Verify Actor was created with correct parameters
             mock_eval_actor.assert_called_once()
             call_kwargs = mock_eval_actor.call_args[1]
-            assert call_kwargs['buffer'] is None  # No buffer for evaluation
-            assert call_kwargs['actor_id'] == -1  # Special evaluation ID
+            assert call_kwargs['replay_buffer'] is None  # No buffer for evaluation
+            # Note: actor_id is not used in evaluation actor creation
 
     def test_evaluation_disabled(self, mock_orchestrator_setup):
         """Test evaluation when disabled."""
@@ -1284,7 +1340,7 @@ class TestMuZeroOrchestrator:
             metrics = orchestrator.run_selfplay_phase()
             
             # Episode logging should have been called
-            mock_log_episode.assert_called_once_with(10)  # Episode length from mock
+            mock_log_episode.assert_called_once_with(8)  # Episode length from bootstrap actor mock
 
     def test_main_entry_point_coverage(self, mock_hydra_config):
         """Test the if __name__ == '__main__' entry point."""

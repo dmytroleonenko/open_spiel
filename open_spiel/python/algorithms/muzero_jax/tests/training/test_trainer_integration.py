@@ -12,7 +12,7 @@ import wandb
 from unittest.mock import patch, MagicMock, Mock
 
 # Import from the common utils module
-from trainer_test_utils import (
+from trainer_utils import (
     NUM_UNROLL_STEPS,
     NUM_ACTIONS,
     BATCH_SIZE,
@@ -36,7 +36,7 @@ from open_spiel.python.algorithms.muzero_jax.training.trainer import (
 )
 
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
-from trainer_test_utils import MockRep, MockDyn, MockPred, MockRew 
+from trainer_utils import MockRep, MockDyn, MockPred, MockRew 
 
 def test_policy_reanalysis_integration_in_training_pipeline(common_key, common_cfg_flat):
     """Test integration of policy reanalysis into the main training pipeline.

@@ -12,7 +12,7 @@ from open_spiel.python.algorithms.muzero_jax.training.trainer import (
     MuZeroConfig,
     create_network_config_from_muzero_config
 )
-from open_spiel.python.algorithms.muzero_jax.tests.training.trainer_test_utils import (
+from open_spiel.python.algorithms.muzero_jax.tests.training.trainer_utils import (
     make_cfg,
     make_model,
     make_model_from_muzero_config,

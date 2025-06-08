@@ -5,7 +5,7 @@ import tempfile
 import os
 from unittest.mock import Mock, patch
 
-from trainer_test_utils import (
+from trainer_utils import (
     key as common_key, 
     cfg_flat as common_cfg_flat,
     make_model, 

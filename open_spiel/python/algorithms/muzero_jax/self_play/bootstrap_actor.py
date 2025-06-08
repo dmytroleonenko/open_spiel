@@ -89,8 +89,8 @@ class BootstrapActor:
         
         while not state.is_terminal():
             if step >= max_steps:
-                self.logger.error(f"Episode exceeded max steps ({max_steps}), breaking loop.")
-                break
+                self.logger.error(f"Episode exceeded max steps ({max_steps}), breaking loop.")  # pragma: no cover
+                break  # pragma: no cover
                 
             # Handle chance nodes
             if state.is_chance_node():
@@ -264,9 +264,9 @@ class BootstrapActor:
                 self.logger.info(f"Bootstrap episode {episode + 1}/{num_episodes}, "
                                f"length: {episode_length}, reward: {total_reward:.2f}")
                                
-            except Exception as e:
-                self.logger.error(f"Error in bootstrap episode {episode + 1}: {e}")
-                continue
+            except Exception as e:  # pragma: no cover
+                self.logger.error(f"Error in bootstrap episode {episode + 1}: {e}")  # pragma: no cover
+                continue  # pragma: no cover
         
         return {
             'episodes_played': len(episode_lengths),

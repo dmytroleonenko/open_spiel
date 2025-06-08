@@ -29,8 +29,8 @@ class TrajectoryBuffer:
     
     def __init__(self, 
                  capacity: int,
-                 observation_shape: Tuple[int, ...],
-                 num_actions: int,
+                 observation_shape: Tuple[int, ...] | None = None,
+                 num_actions: int | None = None,
                  max_trajectory_length: int = 200):
         if capacity <= 0:
             raise ValueError(f"Capacity must be positive, got {capacity}")
@@ -39,26 +39,26 @@ class TrajectoryBuffer:
         self.observation_shape = observation_shape
         self.num_actions = num_actions
         self.max_trajectory_length = max_trajectory_length
-        
-        # Use Flashbax Item Buffer for storing complete trajectories as independent items
-        self._buffer = fbx.make_item_buffer(
-            max_length=capacity,
-            min_length=1,
-            sample_batch_size=1  # Will be overridden during sampling
-        )
-        
-        # Create a dummy trajectory for initialization
-        dummy_trajectory = {
-            'observations': jnp.zeros((max_trajectory_length, *observation_shape), dtype=jnp.float32),
-            'actions': jnp.zeros(max_trajectory_length, dtype=jnp.int32),
-            'rewards': jnp.zeros(max_trajectory_length, dtype=jnp.float32),
-            'value_targets': jnp.zeros(max_trajectory_length, dtype=jnp.float32),
-            'policy_targets': jnp.zeros((max_trajectory_length, num_actions), dtype=jnp.float32),
-            'length': jnp.int32(1)  # Actual trajectory length
-        }
-        
-        self._buffer_state = self._buffer.init(dummy_trajectory)
+        # Buffer state is lazy-initialized if shapes are not yet set
         self._current_size = 0
+        self._buffer = None
+        self._buffer_state = None
+        # Immediate setup if shapes provided
+        if self.observation_shape is not None and self.num_actions is not None:
+            self._buffer = fbx.make_item_buffer(
+                max_length=capacity,
+                min_length=1,
+                sample_batch_size=1
+            )
+            dummy_trajectory = {
+                'observations': jnp.zeros((self.max_trajectory_length, *self.observation_shape), dtype=jnp.float32),
+                'actions': jnp.zeros(self.max_trajectory_length, dtype=jnp.int32),
+                'rewards': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
+                'value_targets': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
+                'policy_targets': jnp.zeros((self.max_trajectory_length, self.num_actions), dtype=jnp.float32),
+                'length': jnp.int32(1)
+            }
+            self._buffer_state = self._buffer.init(dummy_trajectory)
 
     def __len__(self) -> int:
         return self._current_size
@@ -74,6 +74,32 @@ class TrajectoryBuffer:
                 - target_values: Array of value targets
                 - policy_targets: Array of policy targets
         """
+        if self._buffer is None:
+            # Infer shapes if not provided, convert to numpy for list inputs
+            if self.observation_shape is None:
+                first_obs = trajectory['observations'][0]
+                arr_obs = np.array(first_obs)
+                self.observation_shape = tuple(arr_obs.shape)
+            if self.num_actions is None:
+                first_policy = trajectory['policy_targets'][0]
+                arr_pol = np.array(first_policy)
+                # Infer number of actions from last dimension
+                self.num_actions = arr_pol.shape[-1]
+            # Initialize item buffer now that shapes known
+            self._buffer = fbx.make_item_buffer(
+                max_length=self.capacity,
+                min_length=1,
+                sample_batch_size=1
+            )
+            dummy_trajectory = {
+                'observations': jnp.zeros((self.max_trajectory_length, *self.observation_shape), dtype=jnp.float32),
+                'actions': jnp.zeros(self.max_trajectory_length, dtype=jnp.int32),
+                'rewards': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
+                'value_targets': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
+                'policy_targets': jnp.zeros((self.max_trajectory_length, self.num_actions), dtype=jnp.float32),
+                'length': jnp.int32(1)
+            }
+            self._buffer_state = self._buffer.init(dummy_trajectory)
         traj_length = len(trajectory['actions'])
         
         # Pad trajectory to max_trajectory_length

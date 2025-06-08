@@ -1,4 +1,4 @@
-# --- trainer_test_utils.py ---
+# --- trainer_utils.py ---
 import pytest
 import dataclasses
 import jax
@@ -51,14 +51,29 @@ class MockPred(nnx.Module):
         self.vh = nnx.Linear(hidden, vsup if vsup > 0 else 1, rngs=rngs)
 
     def __call__(self, h, training):
-        return self.ph(h), self.vh(h)
+        policy_logits = self.ph(h)
+        value = self.vh(h)
+        
+        # Apply squeezing for scalar values (like real PredictionNetwork)
+        # For MSE loss (vsup == 0), ensure scalar output
+        if value.ndim == 2 and value.shape[-1] == 1:
+            value = jnp.squeeze(value, axis=-1)
+            
+        return policy_logits, value
 
 class MockRew(nnx.Module):
     def __init__(self, hidden, rsup, *, rngs):
         self.rh = nnx.Linear(hidden, rsup if rsup > 0 else 1, rngs=rngs)
 
     def __call__(self, h, training):
-        return self.rh(h)
+        reward = self.rh(h)
+        
+        # Apply squeezing for scalar rewards (like real RewardNetwork)
+        # For MSE loss (rsup == 0), ensure scalar output
+        if reward.ndim == 2 and reward.shape[-1] == 1:
+            reward = jnp.squeeze(reward, axis=-1)
+            
+        return reward
 
 class MockProj(nnx.Module):
     def __init__(self, hidden, psize, *, rngs):
@@ -371,4 +386,4 @@ def create_test_muzero_network(config: MuZeroNetworkConfig) -> MuZeroNetwork:
         config=config, # This should be MuZeroNetworkConfig
         rngs=nnx.Rngs(params=jax.random.PRNGKey(42)), # Use a fixed key for reproducibility
     )
-# --- END OF trainer_test_utils.py --- 
+# --- END OF trainer_utils.py --- 

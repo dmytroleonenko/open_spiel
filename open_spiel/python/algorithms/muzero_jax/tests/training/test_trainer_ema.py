@@ -8,7 +8,7 @@ import numpy as np
 import dataclasses
 
 # Import from the common utils module
-from open_spiel.python.algorithms.muzero_jax.tests.training.trainer_test_utils import (
+from open_spiel.python.algorithms.muzero_jax.tests.training.trainer_utils import (
     NUM_UNROLL_STEPS,
     NUM_ACTIONS,
     BATCH_SIZE,

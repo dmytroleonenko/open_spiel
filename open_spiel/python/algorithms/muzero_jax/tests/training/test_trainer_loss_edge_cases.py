@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import flax.nnx as nnx
 import dataclasses
 
-from trainer_test_utils import (
+from trainer_utils import (
     NUM_ACTIONS,
     key as common_key, 
     cfg_flat as common_cfg_flat,

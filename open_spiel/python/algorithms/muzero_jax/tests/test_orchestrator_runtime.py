@@ -54,6 +54,7 @@ class TestOrchestratorRuntimeExecution:
                 "learning_rate": 0.001,
                 "batch_size": 1,
                 "training_steps": 2,
+                "start_transitions": 1,
                 "discount": 0.99,
                 "num_unroll_steps": 2,
                 "td_steps": 3,
@@ -89,6 +90,11 @@ class TestOrchestratorRuntimeExecution:
             "actors": {
                 "num_actors": 1
             },
+            "bootstrap": {
+                "enabled": True,
+                "min_episodes": 2,
+                "c_puct": 1.25
+            },
             "evaluation": {
                 "interval": 10,
                 "num_episodes": 1
@@ -114,6 +120,7 @@ class TestOrchestratorRuntimeExecution:
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.Learner') as mock_learner, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.Actor') as mock_actor, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.TrajectoryBuffer') as mock_buffer, \
+             patch('open_spiel.python.algorithms.muzero_jax.self_play.bootstrap_actor.BootstrapActor') as mock_bootstrap_actor, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.create_muzero_config_for_game') as mock_config_creator, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.create_network_config_from_muzero_config') as mock_network_config_creator, \
              patch('open_spiel.python.algorithms.muzero_jax.run_muzero_jax.get_latest_checkpoint') as mock_get_checkpoint:
@@ -135,9 +142,28 @@ class TestOrchestratorRuntimeExecution:
             
             # Mock actor
             mock_actor_instance = Mock()
-            mock_actor_instance.play_episode.return_value = 10  # Episode length
+            mock_episode_data = {
+                'observations': [jnp.zeros(27) for _ in range(10)],  # 10 observations
+                'actions': [0] * 10,
+                'rewards': [0.0] * 10,
+                'policy_targets': [jnp.ones(9) / 9] * 10,
+                'value_targets': [0.0] * 10
+            }
+            mock_actor_instance.play_episode.return_value = mock_episode_data
             mock_actor_instance.maybe_load_latest_parameters.return_value = None
             mock_actor.return_value = mock_actor_instance
+            
+            # Mock bootstrap actor
+            mock_bootstrap_actor_instance = Mock()
+            mock_bootstrap_episode_data = {
+                'observations': [jnp.zeros(27) for _ in range(8)],  # 8 observations
+                'actions': [0] * 8,
+                'rewards': [0.0] * 8,
+                'policy_targets': [jnp.ones(9) / 9] * 8,
+                'value_targets': [0.0] * 8
+            }
+            mock_bootstrap_actor_instance.play_episode.return_value = mock_bootstrap_episode_data
+            mock_bootstrap_actor.return_value = mock_bootstrap_actor_instance
             
             # Mock buffer
             mock_buffer_instance = Mock()
@@ -173,12 +199,14 @@ class TestOrchestratorRuntimeExecution:
                 'learner': mock_learner,
                 'actor': mock_actor,
                 'buffer': mock_buffer,
+                'bootstrap_actor': mock_bootstrap_actor,
                 'config_creator': mock_config_creator,
                 'network_config_creator': mock_network_config_creator,
                 'get_checkpoint': mock_get_checkpoint,
                 'learner_instance': mock_learner_instance,
                 'actor_instance': mock_actor_instance,
-                'buffer_instance': mock_buffer_instance
+                'buffer_instance': mock_buffer_instance,
+                'bootstrap_actor_instance': mock_bootstrap_actor_instance
             }
 
     def test_orchestrator_initialization(self, mock_orchestrator_setup):
@@ -219,9 +247,10 @@ class TestOrchestratorRuntimeExecution:
             # Should return metrics
             assert isinstance(metrics, dict)
             assert 'episodes_played' in metrics
+            assert 'using_bootstrap' in metrics
             
-            # Actor should have been called
-            mocks['actor_instance'].play_episode.assert_called()
+            # Bootstrap actor should have been called (since we start with bootstrap=True)
+            mocks['bootstrap_actor_instance'].play_episode.assert_called()
 
     def test_run_training_phase(self, mock_orchestrator_setup):
         """Test the training phase execution."""
@@ -321,7 +350,7 @@ class TestOrchestratorRuntimeExecution:
             metrics = orchestrator.run_selfplay_phase()
             
             # Episode logging should have been called
-            mock_log_episode.assert_called_once_with(10)  # Episode length from mock
+            mock_log_episode.assert_called_once_with(8)  # Episode length from bootstrap actor mock
 
     def test_concurrent_mode_fallback(self, mock_orchestrator_setup):
         """Test concurrent mode fallback to sequential."""

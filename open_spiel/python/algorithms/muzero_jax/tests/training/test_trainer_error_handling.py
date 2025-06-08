@@ -5,7 +5,7 @@ import jax
 from unittest.mock import Mock
 
 from open_spiel.python.algorithms.muzero_jax.training.trainer import Learner
-from open_spiel.python.algorithms.muzero_jax.tests.training.trainer_test_utils import (
+from open_spiel.python.algorithms.muzero_jax.tests.training.trainer_utils import (
     make_cfg,
     make_model_from_muzero_config
 )

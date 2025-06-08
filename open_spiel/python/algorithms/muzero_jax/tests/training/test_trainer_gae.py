@@ -8,7 +8,7 @@ import copy
 import dataclasses
 
 # Import from the common utils module
-from trainer_test_utils import (
+from trainer_utils import (
     NUM_UNROLL_STEPS,
     NUM_ACTIONS,
     BATCH_SIZE,
@@ -36,7 +36,7 @@ from open_spiel.python.algorithms.muzero_jax.training.trainer import (
 )
 
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
-from trainer_test_utils import MockRep, MockDyn, MockPred, MockRew 
+from trainer_utils import MockRep, MockDyn, MockPred, MockRew 
 
 def test_compute_gae_value_targets_with_episode_termination(common_key):
     """Test GAE computation with episode termination flags."""

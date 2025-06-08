@@ -18,7 +18,7 @@ import dataclasses
 from open_spiel.python.algorithms.muzero_jax.training import losses as jax_losses
 
 # Test utilities
-from trainer_test_utils import (
+from trainer_utils import (
     NUM_UNROLL_STEPS, NUM_ACTIONS, BATCH_SIZE, VALUE_SUPPORT_SCALAR, REWARD_SUPPORT_SCALAR,
     key as common_key, cfg_flat as common_cfg_flat, make_model, make_cfg, make_batch
 )

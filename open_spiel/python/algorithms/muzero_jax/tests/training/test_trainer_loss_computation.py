@@ -7,7 +7,7 @@ import flax.nnx.graph as nnx_graph
 import optax
 
 # Import from the common utils module
-from open_spiel.python.algorithms.muzero_jax.tests.training.trainer_test_utils import (
+from open_spiel.python.algorithms.muzero_jax.tests.training.trainer_utils import (
     NUM_UNROLL_STEPS,
     key as common_key, cfg_flat as common_cfg_flat, cfg_img,
     make_model, make_cfg, make_batch,

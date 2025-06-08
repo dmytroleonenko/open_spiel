@@ -7,7 +7,7 @@ import dataclasses
 from unittest.mock import patch, PropertyMock, MagicMock
 
 # Import from the common utils module
-from trainer_test_utils import (
+from trainer_utils import (
     NUM_UNROLL_STEPS,
     NUM_ACTIONS,
     BATCH_SIZE,

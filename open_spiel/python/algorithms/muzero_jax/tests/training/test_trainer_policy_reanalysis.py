@@ -8,7 +8,7 @@ import copy
 import dataclasses
 
 # Import from the common utils module
-from trainer_test_utils import (
+from trainer_utils import (
     NUM_UNROLL_STEPS,
     NUM_ACTIONS,
     BATCH_SIZE,
@@ -35,7 +35,7 @@ from open_spiel.python.algorithms.muzero_jax.training.trainer import (
 )
 
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
-from trainer_test_utils import MockRep, MockDyn, MockPred, MockRew 
+from trainer_utils import MockRep, MockDyn, MockPred, MockRew 
 
 def test_compute_policy_reanalysis_targets_basic_functionality():
     """Test basic functionality of policy reanalysis with mctx."""

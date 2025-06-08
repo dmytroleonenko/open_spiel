@@ -183,6 +183,7 @@ class MuZeroOrchestrator:
             'learning_rate': self.config.training.learning_rate,
             'batch_size': self.config.training.batch_size,
             'training_steps': self.config.training.training_steps,
+            'start_transitions': self.config.training.start_transitions,  # Add start_transitions
             'discount_factor': self.config.training.discount,  # Note: field name is discount_factor
             'num_unroll_steps': self.config.training.num_unroll_steps,
             'td_steps': self.config.training.td_steps,
