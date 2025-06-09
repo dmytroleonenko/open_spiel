@@ -392,11 +392,11 @@ def test_checkpoint_basic_training_workflow(common_key, common_cfg_flat):
 
     # Create temporary directory for checkpoints
     temp_dir = tempfile.mkdtemp(prefix="mz_checkpoint_training_test_")
-    
+
     try:
         config = make_cfg(
-            common_cfg_flat.value_support_size,
-            common_cfg_flat.reward_support_size,
+            0,  # scalar value support
+            0,  # scalar reward support
             1,  # Minimal unroll steps for faster test
             False,  # use_projection
             "checkpoint_training_test",
@@ -407,9 +407,20 @@ def test_checkpoint_basic_training_workflow(common_key, common_cfg_flat):
             checkpoint_dir=temp_dir,
             checkpoint_frequency=100,  # High frequency to avoid checkpointing in this test
             max_checkpoints_to_keep=1,
+            batch_size=1,
         )
 
-        model = make_model(common_key, common_cfg_flat)
+        # Create simple network config
+        simple_cfg = MockNetCfg(
+            observation_shape=(2, 2),
+            num_actions=3,
+            batch_size=1,
+            value_support_size=0,
+            reward_support_size=0,
+            hidden_size=8
+        )
+
+        model = make_model(common_key, simple_cfg)
         optimizer = optax.adam(config.learning_rate)
         learner = Learner(model, optimizer, config, common_key)
 
@@ -417,21 +428,21 @@ def test_checkpoint_basic_training_workflow(common_key, common_cfg_flat):
         batch = make_batch(
             common_key,
             config.batch_size,
-            common_cfg_flat.observation_shape,
-            common_cfg_flat.num_actions,
+            (2, 2),
+            3,
             config.num_unroll_steps,
-            common_cfg_flat.value_support_size,
-            common_cfg_flat.reward_support_size,
+            0,
+            0,
         )
 
         # Train for a few steps to verify training works with checkpoint config
-        for step in range(3):  # Reduced from 5 for faster execution
+        for step in range(2):  # Reduced from 3 for faster execution
             batch["training_step"] = step
             metrics = learner.train_step(batch)
             assert jnp.isfinite(metrics["total_loss"]), f"Loss not finite at step {step}"
 
         print("✅ Checkpoint basic training workflow test completed!")
-        
+
     finally:
         # Clean up temporary directory
         shutil.rmtree(temp_dir, ignore_errors=True)

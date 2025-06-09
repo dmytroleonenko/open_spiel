@@ -124,7 +124,9 @@ def compute_categorical_reward_loss(reward_logits: jax.Array, target_reward_dist
     This aligns with PyTorch's approach where categorical rewards use KL divergence for consistency
     with categorical value loss, instead of cross-entropy.
     """
-    return compute_kl_loss(logits=reward_logits, target_probs=target_reward_distribution)
+    loss = compute_kl_loss(logits=reward_logits, target_probs=target_reward_distribution)
+    # Ensure output is always at least 1D for consistent reshaping
+    return jnp.atleast_1d(loss)
 
 def compute_symlog_loss(prediction: jax.Array, target: jax.Array, base: float = jnp.e) -> jax.Array:
     """Computes loss using symlog transformation (EfficientZeroV2 pattern).
@@ -176,7 +178,9 @@ def compute_kl_loss(logits: jax.Array, target_probs: jax.Array) -> jax.Array:
     # Handle numerical stability
     target_log_probs = jnp.log(jnp.clip(target_probs, 1e-8, 1.0))
     kl_per_atom = target_probs * (target_log_probs - log_probs)
-    return jnp.sum(kl_per_atom, axis=-1)  # Sum over atoms, return per-batch
+    loss = jnp.sum(kl_per_atom, axis=-1)  # Sum over atoms, return per-batch
+    # Ensure output is always at least 1D for consistent reshaping
+    return jnp.atleast_1d(loss)
 
 
 def compute_projection_consistency_loss(

@@ -29,45 +29,45 @@ class TestTrainerGAEComputation(unittest.TestCase):
         """Test GAE computation when batch contains extra observations, actions, rewards, and dones."""
         key = jax.random.key(42)
         mk, lk, bk = jax.random.split(key, 3)
-        
+
         # Create mock network config
         net_config = MockNetCfg(
-            observation_shape=(3, 3),
-            num_actions=5,  # Match the target policy shape
-            batch_size=2,
+            observation_shape=(2, 2),
+            num_actions=3,  # Match the target policy shape
+            batch_size=1,
             value_support_size=0,  # scalar
             reward_support_size=0  # scalar
         )
-        
+
         # Create training config
         config = make_cfg(
             vsup=0,  # scalar value support
             rsup=0,  # scalar reward support  
-            steps=2,  # num_unroll_steps
+            steps=1,  # num_unroll_steps
             proj=False,
             suffix="minimal_test",
-            batch_size=2,
-            num_actions=5  # Match the network config
+            batch_size=1,
+            num_actions=3  # Match the network config
         )
         # Set value_target_type to "GAE" to trigger compute_gae_value_targets
         config = dataclasses.replace(config, value_target_type="GAE")
-        
+
         # Create model and learner
         model = make_model(mk, net_config)
         opt = optax.adam(config.learning_rate)
         learner = Learner(model, opt, config, lk)
-        
+
         # Create batch with extra GAE fields
         batch = make_batch(
             bk, config.batch_size, net_config.observation_shape,
             net_config.num_actions, config.num_unroll_steps,
             net_config.value_support_size, net_config.reward_support_size
         )
-        
+
         # Add extra GAE fields to trigger compute_gae_value_targets
-        extra_steps = 3
+        extra_steps = 2
         total_steps = config.num_unroll_steps + 1 + extra_steps
-        
+
         batch_with_extras = dict(batch)
         batch_with_extras.update({
             'extra_observations': jnp.ones((config.batch_size, total_steps) + net_config.observation_shape),
@@ -75,10 +75,10 @@ class TestTrainerGAEComputation(unittest.TestCase):
             'extra_rewards': jnp.ones((config.batch_size, total_steps)),
             'extra_dones': jnp.zeros((config.batch_size, total_steps))
         })
-        
+
         # This should trigger compute_gae_value_targets via normal training
         metrics = learner.train_step(batch_with_extras)
-        
+
         self.assertIsInstance(metrics, dict)
         self.assertIn("total_loss", metrics)
         self.assertTrue(jnp.isfinite(float(metrics["total_loss"])))

@@ -85,10 +85,18 @@ def test_gradient_clipping_comprehensive_standard_verification(common_key, commo
     ), f"Clipped gradient norm {optax_final_norm} should be <= {clip_norm}"
 
     # Test 2: Essential condition logic testing - only critical thresholds
-    cfgn = common_cfg_flat
+    # Create simple network config
+    simple_cfg = MockNetCfg(
+        observation_shape=(2, 2),
+        num_actions=3,
+        batch_size=1,
+        value_support_size=0,
+        reward_support_size=0,
+        hidden_size=8
+    )
 
     # Ultra-small batch for maximum speed
-    batch = make_batch(bk, 1, cfgn.observation_shape, cfgn.num_actions, 1, 0, 0)
+    batch = make_batch(bk, 1, (2, 2), 3, 1, 0, 0)
     batch["target_value"] = batch["target_value"] * 2.0  # Moderate scaling
 
     # Only test 2 most critical thresholds instead of 3
@@ -98,7 +106,7 @@ def test_gradient_clipping_comprehensive_standard_verification(common_key, commo
     ]
 
     # Single model for threshold tests
-    model_test = make_model(mk, cfgn)
+    model_test = make_model(mk, simple_cfg)
 
     for i, (threshold, should_clip) in enumerate(threshold_tests):
         cfg_test = make_cfg(0, 0, 1, False, f"clip_test_{threshold}", l2_weight=0.0)

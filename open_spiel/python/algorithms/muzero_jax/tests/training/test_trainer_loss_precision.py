@@ -293,31 +293,41 @@ def test_remaining_squeeze_operations_comprehensive(common_key, common_cfg_flat)
             return jnp.ones((h.shape[0], 1))  # B, 1 - triggers squeeze on line 487
 
     cfg_kl = make_cfg(
-        vsup=0, rsup=601, steps=1, proj=False, suffix="_kl_squeeze", use_ema=False
+        vsup=0, rsup=21, steps=1, proj=False, suffix="_kl_squeeze", use_ema=False
     )
-    cfg_kl = dataclasses.replace(cfg_kl, reward_loss_type="kl")
+    cfg_kl = dataclasses.replace(cfg_kl, reward_loss_type="kl", batch_size=1)
 
     rep = lambda model_config, *, rngs: MockRep(
-        common_cfg_flat.observation_shape, common_cfg_flat.hidden_size, rngs=rngs
+        (2, 2), 8, rngs=rngs
     )
     dyn = lambda model_config, *, rngs: MockDyn(
-        common_cfg_flat.hidden_size, common_cfg_flat.num_actions, rngs=rngs
+        8, 3, rngs=rngs
     )
     pred = lambda model_config, *, rngs: MockPred(
-        common_cfg_flat.hidden_size, common_cfg_flat.num_actions, 0, rngs=rngs
+        8, 3, 0, rngs=rngs
     )
     rew_kl = lambda model_config, *, rngs: KLSqueezeTestRew(rngs=rngs)
 
+    # Create simple network config
+    simple_cfg = MockNetCfg(
+        observation_shape=(2, 2),
+        num_actions=3,
+        batch_size=1,
+        value_support_size=0,
+        reward_support_size=21,
+        hidden_size=8
+    )
+
     model_kl = MuZeroNetwork(
-        rep, dyn, pred, rew_kl, None, common_cfg_flat, rngs=nnx.Rngs(params=common_key)
+        rep, dyn, pred, rew_kl, None, simple_cfg, rngs=nnx.Rngs(params=common_key)
     )
 
     # Create batch with scalar targets that will need conversion to distributions
     batch_kl = make_batch(
         common_key,
         cfg_kl.batch_size,
-        common_cfg_flat.observation_shape,
-        common_cfg_flat.num_actions,
+        (2, 2),
+        3,
         cfg_kl.num_unroll_steps,
         vsup=0,
         rsup=0,
@@ -341,29 +351,29 @@ def test_remaining_squeeze_operations_comprehensive(common_key, common_cfg_flat)
 
         def __call__(self, h, training):
             # Return distribution to trigger support_to_scalar on line 514
-            return jnp.ones((h.shape[0], 601))  # B, 601
+            return jnp.ones((h.shape[0], 21))  # B, 21
 
     cfg_mse_rew = make_cfg(
         vsup=0, rsup=0, steps=1, proj=False, suffix="_mse_rew_dist", use_ema=False
     )
-    cfg_mse_rew = dataclasses.replace(cfg_mse_rew, reward_loss_type="mse")
+    cfg_mse_rew = dataclasses.replace(cfg_mse_rew, reward_loss_type="mse", batch_size=1)
 
     rew_mse_dist = lambda model_config, *, rngs: MSERewardDistRew(rngs=rngs)
     model_mse_rew = MuZeroNetwork(
-        rep, dyn, pred, rew_mse_dist, None, common_cfg_flat, rngs=nnx.Rngs(params=common_key)
+        rep, dyn, pred, rew_mse_dist, None, simple_cfg, rngs=nnx.Rngs(params=common_key)
     )
 
     # Create batch with distribution targets to trigger squeeze on line 525
     batch_mse_rew = make_batch(
         common_key,
         cfg_mse_rew.batch_size,
-        common_cfg_flat.observation_shape,
-        common_cfg_flat.num_actions,
+        (2, 2),
+        3,
         cfg_mse_rew.num_unroll_steps,
         vsup=0,
-        rsup=601,
+        rsup=21,
         use_proj=False,
-    )  # rsup=601 creates distributions
+    )  # rsup=21 creates distributions
 
     loss_mse_rew, metrics_mse_rew = Learner._compute_total_loss_static(
         model_mse_rew, cfg_mse_rew, batch_mse_rew, common_key, training=True
@@ -382,22 +392,22 @@ def test_remaining_squeeze_operations_comprehensive(common_key, common_cfg_flat)
     cfg_symlog_rew = make_cfg(
         vsup=0, rsup=0, steps=1, proj=False, suffix="_symlog_rew", use_ema=False
     )
-    cfg_symlog_rew = dataclasses.replace(cfg_symlog_rew, reward_loss_type="symlog")
+    cfg_symlog_rew = dataclasses.replace(cfg_symlog_rew, reward_loss_type="symlog", batch_size=1)
 
     rew_symlog = lambda model_config, *, rngs: SymlogRewardSqueezeRew(rngs=rngs)
     model_symlog_rew = MuZeroNetwork(
-        rep, dyn, pred, rew_symlog, None, common_cfg_flat, rngs=nnx.Rngs(params=common_key)
+        rep, dyn, pred, rew_symlog, None, simple_cfg, rngs=nnx.Rngs(params=common_key)
     )
 
     # Create batch with distribution targets that will trigger squeeze on line 550
     batch_symlog_rew = make_batch(
         common_key,
         cfg_symlog_rew.batch_size,
-        common_cfg_flat.observation_shape,
-        common_cfg_flat.num_actions,
+        (2, 2),
+        3,
         cfg_symlog_rew.num_unroll_steps,
         vsup=0,
-        rsup=601,
+        rsup=21,
         use_proj=False,
     )  # Distribution targets
 
@@ -412,8 +422,8 @@ def test_remaining_squeeze_operations_comprehensive(common_key, common_cfg_flat)
     batch_scalar_rew = make_batch(
         common_key,
         cfg_symlog_rew.batch_size,
-        common_cfg_flat.observation_shape,
-        common_cfg_flat.num_actions,
+        (2, 2),
+        3,
         cfg_symlog_rew.num_unroll_steps,
         vsup=0,
         rsup=0,

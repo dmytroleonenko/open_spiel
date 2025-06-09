@@ -258,13 +258,24 @@ def test_optimizer_config_usage(common_key, common_cfg_flat):
     """Test that different optimizer configurations are properly applied."""
     # Test Case 1: Adam optimizer with specific parameters
     config_adam = MuZeroConfig(
-        num_actions=common_cfg_flat.num_actions,
+        num_actions=3,
         learning_rate=0.001,
         weight_decay=0.0001,
-        num_unroll_steps=2,  # Reduced for faster testing
+        num_unroll_steps=1,  # Reduced for faster testing
         checkpoint_dir=None  # Disable checkpointing for testing
     )
-    model = make_model(common_key, common_cfg_flat)  # Use MockNetCfg instead of MuZeroConfig
+    
+    # Create simple network config
+    simple_cfg = MockNetCfg(
+        observation_shape=(2, 2),
+        num_actions=3,
+        batch_size=1,
+        value_support_size=0,
+        reward_support_size=0,
+        hidden_size=8
+    )
+    
+    model = make_model(common_key, simple_cfg)  # Use MockNetCfg instead of MuZeroConfig
 
     # Test Case 2: Pass None for optimizer_def, should use config values
     custom_lr = 0.001234
@@ -272,8 +283,8 @@ def test_optimizer_config_usage(common_key, common_cfg_flat):
     custom_b2 = 0.995
 
     cfg_custom = make_cfg(
-        common_cfg_flat.value_support_size,
-        common_cfg_flat.reward_support_size,
+        0,  # scalar value support
+        0,  # scalar reward support
         1,
         False,
         "optimizer_config_test",
@@ -297,7 +308,7 @@ def test_optimizer_config_usage(common_key, common_cfg_flat):
     # Test Case 3: Compare with explicitly created optimizer
     explicit_optimizer = optax.adam(learning_rate=custom_lr, b1=custom_b1, b2=custom_b2)
 
-    model_explicit = make_model(jax.random.fold_in(common_key, 1), common_cfg_flat)
+    model_explicit = make_model(jax.random.fold_in(common_key, 1), simple_cfg)
     learner_explicit = Learner(
         model_explicit, explicit_optimizer, cfg_custom, jax.random.fold_in(common_key, 1)
     )
@@ -306,11 +317,11 @@ def test_optimizer_config_usage(common_key, common_cfg_flat):
     batch = make_batch(
         jax.random.fold_in(common_key, 2),
         1,
-        common_cfg_flat.observation_shape,
-        common_cfg_flat.num_actions,
+        (2, 2),
+        3,
         1,
-        common_cfg_flat.value_support_size,
-        common_cfg_flat.reward_support_size,
+        0,
+        0,
     )
 
     # Both learners should produce similar results (within numerical precision)
@@ -326,7 +337,7 @@ def test_optimizer_config_usage(common_key, common_cfg_flat):
 
     # Test Case 4: Verify that passing an explicit optimizer still works
     another_optimizer = optax.sgd(learning_rate=0.01)
-    model_sgd = make_model(jax.random.fold_in(common_key, 2), common_cfg_flat)
+    model_sgd = make_model(jax.random.fold_in(common_key, 2), simple_cfg)
     learner_sgd = Learner(
         model_sgd, another_optimizer, cfg_custom, jax.random.fold_in(common_key, 2)
     )

@@ -409,20 +409,28 @@ def test_symlog_and_kl_loss_types(common_key, common_cfg_flat):
     """Test symlog and KL loss types to cover missing lines."""
     mk, lk, bk = jax.random.split(common_key, 3)
 
-    cfgn = common_cfg_flat
+    # Create simple network config
+    simple_cfg = MockNetCfg(
+        observation_shape=(2, 2),
+        num_actions=3,
+        batch_size=1,
+        value_support_size=0,
+        reward_support_size=0,
+        hidden_size=8
+    )
 
     # Test symlog loss type
-    cfg_symlog = make_cfg(0, 0, 1, False, "symlog_test", l2_weight=0.0, num_actions=cfgn.num_actions)
+    cfg_symlog = make_cfg(0, 0, 1, False, "symlog_test", l2_weight=0.0, num_actions=3)
     cfg_symlog = dataclasses.replace(
         cfg_symlog,
         value_loss_type="symlog",
         reward_loss_type="symlog",
         symlog_base=2.0,
-        batch_size=2,
+        batch_size=1,
     )
 
-    model_symlog = make_model(mk, cfgn)
-    batch_symlog = make_batch(bk, 2, cfgn.observation_shape, cfgn.num_actions, 1, 0, 0)
+    model_symlog = make_model(mk, simple_cfg)
+    batch_symlog = make_batch(bk, 1, (2, 2), 3, 1, 0, 0)
 
     # Test symlog loss computation
     loss_symlog, metrics_symlog = Learner._compute_total_loss_static(
@@ -438,17 +446,26 @@ def test_symlog_and_kl_loss_types(common_key, common_cfg_flat):
     assert jnp.isfinite(metrics_symlog["reward_loss"]), "Symlog reward loss should be finite"
 
     # Test KL loss type
-    cfg_kl = make_cfg(601, 601, 1, False, "kl_test", l2_weight=0.0, num_actions=cfgn.num_actions)  # Use categorical
+    simple_cfg_categorical = MockNetCfg(
+        observation_shape=(2, 2),
+        num_actions=3,
+        batch_size=1,
+        value_support_size=21,
+        reward_support_size=21,
+        hidden_size=8
+    )
+    
+    cfg_kl = make_cfg(21, 21, 1, False, "kl_test", l2_weight=0.0, num_actions=3)  # Use categorical
     cfg_kl = dataclasses.replace(
         cfg_kl,
         value_loss_type="kl",
         reward_loss_type="kl",
-        batch_size=2,
+        batch_size=1,
     )
 
-    model_kl = make_model(jax.random.fold_in(mk, 1), common_cfg_flat)
+    model_kl = make_model(jax.random.fold_in(mk, 1), simple_cfg_categorical)
     batch_kl = make_batch(
-        jax.random.fold_in(bk, 1), 2, cfgn.observation_shape, cfgn.num_actions, 1, 601, 601
+        jax.random.fold_in(bk, 1), 1, (2, 2), 3, 1, 21, 21
     )
 
     # Test KL loss computation

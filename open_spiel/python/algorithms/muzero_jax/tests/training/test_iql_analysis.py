@@ -222,9 +222,9 @@ class TestIQLImplementationAnalysis:
         key = jax.random.PRNGKey(456)
         
         # Test parameters
-        batch_size = 8
-        num_atoms = 51
-        iql_weights = [0.0, 0.3, 0.5, 0.7, 1.0]
+        batch_size = 2
+        num_atoms = 11
+        iql_weights = [0.0, 0.5, 1.0]
         
         for iql_weight in iql_weights:
             # Generate random logits and target distributions

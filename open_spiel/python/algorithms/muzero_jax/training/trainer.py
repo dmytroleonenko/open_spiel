@@ -13,6 +13,7 @@ import flax.nnx.graph as nnx_graph # Import for nnx_graph.Static
 import logging
 import wandb # Added for WandB logging
 import math # For math.e constant
+import functools
 
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork # type: ignore
 from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib # type: ignore
@@ -72,10 +73,79 @@ Metrics = Dict[str, jax.Array]
 
 
 def half_gradient(x: jax.Array) -> jax.Array:
-    """Apply half gradient to input array (EfficientZeroV2 equivalent of register_hook(lambda grad: grad * 0.5))."""
-    # Forward pass: identity
-    # Backward pass: multiply gradient by 0.5
+    """Apply half gradient to input array (EfficientZeroV2 equivalent)."""
+    # Forward pass: identity, Backward pass: multiply gradient by 0.5
     return x + 0.5 * jax.lax.stop_gradient(x) - 0.5 * x
+
+
+def prepare_targets_for_loss_type_host(targets: jax.Array, loss_type: str, support_size: int) -> jax.Array:
+    """Prepare targets for specific loss type - HOST-SIDE PREPARATION (pre-JIT).
+    
+    This function performs all shape conversions and target transformations
+    on the host before entering JIT context, eliminating runtime overhead.
+    """
+    if loss_type in ["categorical", "kl"]:
+        # Convert scalars to categorical distributions if needed
+        if targets.ndim <= 2 or (targets.ndim == 3 and targets.shape[-1] == 1):
+            if targets.ndim == 3 and targets.shape[-1] == 1:
+                targets = jnp.squeeze(targets, axis=-1)
+            # Flatten to apply scalar_to_support, then reshape back
+            original_shape = targets.shape
+            targets_flat = targets.reshape(-1)
+            targets_support = jax.vmap(losses_lib.scalar_to_support, in_axes=(0, None, None, None))(
+                targets_flat, -300.0, 300.0, support_size if support_size > 0 else 601
+            )
+            # Reshape back to original batch structure plus support dimension
+            targets = targets_support.reshape(original_shape + (targets_support.shape[-1],))
+    elif loss_type in ["symlog", "mse"]:
+        # Convert distributions to scalars if needed
+        if targets.ndim > 2 and targets.shape[-1] > 1:
+            # Flatten to apply support_to_scalar, then reshape back
+            original_shape = targets.shape[:-1]  # Remove support dimension
+            targets_flat = targets.reshape(-1, targets.shape[-1])
+            targets_scalar = jax.vmap(losses_lib.support_to_scalar, in_axes=(0, None, None, None))(
+                targets_flat, -300.0, 300.0, targets.shape[-1]
+            )
+            targets = targets_scalar.reshape(original_shape)
+        elif targets.ndim == 3 and targets.shape[-1] == 1:
+            targets = jnp.squeeze(targets, axis=-1)
+    
+    return targets
+
+
+def prepare_predictions_for_loss_type_host(predictions: jax.Array, loss_type: str, support_size: int) -> jax.Array:
+    """Prepare predictions for specific loss type - HOST-SIDE PREPARATION (pre-JIT).
+    
+    This function performs all shape conversions and prediction transformations
+    on the host before entering JIT context, eliminating runtime overhead.
+    """
+    if loss_type in ["categorical", "kl"]:
+        # Convert scalars to categorical distributions if needed
+        if predictions.ndim <= 2 or (predictions.ndim == 3 and predictions.shape[-1] == 1):
+            if predictions.ndim == 3 and predictions.shape[-1] == 1:
+                predictions = jnp.squeeze(predictions, axis=-1)
+            # Flatten to apply scalar_to_support, then reshape back
+            original_shape = predictions.shape
+            predictions_flat = predictions.reshape(-1)
+            predictions_support = jax.vmap(losses_lib.scalar_to_support, in_axes=(0, None, None, None))(
+                predictions_flat, -300.0, 300.0, support_size if support_size > 0 else 601
+            )
+            # Reshape back to original batch structure plus support dimension
+            predictions = predictions_support.reshape(original_shape + (predictions_support.shape[-1],))
+    elif loss_type in ["symlog", "mse"]:
+        # Convert distributions to scalars if needed
+        if predictions.ndim > 2 and predictions.shape[-1] > 1:
+            # Flatten to apply support_to_scalar, then reshape back
+            original_shape = predictions.shape[:-1]  # Remove support dimension
+            predictions_flat = predictions.reshape(-1, predictions.shape[-1])
+            predictions_scalar = jax.vmap(losses_lib.support_to_scalar, in_axes=(0, None, None, None))(
+                predictions_flat, -300.0, 300.0, predictions.shape[-1]
+            )
+            predictions = predictions_scalar.reshape(original_shape)
+        elif predictions.ndim == 3 and predictions.shape[-1] == 1:
+            predictions = jnp.squeeze(predictions, axis=-1)
+    
+    return predictions
 
 
 @dataclasses.dataclass(frozen=True)
@@ -722,240 +792,40 @@ class Learner:
         else:
             effective_iql_param = 0.5  # Symmetric loss when IQL is disabled
 
-        # Compute losses per step (accumulate per-sample losses for importance weighting)
-        per_sample_policy_loss = jnp.zeros(initial_observation.shape[0])  # B
-        per_sample_value_loss = jnp.zeros(initial_observation.shape[0])   # B
-        per_sample_reward_loss = jnp.zeros(initial_observation.shape[0])  # B
-        per_sample_ssl_loss = jnp.zeros(initial_observation.shape[0])     # B
-        per_sample_entropy_loss = jnp.zeros(initial_observation.shape[0]) # B
+        # Task 6.4: Loss Computation Strategy Optimization - HOST-SIDE PREPARATION
+        # Pre-process targets and predictions on host to eliminate runtime conversions in JIT
+        processed_target_values = prepare_targets_for_loss_type_host(
+            actual_target_values, config.value_loss_type, config.value_support_size
+        )
+        processed_predicted_values = prepare_predictions_for_loss_type_host(
+            predicted_values, config.value_loss_type, config.value_support_size
+        )
+        
+        processed_target_rewards = prepare_targets_for_loss_type_host(
+            target_rewards, config.reward_loss_type, config.reward_support_size
+        )
+        processed_predicted_rewards = prepare_predictions_for_loss_type_host(
+            predicted_rewards, config.reward_loss_type, config.reward_support_size
+        )
 
-        for k_idx in range(config.num_unroll_steps + 1):
-            step_mask = game_history_mask[:, k_idx] # B
-            
-            # Policy Loss
-            p_loss = losses_lib.compute_policy_loss(
-                predicted_policy_logits[:, k_idx], actual_target_policies[:, k_idx]
-            )
-            masked_p_loss = p_loss * step_mask
-            per_sample_policy_loss += masked_p_loss
-
-            # Value Loss with EfficientZeroV2 parity
-            predicted_val = predicted_values[:, k_idx]
-            target_val = actual_target_values[:, k_idx]
-            
-            # Support multiple value heads (v_num) - EfficientZeroV2 feature
-            if config.v_num > 1:
-                # Repeat targets for multiple value heads if predictions have multiple heads
-                if predicted_val.ndim >= 2 and predicted_val.shape[-1] == config.v_num:
-                    # predicted_val shape: (B, v_num) or (B, v_num, support_size)
-                    if target_val.ndim == 1 or (target_val.ndim == 2 and target_val.shape[-1] != config.v_num):
-                        # Repeat targets across value heads
-                        target_val = jnp.repeat(jnp.expand_dims(target_val, axis=-1), config.v_num, axis=-1)
-            
-            # Simplified value loss computation - model outputs correct format
-            if config.value_loss_type == "categorical":
-                # Model outputs logits, targets may need conversion to distributions
-                # Handle predicted value shape conversion for compatibility
-                if predicted_val.ndim == 1 or (predicted_val.ndim == 2 and predicted_val.shape[-1] == 1):
-                    # Predicted values are scalar, convert to support distribution
-                    if predicted_val.ndim == 2 and predicted_val.shape[-1] == 1: # pragma: no cover
-                        predicted_val = jnp.squeeze(predicted_val, axis=-1) # pragma: no cover
-                    predicted_val = losses_lib.scalar_to_support(
-                        predicted_val,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=config.value_support_size if config.value_support_size > 0 else 601
-                    )
-                
-                if target_val.ndim == 1 or (target_val.ndim == 2 and target_val.shape[-1] == 1):
-                    # Target values are scalar, convert to support distribution
-                    if target_val.ndim == 2 and target_val.shape[-1] == 1: # pragma: no cover
-                        target_val = jnp.squeeze(target_val, axis=-1) # pragma: no cover
-                    target_val = losses_lib.scalar_to_support(
-                        target_val,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=config.value_support_size if config.value_support_size > 0 else 601
-                    )
-                
-                v_loss = losses_lib.compute_categorical_value_loss(predicted_val, target_val, effective_iql_param)
-                
-            elif config.value_loss_type == "symlog":
-                # Model outputs symlog-transformed scalars, targets need to be scalars
-                # Handle predicted value shape conversion for compatibility
-                if predicted_val.ndim == 2 and predicted_val.shape[-1] == 1:
-                    predicted_val = jnp.squeeze(predicted_val, axis=-1)
-                    
-                if target_val.ndim > 1 and target_val.shape[-1] > 1: # pragma: no cover
-                    # Target values are distributions, convert to scalars
-                    target_val = losses_lib.support_to_scalar( # pragma: no cover
-                        target_val, # pragma: no cover
-                        support_min=-300.0, # pragma: no cover
-                        support_max=300.0, # pragma: no cover
-                        num_atoms=target_val.shape[-1] # pragma: no cover
-                    ) # pragma: no cover
-                elif target_val.ndim == 2 and target_val.shape[-1] == 1: # pragma: no cover
-                    target_val = jnp.squeeze(target_val, axis=-1) # pragma: no cover
-                
-                # Use symlog loss with IQL weighting for value prediction
-                v_loss = losses_lib.compute_symlog_value_loss(predicted_val, target_val, effective_iql_param, config.symlog_base)
-                
-            else:  # MSE
-                # Model outputs scalars, targets need to be scalars
-                # Handle predicted value shape conversion for compatibility
-                if predicted_val.ndim > 1 and predicted_val.shape[-1] > 1:
-                    # Predicted values are distributions, convert to scalars
-                    predicted_val = losses_lib.support_to_scalar(
-                        predicted_val,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=predicted_val.shape[-1]
-                    )
-                elif predicted_val.ndim == 2 and predicted_val.shape[-1] == 1: # pragma: no cover
-                    predicted_val = jnp.squeeze(predicted_val, axis=-1) # pragma: no cover
-                
-                if target_val.ndim > 1 and target_val.shape[-1] > 1:
-                    # Target values are distributions, convert to scalars
-                    target_val = losses_lib.support_to_scalar(
-                        target_val,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=target_val.shape[-1]
-                    )
-                elif target_val.ndim == 2 and target_val.shape[-1] == 1: # pragma: no cover
-                    target_val = jnp.squeeze(target_val, axis=-1) # pragma: no cover
-                
-                v_loss = losses_lib.compute_scalar_value_loss(predicted_val, target_val, effective_iql_param)
-            masked_v_loss = v_loss * step_mask
-            per_sample_value_loss += masked_v_loss
-
-            # Reward Loss with EfficientZeroV2 parity
-            predicted_rew = predicted_rewards[:, k_idx]
-            target_rew = target_rewards[:, k_idx]
-            
-            # Simplified reward loss computation - model outputs correct format
-            if config.reward_loss_type == "categorical":
-                # Model outputs logits, targets may need conversion to distributions
-                # Handle predicted reward shape conversion for compatibility
-                if predicted_rew.ndim == 1 or (predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1):
-                    # Predicted rewards are scalar, convert to support distribution
-                    if predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1: # pragma: no cover
-                        predicted_rew = jnp.squeeze(predicted_rew, axis=-1) # pragma: no cover
-                    predicted_rew = losses_lib.scalar_to_support(
-                        predicted_rew,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=config.reward_support_size if config.reward_support_size > 0 else 601
-                    )
-                
-                if target_rew.ndim == 1 or (target_rew.ndim == 2 and target_rew.shape[-1] == 1):
-                    # Target rewards are scalar, convert to support distribution
-                    if target_rew.ndim == 2 and target_rew.shape[-1] == 1: # pragma: no cover
-                        target_rew = jnp.squeeze(target_rew, axis=-1) # pragma: no cover
-                    target_rew = losses_lib.scalar_to_support(
-                        target_rew,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=config.reward_support_size if config.reward_support_size > 0 else 601
-                    )
-                
-                r_loss = losses_lib.compute_categorical_reward_loss(predicted_rew, target_rew)
-                
-            elif config.reward_loss_type == "symlog":
-                # Model outputs symlog-transformed scalars, targets need to be scalars
-                # Handle predicted reward shape conversion for compatibility
-                if predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1:
-                    predicted_rew = jnp.squeeze(predicted_rew, axis=-1)
-                    
-                if target_rew.ndim > 1 and target_rew.shape[-1] > 1:
-                    # Target rewards are distributions, convert to scalars
-                    target_rew = losses_lib.support_to_scalar(
-                        target_rew,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=target_rew.shape[-1]
-                    )
-                elif target_rew.ndim == 2 and target_rew.shape[-1] == 1: # pragma: no cover
-                    target_rew = jnp.squeeze(target_rew, axis=-1) # pragma: no cover
-                
-                r_loss = losses_lib.compute_symlog_loss(predicted_rew, target_rew, config.symlog_base)
-                
-            elif config.reward_loss_type == "kl":
-                # Model outputs logits, targets may need conversion to distributions
-                # Handle predicted reward shape conversion for compatibility
-                if predicted_rew.ndim == 1 or (predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1):
-                    # Predicted rewards are scalar, convert to support distribution
-                    if predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1: # pragma: no cover
-                        predicted_rew = jnp.squeeze(predicted_rew, axis=-1) # pragma: no cover
-                    predicted_rew = losses_lib.scalar_to_support(
-                        predicted_rew,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=config.reward_support_size if config.reward_support_size > 0 else 601
-                    )
-                
-                if target_rew.ndim == 1 or (target_rew.ndim == 2 and target_rew.shape[-1] == 1):
-                    # Target rewards are scalar, convert to support distribution
-                    if target_rew.ndim == 2 and target_rew.shape[-1] == 1: # pragma: no cover
-                        target_rew = jnp.squeeze(target_rew, axis=-1) # pragma: no cover
-                    target_rew = losses_lib.scalar_to_support(
-                        target_rew,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=config.reward_support_size if config.reward_support_size > 0 else 601
-                    )
-                
-                r_loss = losses_lib.compute_kl_loss(predicted_rew, target_rew)
-                
-            else:  # MSE
-                # Model outputs scalars, targets need to be scalars
-                # Handle predicted reward shape conversion for compatibility
-                if predicted_rew.ndim > 1 and predicted_rew.shape[-1] > 1:
-                    # Predicted rewards are distributions, convert to scalars
-                    predicted_rew = losses_lib.support_to_scalar(
-                        predicted_rew,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=predicted_rew.shape[-1]
-                    )
-                elif predicted_rew.ndim == 2 and predicted_rew.shape[-1] == 1: # pragma: no cover
-                    predicted_rew = jnp.squeeze(predicted_rew, axis=-1) # pragma: no cover
-                
-                if target_rew.ndim > 1 and target_rew.shape[-1] > 1:
-                    # Target rewards are distributions, convert to scalars
-                    target_rew = losses_lib.support_to_scalar(
-                        target_rew,
-                        support_min=-300.0,
-                        support_max=300.0,
-                        num_atoms=target_rew.shape[-1]
-                    )
-                elif target_rew.ndim == 2 and target_rew.shape[-1] == 1: # pragma: no cover
-                    target_rew = jnp.squeeze(target_rew, axis=-1) # pragma: no cover
-                
-                r_loss = losses_lib.compute_scalar_reward_loss(predicted_rew, target_rew)
-            masked_r_loss = r_loss * step_mask
-            per_sample_reward_loss += masked_r_loss
-            
-            # SSL Loss with stop_gradient (EfficientZeroV2 pattern)
-            if config.use_projection and config.consistency_loss_coeff > 0 and \
-               predicted_projections is not None and initial_projection is not None and k_idx > 0: 
-                ssl_loss_step = losses_lib.compute_projection_consistency_loss(
-                    predicted_projections[:, k_idx], 
-                    jax.lax.stop_gradient(initial_projection)  # Stop gradient as in EfficientZeroV2
-                )
-                masked_ssl_loss = ssl_loss_step * step_mask
-                per_sample_ssl_loss += masked_ssl_loss
-            
-            # Entropy Loss for policy regularization (EfficientZeroV2 pattern)
-            if config.entropy_coeff > 0:
-                # Use general entropy function that supports both discrete and continuous actions
-                entropy_loss_step = losses_lib.compute_policy_entropy_general(
-                    predicted_policy_logits[:, k_idx], 
-                    action_type=config.action_type,
-                    distribution_type=config.distribution_type
-                )
-                masked_entropy_loss = entropy_loss_step * step_mask
-                per_sample_entropy_loss += masked_entropy_loss
+        # Use vectorized loss computation with pre-processed inputs (no runtime conversions)
+        (per_sample_policy_loss, 
+         per_sample_value_loss, 
+         per_sample_reward_loss, 
+         per_sample_ssl_loss, 
+         per_sample_entropy_loss) = Learner._compute_vectorized_loss_optimized(
+            predicted_values=processed_predicted_values,
+            predicted_rewards=processed_predicted_rewards,
+            predicted_policy_logits=predicted_policy_logits,
+            actual_target_values=processed_target_values,
+            target_rewards=processed_target_rewards,
+            actual_target_policies=actual_target_policies,
+            game_history_mask=game_history_mask,
+            config=config,
+            effective_iql_param=effective_iql_param,
+            predicted_projections=predicted_projections,
+            initial_projection=initial_projection
+        )
 
         # L2 regularization (only if not using optimizer weight_decay)
         model_params = nnx.state(model, nnx.Param)
@@ -1182,6 +1052,175 @@ class Learner:
     def _sync_target_network_from_ema(self): # pragma: no cover
         """Stub for backwards compatibility; EMA sync handled inside JIT."""
         return
+
+    @staticmethod
+    def _compute_vectorized_loss_optimized(
+        predicted_values: jax.Array,      # [B, K+1, ...]
+        predicted_rewards: jax.Array,     # [B, K+1, ...]
+        predicted_policy_logits: jax.Array,  # [B, K+1, ...]
+        actual_target_values: jax.Array,  # [B, K+1, ...]
+        target_rewards: jax.Array,        # [B, K+1, ...]
+        actual_target_policies: jax.Array,  # [B, K+1, ...]
+        game_history_mask: jax.Array,     # [B, K+1]
+        config: MuZeroConfig,
+        effective_iql_param: float,
+        predicted_projections: jax.Array | None = None,  # [B, K+1, ...]
+        initial_projection: jax.Array | None = None,  # [B, ...]
+    ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        """
+        Optimized vectorized loss computation eliminating per-step loops.
+        
+        Task 6.4: Loss Computation Strategy Optimization
+        - Vectorize loss computation across (B, K+1) dimensions
+        - Move shape conversions to pre-JIT host-side preparation
+        - Eliminate runtime conditional branching using static function selection
+        
+        All inputs are pre-processed on host-side to correct formats.
+        No runtime shape conversions or conditional branching within JIT.
+        
+        Returns:
+            Tuple of per-sample losses: (policy, value, reward, ssl, entropy)
+        """
+        
+        # Static function selection based on loss types (eliminates runtime branching)
+        # All shape conversions already done on host-side
+        if config.value_loss_type == "categorical":
+            value_loss_fn = functools.partial(losses_lib.compute_categorical_value_loss, effective_iql_param=effective_iql_param)
+        elif config.value_loss_type == "symlog":
+            value_loss_fn = functools.partial(losses_lib.compute_symlog_value_loss, effective_iql_param=effective_iql_param, base=config.symlog_base)
+        elif config.value_loss_type == "kl":
+            # For KL value loss, use categorical value loss (which uses KL internally)
+            value_loss_fn = functools.partial(losses_lib.compute_categorical_value_loss, effective_iql_param=effective_iql_param)
+        else:  # mse
+            value_loss_fn = functools.partial(losses_lib.compute_scalar_value_loss, effective_iql_param=effective_iql_param)
+        
+        if config.reward_loss_type == "categorical":
+            reward_loss_fn = losses_lib.compute_categorical_reward_loss
+        elif config.reward_loss_type == "symlog":
+            reward_loss_fn = functools.partial(losses_lib.compute_symlog_loss, base=config.symlog_base)
+        elif config.reward_loss_type == "kl":
+            # For KL reward loss, use categorical reward loss (which uses KL internally)
+            reward_loss_fn = losses_lib.compute_categorical_reward_loss
+        else:  # mse
+            reward_loss_fn = losses_lib.compute_scalar_reward_loss
+        
+        # Vectorized loss computation across all (B, K+1) dimensions
+        # Get consistent batch and time dimensions
+        batch_size = game_history_mask.shape[0]
+        time_steps = game_history_mask.shape[1] if game_history_mask.ndim > 1 else 1
+        
+        # Ensure all tensors have consistent time dimension
+        pred_policy_time = predicted_policy_logits.shape[1]
+        target_policy_time = actual_target_policies.shape[1]
+        pred_values_time = predicted_values.shape[1]
+        target_values_time = actual_target_values.shape[1]
+        pred_rewards_time = predicted_rewards.shape[1]
+        target_rewards_time = target_rewards.shape[1]
+        
+        # Use minimum time dimension for safety
+        min_time = min(time_steps, pred_policy_time, target_policy_time, 
+                      pred_values_time, target_values_time, pred_rewards_time, target_rewards_time)
+        
+        # Truncate all tensors to consistent time dimension
+        truncated_predicted_policy = predicted_policy_logits[:batch_size, :min_time]
+        truncated_target_policy = actual_target_policies[:batch_size, :min_time]
+        truncated_predicted_values = predicted_values[:batch_size, :min_time]
+        truncated_target_values = actual_target_values[:batch_size, :min_time]
+        truncated_predicted_rewards = predicted_rewards[:batch_size, :min_time]
+        truncated_target_rewards = target_rewards[:batch_size, :min_time]
+        truncated_mask = game_history_mask[:batch_size, :min_time]
+        
+        # Flatten time dimension for vectorized processing
+        flat_predicted_policy = truncated_predicted_policy.reshape(batch_size * min_time, -1)
+        flat_target_policy = truncated_target_policy.reshape(batch_size * min_time, -1)
+        
+        # Handle value flattening (maintain shape appropriately)
+        if truncated_predicted_values.ndim > 2:
+            flat_predicted_values = truncated_predicted_values.reshape(batch_size * min_time, -1)
+        else:
+            flat_predicted_values = truncated_predicted_values.reshape(batch_size * min_time)
+        
+        if truncated_target_values.ndim > 2:
+            flat_target_values = truncated_target_values.reshape(batch_size * min_time, -1)
+        else:
+            flat_target_values = truncated_target_values.reshape(batch_size * min_time)
+            
+        # Handle reward flattening (maintain shape appropriately)
+        if truncated_predicted_rewards.ndim > 2:
+            flat_predicted_rewards = truncated_predicted_rewards.reshape(batch_size * min_time, -1)
+        else:
+            flat_predicted_rewards = truncated_predicted_rewards.reshape(batch_size * min_time)
+            
+        if truncated_target_rewards.ndim > 2:
+            flat_target_rewards = truncated_target_rewards.reshape(batch_size * min_time, -1)
+        else:
+            flat_target_rewards = truncated_target_rewards.reshape(batch_size * min_time)
+        
+        # Apply loss functions to flattened data - using pre-selected static functions
+        # No runtime branching or shape conversions needed
+        policy_losses_flat = losses_lib.compute_policy_loss(flat_predicted_policy, flat_target_policy)
+        value_losses_flat = value_loss_fn(flat_predicted_values, flat_target_values)
+        reward_losses_flat = reward_loss_fn(flat_predicted_rewards, flat_target_rewards)
+        
+        # Reshape back to [B, time_steps] 
+        policy_losses = policy_losses_flat.reshape(batch_size, min_time)
+        value_losses = value_losses_flat.reshape(batch_size, min_time)
+        reward_losses = reward_losses_flat.reshape(batch_size, min_time)
+        
+        # Apply masking and sum across time steps
+        masked_policy_losses = policy_losses * truncated_mask
+        masked_value_losses = value_losses * truncated_mask
+        masked_reward_losses = reward_losses * truncated_mask
+        
+        # Sum over time steps to get per-sample losses
+        per_sample_policy_loss = jnp.sum(masked_policy_losses, axis=1)   # [B]
+        per_sample_value_loss = jnp.sum(masked_value_losses, axis=1)     # [B]
+        per_sample_reward_loss = jnp.sum(masked_reward_losses, axis=1)   # [B]
+        
+        # SSL Loss (consistency/projection loss) - vectorized
+        per_sample_ssl_loss = jnp.zeros(batch_size)  # [B]
+        if (config.use_projection and config.consistency_loss_coeff > 0 and 
+            predicted_projections is not None and initial_projection is not None):
+            
+            # Vectorized SSL loss for steps k > 0
+            ssl_mask = truncated_mask[:, 1:] if min_time > 1 else jnp.zeros((batch_size, 0))  # [B, time_steps-1]
+            
+            if min_time > 1:
+                # Truncate projections to consistent time dimension
+                truncated_projections = predicted_projections[:batch_size, :min_time]
+                flat_projections = truncated_projections[:, 1:].reshape(batch_size * (min_time - 1), -1)
+                # Expand initial projection to match each timestep
+                expanded_initial = jnp.tile(initial_projection[:, None, :], (1, min_time - 1, 1)).reshape(batch_size * (min_time - 1), -1)
+                
+                ssl_losses_flat = losses_lib.compute_projection_consistency_loss(
+                    flat_projections, jax.lax.stop_gradient(expanded_initial)
+                )
+                ssl_losses = ssl_losses_flat.reshape(batch_size, min_time - 1)  # [B, K]
+                
+                masked_ssl_losses = ssl_losses * ssl_mask  # [B, K]
+                per_sample_ssl_loss = jnp.sum(masked_ssl_losses, axis=1)  # [B]
+        
+        # Entropy Loss - vectorized
+        per_sample_entropy_loss = jnp.zeros(batch_size)  # [B]
+        if config.entropy_coeff > 0:
+            # Vectorized entropy computation - process batched data directly
+            entropy_losses_flat = losses_lib.compute_policy_entropy_general(
+                flat_predicted_policy,
+                action_type=config.action_type,
+                distribution_type=config.distribution_type
+            )
+            
+            entropy_losses = entropy_losses_flat.reshape(batch_size, min_time)  # [B, K+1]
+            masked_entropy_losses = entropy_losses * truncated_mask  # [B, time_steps]
+            per_sample_entropy_loss = jnp.sum(masked_entropy_losses, axis=1)  # [B]
+        
+        return (
+            per_sample_policy_loss,
+            per_sample_value_loss,
+            per_sample_reward_loss,
+            per_sample_ssl_loss,
+            per_sample_entropy_loss
+        )
 
 def apply_value_prefix_reward_accumulation(
     target_reward: jax.Array, 
