@@ -173,4 +173,71 @@ def test_noisy_networks_trainer_integration_coverage(common_key, common_cfg_flat
     print(f"  1. ✅ Training step with noisy_net=True exercises lines 328-332")
     print(f"  2. ✅ Noise reset called on main model during training")
     print(f"  3. ✅ Noise reset called on target model when EMA enabled")
-    print(f"  4. ✅ Training stability maintained with noisy networks") 
+    print(f"  4. ✅ Training stability maintained with noisy networks")
+
+def test_symlog_value_shape_squeezing_coverage(common_key, common_cfg_flat):
+    """Test symlog value prediction shape squeezing to cover line 787 in trainer.py."""
+    mk, bk = jax.random.split(common_key, 2)
+    
+    # Create config with symlog value loss
+    cfg_symlog = make_cfg(
+        common_cfg_flat.value_support_size,
+        common_cfg_flat.reward_support_size,
+        NUM_UNROLL_STEPS,
+        False,
+        "symlog_test",
+        num_actions=common_cfg_flat.num_actions,
+        batch_size=common_cfg_flat.batch_size
+    )
+    # Set value loss type to symlog to trigger the specific code path
+    cfg_symlog = dataclasses.replace(cfg_symlog, value_loss_type="symlog")
+    
+    model = make_model(mk, common_cfg_flat)
+    opt = optax.adam(cfg_symlog.learning_rate)
+    learner = Learner(model, opt, cfg_symlog, mk)
+    
+    # Create batch with specific shape that will trigger the squeezing logic
+    batch = make_batch(
+        bk,
+        cfg_symlog.batch_size,
+        common_cfg_flat.observation_shape,
+        common_cfg_flat.num_actions,
+        cfg_symlog.num_unroll_steps,
+        1,  # value_support_size = 1 to create 2D predictions that need squeezing
+        common_cfg_flat.reward_support_size
+    )
+    
+    # Mock the model to return predictions with shape (batch, 1) that need squeezing
+    original_initial_inference = model.initial_inference
+    original_recurrent_inference = model.recurrent_inference
+    
+    def mock_initial_inference(observation, training=False):
+        hidden_state, policy_logits, value, reward, projection = original_initial_inference(observation, training)
+        # Ensure value has shape (batch, 1) to trigger squeezing on line 787
+        if value.ndim == 1:
+            value = jnp.expand_dims(value, axis=-1)  # Shape: (batch, 1)
+        return hidden_state, policy_logits, value, reward, projection
+    
+    def mock_recurrent_inference(hidden_state, action, training=False):
+        next_hidden_state, reward, value, policy_logits, projection = original_recurrent_inference(hidden_state, action, training)
+        # Ensure value has shape (batch, 1) to trigger squeezing on line 787
+        if value.ndim == 1:
+            value = jnp.expand_dims(value, axis=-1)  # Shape: (batch, 1)
+        return next_hidden_state, reward, value, policy_logits, projection
+    
+    # Apply the mocks to trigger the squeezing code path
+    model.initial_inference = mock_initial_inference
+    model.recurrent_inference = mock_recurrent_inference
+    
+    # Run training step - this should trigger line 787 where value shape is squeezed
+    metrics = learner.train_step(batch)
+    
+    # Verify training completed successfully
+    assert isinstance(metrics, dict)
+    assert "total_loss" in metrics
+    assert "value_loss" in metrics
+    assert jnp.isfinite(metrics["total_loss"])
+    assert jnp.isfinite(metrics["value_loss"])
+    
+    # Training step counter should increment
+    assert learner.num_training_steps == 1 
