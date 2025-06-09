@@ -14,10 +14,14 @@ class GameWrapper:
         is_chance_node() -> bool: Return True if current state is a chance node.
         chance_outcomes() -> list[tuple[int, float]]: Return list of (action, probability) pairs for chance outcomes.
         is_terminal() -> bool: Return True if the current state is terminal.
+        is_stochastic() -> bool: Return True if the game has chance nodes (is stochastic).
+        max_chance_outcomes() -> int: Return the maximum number of chance outcomes for any chance node.
         observation_shape: tuple: Shape of the observation tensor.
     """
     def __init__(self, game_name: str):
         self._game = pyspiel.load_game(game_name)
+        # Cache game type information for efficiency
+        self._game_type = self._game.get_type()
         # Get observation shape from the game - but use flat observation for OpenSpiel games
         # Following EfficientZeroV2's approach: OpenSpiel games are treated as state-based, not image-based
         raw_shape = self._game.observation_tensor_shape()
@@ -88,4 +92,15 @@ class GameWrapper:
 
     def is_terminal(self) -> bool:
         """Return True if the current state is terminal."""
-        return self._state.is_terminal() 
+        return self._state.is_terminal()
+
+    def is_stochastic(self) -> bool:
+        """Return True if the game has chance nodes (is stochastic)."""
+        return (self._game_type.chance_mode == pyspiel.GameType.ChanceMode.EXPLICIT_STOCHASTIC or
+                self._game_type.chance_mode == pyspiel.GameType.ChanceMode.SAMPLED_STOCHASTIC)
+
+    def max_chance_outcomes(self) -> int:
+        """Return the maximum number of chance outcomes for any chance node in the game."""
+        if not self.is_stochastic():
+            return 0
+        return self._game.max_chance_outcomes() 

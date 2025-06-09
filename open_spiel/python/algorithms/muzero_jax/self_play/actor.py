@@ -20,7 +20,7 @@ import logging
 from open_spiel.python.algorithms.muzero_jax.envs.game_wrapper import GameWrapper
 from open_spiel.python.algorithms.muzero_jax.replay_buffer.replay_buffer import TrajectoryBuffer
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
-from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import MCTS
+from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import MCTS, StochasticMCTS, create_mcts_for_game, is_stochastic_mcts_instance
 from open_spiel.python.algorithms.muzero_jax.utils.checkpointing import load_checkpoint, get_latest_checkpoint
 
 
@@ -33,59 +33,72 @@ class Actor:
     2. Playing games using MCTS with the current network
     3. Collecting trajectory data (observations, actions, rewards, targets)
     4. Adding completed trajectories to the replay buffer
+    
+    Automatically selects the appropriate MCTS type (deterministic vs stochastic) 
+    based on the game's chance mode.
     """
     
     def __init__(
         self,
         network: MuZeroNetwork,
-        mcts: MCTS,
         game_wrapper: GameWrapper,
         replay_buffer: TrajectoryBuffer,
         config: Any,
+        num_simulations: int = 50,
+        max_num_considered_actions: int = 16,
+        gumbel_scale: float = 1.0,
         n_step_return: int = 5,
         discount_factor: float = 0.99,
         temperature: float = 1.0,
         temperature_threshold: int = 30,
     ):
         """
-        Initialize the self-play actor.
+        Initialize Actor for self-play.
         
         Args:
-            network: MuZero network for inference
-            mcts: MCTS implementation for action selection
+            network: MuZeroNetwork instance
             game_wrapper: Game environment wrapper
-            replay_buffer: Buffer to store completed trajectories
-            config: Configuration object with game and network parameters
-            n_step_return: Number of steps for n-step return calculation
-            discount_factor: Discount factor for value target computation
-            temperature: Temperature for action selection from MCTS policy
-            temperature_threshold: Step threshold after which temperature becomes 0
+            replay_buffer: Replay buffer for storing trajectories
+            config: Configuration object
+            num_simulations: Number of MCTS simulations per step
+            max_num_considered_actions: Maximum actions to consider in MCTS
+            gumbel_scale: Gumbel noise scale for action selection
+            n_step_return: Number of steps for n-step return computation
+            discount_factor: Discount factor for future rewards
+            temperature: Temperature for action selection during self-play
+            temperature_threshold: Step threshold for temperature transition
         """
-        # Validate parameters
-        if discount_factor <= 0.0 or discount_factor > 1.0:
-            raise ValueError(f"discount_factor must be in (0, 1], got {discount_factor}")
-        if n_step_return <= 0:
-            raise ValueError(f"n_step_return must be positive, got {n_step_return}")
-        if temperature < 0.0:
-            raise ValueError(f"temperature must be non-negative, got {temperature}")
-        if temperature_threshold < 0:
-            raise ValueError(f"temperature_threshold must be non-negative, got {temperature_threshold}")
-            
         self.network = network
-        self.mcts = mcts
         self.game_wrapper = game_wrapper
         self.replay_buffer = replay_buffer
         self.config = config
+        self.num_simulations = num_simulations
+        self.max_num_considered_actions = max_num_considered_actions
+        self.gumbel_scale = gumbel_scale
         self.n_step_return = n_step_return
         self.discount_factor = discount_factor
         self.temperature = temperature
         self.temperature_threshold = temperature_threshold
         
-        # Current network parameters (will be updated when loading checkpoints)
+        # Set up logging
+        self.logger = logging.getLogger(__name__)
+        
+        # Initialize MCTS
+        from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import create_mcts_for_game
+        self.mcts = create_mcts_for_game(
+            game_wrapper=game_wrapper,
+            num_simulations=num_simulations,
+            max_num_considered_actions=max_num_considered_actions,
+            gumbel_scale=gumbel_scale
+        )
+        
+        # Check if this is stochastic MCTS
+        self._is_stochastic_mcts = hasattr(self.mcts, 'is_stochastic') and self.mcts.is_stochastic
+        
+        # Initialize current network parameters
         self.current_params = None
         
-        # Initialize logging
-        self.logger = logging.getLogger(__name__)
+        self.logger.info(f"Initialized Actor with {'stochastic' if self._is_stochastic_mcts else 'deterministic'} MCTS")
         
     def load_network_parameters(self, checkpoint_path: str) -> Dict[str, Any]:
         """
@@ -134,38 +147,29 @@ class Actor:
         return False        
     def _create_recurrent_fn(self) -> callable:
         """
-        Create the recurrent function for MCTS.
+        Create recurrent function for standard (deterministic) MCTS.
         
         Returns:
-            Function that takes (params, rng_key, action, embedding) and returns
-            (reward, discount, prior_logits, value, embedding)
+            Callable that can be used with mctx.gumbel_muzero_policy
         """
+        
         def recurrent_fn(params, rng_key, action, embedding):
-            # Use the network's recurrent inference with the provided params
-            # If params is None, we'll use the network's current state
-            if params is not None:
-                # Use provided parameters (this would involve parameter application in real implementation)
-                # For now, we proceed with the network as-is but acknowledge params
-                pass
-                
-            next_hidden_state, reward, value, policy_logits, _ = self.network.recurrent_inference(
-                embedding, action, training=False
+            """Standard recurrent function for deterministic MCTS."""
+            # Convert action to proper format for network
+            action_array = jnp.array([action])  # Add batch dimension
+            
+            # Use the actual network's recurrent inference
+            next_embedding, reward, value, policy_logits, _ = self.network.recurrent_inference(
+                embedding, action_array, training=False
             )
             
-            # For MuZero, discount is typically 1.0 for non-terminal states
-            # This will be handled by the game termination logic
-            discount = jnp.ones_like(value)
-            
-            # Create RecurrentFnOutput as expected by mctx
             from mctx._src.base import RecurrentFnOutput
-            step = RecurrentFnOutput(
+            return RecurrentFnOutput(
                 reward=reward,
-                discount=discount,
+                discount=jnp.ones_like(reward),  # No discounting in model
                 prior_logits=policy_logits,
                 value=value
-            )
-            
-            return step, next_hidden_state
+            ), next_embedding
             
         return recurrent_fn
         
@@ -294,6 +298,7 @@ class Actor:
                 logging.error(f"Episode in {self.game_wrapper._game.get_type().short_name} "
                               f"exceeded max steps ({max_steps}), breaking loop.")
                 break
+                
             # Handle chance nodes
             if self.game_wrapper.is_chance_node():
                 # For chance nodes, sample from the chance outcomes
@@ -331,7 +336,7 @@ class Actor:
                 
             observations.append(current_obs)
             
-            # Get initial inference from network (hidden_state, reward, value, policy_logits, projection)
+            # Get initial inference from network
             obs_array = jnp.array([current_obs])  # Add batch dimension
             hidden_state, reward, value, policy_logits, _ = self.network.initial_inference(
                 obs_array, training=False
@@ -356,17 +361,26 @@ class Actor:
             # Debug logging
             self.logger.info(f"Step {step}: Legal actions: {legal_actions}, Total actions: {num_actions}")
             
-            # Run MCTS
+            # Run MCTS using the appropriate method
             rng_key, subkey = jax.random.split(rng_key)
-            recurrent_fn = self._create_recurrent_fn()
             
-            policy_output = self.mcts.run(
-                params=self.current_params,  # Use loaded network parameters
-                rng_key=subkey,
-                root=root,
-                recurrent_fn=recurrent_fn,
-                invalid_actions=invalid_actions
-            )
+            if self._is_stochastic_mcts:
+                # Use stochastic MCTS with official mctx API
+                policy_output = self.mcts.run_stochastic(
+                    rng_key=subkey,
+                    root=root,
+                    network=self.network,  # Pass the network for proper stochastic integration
+                    invalid_actions=invalid_actions
+                )
+            else:
+                # Use standard deterministic MCTS
+                recurrent_fn = self._create_recurrent_fn()
+                policy_output = self.mcts.run(
+                    rng_key=subkey,
+                    root=root,
+                    recurrent_fn=recurrent_fn,
+                    invalid_actions=invalid_actions
+                )
             
             # Select action and get policy target
             action, policy_target = self._select_action(policy_output, step)

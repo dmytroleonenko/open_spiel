@@ -216,13 +216,6 @@ class TestActorBufferIntegration:
         rng_key = jax.random.PRNGKey(42)
         network = make_model(rng_key, tic_tac_toe_cfg)
         
-        # Create MCTS
-        mcts = MCTS(
-            num_simulations=5,
-            max_num_considered_actions=num_actions,
-            gumbel_scale=1.0
-        )
-        
         # Create replay buffer
         buffer = TrajectoryBuffer(
             capacity=100,
@@ -234,10 +227,9 @@ class TestActorBufferIntegration:
         from types import SimpleNamespace
         actor_config = SimpleNamespace(num_actions=num_actions)
         
-        # Create actor
+        # Create actor (will auto-create appropriate MCTS based on game type)
         actor = Actor(
             network=network,
-            mcts=mcts,
             game_wrapper=game_wrapper,
             replay_buffer=buffer,
             config=actor_config,
@@ -342,19 +334,13 @@ class TestEndToEndWorkflow:
             num_actions=num_actions
         )
         
-        mcts = MCTS(
-            num_simulations=5,
-            max_num_considered_actions=num_actions,
-            gumbel_scale=1.0
-        )
-        
         # Create actor config
         from types import SimpleNamespace
         actor_config = SimpleNamespace(num_actions=num_actions)
         
+        # Create actor (will auto-create appropriate MCTS based on game type)
         actor = Actor(
             network=network,
-            mcts=mcts,
             game_wrapper=game_wrapper,
             replay_buffer=buffer,
             config=actor_config,
@@ -518,19 +504,13 @@ class TestBufferStateConsistency:
             num_actions=num_actions
         )
         
-        mcts = MCTS(
-            num_simulations=5,
-            max_num_considered_actions=num_actions,
-            gumbel_scale=1.0
-        )
-        
         # Create actor config
         from types import SimpleNamespace
         actor_config = SimpleNamespace(num_actions=num_actions)
         
+        # Create actor (will auto-create appropriate MCTS based on game type)
         actor = Actor(
             network=network,
-            mcts=mcts,
             game_wrapper=game_wrapper,
             replay_buffer=buffer,
             config=actor_config,

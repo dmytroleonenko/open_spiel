@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 from open_spiel.python.algorithms.muzero_jax.envs.game_wrapper import GameWrapper
 from open_spiel.python.algorithms.muzero_jax.replay_buffer.replay_buffer import TrajectoryBuffer
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
-from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import MCTS
+from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import MCTS, StochasticMCTS
 
 
 class TestActor:
@@ -31,6 +31,21 @@ class TestActor:
         config.num_actions = 9
         config.hidden_state_dim = 64
         return config
+
+    @pytest.fixture
+    def mock_game_wrapper(self):
+        """Create a mock GameWrapper with proper stochastic/deterministic behavior."""
+        mock_wrapper = Mock(spec=GameWrapper)
+        mock_wrapper.is_stochastic.return_value = False  # Default to deterministic
+        mock_wrapper.max_chance_outcomes.return_value = 0
+        
+        # Setup the _game attribute
+        mock_game = Mock()
+        mock_game.max_game_length.return_value = 100
+        mock_game.get_type.return_value.short_name = "test_game"
+        mock_wrapper._game = mock_game
+        
+        return mock_wrapper
 
     @pytest.fixture
     def mock_muzero_network(self):
@@ -63,18 +78,18 @@ class TestActor:
             side_effect=mock_recurrent_inference)
         return network
 
-    def test_actor_initialization(self, mock_config, mock_muzero_network):
+    def test_actor_initialization(self, mock_config, mock_muzero_network, mock_game_wrapper):
         """Test that the actor can be initialized with required components."""
         from open_spiel.python.algorithms.muzero_jax.self_play.actor import Actor
 
         # Create minimal mocks for initialization test
-        mock_mcts = Mock(spec=MCTS)
-        mock_game_wrapper = Mock(spec=GameWrapper)
         mock_replay_buffer = Mock(spec=TrajectoryBuffer)
 
+        # Test with deterministic game (default)
+        mock_game_wrapper.is_stochastic.return_value = False
+        
         actor = Actor(
             network=mock_muzero_network,
-            mcts=mock_mcts,
             game_wrapper=mock_game_wrapper,
             replay_buffer=mock_replay_buffer,
             config=mock_config
@@ -82,25 +97,46 @@ class TestActor:
 
         # Verify that all components are set correctly
         assert actor.network == mock_muzero_network
-        assert actor.mcts == mock_mcts
         assert actor.game_wrapper == mock_game_wrapper
         assert actor.replay_buffer == mock_replay_buffer
         assert actor.config == mock_config
         assert actor.current_params is None
+        assert hasattr(actor, 'mcts')
+        assert hasattr(actor, '_is_stochastic_mcts')
+        assert actor._is_stochastic_mcts == False  # Should be deterministic MCTS
 
-    def test_actor_parameter_validation(self, mock_config, mock_muzero_network):
+    def test_actor_stochastic_game_initialization(self, mock_config, mock_muzero_network, mock_game_wrapper):
+        """Test that the actor initializes StochasticMCTS for stochastic games."""
+        from open_spiel.python.algorithms.muzero_jax.self_play.actor import Actor
+        
+        # Create minimal mocks for initialization test
+        mock_replay_buffer = Mock(spec=TrajectoryBuffer)
+
+        # Test with stochastic game
+        mock_game_wrapper.is_stochastic.return_value = True
+        mock_game_wrapper.max_chance_outcomes.return_value = 6  # e.g., dice game
+        
+        actor = Actor(
+            network=mock_muzero_network,
+            game_wrapper=mock_game_wrapper,
+            replay_buffer=mock_replay_buffer,
+            config=mock_config
+        )
+
+        # Verify that stochastic MCTS was created
+        assert actor._is_stochastic_mcts == True
+        assert hasattr(actor, 'mcts')
+
+    def test_actor_parameter_validation(self, mock_config, mock_muzero_network, mock_game_wrapper):
         """Test that the actor validates initialization parameters."""
         from open_spiel.python.algorithms.muzero_jax.self_play.actor import Actor
 
-        mock_mcts = Mock(spec=MCTS)
-        mock_game_wrapper = Mock(spec=GameWrapper)
         mock_replay_buffer = Mock(spec=TrajectoryBuffer)
 
         # Test invalid discount factor
         with pytest.raises(ValueError, match="discount_factor must be in"):
             Actor(
                 network=mock_muzero_network,
-                mcts=mock_mcts,
                 game_wrapper=mock_game_wrapper,
                 replay_buffer=mock_replay_buffer,
                 config=mock_config,
@@ -111,7 +147,6 @@ class TestActor:
         with pytest.raises(ValueError, match="n_step_return must be positive"):
             Actor(
                 network=mock_muzero_network,
-                mcts=mock_mcts,
                 game_wrapper=mock_game_wrapper,
                 replay_buffer=mock_replay_buffer,
                 config=mock_config,
@@ -122,7 +157,6 @@ class TestActor:
         with pytest.raises(ValueError, match="temperature must be non-negative"):
             Actor(
                 network=mock_muzero_network,
-                mcts=mock_mcts,
                 game_wrapper=mock_game_wrapper,
                 replay_buffer=mock_replay_buffer,
                 config=mock_config,
@@ -133,7 +167,6 @@ class TestActor:
         with pytest.raises(ValueError, match="temperature_threshold must be non-negative"):
             Actor(
                 network=mock_muzero_network,
-                mcts=mock_mcts,
                 game_wrapper=mock_game_wrapper,
                 replay_buffer=mock_replay_buffer,
                 config=mock_config,
@@ -143,7 +176,6 @@ class TestActor:
         # Test valid parameters
         actor = Actor(
             network=mock_muzero_network,
-            mcts=mock_mcts,
             game_wrapper=mock_game_wrapper,
             replay_buffer=mock_replay_buffer,
             config=mock_config,
