@@ -327,19 +327,15 @@ class MuZeroOrchestrator:
         )
         
         # Create MuZero actors for later use (when network is trained)
-        mcts = MCTS(
-            num_simulations=self.muzero_config.num_simulations,
-            max_num_considered_actions=self.game_wrapper.num_distinct_actions(),
-            gumbel_scale=1.0
-        )
-        
         for i in range(num_actors):
             actor = Actor(
                 network=self.network,
-                mcts=mcts,
                 game_wrapper=GameWrapper(self.config.game.name),
                 replay_buffer=self.replay_buffer,
                 config=self.muzero_config,
+                num_simulations=self.muzero_config.num_simulations,
+                max_num_considered_actions=self.game_wrapper.num_distinct_actions(),
+                gumbel_scale=1.0,
                 n_step_return=self.muzero_config.td_steps,
                 discount_factor=self.muzero_config.discount_factor,
             )

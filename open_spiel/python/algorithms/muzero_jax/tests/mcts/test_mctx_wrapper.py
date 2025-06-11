@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 import pytest
-from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import MCTS, gumbel_muzero_policy
+from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import MCTS
 
 
 def test_mcts_run_calls_gumbel_policy(monkeypatch):
@@ -9,10 +9,10 @@ def test_mcts_run_calls_gumbel_policy(monkeypatch):
     def fake_policy(**kwargs):
         called.update(kwargs)
         return 'fake_result'
-    monkeypatch.setattr(
-        'open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper.gumbel_muzero_policy',
-        fake_policy
-    )
+    
+    # Mock the mctx.gumbel_muzero_policy function directly since that's what MCTS.run calls internally
+    monkeypatch.setattr('mctx.gumbel_muzero_policy', fake_policy)
+    
     num_simulations = 5
     max_actions = 10
     gumbel_scale = 0.7
@@ -44,4 +44,4 @@ def test_mcts_run_calls_gumbel_policy(monkeypatch):
     assert called['invalid_actions'] == 'inv'
     assert called['max_depth'] == 3
     assert called['loop_fn'] == 'loop'
-    assert called['qtransform'] == 'qt' 
+    assert called['qtransform'] == 'qt'

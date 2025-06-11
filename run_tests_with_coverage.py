@@ -42,6 +42,12 @@ from typing import List, Tuple, Dict, Optional
 # Global timeout setting
 GLOBAL_TIMEOUT = 600
 
+# Optional progress bar support
+try:
+    from tqdm import tqdm  # type: ignore
+except ImportError:  # pragma: no cover
+    tqdm = None  # Fallback if tqdm is not installed
+
 
 def set_process_title(title: str):
     """Set the process title for visibility in process monitors."""
@@ -305,11 +311,17 @@ def run_single_test_case_with_coverage(test_case: str, worker_id: int, temp_dir:
             return True, test_case, duration, coverage_file
         else:
             print(f"[Worker {worker_id}] ❌ {test_name} failed in {duration:.1f}s")
-            # Print more detailed error info
+            # Print more detailed error info (full stderr, trimmed stdout)
             if result.stderr:
-                print(f"[Worker {worker_id}] STDERR: {result.stderr[-800:]}")  # More error details
+                print(f"[Worker {worker_id}] ====== STDERR BEGIN ======")
+                print(result.stderr)
+                print(f"[Worker {worker_id}] ====== STDERR END ======")
             if result.stdout:
-                print(f"[Worker {worker_id}] STDOUT: {result.stdout[-400:]}")  # Show some output
+                stdout_tail = '\n'.join(result.stdout.splitlines()[-200:])  # tail for readability
+                if stdout_tail:
+                    print(f"[Worker {worker_id}] ====== STDOUT (tail) ======")
+                    print(stdout_tail)
+                    print(f"[Worker {worker_id}] ====== STDOUT END ======")
             return False, test_case, duration, coverage_file
             
     except subprocess.TimeoutExpired:
@@ -424,7 +436,7 @@ def main(test_dir: str = "open_spiel/python/algorithms/muzero_jax/tests", num_wo
     
     # Set up parallel execution
     # Limit workers to reasonable defaults: half of CPU cores, max test cases, or user specified
-    effective_workers = min(mp.cpu_count() // 1.1, len(test_cases), num_workers)
+    effective_workers = min(mp.cpu_count(), len(test_cases), num_workers)
     print(f"\nRunning {len(test_cases)} test cases with {effective_workers} parallel workers")
     print(f"⏱️  Individual test timeout: {timeout}s")
     
@@ -454,6 +466,13 @@ def main(test_dir: str = "open_spiel/python/algorithms/muzero_jax/tests", num_wo
         # Start workers as needed
         worker_id = 0
         tests_completed = 0
+        
+        # ------------------------------------------------------------------
+        # Set up progress bar (if tqdm is available)
+        # ------------------------------------------------------------------
+        pbar = None
+        if tqdm is not None:
+            pbar = tqdm(total=len(test_cases), desc="Progress", unit="test", ncols=80)
         
         while tests_completed < len(test_cases):
             # Start new workers if we have tests and available worker slots
@@ -487,7 +506,12 @@ def main(test_dir: str = "open_spiel/python/algorithms/muzero_jax/tests", num_wo
                     if coverage_file and os.path.exists(coverage_file):
                         coverage_files.append(coverage_file)
                     
-                    print(f"Progress: {tests_completed}/{len(test_cases)} test cases completed")
+                    # Update progress bar or fallback progress print
+                    if pbar is not None:
+                        pbar.update(1)
+                        pbar.set_postfix({"completed": f"{tests_completed}/{len(test_cases)}"})
+                    else:
+                        print(f"Progress: {tests_completed}/{len(test_cases)} test cases completed ({tests_completed / len(test_cases) * 100:.1f}%)")
                 
                 # Clean up finished workers
                 active_workers = [w for w in active_workers if w.is_alive()]
@@ -540,36 +564,41 @@ def main(test_dir: str = "open_spiel/python/algorithms/muzero_jax/tests", num_wo
             test_name = test_case.split("::")[-1] if "::" in test_case else test_case
             print(f"  - {test_name} ({duration:.1f}s)")
     
-    if slow_tests:
-        print(f"\n🐌 Slow test cases (>= {report_slow}s): {len(slow_tests)}")
-        print("\nSlow test cases:")
-        # Sort by duration, slowest first
-        slow_tests.sort(key=lambda x: x[1], reverse=True)
-        for test_case, duration in slow_tests:
-            # Extract file and function name in file::function format
-            if "::" in test_case:
-                parts = test_case.split("::")
-                if len(parts) >= 2:
-                    file_name = parts[0].split("/")[-1].replace(".py", "")  # Get just the filename without path and extension
-                    function_name = parts[-1]  # Get the test function name
-                    formatted_name = f"{file_name}::{function_name}"
-                else:
-                    formatted_name = test_case
-            else:
-                formatted_name = test_case
-            print(f"  - {formatted_name} ({duration:.1f}s)")
-    
+    # -------------------------------------------------------------
+    # Helper for grouping tests by file path
+    # -------------------------------------------------------------
+    def _group_by_file(test_records):
+        grouped: Dict[str, List[Tuple[str, float]]] = {}
+        for _succ, test_node, dur in test_records:
+            file_path, _, case_part = test_node.partition("::")
+            grouped.setdefault(file_path, []).append((case_part or file_path, dur))
+        return grouped
+
     if failed_tests:
         print("\nFailed test cases:")
-        for success, test_case, duration in failed_tests:
-            # Show just the test case name part for readability
-            test_name = test_case.split("::")[-1] if "::" in test_case else test_case
-            print(f"  - {test_name} ({duration:.1f}s)")
+        for file_path, cases in _group_by_file(failed_tests).items():
+            print(f"{file_path}:")
+            for case, dur in cases:
+                indent_case = f"└─ {case}" if case != file_path else f"└─ (file import error)"
+                print(f"  {indent_case} ({dur:.1f}s)")
+    
+    if slow_tests:
+        print(f"\n🐌 Slow test cases (>={report_slow}s): {len(slow_tests)}")
+        for file_path, cases in _group_by_file([(True, tc, dur) for tc, dur in slow_tests]).items():
+            print(f"{file_path}:")
+            # sort within file
+            for case, dur in sorted(cases, key=lambda x: x[1], reverse=True):
+                indent_case = f"└─ {case}"
+                print(f"  {indent_case} ({dur:.1f}s)")
     
     # Performance summary
     total_duration = sum(r[2] for r in results)
     avg_duration = total_duration / len(results) if results else 0
     print(f"\nPerformance: {total_duration:.1f}s total, {avg_duration:.1f}s average per test case")
+    
+    # Close progress bar if used
+    if pbar is not None:
+        pbar.close()
     
     return len(failed_tests) == 0
 

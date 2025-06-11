@@ -135,18 +135,22 @@ class TestOrchestratorIntegration:
     
     def test_training_only_occurs_with_sufficient_data(self, minimal_config):
         """Test that training only occurs when buffer has enough data."""
-        # Set high start_transitions to test conditional training
-        minimal_config.training.start_transitions = 10
+        # Create a copy to avoid modifying the fixture
+        import copy
+        config = copy.deepcopy(minimal_config)
         
-        orchestrator = MuZeroOrchestrator(minimal_config)
+        # Set high start_transitions to test conditional training
+        config.training.start_transitions = 10
+        
+        orchestrator = MuZeroOrchestrator(config)
         orchestrator.setup_components()
         
         # Run self-play with fewer episodes than start_transitions
-        minimal_config.resource_management.selfplay_phase_episodes = 2
+        config.resource_management.selfplay_phase_episodes = 2
         selfplay_metrics = orchestrator.run_selfplay_phase()
         
         buffer_size = len(orchestrator.replay_buffer)
-        assert buffer_size < minimal_config.training.start_transitions
+        assert buffer_size < config.training.start_transitions
         
         # Attempt training - should be skipped
         initial_training_step = orchestrator.training_step
@@ -154,18 +158,22 @@ class TestOrchestratorIntegration:
         # Training should not advance when buffer is too small
         # We can't easily test the skipping without modifying the method,
         # but we can verify the buffer condition
-        assert buffer_size < minimal_config.training.start_transitions, (
+        assert buffer_size < config.training.start_transitions, (
             "Training should be skipped when buffer size < start_transitions"
         )
     
     def test_complete_workflow_single_iteration(self, minimal_config):
         """Test complete workflow: self-play → buffer → training."""
-        # Ensure we have enough data to trigger training
-        minimal_config.training.start_transitions = 1
-        minimal_config.training.batch_size = 2  # Reduce batch size to allow training
-        minimal_config.resource_management.selfplay_phase_episodes = 3
+        # Create a copy to avoid modifying the fixture
+        import copy
+        config = copy.deepcopy(minimal_config)
         
-        orchestrator = MuZeroOrchestrator(minimal_config)
+        # Ensure we have enough data to trigger training
+        config.training.start_transitions = 1
+        config.training.batch_size = 2  # Reduce batch size to allow training
+        config.resource_management.selfplay_phase_episodes = 3
+        
+        orchestrator = MuZeroOrchestrator(config)
         orchestrator.setup_components()
         
         initial_training_step = orchestrator.training_step
@@ -177,7 +185,7 @@ class TestOrchestratorIntegration:
         
         # Verify episodes were added to buffer
         assert buffer_size_after_selfplay > initial_buffer_size
-        assert buffer_size_after_selfplay >= minimal_config.training.start_transitions
+        assert buffer_size_after_selfplay >= config.training.start_transitions
         
         # Training phase  
         training_metrics = orchestrator.run_training_phase()
@@ -233,6 +241,8 @@ class TestActorBufferIntegration:
             game_wrapper=game_wrapper,
             replay_buffer=buffer,
             config=actor_config,
+            num_simulations=3,  # Low for fast testing
+            max_num_considered_actions=4,  # Low for fast testing
             n_step_return=3,
             discount_factor=0.99
         )
@@ -344,6 +354,8 @@ class TestEndToEndWorkflow:
             game_wrapper=game_wrapper,
             replay_buffer=buffer,
             config=actor_config,
+            num_simulations=3,  # Low for fast testing
+            max_num_considered_actions=4,  # Low for fast testing
             n_step_return=3,
             discount_factor=0.99
         )
@@ -514,6 +526,8 @@ class TestBufferStateConsistency:
             game_wrapper=game_wrapper,
             replay_buffer=buffer,
             config=actor_config,
+            num_simulations=3,  # Low for fast testing
+            max_num_considered_actions=4,  # Low for fast testing
             n_step_return=3,
             discount_factor=0.99
         )

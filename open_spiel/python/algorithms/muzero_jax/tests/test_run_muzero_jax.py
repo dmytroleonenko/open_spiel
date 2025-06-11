@@ -9,6 +9,8 @@ import pytest
 import tempfile
 import os
 import shutil
+import threading
+import time
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 from dataclasses import replace, asdict
@@ -29,6 +31,9 @@ from open_spiel.python.algorithms.muzero_jax.replay_buffer.replay_buffer import 
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
 from open_spiel.python.algorithms.muzero_jax.envs.game_wrapper import GameWrapper
 from open_spiel.python.algorithms.muzero_jax.run_muzero_jax import MuZeroOrchestrator
+
+# Import the isolated checkpoint fixture
+from open_spiel.python.algorithms.muzero_jax.tests.utils.fixtures import isolated_checkpoint_dir
 
 
 class TestMainOrchestrationSetup:
@@ -107,11 +112,9 @@ class TestActorLearnerIntegration:
     """Test the integration between actor and learner components."""
     
     @pytest.fixture
-    def temp_checkpoint_dir(self):
-        """Create a temporary directory for checkpoints."""
-        temp_dir = tempfile.mkdtemp()
-        yield temp_dir
-        shutil.rmtree(temp_dir)
+    def temp_checkpoint_dir(self, isolated_checkpoint_dir):
+        """Use the isolated checkpoint helper for complete test isolation."""
+        return isolated_checkpoint_dir
         
     @pytest.fixture
     def mock_config(self):
