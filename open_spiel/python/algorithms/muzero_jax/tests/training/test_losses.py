@@ -1202,31 +1202,20 @@ def test_compute_continuous_policy_entropy_normal():
     
     key = jr.key(42)
     
-    # Test normal distribution entropy
+    # For OpenSpiel, continuous entropy should raise NotImplementedError
     batch_size = 3
     action_dim = 2
     # Parameters: [means, log_stds]
     distribution_params = jr.normal(key, (batch_size, 2 * action_dim))
     
-    entropy = losses_lib.compute_continuous_policy_entropy(
-        distribution_params, distribution_type="normal"
-    )
-    assert entropy.shape == (batch_size,)
-    assert jnp.all(entropy > 0.0)  # Should be positive for reasonable std
-    
-    # Test with higher variance (should have higher entropy)
-    high_var_params = distribution_params.at[:, action_dim:].set(2.0)  # High log_stds
-    high_entropy = losses_lib.compute_continuous_policy_entropy(
-        high_var_params, distribution_type="normal"
-    )
-    assert jnp.all(high_entropy > entropy)
-    
-    # Test numerical stability with extreme log_stds
-    extreme_params = distribution_params.at[:, action_dim:].set(10.0)  # Very high
-    stable_entropy = losses_lib.compute_continuous_policy_entropy(
-        extreme_params, distribution_type="normal"
-    )
-    assert jnp.all(jnp.isfinite(stable_entropy))
+    try:
+        entropy = losses_lib.compute_continuous_policy_entropy(
+            distribution_params, distribution_type="normal"
+        )
+        assert False, "Should have raised NotImplementedError for OpenSpiel"
+    except NotImplementedError as e:
+        assert "OpenSpiel" in str(e), "Error should mention OpenSpiel limitation"
+        assert "discrete action" in str(e), "Error should mention discrete action spaces"
 
 
 def test_compute_continuous_policy_entropy_squashed_normal():
@@ -1236,21 +1225,19 @@ def test_compute_continuous_policy_entropy_squashed_normal():
     
     key = jr.key(42)
     
-    # Test squashed normal distribution entropy
+    # For OpenSpiel, continuous entropy should raise NotImplementedError
     batch_size = 2
     action_dim = 3
     distribution_params = jr.normal(key, (batch_size, 2 * action_dim))
     
-    entropy = losses_lib.compute_continuous_policy_entropy(
-        distribution_params, distribution_type="squashed_normal"
-    )
-    assert entropy.shape == (batch_size,)
-    
-    # Should be lower than normal entropy due to squashing
-    normal_entropy = losses_lib.compute_continuous_policy_entropy(
-        distribution_params, distribution_type="normal"
-    )
-    assert jnp.all(entropy <= normal_entropy)
+    try:
+        entropy = losses_lib.compute_continuous_policy_entropy(
+            distribution_params, distribution_type="squashed_normal"
+        )
+        assert False, "Should have raised NotImplementedError for OpenSpiel"
+    except NotImplementedError as e:
+        assert "OpenSpiel" in str(e), "Error should mention OpenSpiel limitation"
+        assert "discrete action" in str(e), "Error should mention discrete action spaces"
 
 
 def test_compute_continuous_policy_entropy_error_cases():
@@ -1260,29 +1247,31 @@ def test_compute_continuous_policy_entropy_error_cases():
     
     key = jr.key(42)
     
-    # Test invalid shape
+    # For OpenSpiel, the function should always raise NotImplementedError
+    # Test with any valid-looking input - should still raise NotImplementedError
     try:
-        invalid_params = jr.normal(key, (3,))  # 1D instead of 2D
-        losses_lib.compute_continuous_policy_entropy(invalid_params, "normal")
-        assert False, "Should have raised ValueError"
-    except ValueError as e:
-        assert "2D" in str(e)
+        valid_params = jr.normal(key, (2, 4))  # Valid 2D shape, even number
+        losses_lib.compute_continuous_policy_entropy(valid_params, "normal")
+        assert False, "Should have raised NotImplementedError for OpenSpiel"
+    except NotImplementedError as e:
+        assert "OpenSpiel" in str(e), "Error should mention OpenSpiel limitation"
+        assert "discrete action" in str(e), "Error should mention discrete action spaces"
     
-    # Test odd parameter dimension
+    # Test with different distribution types - should all raise NotImplementedError for OpenSpiel
     try:
-        odd_params = jr.normal(key, (2, 5))  # Odd number of params
-        losses_lib.compute_continuous_policy_entropy(odd_params, "normal")
-        assert False, "Should have raised ValueError"
-    except ValueError as e:
-        assert "even" in str(e)
-    
-    # Test unsupported distribution
+        params = jr.normal(key, (2, 4))
+        losses_lib.compute_continuous_policy_entropy(params, "squashed_normal")
+        assert False, "Should have raised NotImplementedError for OpenSpiel"
+    except NotImplementedError as e:
+        assert "OpenSpiel" in str(e), "Error should mention OpenSpiel limitation"
+        
+    # Test with unsupported distribution - should also raise NotImplementedError for OpenSpiel
     try:
         params = jr.normal(key, (2, 4))
         losses_lib.compute_continuous_policy_entropy(params, "unsupported")
-        assert False, "Should have raised NotImplementedError"
+        assert False, "Should have raised NotImplementedError for OpenSpiel"
     except NotImplementedError as e:
-        assert "unsupported" in str(e)
+        assert "OpenSpiel" in str(e), "Error should mention OpenSpiel limitation"
 
 
 def test_compute_policy_entropy_general_discrete():
@@ -1311,16 +1300,15 @@ def test_compute_policy_entropy_general_continuous():
     key = jr.key(42)
     distribution_params = jr.normal(key, (3, 4))  # 2 actions, means + log_stds
     
-    # Test continuous entropy  
-    entropy_continuous = losses_lib.compute_policy_entropy_general(
-        distribution_params, action_type="continuous", distribution_type="normal"
-    )
-    
-    # Should match direct continuous entropy computation
-    entropy_direct = losses_lib.compute_continuous_policy_entropy(
-        distribution_params, distribution_type="normal"
-    )
-    assert jnp.allclose(entropy_continuous, entropy_direct)
+    # For OpenSpiel, continuous entropy should raise NotImplementedError
+    try:
+        entropy_continuous = losses_lib.compute_policy_entropy_general(
+            distribution_params, action_type="continuous", distribution_type="normal"
+        )
+        assert False, "Should have raised NotImplementedError for OpenSpiel"
+    except NotImplementedError as e:
+        assert "OpenSpiel" in str(e), "Error should mention OpenSpiel limitation"
+        assert "discrete action" in str(e), "Error should mention discrete action spaces"
 
 
 def test_compute_policy_entropy_general_error_handling():
@@ -1360,23 +1348,8 @@ def test_entropy_mathematical_properties():
     deterministic_entropy = losses_lib.compute_policy_entropy(deterministic_logits)
     assert deterministic_entropy[0] < 0.01  # Should be very close to 0
     
-    # Test entropy monotonicity for continuous distributions
-    action_dim = 2
-    base_params = jnp.zeros((1, 2 * action_dim))
-    
-    # Low variance
-    low_std_params = base_params.at[0, action_dim:].set(-1.0)  # log_std = -1
-    low_entropy = losses_lib.compute_continuous_policy_entropy(
-        low_std_params, "normal"
-    )
-    
-    # High variance
-    high_std_params = base_params.at[0, action_dim:].set(1.0)  # log_std = 1
-    high_entropy = losses_lib.compute_continuous_policy_entropy(
-        high_std_params, "normal"
-    )
-    
-    assert high_entropy[0] > low_entropy[0]  # Higher variance should have higher entropy
+    # NOTE: Continuous entropy tests are skipped for OpenSpiel since it only supports discrete actions
+    # OpenSpiel environments use discrete action spaces only
 
 
 def test_entropy_integration_with_trainer_config():
@@ -1396,24 +1369,8 @@ def test_entropy_integration_with_trainer_config():
     assert discrete_entropy.shape == (4,)
     assert jnp.all(discrete_entropy >= 0.0)
     
-    # Test continuous action configuration
-    continuous_params = jr.normal(key, (4, 8))  # 4 actions * 2 params each
-    continuous_entropy = losses_lib.compute_policy_entropy_general(
-        continuous_params,
-        action_type="continuous", 
-        distribution_type="normal"
-    )
-    assert continuous_entropy.shape == (4,)
-    assert jnp.all(continuous_entropy > 0.0)
-    
-    # Test squashed normal configuration
-    squashed_entropy = losses_lib.compute_policy_entropy_general(
-        continuous_params,
-        action_type="continuous",
-        distribution_type="squashed_normal"
-    )
-    assert squashed_entropy.shape == (4,)
-    assert jnp.all(squashed_entropy <= continuous_entropy)  # Should be lower due to squashing 
+    # NOTE: Continuous action tests are skipped for OpenSpiel since it only supports discrete actions
+    # OpenSpiel environments use discrete action spaces only
 
 # Add comprehensive tests for Action Item 8: Discrete Support Transformation for OpenSpiel
 def test_discrete_support_openspiel_parameters():

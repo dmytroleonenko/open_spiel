@@ -445,9 +445,13 @@ class MuZeroOrchestrator:
         
         # Get dimensions
         batch_size = len(trajectories)
-        max_length = max(len(traj['actions']) for traj in trajectories)
+        # Use num_unroll_steps + 1 as the expected time dimension for training
+        expected_length = self.muzero_config.num_unroll_steps + 1
         observation_shape = trajectories[0]['observations'][0].shape
         num_actions = self.game_wrapper.num_distinct_actions()
+        
+        # Use expected_length instead of max trajectory length to match model unrolling
+        max_length = expected_length
         
         # Initialize batch arrays with padding
         batch_observations = np.zeros((batch_size, max_length, *observation_shape))
@@ -460,25 +464,27 @@ class MuZeroOrchestrator:
         # Fill batch arrays
         for i, trajectory in enumerate(trajectories):
             traj_length = len(trajectory['actions'])
+            # Limit to the expected length to match model unrolling
+            effective_length = min(traj_length, max_length)
             
             # Fill observations (pad with last observation if needed)
             for j in range(max_length):
-                if j < len(trajectory['observations']):
+                if j < len(trajectory['observations']) and j < max_length:
                     batch_observations[i, j] = trajectory['observations'][j]
-                else:
+                elif len(trajectory['observations']) > 0:
                     # Pad with last observation
-                    batch_observations[i, j] = trajectory['observations'][-1]
+                    batch_observations[i, j] = trajectory['observations'][min(j, len(trajectory['observations']) - 1)]
             
-            # Fill actions, rewards, values, policies (pad with zeros)
-            batch_actions[i, :traj_length] = trajectory['actions']
-            batch_target_rewards[i, :traj_length] = trajectory['rewards']
-            batch_target_values[i, :traj_length] = trajectory['value_targets']
+            # Fill actions, rewards, values, policies (only up to effective_length)
+            batch_actions[i, :effective_length] = trajectory['actions'][:effective_length]
+            batch_target_rewards[i, :effective_length] = trajectory['rewards'][:effective_length]
+            batch_target_values[i, :effective_length] = trajectory['value_targets'][:effective_length]
             
-            for j in range(traj_length):
+            for j in range(effective_length):
                 batch_target_policies[i, j] = trajectory['policy_targets'][j]
             
             # Set mask (1.0 for valid steps, 0.0 for padding)
-            batch_masks[i, :traj_length] = 1.0
+            batch_masks[i, :effective_length] = 1.0
         
         # Create base batch dictionary
         batch = {

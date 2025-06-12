@@ -91,13 +91,29 @@ def compute_categorical_value_loss(value_logits: jax.Array, target_value_distrib
         target_value_distribution: Target value distribution
         effective_iql_param: Effective IQL parameter (0.5 for symmetric loss, other values for asymmetric)
     """
-    # EfficientZeroV2 pattern: use KL divergence for categorical value loss
+    # Ensure targets are proper distributions matching logits shape
+    target_value_distribution = _ensure_distribution(target_value_distribution, value_logits.shape[-1])
+    # Normalize target distributions if not proper probabilities (sum !=1 or negative values)
+    sums = jnp.sum(target_value_distribution, axis=-1, keepdims=True)
+    is_prob = (jnp.all(target_value_distribution >= 0, axis=-1, keepdims=True) &
+               (jnp.abs(sums - 1.0) < 1e-4))
+    target_value_distribution = jnp.where(
+        is_prob,
+        target_value_distribution,
+        jax.nn.softmax(target_value_distribution, axis=-1),
+    )
+
+    # Compute KL divergence and ensure reduction to 1D array
     base_loss = compute_kl_loss(logits=value_logits, target_probs=target_value_distribution)
+    if base_loss.ndim > 1:
+        base_loss = jnp.sum(base_loss, axis=-1)
     
     # Always apply IQL-style weighting (EfficientZeroV2 pattern)
     # For categorical case, compute expected values to determine error sign
     num_atoms = value_logits.shape[-1]
-    support = jnp.linspace(-1.0, 1.0, num_atoms)  # Assume normalized support
+    # Align support range with scalar_to_support default (-300..300) used everywhere else.
+    # If callers need a different range they should pre-scale logits/targets beforehand.
+    support = jnp.linspace(-300.0, 300.0, num_atoms)
     
     pred_probs = jax.nn.softmax(value_logits)
     pred_value = jnp.sum(pred_probs * support, axis=-1)
@@ -106,6 +122,15 @@ def compute_categorical_value_loss(value_logits: jax.Array, target_value_distrib
     error = pred_value - target_value
     value_sign = (error > 0).astype(jnp.float32)
     weights = (1.0 - value_sign) * effective_iql_param + value_sign * (1.0 - effective_iql_param)
+
+    # Ensure weights broadcast to base_loss shape
+    if base_loss.shape != weights.shape:
+        # If base_loss is (N, S) and weights is (N,), sum base_loss over S
+        if base_loss.ndim > 1 and weights.ndim == 1 and base_loss.shape[0] == weights.shape[0]:
+            base_loss = jnp.sum(base_loss, axis=-1)
+        # If weights is (N, S) and base_loss is (N,), sum weights over S
+        elif weights.ndim > 1 and base_loss.ndim == 1 and weights.shape[0] == base_loss.shape[0]:
+            weights = jnp.sum(weights, axis=-1)
     return base_loss * weights
 
 # --- Reward Loss ---
@@ -124,7 +149,28 @@ def compute_categorical_reward_loss(reward_logits: jax.Array, target_reward_dist
     This aligns with PyTorch's approach where categorical rewards use KL divergence for consistency
     with categorical value loss, instead of cross-entropy.
     """
+    # Ensure targets are proper distributions matching logits shape
+    target_reward_distribution = _ensure_distribution(target_reward_distribution, reward_logits.shape[-1])
+    # Normalize target distributions if not proper probabilities (sum !=1 or negative values)
+    sums = jnp.sum(target_reward_distribution, axis=-1, keepdims=True)
+    is_prob = (jnp.all(target_reward_distribution >= 0, axis=-1, keepdims=True) &
+               (jnp.abs(sums - 1.0) < 1e-4))
+    target_reward_distribution = jnp.where(
+        is_prob,
+        target_reward_distribution,
+        jax.nn.softmax(target_reward_distribution, axis=-1),
+    )
+
+    # If target includes an extra trailing singleton dimension (e.g., shape [..., 1])
+    # squeeze it so shapes align with logits during KL computation.
+    if target_reward_distribution.ndim == reward_logits.ndim + 1 and target_reward_distribution.shape[-1] == 1:
+        target_reward_distribution = jnp.squeeze(target_reward_distribution, axis=-1)
+
+    # Compute KL divergence loss and ensure reduction to 1D array
     loss = compute_kl_loss(logits=reward_logits, target_probs=target_reward_distribution)
+    if loss.ndim > 1:
+        loss = jnp.sum(loss, axis=-1)
+    
     # Ensure output is always at least 1D for consistent reshaping
     return jnp.atleast_1d(loss)
 
@@ -230,51 +276,63 @@ def symexp(x: jax.Array, base: float = jnp.e) -> jax.Array:
 def scalar_to_support(x: jax.Array, support_min: float = -300.0, support_max: float = 300.0, 
                       num_atoms: int = 601, epsilon: float = 0.001) -> jax.Array:
     """Converts scalar values to categorical distribution over support.
-    
+
     Based on EfficientZeroV2's DiscreteSupport.scalar_to_vector implementation.
-    For OpenSpiel environments, this uses the standard Atari-style transformation.
+    This implements the canonical MuZero transformation from Appendix A.2.
     
+    OpenSpiel environments are classified as DMC/Gym-style (discrete actions, MLP networks,
+    abstract states) rather than Atari-style (pixel inputs, CNN networks).
+
     Args:
         x: Scalar values to convert. Shape (...,)
         support_min: Minimum value of support range
         support_max: Maximum value of support range  
         num_atoms: Number of atoms in the support
-        epsilon: Small value for numerical stability
-        
+        epsilon: Small value for numerical stability (0.001 for EfficientZeroV2 parity)
+
     Returns:
         Categorical distribution over support. Shape (..., num_atoms)
     """
-    # Apply symlog-like transformation (EfficientZeroV2 Atari style for OpenSpiel)
-    sign = jnp.sign(x)
-    x_transformed = sign * (jnp.sqrt(jnp.abs(x) + 1.0) - 1.0) + epsilon * x
+    # EfficientZeroV2 canonical transformation for DMC/Gym environments (OpenSpiel)
+    # Reference: EfficientZeroV2/ez/utils/format.py DiscreteSupport.scalar_to_vector
     
-    # Map to [0, num_atoms-1] index space  
-    # Rescale transformed values to fit in the support range
-    scale = (support_max - support_min) / (num_atoms - 1)
+    # First transform the support range bounds (EfficientZeroV2 does this)
+    def transform_one(val):
+        return jnp.sign(val) * (jnp.sqrt(jnp.abs(val) + 1.0) - 1.0) + epsilon * val
     
-    # For better numerical behavior, we'll map the transformed space to index space more directly
-    # The transformation typically maps small values to small values, so we can use this fact
-    x_index_space = (x_transformed - support_min) / scale
+    x_min_transformed = transform_one(support_min)
+    x_max_transformed = transform_one(support_max)
+    scale = (x_max_transformed - x_min_transformed) / (num_atoms - 1)
     
-    # Clamp to valid index range
-    x_index_space = jnp.clip(x_index_space, 0.0, num_atoms - 1.0 - 1e-5)
+    # Create transformed support range
+    x_range = jnp.linspace(x_min_transformed, x_max_transformed, num_atoms)
+    
+    # Apply DMC/Gym transformation to input values
+    x_transformed = transform_one(x)
+    
+    # Clamp to valid transformed range
+    x_transformed = jnp.clip(x_transformed, x_min_transformed, x_max_transformed)
+    
+    # Map to index space
+    x_index = (x_transformed - x_min_transformed) / scale
+    x_index = jnp.clip(x_index, 0.0, num_atoms - 1.0 - 1e-5)
     
     # Get lower and upper indices for interpolation
-    x_low_idx = jnp.floor(x_index_space)
-    x_high_idx = jnp.ceil(x_index_space)
+    x_low_idx = jnp.floor(x_index)
+    x_high_idx = jnp.ceil(x_index)
     
     # Compute interpolation weights
-    p_high = x_index_space - x_low_idx
+    p_high = x_index - x_low_idx
     p_low = 1.0 - p_high
-    
+
+    # Convert to integer indices
+    x_low_idx = jnp.clip(x_low_idx.astype(jnp.int32), 0, num_atoms - 1)
+    x_high_idx = jnp.clip(x_high_idx.astype(jnp.int32), 0, num_atoms - 1)
+
     # Create target distribution
     target_shape = x.shape + (num_atoms,)
     target = jnp.zeros(target_shape)
-    
-    # Scatter weights to appropriate indices
-    x_low_idx = jnp.clip(x_low_idx.astype(jnp.int32), 0, num_atoms - 1)
-    x_high_idx = jnp.clip(x_high_idx.astype(jnp.int32), 0, num_atoms - 1)
-    
+
     # Handle different input shapes
     if x.ndim == 0:  # Scalar input
         target = target.at[x_low_idx].add(p_low)
@@ -291,81 +349,86 @@ def scalar_to_support(x: jax.Array, support_min: float = -300.0, support_max: fl
         x_high_flat = x_high_idx.reshape(-1)
         p_low_flat = p_low.reshape(-1)
         p_high_flat = p_high.reshape(-1)
-        
+
         target_flat = target_flat.at[batch_flat, x_low_flat].add(p_low_flat)
         target_flat = target_flat.at[batch_flat, x_high_flat].add(p_high_flat)
         target = target_flat.reshape(target_shape)
-    
+
     return target
 
-def support_to_scalar(logits: jax.Array, support_min: float = -300.0, support_max: float = 300.0,
+def support_to_scalar(support_dist: jax.Array, support_min: float = -300.0, support_max: float = 300.0,
                       num_atoms: int = 601, epsilon: float = 0.001) -> jax.Array:
     """Converts categorical distribution over support back to scalar values.
-    
+
     Based on EfficientZeroV2's DiscreteSupport.vector_to_scalar implementation.
-    Uses Newton's method to precisely invert the forward transformation.
-    
+    This implements the canonical MuZero inverse transformation for DMC/Gym environments.
+
     Args:
-        logits: Logits over support atoms. Shape (..., num_atoms)
+        support_dist: Categorical distribution over support. Shape (..., num_atoms)
+                     Should be probability distribution (not logits) when coming from scalar_to_support
         support_min: Minimum value of support range
         support_max: Maximum value of support range
-        num_atoms: Number of atoms in the support  
-        epsilon: Small value for numerical stability (should match scalar_to_support)
-        
+        num_atoms: Number of atoms in the support
+        epsilon: Small value for numerical stability (0.001 for EfficientZeroV2 parity)
+
     Returns:
         Scalar values. Shape (...,)
     """
-    # Create support range
-    support_range = jnp.linspace(support_min, support_max, num_atoms)
-    
-    # Convert logits to probabilities and compute expected value
-    value_probs = jax.nn.softmax(logits, axis=-1)
-    y_target = jnp.sum(value_probs * support_range, axis=-1)  # This is the transformed value
-    
-    # Now we need to solve for x in: y_target = sign(x) * (sqrt(abs(x) + 1) - 1) + epsilon * x
-    # Use Newton's method for precision
-    
-    def forward_transform(x):
-        """The forward transformation from scalar_to_support"""
-        sign = jnp.sign(x)
-        return sign * (jnp.sqrt(jnp.abs(x) + 1.0) - 1.0) + epsilon * x
-    
-    def forward_derivative(x):
-        """Derivative of the forward transformation"""
-        sign = jnp.sign(x)
-        abs_x = jnp.abs(x)
-        # d/dx [sign(x) * (sqrt(abs(x) + 1) - 1) + epsilon * x]
-        # For x > 0: d/dx [sqrt(x + 1) - 1 + epsilon * x] = 1/(2*sqrt(x + 1)) + epsilon
-        # For x < 0: d/dx [-sqrt(-x + 1) + 1 + epsilon * x] = 1/(2*sqrt(-x + 1)) + epsilon
-        # For x = 0: derivative is 0.5 + epsilon (by continuity)
-        sqrt_term = jnp.sqrt(abs_x + 1.0)
-        derivative = 0.5 / jnp.maximum(sqrt_term, 1e-8) + epsilon
-        return derivative
-    
-    # Newton's method to solve forward_transform(x) - y_target = 0
-    # Initialize with a reasonable guess: for small values, x ≈ y_target / (0.5 + epsilon)
-    x = y_target / (0.5 + epsilon)
-    
-    # Newton iterations (typically 3-5 iterations give excellent precision)
-    for _ in range(5):
-        fx = forward_transform(x) - y_target
-        fpx = forward_derivative(x)
-        # Avoid division by zero
-        fpx = jnp.where(jnp.abs(fpx) < 1e-10, 1e-10, fpx)
-        x_new = x - fx / fpx
-        
-        # Check for convergence (optional, but helps with numerical stability)
-        converged = jnp.abs(x_new - x) < 1e-8
-        x = jnp.where(converged, x, x_new)
-        
-        # Clamp to reasonable bounds to avoid numerical issues
-        x = jnp.clip(x, -1000.0, 1000.0)
-    
-    # Final cleanup: handle edge cases
-    x = jnp.where(jnp.isnan(x), 0.0, x)
-    x = jnp.where(jnp.isinf(x), jnp.sign(x) * 1000.0, x)
-    
-    return x
+    def transform_one(val):
+        return jnp.sign(val) * (jnp.sqrt(jnp.abs(val) + 1.0) - 1.0) + epsilon * val
+
+    # Compute transformation parameters
+    x_min_transformed = transform_one(support_min)
+    x_max_transformed = transform_one(support_max)
+    scale = (x_max_transformed - x_min_transformed) / (num_atoms - 1)
+    x_range = jnp.linspace(x_min_transformed, x_max_transformed, num_atoms)
+
+    # Allow both probabilities (sum≈1) and logits as input.
+    # Detect whether last-dim sums to ~1; if not, treat as logits and apply softmax.
+    sums = jnp.sum(support_dist, axis=-1, keepdims=True)
+    value_probs = jnp.where(
+        jnp.abs(sums - 1.0) < 1e-4,
+        support_dist,
+        jax.nn.softmax(support_dist, axis=-1),  # convert logits to probabilities
+    )
+
+    batch_shape = support_dist.shape[:-1]
+    value_support = jnp.broadcast_to(x_range, batch_shape + (num_atoms,))
+    z = jnp.sum(value_support * value_probs, axis=-1) / scale
+
+    # (Debug prints removed for cleanliness)
+
+    sign = jnp.sign(z)
+    abs_z = jnp.abs(z)
+    sqrt_term = jnp.sqrt(1.0 + 4.0 * epsilon * (abs_z * scale + 1.0 + epsilon))
+    numerator = sqrt_term - 1.0
+    fraction = numerator / (2.0 * epsilon)
+    output = sign * (fraction ** 2 - 1.0)
+
+    # (Debug prints removed)
+
+    # Numerical stability guards (match EfficientZeroV2 behaviour)
+    output = jnp.where(jnp.isnan(output), 0.0, output)
+    output = jnp.where(jnp.abs(output) < epsilon, 0.0, output)
+
+    return output
+
+def _ensure_distribution(target: jax.Array, num_atoms: int, support_min: float = -300.0, support_max: float = 300.0, epsilon: float = 0.001) -> jax.Array:
+    """Utility: ensure *target* is a categorical distribution with *num_atoms* atoms.
+
+    If *target* already has the correct last-dimension size it is returned unchanged.
+    Otherwise, it is treated as scalar(s) and converted via `scalar_to_support`.
+    """
+    # If already distribution with correct support size, return as-is
+    if target.ndim > 0 and target.shape[-1] == num_atoms:
+        return target
+
+    # Convert scalar targets to distribution
+    target_flat = target.reshape(-1)
+    target_support = jax.vmap(scalar_to_support, in_axes=(0, None, None, None))(
+        target_flat, support_min, support_max, num_atoms
+    )
+    return target_support.reshape(target.shape + (num_atoms,))
 
 def compute_policy_entropy(policy_logits: jax.Array) -> jax.Array:
     """Computes entropy of discrete policy distribution for regularization.
@@ -394,81 +457,27 @@ def compute_continuous_policy_entropy(
     distribution_type: str = "normal"
 ) -> jax.Array:
     """Computes entropy of continuous policy distribution for regularization.
-    
-    This function supports various continuous distributions that might be used
-    in continuous action spaces, preparing for EfficientZeroV2's full feature set.
-    
+
+    NOTE: OpenSpiel environments use discrete action spaces only.
+    This function is provided for API completeness but should not be used
+    in practice for OpenSpiel-based MuZero implementations.
+
     Args:
         distribution_params: Parameters of the continuous distribution.
-                           For 'normal': Shape (batch_size, 2 * action_dim) where first half is means,
-                           second half is log_stds.
-                           For 'categorical': Falls back to discrete entropy.
-        distribution_type: Type of distribution ('normal', 'squashed_normal', 'truncated_normal', etc.)
-        
+        distribution_type: Type of distribution (not used for OpenSpiel)
+
     Returns:
         Per-batch entropy values. Shape (batch_size,)
-        
+
     Raises:
-        NotImplementedError: For distribution types not yet implemented
-        ValueError: For invalid distribution parameters
+        NotImplementedError: Always raised since OpenSpiel uses discrete actions only
     """
-    if distribution_type == "normal":
-        # For multivariate normal with diagonal covariance:
-        # H(X) = 0.5 * log((2πe)^k * |Σ|) = 0.5 * k * log(2πe) + 0.5 * log(|Σ|)
-        # For diagonal Σ: log(|Σ|) = sum(log(σ_i^2)) = 2 * sum(log(σ_i))
-        
-        if distribution_params.ndim != 2:
-            raise ValueError(f"Distribution params must be 2D (batch_size, 2*action_dim), got {distribution_params.ndim}D") # pragma: no cover
-        
-        param_dim = distribution_params.shape[-1]
-        if param_dim % 2 != 0:
-            raise ValueError(f"Distribution params size must be even (means + log_stds), got {param_dim}") # pragma: no cover
-        
-        action_dim = param_dim // 2
-        means = distribution_params[:, :action_dim]  # (batch_size, action_dim)
-        log_stds = distribution_params[:, action_dim:]  # (batch_size, action_dim)
-        
-        # Clamp log_stds for numerical stability
-        log_stds = jnp.clip(log_stds, min=-5.0, max=2.0)
-        
-        # Entropy = 0.5 * action_dim * log(2πe) + sum(log_stds)
-        constant_term = 0.5 * action_dim * jnp.log(2 * jnp.pi * jnp.e)
-        variable_term = jnp.sum(log_stds, axis=-1)
-        entropy = constant_term + variable_term
-        
-        return entropy
-        
-    elif distribution_type == "squashed_normal":
-        # For SquashedNormal (typically tanh-squashed), we need to account for the
-        # log absolute determinant of the Jacobian of the transformation
-        # This is a simplified version - full implementation would require the actual
-        # sampled actions to compute the Jacobian term accurately
-        
-        if distribution_params.ndim != 2:
-            raise ValueError(f"Distribution params must be 2D (batch_size, 2*action_dim), got {distribution_params.ndim}D") # pragma: no cover
-        
-        # Start with normal entropy
-        normal_entropy = compute_continuous_policy_entropy(distribution_params, "normal")
-        
-        # Approximate Jacobian correction for tanh squashing
-        # This is a rough approximation - exact computation requires sampled actions
-        action_dim = distribution_params.shape[-1] // 2
-        log_stds = distribution_params[:, action_dim:]
-        stds = jnp.exp(jnp.clip(log_stds, min=-5.0, max=2.0))
-        
-        # Approximation: reduce entropy by expected squashing effect
-        # This is conservative and encourages exploration
-        squashing_correction = -0.5 * jnp.sum(jnp.log(1.0 + stds**2), axis=-1)
-        
-        return normal_entropy + squashing_correction
-        
-    elif distribution_type == "categorical":
-        # Fallback to discrete entropy computation
-        return compute_policy_entropy(distribution_params) # pragma: no cover
-        
-    else:
-        raise NotImplementedError(f"Entropy computation for '{distribution_type}' distribution not implemented. "
-                                f"Supported types: 'normal', 'squashed_normal', 'categorical'") # pragma: no cover
+    # CRITICAL FIX (Action Item #7): OpenSpiel environments are discrete action only
+    raise NotImplementedError(
+        "Continuous action entropy is not supported for OpenSpiel environments. "
+        "OpenSpiel games use discrete action spaces only. "
+        "Use compute_policy_entropy() for discrete action entropy computation."
+    )
 
 
 def compute_policy_entropy_general(

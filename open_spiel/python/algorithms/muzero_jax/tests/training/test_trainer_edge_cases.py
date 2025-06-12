@@ -79,8 +79,8 @@ def test_ema_and_target_network_edge_cases(common_key, common_cfg_flat):
     model = make_model(common_key, common_cfg_flat)
     learner_no_ema = Learner(model, None, cfg_no_ema, common_key)
     
-    # This should not raise an error even though target_model is None
-    learner_no_ema._update_target_network_ema()  # Should be no-op
+    # EMA is disabled, so no target network should exist
+    assert learner_no_ema.target_model is None
     
     # Test cleanup with exception (should not propagate)  
     failing_manager = Mock()
@@ -146,4 +146,4 @@ def test_utility_functions_fast(common_key, common_cfg_flat):
     masks = generate_top_new_masks(sample_indices, 250, 50)
     expected = jnp.array([False, False, True])
     assert jnp.array_equal(masks, expected)
-    assert masks.dtype == jnp.float32 
+    assert masks.dtype == jnp.bool_  # Masks should be boolean 

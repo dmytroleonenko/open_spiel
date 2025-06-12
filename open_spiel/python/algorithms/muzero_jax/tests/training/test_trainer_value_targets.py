@@ -70,9 +70,8 @@ def test_iql_weighting_explicit_verification(common_key, common_cfg_flat):
     )
 
     # Override target values to create specific prediction error scenarios
-    batch["target_value"] = jnp.array([1.0])[
-        :batch_size, None, None
-    ]  # Shape (batch, steps+1, 1)
+    # Shape should be (batch_size, num_time_steps) where num_time_steps = steps + 1
+    batch["target_value"] = jnp.ones((batch_size, num_steps + 1)) * 1.0
 
     # Get the predictions before training
     def get_value_predictions(model, batch):

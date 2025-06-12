@@ -275,7 +275,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
 
 
 
-[TODO] 6.6. **Dynamic Model Updates and Multi-Model Orchestration Enhancement:**
+[DONE] 6.6. **Dynamic Model Updates and Multi-Model Orchestration Enhancement:**
     *   **TDD:** Write comprehensive Pytest tests comparing JAX multi-model update logic against EfficientZeroV2's sophisticated model orchestration. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/training/test_dynamic_model_updates.py`)
     *   **CRITICAL ARCHITECTURAL GAP IDENTIFIED:** Current JAX implementation has significantly simplified model update strategy compared to EfficientZeroV2's multi-model orchestration with adaptive scheduling.
     *   **EfficientZeroV2 References:**
@@ -574,7 +574,104 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/test_reanalyze.py` (covering reanalyze worker logic, interaction with Flashbax for reading trajectories and writing updated targets, and correct target re-computation using a mock model and trajectory data) pass (100%).
         *   100% code coverage for the reanalyze worker implementation and its integration points is achieved and verified.
 
-[TODO] 20. **Self-Supervised Learning (if adopted from EfficientZeroV2):**
+[TODO] 20. **LSTM-Based Value-Prefix Reward Accumulation Implementation (EfficientZeroV2 style):**
+    *   **TDD:** Write comprehensive Pytest tests comparing JAX LSTM reward network implementation against EfficientZeroV2 reference implementation. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/training/test_lstm_value_prefix.py`)
+    *   **CRITICAL ARCHITECTURAL GAP IDENTIFIED:** Current JAX implementation has placeholder value-prefix reward accumulation that returns `reward_hidden=None`, while EfficientZeroV2 uses sophisticated LSTM-based reward prediction with hidden state management.
+    *   **EfficientZeroV2 Reference Implementation Analysis:**
+        *   **LSTM Reward Network Architecture (`@EfficientZeroV2/ez/agents/models/base_model.py` lines 234-295)**
+
+    *   **Current JAX Implementation Limitations (`open_spiel/python/algorithms/muzero_jax/training/trainer.py` lines 1299-1340):**
+        ```python
+        def apply_value_prefix_reward_accumulation(
+            target_reward: jax.Array, 
+            config: MuZeroConfig,
+            game_history_mask: jax.Array | None = None
+        ) -> jax.Array:
+            # PLACEHOLDER IMPLEMENTATION - Missing LSTM reward network
+            # Currently returns reward_hidden=None and performs simple accumulation
+            # TODO: Implement actual LSTM-based reward prediction with hidden state management
+            return target_reward  # Simplified fallback
+        ```
+    *   **Implementation Strategy:**
+        *   **LSTM Reward Network Architecture:** Implement `SupportLSTMRewardNetwork` in JAX/Flax NNX that mirrors EfficientZeroV2's architecture with conv1x1 reduction, LSTM layer, and MLP output head
+        *   **Hidden State Management:** Create JAX-compatible LSTM hidden state initialization, reset logic, and carry-forward mechanisms within JIT-compiled functions
+        *   **Value-Prefix Integration:** Integrate LSTM reward network into `MuZeroNetwork` and update `apply_value_prefix_reward_accumulation` to use actual LSTM predictions
+        *   **Horizon-Based Reset Logic:** Implement `lstm_horizon_length` configuration parameter and periodic hidden state reset functionality
+        *   **JAX Scan Integration:** Use `jax.lax.scan` for efficient sequential LSTM computation across trajectory time steps
+    *   **Target Enhanced Architecture:**
+        ```python
+        class SupportLSTMRewardNetwork(nnx.Module):
+            def __init__(self, config: MuZeroNetworkConfig, *, rngs: nnx.Rngs):
+                self.conv1x1_reward = nnx.Conv(
+                    in_features=config.hidden_state_size,
+                    out_features=config.reduced_channels_reward,
+                    kernel_size=(1, 1), rngs=rngs
+                )
+                self.lstm = nnx.RNN(
+                    nnx.LSTMCell(
+                        in_features=config.reduced_channels_reward * config.spatial_size,
+                        out_features=config.lstm_hidden_size,
+                        rngs=rngs
+                    )
+                )
+                self.fc = MLP(config.lstm_hidden_size, config.reward_support_size, rngs=rngs)
+            
+            def __call__(self, hidden_state: jax.Array, reward_hidden: nnx.RNNState, 
+                        training: bool = False) -> Tuple[jax.Array, nnx.RNNState]:
+                # hidden_state: [B, C, H, W] from dynamics network
+                # reward_hidden: LSTM hidden state (h, c)
+                x = self.conv1x1_reward(hidden_state)  # [B, reduced_channels, H, W]
+                x = x.reshape(x.shape[0], -1)  # [B, reduced_channels * H * W]
+                lstm_out, new_reward_hidden = self.lstm(x, reward_hidden)  # [B, lstm_hidden_size]
+                reward_support = self.fc(lstm_out)  # [B, reward_support_size]
+                return reward_support, new_reward_hidden
+        
+        @jax.jit
+        def compute_value_prefix_with_lstm(
+            model: MuZeroNetwork,
+            hidden_states: jax.Array,  # [B, K+1, C, H, W]
+            config: MuZeroConfig,
+            initial_reward_hidden: nnx.RNNState
+        ) -> Tuple[jax.Array, nnx.RNNState]:
+            # Use jax.lax.scan for efficient sequential LSTM computation
+            def lstm_step(carry, hidden_state):
+                reward_hidden = carry
+                reward_pred, new_reward_hidden = model.lstm_reward_network(
+                    hidden_state, reward_hidden, training=False
+                )
+                return new_reward_hidden, reward_pred
+            
+            final_hidden, reward_predictions = jax.lax.scan(
+                lstm_step, initial_reward_hidden, hidden_states
+            )
+            return reward_predictions, final_hidden
+        ```
+    *   **Analysis Required:**
+        *   Implement EfficientZeroV2's `SupportLSTMNetwork` architecture using JAX/Flax NNX patterns with proper LSTM cell integration
+        *   Create LSTM hidden state management functions that work efficiently within JIT context using `nnx.RNNState`
+        *   Design value-prefix accumulation logic that integrates LSTM reward predictions with existing target computation
+        *   Verify that enhanced implementation produces equivalent training dynamics to EfficientZeroV2 reference on identical data
+        *   Benchmark memory usage and computational overhead of LSTM reward network vs simplified reward head
+    *   **Completion Criteria:**
+        *   ✅ **LSTM Reward Network Architecture:** `SupportLSTMRewardNetwork` is implemented in `open_spiel/python/algorithms/muzero_jax/models/network.py` using JAX/Flax NNX patterns, mirroring EfficientZeroV2's conv1x1 → LSTM → MLP architecture
+        *   ✅ **Hidden State Management:** LSTM hidden state initialization, reset logic, and carry-forward mechanisms are implemented using `nnx.RNNState` and work efficiently within JIT-compiled functions
+        *   ✅ **MuZeroNetwork Integration:** `MuZeroNetwork` is updated to optionally include `SupportLSTMRewardNetwork` when `config.use_value_prefix=True`, with proper conditional logic for LSTM vs simple reward head
+        *   ✅ **Value-Prefix Function Enhancement:** `apply_value_prefix_reward_accumulation` in `trainer.py` is updated to use actual LSTM reward predictions instead of returning `reward_hidden=None`
+        *   ✅ **Horizon-Based Reset Logic:** `lstm_horizon_length` configuration parameter is implemented with periodic hidden state reset functionality that works within JAX scan loops
+        *   ✅ **JAX Scan Integration:** Sequential LSTM computation across trajectory time steps is implemented using `jax.lax.scan` for efficiency and JIT compatibility
+        *   ✅ **Configuration Support:** `MuZeroConfig` includes all necessary LSTM parameters (`use_value_prefix`, `lstm_horizon_length`, `lstm_hidden_size`, `reduced_channels_reward`) with EfficientZeroV2 default values
+        *   ✅ **Comprehensive Test Suite:** Test suite in `open_spiel/python/algorithms/muzero_jax/tests/training/test_lstm_value_prefix.py` includes:
+            *   LSTM network architecture verification (input/output shapes, parameter initialization)
+            *   Hidden state management testing (initialization, reset, carry-forward)
+            *   Value-prefix accumulation logic verification against EfficientZeroV2 reference
+            *   Integration testing with full MuZero training loop
+            *   Memory usage and performance benchmarking
+        *   ✅ **JAX-PyTorch Numerical Verification:** LSTM reward predictions and value-prefix accumulation produce <1e-4 relative error compared to EfficientZeroV2 reference implementation across multiple trajectory scenarios
+        *   ✅ **Training Integration:** Enhanced value-prefix implementation integrates seamlessly with existing training loop without breaking backward compatibility for `use_value_prefix=False` configurations
+        *   ✅ **Performance Validation:** LSTM reward network shows acceptable computational overhead (<20% increase in training time) while providing improved value estimation accuracy on complex sequential reward patterns
+        *   ✅ **100% Code Coverage:** All LSTM reward network components, hidden state management, and value-prefix integration achieve 100% test coverage and verification
+
+[TODO] 21. **Self-Supervised Learning (if adopted from EfficientZeroV2):**
     *   **TDD:** Tests for the self-supervised loss component and its integration into the main loss. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/training/test_ssl_loss.py`)
     *   (Reference: `@EfficientZeroV2/ez/agents/models/base_model.py` Projection Networks, relevant loss terms in `update_weights`).
     *   If projection heads were implemented, add corresponding SSL loss to main training loss.
@@ -586,7 +683,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/training/test_ssl_loss.py` (verifying the correct calculation of the SSL loss component given projected representations and its successful integration into the total loss calculation and gradient updates) pass (100%).
         *   100% code coverage for the SSL loss implementation and its integration into the training process is achieved and verified.
 
-[TODO] 21. **Support for wider range of OpenSpiel games:**
+[TODO] 22. **Support for wider range of OpenSpiel games:**
     *   **TDD:** Add test suites for new game types as they are supported. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/games/`)
     *   Test and adapt for image-based games (e.g., Atari if `EfficientZeroV2` features are fully ported).
     *   **Completion Criteria:**
@@ -599,7 +696,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   Any necessary adaptations in `GameWrapper` or network input/output handling for these new game types are implemented and covered by tests.
         *   100% code coverage for any game-specific adaptation code is achieved and verified. The overall project coverage remains high.
 
-[TODO] 22. **Hyperparameter Tuning:**
+[TODO] 23. **Hyperparameter Tuning:**
     *   (Reference: `@EfficientZeroV2` Hydra configs in `@EfficientZeroV2/ez/config/`)
     *   Use `EfficientZeroV2`'s configurations (managed with Hydra) as starting point.
     *   **Completion Criteria:**
@@ -610,7 +707,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   While direct TDD for "good hyperparameters" is not possible, the configuration loading, sweep execution mechanism, and logging are robust. All Pytest tests for the main orchestration script (Task 8) using various valid configurations pass (100%).
         *   100% code coverage for any custom scripts or utilities written specifically for hyperparameter management or sweep execution is achieved and verified.
 
-[TODO] 23. **Evaluation Pipeline:**
+[TODO] 24. **Evaluation Pipeline:**
     *   **TDD:** Tests for the evaluation loop, metric calculation, and agent loading. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_evaluation.py`)
     *   (Reference: `@EfficientZeroV2/ez/eval.py`)
     *   Implement evaluation similar to `EfficientZeroV2`.
@@ -625,7 +722,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/test_evaluation.py` (covering model loading, game play for evaluation, metric calculation, and interaction with different types of baseline opponents on mock/simple games) pass (100%).
         *   100% code coverage for `evaluation.py` (or equivalent module) is achieved and verified.
 
-[TODO] 24. **Code Refinement and Documentation:**
+[TODO] 25. **Code Refinement and Documentation:**
     *   Ensure all new code meets TDD and coverage standards.
     *   Update README and add docstrings.
     *   **Completion Criteria:**
@@ -636,7 +733,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   Overall code coverage for the `muzero_jax` project remains at 98%+ (striving for 100%).
         *   A review of all TODO comments in the code is performed; they are either addressed or converted into new tasks if significant.
 
-[TODO] 25. **Final Coverage Check & Polish:**
+[TODO] 26. **Final Coverage Check & Polish:**
     *   Aim for 100% test coverage across the entire project. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/`)
     *   Final review of code quality, documentation, and examples.
     *   **Completion Criteria:**
@@ -650,7 +747,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
 ---
 ### Later / Optional
 
-[TODO] 26. **Advanced Network Architectures:**
+[TODO] 27. **Advanced Network Architectures:**
     *   (Reference: `EfficientZeroV2` model variants, e.g., LSTM use).
     *   **Completion Criteria:**
         *   At least one alternative network architecture (e.g., incorporating LSTMs for handling partial observability more explicitly, or using Transformer layers if deemed beneficial and aligned with `EfficientZeroV2` variants) is implemented as a configurable option for the `MuZeroNetwork`.
@@ -659,7 +756,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   100% code coverage for the new architectural components is achieved and verified.
         *   A comparative experiment is run against the baseline network architecture on at least one relevant game, with results logged (e.g., to WandB).
 
-[TODO] 27. **Advanced Optimizer Support (K-FAC/ACKTR):**
+[TODO] 28. **Advanced Optimizer Support (K-FAC/ACKTR):**
     *   **TDD:** Write Pytest tests for the K-FAC optimizer integration, verifying parameter updates on a mock model and loss. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/training/test_kfac_optimizer.py`)
     *   Integrate K-FAC (Kronecker-Factored Approximate Curvature) as the primary optimizer within the training loop (Task 6 / Task 13). This is the core of ACKTR.
     *   (Reference: JAX KFAC library if available, or implementations from other JAX-based RL agents).
@@ -672,7 +769,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   100% code coverage for the K-FAC integration logic within `trainer.py` and any K-FAC utility/wrapper functions is achieved and verified.
         *   (Optional but recommended) A comparative run against a standard optimizer (e.g., Adam) on a simple environment is performed during development to ensure K-FAC behaves as expected and to understand its characteristics, though Adam will not be part of the final agent.
 
-[TODO] 28. **Support for Continuous Actions:**
+[TODO] 29. **Support for Continuous Actions:**
     *   (Reference: `EfficientZeroV2/ez/agents/models/base_model.py` `is_continuous` flags and logic).
     *   **Completion Criteria:**
         *   The `MuZeroNetwork`'s prediction function is adapted to output parameters for a continuous probability distribution (e.g., mean and std dev for a Gaussian) instead of logits over discrete actions, when configured for a continuous action space game.
@@ -682,7 +779,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   All Pytest tests are added for continuous action support, covering network output, MCTS interaction, and training on a simple continuous action game (e.g., Pendulum if wrapped, or a custom simple environment). All these tests pass (100%).
         *   100% code coverage for all new or modified code related to continuous action support is achieved and verified.
 
-[TODO] 29. **More Sophisticated Distributed Setup (Optional - e.g., Ray-based):**
+[TODO] 30. **More Sophisticated Distributed Setup (Optional - e.g., Ray-based):**
     *   (Reference: `EfficientZeroV2` Ray actor/server model for replay, storage).
     *   **Completion Criteria:**
         *   If `EfficientZeroV2`'s Ray-based actor/server model for replay and storage is adopted:

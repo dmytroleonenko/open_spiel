@@ -141,26 +141,24 @@ class TestMixedValueTargetValidation:
         for collected_trans, threshold, sample_indices, description in overflow_scenarios:
             masks = generate_top_new_masks(sample_indices, collected_trans, threshold)
             
-            # Verify masks are valid float32 values
-            assert masks.dtype == jnp.float32, f"Wrong dtype in {description}"
-            assert jnp.all(jnp.isfinite(masks)), f"Non-finite values in {description}"
-            assert jnp.all((masks >= 0.0) & (masks <= 1.0)), f"Invalid mask range in {description}"
+            # Verify masks are valid boolean values
+            assert masks.dtype == jnp.bool_, f"Wrong dtype in {description}"
             
             # Verify mathematical correctness: mask = (idx > collected_trans - threshold)
             expected_threshold = collected_trans - threshold
-            expected_masks = (sample_indices > expected_threshold).astype(jnp.float32)
-            assert jnp.allclose(masks, expected_masks), f"Math error in {description}"
+            expected_masks = (sample_indices > expected_threshold)
+            assert jnp.array_equal(masks, expected_masks), f"Math error in {description}"
 
     def test_mixed_value_threshold_boundary_conditions(self, common_key, base_config):
         """Test exact behavior at mixed_value_threshold boundaries."""
         # Test boundary conditions with precise threshold calculations
         boundary_test_cases = [
             # (collected_transitions, threshold, test_indices, expected_pattern)
-            (1000, 300, [699, 700, 701], [0.0, 0.0, 1.0]),  # Around 700 boundary
-            (5000, 2000, [2999, 3000, 3001], [0.0, 0.0, 1.0]),  # Around 3000 boundary  
-            (10000, 5000, [4999, 5000, 5001], [0.0, 0.0, 1.0]),  # Around 5000 boundary
-            (100, 10, [89, 90, 91], [0.0, 0.0, 1.0]),  # Around 90 boundary
-            (1, 1, [0, 1], [0.0, 1.0]),  # Edge case: threshold >= collected
+            (1000, 300, [699, 700, 701], [False, False, True]),  # Around 700 boundary
+            (5000, 2000, [2999, 3000, 3001], [False, False, True]),  # Around 3000 boundary  
+            (10000, 5000, [4999, 5000, 5001], [False, False, True]),  # Around 5000 boundary
+            (100, 10, [89, 90, 91], [False, False, True]),  # Around 90 boundary
+            (1, 1, [0, 1], [False, True]),  # Edge case: threshold >= collected
         ]
         
         for collected_trans, threshold, test_indices, expected_pattern in boundary_test_cases:
@@ -170,7 +168,7 @@ class TestMixedValueTargetValidation:
             masks = generate_top_new_masks(sample_indices, collected_trans, threshold)
             
             # Verify exact boundary behavior
-            assert jnp.allclose(masks, expected_masks), (
+            assert jnp.array_equal(masks, expected_masks), (
                 f"Boundary test failed: collected={collected_trans}, threshold={threshold}, "
                 f"indices={test_indices}, expected={expected_pattern}, got={masks}"
             )
@@ -183,7 +181,7 @@ class TestMixedValueTargetValidation:
             
             # Verify mixed application follows mask pattern
             for i, mask_val in enumerate(expected_pattern):
-                if mask_val == 0.0:
+                if mask_val == False:
                     # Should use search values
                     assert jnp.allclose(mixed_vals[i, :], 10.0), f"Sample {i} should use search values"
                 else:
@@ -231,9 +229,12 @@ class TestMixedValueTargetValidation:
             # JAX implementation
             jax_masks = generate_top_new_masks(sample_indices, collected_trans, threshold)
             
+            # Convert boolean masks to float for comparison with PyTorch
+            jax_masks_float = jax_masks.astype(jnp.float32)
+            
             # Verify bit-for-bit equivalence
-            assert jnp.allclose(jax_masks, pytorch_masks, rtol=1e-15, atol=1e-15), (
-                f"Mask mismatch in {test_case['name']}: PyTorch={pytorch_masks}, JAX={jax_masks}"
+            assert jnp.allclose(jax_masks_float, pytorch_masks, rtol=1e-15, atol=1e-15), (
+                f"Mask mismatch in {test_case['name']}: PyTorch={pytorch_masks}, JAX={jax_masks_float}"
             )
             
             # Test complete target selection logic
@@ -381,8 +382,8 @@ class TestMixedValueTargetValidation:
             masks = generate_top_new_masks(
                 batch["sample_indices"], batch["collected_transitions"], fast_config.mixed_value_threshold
             )
-            expected_masks = jnp.array([0.0, 0.0])  # Both indices < (2000-1000)=1000
-            assert jnp.allclose(masks, expected_masks), "Mixed value masks incorrect"
+            expected_masks = jnp.array([False, False])  # Both indices < (2000-1000)=1000
+            assert jnp.array_equal(masks, expected_masks), "Mixed value masks incorrect"
             
         except Exception as e:
             pytest.fail(f"Optimized training test failed: {e}")
@@ -432,8 +433,7 @@ class TestMixedValueTargetValidation:
             
             # Verify output properties
             assert masks.shape == case["sample_indices"].shape, f"Shape mismatch in {case['name']}"
-            assert masks.dtype == jnp.float32, f"Wrong dtype in {case['name']}"
-            assert jnp.all(jnp.isfinite(masks)), f"Non-finite masks in {case['name']}"
+            assert masks.dtype == jnp.bool_, f"Wrong dtype in {case['name']}"
             
             # Test with value target application if batch not empty
             if len(case["sample_indices"]) > 0:
@@ -461,7 +461,7 @@ class TestMixedValueTargetValidation:
             
             # Verify basic functionality without strict timing constraints
             assert masks.shape == (batch_size,), f"Wrong mask shape for batch_size={batch_size}"
-            assert masks.dtype == jnp.float32, f"Wrong mask dtype for batch_size={batch_size}"
+            assert masks.dtype == jnp.bool_, f"Wrong mask dtype for batch_size={batch_size}"
             
             # Test mixed value application with smaller dimensions for speed
             search_vals = jnp.ones((batch_size, 3)) * 3.0  # Reduced from 5 to 3

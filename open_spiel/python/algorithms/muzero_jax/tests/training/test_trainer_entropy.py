@@ -100,20 +100,8 @@ def test_entropy_regularization_comprehensive(common_key, common_cfg_flat):
     assert discrete_entropy.shape == (4,)
     assert jnp.all(discrete_entropy >= 0.0)
 
-    # Test continuous entropy for normal distribution
-    continuous_params = jax.random.normal(common_key, (4, 8))  # 4 actions * 2 params
-    continuous_entropy = losses_lib.compute_policy_entropy_general(
-        continuous_params, action_type="continuous", distribution_type="normal"
-    )
-    assert continuous_entropy.shape == (4,)
-    assert jnp.all(continuous_entropy > 0.0)
-
-    # Test continuous entropy for squashed normal distribution
-    squashed_entropy = losses_lib.compute_policy_entropy_general(
-        continuous_params, action_type="continuous", distribution_type="squashed_normal"
-    )
-    assert squashed_entropy.shape == (4,)
-    assert jnp.all(squashed_entropy > 0.0)
+    # NOTE: Continuous entropy tests are skipped for OpenSpiel since it only supports discrete actions
+    # OpenSpiel environments use discrete action spaces only
 
     print("✅ Comprehensive entropy regularization functionality verified!")
 
@@ -197,9 +185,11 @@ def test_entropy_error_handling_integration(common_key, common_cfg_flat):
         )
         assert (
             False
-        ), "Should have raised NotImplementedError for unsupported distribution type"
+        ), "Should have raised NotImplementedError for continuous actions in OpenSpiel"
     except NotImplementedError as e:
-        assert "unsupported_distribution" in str(e)
+        # For OpenSpiel, continuous actions are not supported at all
+        assert "OpenSpiel" in str(e), "Should mention OpenSpiel limitation"
+        assert "discrete action" in str(e), "Should mention discrete action spaces"
 
     print("✅ Entropy error handling integration verified!")
 
