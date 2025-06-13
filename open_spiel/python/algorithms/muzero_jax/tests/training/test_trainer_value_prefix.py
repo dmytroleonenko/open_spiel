@@ -26,14 +26,34 @@ from trainer_utils import (
 )
 
 from open_spiel.python.algorithms.muzero_jax.training.trainer import (
+    apply_value_prefix_reward_accumulation as _apply_value_prefix_reward_accumulation,
     Learner, 
     MuZeroConfig, 
     Batch,
-    apply_value_prefix_reward_accumulation
 )
 
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
 from trainer_utils import MockRep, MockDyn, MockPred, MockRew
+
+# Helper function to handle tuple return value from apply_value_prefix_reward_accumulation
+def apply_value_prefix_reward_accumulation(rewards, config, mask=None):
+    """
+    Wrapper for apply_value_prefix_reward_accumulation that handles tuple return values.
+    
+    The function now returns (rewards, hidden_state) but tests expect just rewards.
+    This wrapper extracts and returns only the rewards part for backward compatibility.
+    """
+    if mask is not None:
+        result = _apply_value_prefix_reward_accumulation(rewards, config, mask)
+    else:
+        result = _apply_value_prefix_reward_accumulation(rewards, config)
+    
+    # Unpack result if it's a tuple (rewards, hidden_state)
+    if isinstance(result, tuple):
+        result_rewards, _ = result  # Extract rewards, ignore hidden_state
+        return result_rewards
+    else:
+        return result
 
 def test_apply_value_prefix_reward_accumulation_categorical_basic(common_key, common_cfg_flat):
     """Test basic categorical reward accumulation with value prefix enabled."""
@@ -252,7 +272,7 @@ def test_apply_value_prefix_comprehensive_coverage(common_key, common_cfg_flat):
                 expected_shape = (1, 5, 2)
 
             result = apply_value_prefix_reward_accumulation(rewards, config)
-
+            
             # Verify shape preservation
             assert (
                 result.shape == expected_shape

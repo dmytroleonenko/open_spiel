@@ -35,6 +35,15 @@ class MuZeroNetworkConfig:
     reward_loss_type: str = "mse" # "mse", "symlog", "kl", or "categorical"
     symlog_base: float = 2.71828182845904523536 # Base for symlog transformation (natural log base e)
     
+    # LSTM reward network parameters (EfficientZeroV2 value-prefix support)
+    # Useful for games with imperfect observability, temporal dependencies, or complex reward patterns
+    use_value_prefix: bool = False # Whether to use LSTM-based reward prediction
+    lstm_hidden_size: int = 256 # LSTM hidden state size (reduced default for discrete games)
+    reduced_channels_reward: int = 16 # Feature reduction size before LSTM
+    lstm_horizon_length: int = 5 # Horizon for LSTM hidden state reset
+    hidden_state_size: int = 64 # Hidden state size from dynamics network
+    spatial_size: int = 16 # Effective feature size for LSTM input (H*W for spatial, or target size for flat)
+    
     def get_value_output_dim(self) -> int:
         """Determines the correct output dimension for the value head based on loss type and support size."""
         if self.value_loss_type == "categorical":

@@ -375,7 +375,7 @@ class TestEndToEndWorkflow:
         # Verify we can forward pass through network
         # Add batch dimension to observations from the single trajectory
         obs_batch = jnp.expand_dims(batch['observations'][0], axis=0)  # Take first obs and add batch dim
-        hidden_state, reward, value, policy_logits, _ = network.initial_inference(
+        hidden_state, reward, value, policy_logits, _, reward_hidden = network.initial_inference(
             obs_batch, training=False
         )
         

@@ -256,17 +256,23 @@ def test_comprehensive_missing_coverage_lines(common_key, common_cfg_flat):
             self.prediction = SqueezeTestPred(rngs=rngs)
             self.reward = SqueezeTestRew(rngs=rngs)
 
-        def initial_inference(self, x, training=False):
+        def initial_inference(self, x, training=False, reward_hidden=None):
             h = self.representation(x, training)
             policy, value = self.prediction(h, training)
             reward = self.reward(h, training)
-            return h, reward, value, policy
+            # Return 6-element tuple to match LSTM interface: (hidden, reward, value, policy, projection, reward_hidden)
+            dummy_projection = None  # No projection in this test
+            dummy_reward_hidden = None  # No LSTM in this test
+            return h, reward, value, policy, dummy_projection, dummy_reward_hidden
 
-        def recurrent_inference(self, h, a, training=False):
+        def recurrent_inference(self, h, a, training=False, reward_hidden=None):
             h_next = self.dynamics(h, a, training)
             policy, value = self.prediction(h_next, training)
             reward = self.reward(h_next, training)
-            return h_next, reward, value, policy
+            # Return 6-element tuple to match LSTM interface: (hidden, reward, value, policy, projection, reward_hidden)
+            dummy_projection = None  # No projection in this test
+            dummy_reward_hidden = None  # No LSTM in this test
+            return h_next, reward, value, policy, dummy_projection, dummy_reward_hidden
 
     # Test with scalar value support (triggers squeeze on line 461)
     cfg_squeeze = make_cfg(

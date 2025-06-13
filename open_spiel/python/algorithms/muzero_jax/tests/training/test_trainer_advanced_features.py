@@ -101,6 +101,7 @@ def test_symlog_loss_functionality(common_key, common_cfg_flat):
         reward_loss_type="symlog",
         symlog_base=2.0,
         batch_size=2,
+        reanalyze_ratio=0.0,  # Disable policy reanalysis to avoid mctx differentiation issues
     )
 
     model = make_model(mk, cfgn)
@@ -283,17 +284,22 @@ def test_discrete_support_transformations_integration(common_key, common_cfg_fla
         def recurrent_model(self, hidden, action, training=False):
             return self.dynamics(hidden, action, training)
 
-        def recurrent_inference(self, hidden, action, training=False):
+        def recurrent_inference(self, hidden, action, training=False, reward_hidden=None):
             next_hidden, reward = self.recurrent_model(hidden, action, training)
             value, policy_logits = self.prediction_model(next_hidden, training)
-            return next_hidden, reward, value, policy_logits
+            # Return 6-element tuple to match LSTM interface: (hidden, reward, value, policy_logits, projection, reward_hidden)
+            dummy_projection = None  # No projection for this simple model
+            dummy_reward_hidden = None  # No LSTM state for this simple model
+            return next_hidden, reward, value, policy_logits, dummy_projection, dummy_reward_hidden
 
-        def initial_inference(self, observation, training=False):
+        def initial_inference(self, observation, training=False, reward_hidden=None):
             hidden = self.initial_model(observation, training)
             value, policy_logits = self.prediction_model(hidden, training)
-            # Return 4-element tuple to match expected interface: (hidden, reward, value, policy_logits)
+            # Return 6-element tuple to match LSTM interface: (hidden, reward, value, policy_logits, projection, reward_hidden)
             dummy_reward = jnp.zeros((hidden.shape[0],))  # Dummy reward for initial step
-            return hidden, dummy_reward, value, policy_logits
+            dummy_projection = None  # No projection for this simple model
+            dummy_reward_hidden = None  # No LSTM state for this simple model
+            return hidden, dummy_reward, value, policy_logits, dummy_projection, dummy_reward_hidden
 
     class ScalarRep(nnx.Module):
         def __init__(self, config, *, rngs):

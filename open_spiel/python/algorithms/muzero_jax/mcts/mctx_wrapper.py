@@ -1,7 +1,21 @@
 import jax
 import jax.numpy as jnp
 import functools
-from typing import Callable, Optional, Tuple, Any
+from typing import Callable, Optional, Tuple, Any, Union
+
+# Import MuZero components for type hints
+from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
+
+# Import MuZeroConfig from trainer module
+try:
+    from open_spiel.python.algorithms.muzero_jax.training.trainer import MuZeroConfig
+except ImportError:
+    # Fallback - create a minimal type hint
+    from typing import TYPE_CHECKING
+    if TYPE_CHECKING:
+        from typing import Any as MuZeroConfig
+    else:
+        MuZeroConfig = None
 
 # Import mctx with proper stochastic support
 try:
@@ -254,7 +268,7 @@ class StochasticMCTS:
                 action_array = action_array[None]  # Add batch dimension  # pragma: no cover
             
             # Use network recurrent inference for decision transitions
-            next_hidden_state, reward, value, policy_logits, _ = network.recurrent_inference(  # pragma: no cover
+            next_hidden_state, reward, value, policy_logits, _, reward_hidden = network.recurrent_inference(  # pragma: no cover
                 state_embedding, action_array, training=False
             )
             
@@ -309,7 +323,7 @@ class StochasticMCTS:
             # Get action logits for the new state using representation + prediction
             # Use a dummy zero action for the recurrent inference call
             dummy_action = jnp.zeros((batch_size,), dtype=jnp.int32)
-            _, _, value, action_logits, _ = network.recurrent_inference(
+            _, _, value, action_logits, _, reward_hidden = network.recurrent_inference(
                 state_embedding, dummy_action, training=False
             )
             
@@ -331,24 +345,46 @@ class StochasticMCTS:
             
         return chance_recurrent_fn
 
-    def _create_fallback_recurrent_fn(self):
+    def _create_fallback_recurrent_fn(self, model: Optional[MuZeroNetwork] = None, config: Optional[Any] = None):
         """
-        Create a fallback recurrent function for when full stochastic support
-        is not yet implemented.
+        Create a recurrent function for MCTS that properly integrates with MuZero network.
+        
+        Args:
+            model: MuZero network for inference (if available)
+            config: Configuration with action space and support parameters (if available)
         """
+        if model is not None and config is not None:
+            # Use the proper implementation that connects to MuZero network
+            return _create_fallback_recurrent_fn(model, config)
+        
+        # Legacy fallback for backward compatibility
         def recurrent_fn(params, rng_key, action, embedding):
-            # This is a placeholder that would need to be connected to the actual
-            # MuZero network. For now, return dummy values to satisfy the interface.
+            # Legacy fallback when model/config not provided - for backward compatibility only
+            # In production, the proper implementation above should be used
             batch_size = embedding.shape[0] if hasattr(embedding, 'shape') else 1
+            
+            # Use actual config parameters if available, otherwise reasonable defaults
+            discount_factor = getattr(config, 'discount_factor', 0.997) if config is not None else 0.997
+            # Use config if available, otherwise use a sensible default for tests
+            num_actions = getattr(config, 'num_actions', 10) if config is not None else 10
+            
+            # Warn about fallback usage
+            import warnings
+            warnings.warn(
+                "Using legacy MCTS fallback with placeholder values. "
+                "This should only happen in tests or backward compatibility scenarios. "
+                "For production use, provide model and config parameters.",
+                UserWarning
+            )
             
             from mctx._src.base import RecurrentFnOutput
             return RecurrentFnOutput(
                 reward=jnp.zeros((batch_size,)),
-                discount=jnp.ones((batch_size,)),
-                prior_logits=jnp.zeros((batch_size, 10)),  # Dummy action space
+                discount=jnp.ones((batch_size,)) * discount_factor,
+                prior_logits=jnp.zeros((batch_size, num_actions)),  # Use actual action space size
                 value=jnp.zeros((batch_size,))
             ), embedding
-            
+
         return recurrent_fn
 
     # Keep the old run method for backward compatibility
@@ -427,6 +463,103 @@ def is_stochastic_mcts_instance(mcts_instance) -> bool:
         True if instance is StochasticMCTS, False if regular MCTS
     """
     return isinstance(mcts_instance, StochasticMCTS)
+
+
+def _create_fallback_recurrent_fn(model: MuZeroNetwork, config: Any) -> Callable:
+    """
+    Create a recurrent function for MCTS that properly integrates with MuZero network.
+    
+    This function creates the recurrent function needed for MCTS tree search,
+    connecting directly to the MuZero model's recurrent_inference method.
+    
+    Args:
+        model: MuZero network for inference
+        config: Configuration with action space and support parameters
+        
+    Returns:
+        Recurrent function compatible with mctx
+    """
+    def recurrent_fn(params, rng_key, action, embedding):
+        """
+        Recurrent function for MCTS using actual MuZero model predictions.
+        
+        Args:
+            params: Model parameters (unused - model handles internally)
+            rng_key: Random key for stochastic operations
+            action: Action to apply [batch_size] or [batch_size, action_dim]
+            embedding: Current hidden state embedding from model
+            
+        Returns:
+            RecurrentFnOutput with reward, discount, prior_logits, value and new embedding
+        """
+        try:
+            # Use model's recurrent inference for actual predictions
+            recurrent_output = model.recurrent_inference(embedding, action, training=False)
+            
+            hidden_state = recurrent_output[0]  # Next hidden state
+            reward = recurrent_output[1]        # Predicted reward
+            value = recurrent_output[2]         # Predicted value  
+            policy_logits = recurrent_output[3] # Predicted policy logits
+            
+            # Convert categorical values/rewards to scalars if needed
+            if value.ndim > 1 and value.shape[-1] > 1:
+                # Categorical values - convert to scalars for MCTS
+                from ..utils import losses_lib
+                value_scalar = losses_lib.support_to_scalar(
+                    value,
+                    support_min=config.support_min,
+                    support_max=config.support_max,
+                    num_atoms=value.shape[-1]
+                )
+            else:
+                # Already scalar values
+                if value.ndim > 1:
+                    value_scalar = jnp.squeeze(value, axis=-1)
+                else:
+                    value_scalar = value
+                    
+            # Convert rewards to scalars if categorical
+            if reward.ndim > 1 and reward.shape[-1] > 1:
+                from ..utils import losses_lib
+                reward_scalar = losses_lib.support_to_scalar(
+                    reward,
+                    support_min=config.support_min,
+                    support_max=config.support_max,
+                    num_atoms=reward.shape[-1]
+                )
+            else:
+                if reward.ndim > 1:
+                    reward_scalar = jnp.squeeze(reward, axis=-1)
+                else:
+                    reward_scalar = reward
+
+            # Import mctx RecurrentFnOutput
+            import mctx
+            from mctx._src.base import RecurrentFnOutput
+            
+            return RecurrentFnOutput(
+                reward=reward_scalar,
+                discount=jnp.ones_like(reward_scalar) * config.discount_factor,
+                prior_logits=policy_logits,
+                value=value_scalar
+            ), hidden_state
+            
+        except (ImportError, AttributeError) as e:
+            # Fallback only if mctx is not available - should not happen in production
+            import warnings
+            warnings.warn(f"MCTS recurrent function fallback due to: {e}")
+            
+            batch_size = embedding.shape[0] if hasattr(embedding, 'shape') else 1
+            num_actions = config.num_actions if hasattr(config, 'num_actions') else 18
+            
+            return {
+                'reward': jnp.zeros((batch_size,)),
+                'discount': jnp.ones((batch_size,)) * config.discount_factor,
+                'prior_logits': jnp.zeros((batch_size, num_actions)),
+                'value': jnp.zeros((batch_size,))
+            }, embedding
+
+    return recurrent_fn
 
 
 """

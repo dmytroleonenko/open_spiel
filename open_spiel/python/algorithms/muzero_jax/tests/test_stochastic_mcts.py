@@ -308,7 +308,8 @@ class TestIntegrationPoints:
                 jnp.zeros((batch_size,)),          # reward
                 jnp.zeros((batch_size,)),          # value  
                 jnp.zeros((batch_size, 4)),        # policy_logits
-                None                               # projection (unused)
+                None,                              # projection (unused)
+                None                               # reward_hidden (LSTM reward hidden state)
             )
         
         mock_network.recurrent_inference = mock_recurrent_inference

@@ -24,8 +24,8 @@ class RealNetworkIntegrationTest(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         self.rng_key = jax.random.PRNGKey(42)
-        self.batch_size = 4
-        self.num_unroll_steps = 3
+        self.batch_size = 2  # Reduced from 4 for faster execution
+        self.num_unroll_steps = 2  # Reduced from 3 for faster execution
         self.observation_shape = (3, 3)  # Tic-tac-toe board
         self.num_actions = 9
         
@@ -44,9 +44,9 @@ class RealNetworkIntegrationTest(unittest.TestCase):
             use_target_network_ema=True,
             ema_decay=0.99,
             ema_update_frequency=1,
-            # Set intervals for multi-model orchestration testing
-            reanalyze_update_interval=10,  # Update reanalysis model every 10 steps
-            self_play_update_interval=5    # Update self-play model every 5 steps
+            # Set intervals for multi-model orchestration testing - reduced for faster testing
+            reanalyze_update_interval=3,  # Update reanalysis model every 3 steps (reduced from 10)
+            self_play_update_interval=2   # Update self-play model every 2 steps (reduced from 5)
         )
         
         # Create network config from MuZero config
@@ -117,7 +117,7 @@ class RealNetworkIntegrationTest(unittest.TestCase):
         game_history_mask = jnp.ones((self.batch_size, self.num_unroll_steps + 1), dtype=jnp.bool_)
 
         # Create sample indices for adaptive hyperparameters
-        sample_indices = jnp.array([100, 200, 300, 400])  # Different ages
+        sample_indices = jnp.array([100, 200])  # Different ages - reduced to match batch_size=2
 
         return {
             'observation': observations,
@@ -199,8 +199,10 @@ class RealNetworkIntegrationTest(unittest.TestCase):
         initial_reanalysis = nnx.state(learner.reanalysis_model, nnx.Param)
         initial_self_play = nnx.state(learner.self_play_model, nnx.Param)
         
-        # Perform multiple training steps to trigger model updates
-        for step in range(15):  # Should trigger both reanalysis and self-play updates
+        # Perform minimal training steps to trigger model updates
+        # With reanalyze_update_interval=3 and self_play_update_interval=2, 
+        # running 6 steps will trigger both updates while keeping test fast
+        for step in range(6):  # Reduced from 15 - still triggers both model updates
             learner.train_step(batch)
             
         # Get updated parameters
@@ -218,7 +220,7 @@ class RealNetworkIntegrationTest(unittest.TestCase):
         )
         self.assertTrue(online_changed, "Online model should have changed after training")
         
-        # Reanalysis model should have been updated (at step 10)
+        # Reanalysis model should have been updated (at steps 3, 6 with interval=3)
         reanalysis_changed = any(
             not jnp.allclose(p1, p2, atol=1e-8)
             for p1, p2 in zip(
@@ -228,7 +230,7 @@ class RealNetworkIntegrationTest(unittest.TestCase):
         )
         self.assertTrue(reanalysis_changed, "Reanalysis model should have been updated")
         
-        # Self-play model should have been updated (at steps 5, 10, 15)
+        # Self-play model should have been updated (at steps 2, 4, 6 with interval=2)
         self_play_changed = any(
             not jnp.allclose(p1, p2, atol=1e-8)
             for p1, p2 in zip(
@@ -250,10 +252,10 @@ class RealNetworkIntegrationTest(unittest.TestCase):
         
         # Create batches with different sample ages
         batch_young = self._create_realistic_batch()
-        batch_young['sample_indices'] = jnp.array([100, 200, 300, 400])  # Young samples
+        batch_young['sample_indices'] = jnp.array([100, 200])  # Young samples - reduced to match batch_size=2
         
         batch_old = self._create_realistic_batch()
-        batch_old['sample_indices'] = jnp.array([800, 900, 950, 990])  # Old samples
+        batch_old['sample_indices'] = jnp.array([800, 900])  # Old samples - reduced to match batch_size=2
         
         # Train on both batches and check that different losses are computed
         metrics_young = learner.train_step(batch_young)

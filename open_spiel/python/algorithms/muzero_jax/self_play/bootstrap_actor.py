@@ -136,9 +136,108 @@ class BootstrapActor:
             policy_target = self._get_mcts_policy(state, action)
             policy_targets.append(policy_target)
             
-            # Get MCTS value estimate (simplified - could use bot's value if available)
-            # For now, we'll compute this post-episode from actual returns
-            mcts_values.append(0.0)  # Placeholder
+            # Get MCTS value estimate from the bot's root value or network prediction
+            if hasattr(self.mcts_bot, 'get_root_value') and callable(self.mcts_bot.get_root_value):
+                # If bot provides root value from MCTS search
+                mcts_value = self.mcts_bot.get_root_value()
+            elif hasattr(self.mcts_bot, '_model') and self.mcts_bot._model is not None:
+                # Fallback: use network's initial inference for value estimation
+                try:
+                    # Get current observation for value estimation
+                    current_obs = self.game_wrapper.get_observation(state, 0)
+                    if hasattr(current_obs, 'observation'):
+                        obs_array = current_obs.observation
+                    else:
+                        obs_array = current_obs
+                    
+                    # Convert to JAX array if needed
+                    if not isinstance(obs_array, jnp.ndarray):
+                        obs_array = jnp.array(obs_array)
+                    
+                    # Add batch dimension if needed
+                    if obs_array.ndim == len(self.game_wrapper.observation_shape):
+                        obs_array = jnp.expand_dims(obs_array, axis=0)
+                    
+                    # Get value from network
+                    initial_output = self.mcts_bot._model.initial_inference(obs_array, training=False)
+                    network_value = initial_output[2]  # Value is at index 2
+                    
+                    # Convert to scalar if categorical
+                    if network_value.ndim > 1 and network_value.shape[-1] > 1:
+                        # Categorical value - convert to scalar
+                        from ..utils import losses_lib
+                        mcts_value = float(losses_lib.support_to_scalar(
+                            network_value,
+                            support_min=-300.0,  # Default support range
+                            support_max=300.0,
+                            num_atoms=network_value.shape[-1]
+                        )[0])  # Take first element from batch
+                    else:
+                        # Scalar value
+                        if network_value.ndim > 1:
+                            mcts_value = float(jnp.squeeze(network_value)[0])
+                        else:
+                            mcts_value = float(network_value)
+                            
+                except Exception as e:
+                    # Fallback to 0.0 if network inference fails
+                    import warnings
+                    warnings.warn(f"Failed to get network value estimate: {e}")
+                    mcts_value = 0.0
+            else:
+                # Last resort: estimate value based on current game state
+                # For games with clear winning/losing states, we can provide better estimates
+                if state.is_terminal():
+                    # Terminal state - use actual return
+                    returns = state.returns()
+                    if len(returns) > 0:
+                        mcts_value = float(returns[0])
+                    else:
+                        mcts_value = 0.0
+                else:
+                    # Non-terminal state - extract value from MCTS root if available
+                    mcts_value = 0.0
+                    
+                    # Try to get MCTS search statistics from the bot
+                    if hasattr(self.mcts_bot, '_search_results') and self.mcts_bot._search_results is not None:
+                        # Extract root value from MCTS search results
+                        try:
+                            search_results = self.mcts_bot._search_results
+                            if hasattr(search_results, 'search_tree') and search_results.search_tree is not None:
+                                # Get root node value
+                                root_value = search_results.search_tree.node_values[0]  # Root is at index 0
+                                mcts_value = float(root_value)
+                            elif hasattr(search_results, 'root_value'):
+                                mcts_value = float(search_results.root_value)
+                        except (AttributeError, IndexError):
+                            # Fallback to 0.0 if MCTS values cannot be extracted
+                            mcts_value = 0.0
+                    
+                    # Alternative: try to get value from visit counts if available
+                    if mcts_value == 0.0 and hasattr(self.mcts_bot, '_action_values'):
+                        try:
+                            action_values = self.mcts_bot._action_values
+                            if action_values is not None and len(action_values) > 0:
+                                # Use expected value from action-value estimates
+                                # Weighted by visit counts if available
+                                if hasattr(self.mcts_bot, '_visit_counts'):
+                                    visit_counts = self.mcts_bot._visit_counts
+                                    if visit_counts is not None and sum(visit_counts) > 0:
+                                        # Weighted average of action values
+                                        total_visits = sum(visit_counts)
+                                        weighted_value = sum(v * c for v, c in zip(action_values, visit_counts)) / total_visits
+                                        mcts_value = float(weighted_value)
+                                    else:
+                                        # Unweighted average if no visit counts
+                                        mcts_value = float(sum(action_values) / len(action_values))
+                                else:
+                                    # Use maximum action value as heuristic
+                                    mcts_value = float(max(action_values))
+                        except (AttributeError, ValueError, ZeroDivisionError):
+                            # Keep 0.0 if extraction fails
+                            mcts_value = 0.0
+            
+            mcts_values.append(mcts_value)
             
             # Apply action
             state.apply_action(action)

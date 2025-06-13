@@ -65,7 +65,7 @@ class TestActor:
         """Create a mock MuZero network."""
         network = Mock(spec=MuZeroNetwork)
 
-        # Mock initial_inference
+        # Mock initial_inference - return 6 values to match actual network signature
         def mock_initial_inference(observation, training=False):
             batch_size = observation.shape[0] if observation.ndim > 1 else 1
             hidden_state = jnp.zeros((batch_size, 64))
@@ -73,19 +73,23 @@ class TestActor:
             value = jnp.zeros((batch_size,))
             reward = jnp.zeros((batch_size,))
             projection = None
-            return hidden_state, policy_logits, value, reward, projection
+            reward_hidden = None  # LSTM reward hidden state (can be None)
+            # Return in order: hidden_state, reward, value, policy_logits, projection, reward_hidden
+            return hidden_state, reward, value, policy_logits, projection, reward_hidden
 
         network.initial_inference = Mock(side_effect=mock_initial_inference)
 
-        # Mock recurrent_inference
+        # Mock recurrent_inference - return 6 values to match actual network signature
         def mock_recurrent_inference(hidden_state, action, training=False):
             batch_size = hidden_state.shape[0]
             next_hidden_state = jnp.zeros_like(hidden_state)
             policy_logits = jnp.zeros((batch_size, 9))
             value = jnp.zeros((batch_size,))
             reward = jnp.zeros((batch_size,))
-            # Return in the order expected by actor.py: next_hidden_state, reward, value, policy_logits, _
-            return next_hidden_state, reward, value, policy_logits, None
+            projection = None
+            reward_hidden = None  # LSTM reward hidden state (can be None)
+            # Return in order: next_hidden_state, reward, value, policy_logits, projection, reward_hidden
+            return next_hidden_state, reward, value, policy_logits, projection, reward_hidden
 
         network.recurrent_inference = Mock(
             side_effect=mock_recurrent_inference)

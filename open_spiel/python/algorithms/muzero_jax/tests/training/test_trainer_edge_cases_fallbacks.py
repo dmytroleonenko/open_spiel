@@ -187,15 +187,15 @@ def test_scalar_reward_dimension_check_line_1339(common_key, common_cfg_flat):
             reward = jnp.array(1.0)  # Scalar reward (ndim=0)
             value = jnp.ones((batch_size, 1))
             policy = jnp.ones((batch_size, common_cfg_flat.num_actions))
-            return (hidden, reward, value, policy)
+            return (hidden, reward, value, policy, None, None)  # Add missing return values for LSTM
 
-        def recurrent_inference(self, h, a, training):
+        def recurrent_inference(self, h, a, training, reward_hidden=None):
             reward = jnp.array(
                 2.0
             )  # Scalar reward (ndim=0) - this should trigger line 1339
             value = jnp.ones((h.shape[0], 1))
             policy = jnp.ones((h.shape[0], common_cfg_flat.num_actions))
-            return (h, reward, value, policy)
+            return (h, reward, value, policy, None, None)  # Add missing return values for LSTM
 
     # Import and mock components
     from open_spiel.python.algorithms.muzero_jax.training.trainer import (
@@ -232,12 +232,19 @@ def test_scalar_reward_dimension_check_line_1339(common_key, common_cfg_flat):
 
     mock_mctx.RecurrentFnOutput = mock_recurrent_output
 
-    # Mock policy output
+    # Mock policy output with proper JAX arrays
     mock_policy_output = MagicMock()
-    mock_policy_output.action_weights = (
-        jnp.ones((1, common_cfg_flat.num_actions)) / common_cfg_flat.num_actions
-    )
-    mock_mctx.muzero_policy = MagicMock(return_value=mock_policy_output)
+    
+    # Pre-compute the expected result to avoid recursion
+    batch_size = 1
+    num_steps = 2  # config.num_unroll_steps + 1
+    action_weights_flat = jnp.ones((batch_size * num_steps * common_cfg_flat.num_actions,)) / common_cfg_flat.num_actions
+    action_weights_reshaped = jnp.reshape(action_weights_flat, (batch_size, num_steps, common_cfg_flat.num_actions))
+    
+    mock_policy_output.action_weights = action_weights_reshaped.reshape(-1)  # Flat version
+    mock_policy_output.action_weights.reshape = MagicMock(return_value=action_weights_reshaped)
+    
+    mock_mctx.gumbel_muzero_policy = MagicMock(return_value=mock_policy_output)
 
     with patch.dict("sys.modules", {"mctx": mock_mctx}):
         # Use the base model structure but override the inference methods
@@ -297,15 +304,15 @@ def test_value_support_to_scalar_conversion_line_1444(common_key, common_cfg_fla
                 common_key, (batch_size, 11)
             )  # Categorical value distribution
             policy = jnp.ones((batch_size, common_cfg_flat.num_actions))
-            return (hidden, reward, value, policy)
+            return (hidden, reward, value, policy, None, None)  # Add missing return values for LSTM
 
-        def recurrent_inference(self, h, a, training):
+        def recurrent_inference(self, h, a, training, reward_hidden=None):
             reward = jnp.ones((h.shape[0], 1))
             value = jax.random.uniform(
                 common_key, (h.shape[0], 11)
             )  # Categorical value distribution - should trigger line 1444
             policy = jnp.ones((h.shape[0], common_cfg_flat.num_actions))
-            return (h, reward, value, policy)
+            return (h, reward, value, policy, None, None)  # Add missing return values for LSTM
 
     # Import and mock components
     from open_spiel.python.algorithms.muzero_jax.training.trainer import (
@@ -342,12 +349,19 @@ def test_value_support_to_scalar_conversion_line_1444(common_key, common_cfg_fla
 
     mock_mctx.RecurrentFnOutput = mock_recurrent_output
 
-    # Mock policy output
+    # Mock policy output with proper JAX arrays
     mock_policy_output = MagicMock()
-    mock_policy_output.action_weights = (
-        jnp.ones((1, common_cfg_flat.num_actions)) / common_cfg_flat.num_actions
-    )
-    mock_mctx.muzero_policy = MagicMock(return_value=mock_policy_output)
+    
+    # Pre-compute the expected result to avoid recursion
+    batch_size = 1
+    num_steps = 2  # config.num_unroll_steps + 1
+    action_weights_flat = jnp.ones((batch_size * num_steps * common_cfg_flat.num_actions,)) / common_cfg_flat.num_actions
+    action_weights_reshaped = jnp.reshape(action_weights_flat, (batch_size, num_steps, common_cfg_flat.num_actions))
+    
+    mock_policy_output.action_weights = action_weights_reshaped.reshape(-1)  # Flat version
+    mock_policy_output.action_weights.reshape = MagicMock(return_value=action_weights_reshaped)
+    
+    mock_mctx.gumbel_muzero_policy = MagicMock(return_value=mock_policy_output)
 
     with patch.dict("sys.modules", {"mctx": mock_mctx}):
         # Use the base model structure but override the inference methods
@@ -528,12 +542,11 @@ def test_mcts_policy_shape_validation_line_1462_1464(common_key, common_cfg_flat
 
     mock_mctx.RecurrentFnOutput = mock_recurrent_output
 
-    # Mock policy output with WRONG action count to trigger lines 1462-1464
-    mock_policy_output = MagicMock()
-    mock_policy_output.action_weights = jnp.ones(
-        (1, 99)
-    )  # Wrong number of actions (should be common_cfg_flat.num_actions=5)
-    mock_mctx.muzero_policy = MagicMock(return_value=mock_policy_output)
+    # Mock gumbel_muzero_policy to raise an exception to trigger fallback
+    def mock_gumbel_policy(*args, **kwargs):
+        raise AttributeError("Simulated mctx failure to trigger fallback")
+    
+    mock_mctx.gumbel_muzero_policy = mock_gumbel_policy
 
     # Mock the import of mctx to return our mock
     with patch.dict("sys.modules", {"mctx": mock_mctx}):
@@ -559,18 +572,20 @@ def test_mcts_policy_shape_validation_line_1462_1464(common_key, common_cfg_flat
             common_key, (batch_size, num_steps, *common_cfg_flat.observation_shape)
         )
 
-        # Run policy reanalysis - should trigger shape mismatch detection and fallback
+        # Run policy reanalysis - should trigger exception and fallback to temperature-scaled policy
         policy_targets = compute_policy_reanalysis_targets(
             model, observations, config, training=False, rng_key=common_key
         )
 
-        # Verify the fallback uniform policy was created
+        # Verify the fallback policy was created with correct shape
         assert policy_targets.shape == (batch_size, num_steps, common_cfg_flat.num_actions)
 
-        # Verify uniform distribution (fallback behavior from line 1464)
-        expected_uniform = 1.0 / common_cfg_flat.num_actions
-        # Since we mocked mctx to return wrong shape, it should fallback to uniform policy
-        # The exact values depend on the implementation, but shape should be correct
+        # Verify policies are normalized (fallback behavior uses softmax)
         assert jnp.allclose(
             jnp.sum(policy_targets, axis=-1), 1.0, atol=1e-6
-        ), "Policies should be normalized" 
+        ), "Policies should be normalized"
+        
+        # Verify policies are not uniform (fallback uses temperature scaling + noise)
+        # The fallback should produce non-uniform policies due to temperature scaling and noise
+        policy_variance = jnp.var(policy_targets)
+        assert policy_variance > 1e-6, "Fallback policies should not be uniform due to temperature scaling and noise" 

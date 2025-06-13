@@ -179,7 +179,7 @@ def test_loss_static_missing_projection_in_model_output(common_key, common_cfg_f
 
     # Scenario 1: initial_inference returns too few elements
     class MockModelShortInitial(MuZeroNetwork):
-        def initial_inference(self, x, training):
+        def initial_inference(self, x, training, reward_hidden=None):
             # Returns hidden_state, reward, value, policy_logits (4 elements)
             # Actual mock model parts need to be set up if they are accessed by base class
             hidden_state = jnp.zeros((x.shape[0], self.config.hidden_size))
@@ -204,10 +204,13 @@ def test_loss_static_missing_projection_in_model_output(common_key, common_cfg_f
                 )
             )
             policy_logits = jnp.zeros((x.shape[0], self.config.num_actions))
-            return hidden_state, reward, value, policy_logits
+            # Return 6-element tuple to match LSTM interface: (hidden, reward, value, policy, projection, reward_hidden)
+            dummy_projection = None  # Missing projection (this is what the test is testing)
+            dummy_reward_hidden = None  # No LSTM in this test
+            return hidden_state, reward, value, policy_logits, dummy_projection, dummy_reward_hidden
 
         # recurrent_inference also needs to be properly mocked if reached
-        def recurrent_inference(self, h, a, training):
+        def recurrent_inference(self, h, a, training, reward_hidden=None):
             reward = jnp.zeros(
                 (
                     h.shape[0],
@@ -229,8 +232,10 @@ def test_loss_static_missing_projection_in_model_output(common_key, common_cfg_f
                 )
             )
             policy_logits = jnp.zeros((h.shape[0], self.config.num_actions))
-            # No projection returned here either for simplicity, though not directly testing this part for coverage here
-            return h, reward, value, policy_logits
+            # Return 6-element tuple to match LSTM interface: (hidden, reward, value, policy, projection, reward_hidden)
+            dummy_projection = None  # Missing projection (this is what the test is testing)
+            dummy_reward_hidden = None  # No LSTM in this test
+            return h, reward, value, policy_logits, dummy_projection, dummy_reward_hidden
 
     model_short = MockModelShortInitial(
         representation_network_def=lambda cfg, *, rngs: MockRep(
@@ -281,7 +286,7 @@ def test_loss_static_missing_projection_in_model_output(common_key, common_cfg_f
 
     # Scenario 2: initial_inference returns projection as None
     class MockModelNoneInitialProjection(MuZeroNetwork):
-        def initial_inference(self, x, training):
+        def initial_inference(self, x, training, reward_hidden=None):
             hidden_state = jnp.zeros((x.shape[0], self.config.hidden_size))
             reward = jnp.zeros(
                 (
@@ -309,10 +314,11 @@ def test_loss_static_missing_projection_in_model_output(common_key, common_cfg_f
                 reward,
                 value,
                 policy_logits,
-                None,
-            )  # 5th element is None
+                None,  # 5th element is None (this is what the test is testing)
+                None,  # 6th element is reward_hidden
+            )
 
-        def recurrent_inference(self, h, a, training):
+        def recurrent_inference(self, h, a, training, reward_hidden=None):
             reward = jnp.zeros(
                 (
                     h.shape[0],
@@ -339,8 +345,9 @@ def test_loss_static_missing_projection_in_model_output(common_key, common_cfg_f
                 reward,
                 value,
                 policy_logits,
-                None,
-            )  # Return None projection here too
+                None,  # Return None projection here too (this is what the test is testing)
+                None,  # 6th element is reward_hidden
+            )
 
     model_none_proj = MockModelNoneInitialProjection(
         representation_network_def=lambda cfg, *, rngs: MockRep(

@@ -271,13 +271,13 @@ def test_loss_static(
     # 1. Forward pass through the fixed model
     # Initial inference
     obs_init = fixed_batch["observation"][:, 0]  # (B, *obs_shape)
-    s0, r0_pred, v0_pred, p0_logits, proj0_pred = fixed_model.initial_inference(
+    s0, r0_pred, v0_pred, p0_logits, proj0_pred, reward_hidden = fixed_model.initial_inference(
         obs_init, training=False
     )
 
     # Recurrent inference (1 step)
     action_k0 = fixed_batch["action"][:, 0]  # (B,)
-    s1, r1_pred, v1_pred, p1_logits, proj1_pred = fixed_model.recurrent_inference(
+    s1, r1_pred, v1_pred, p1_logits, proj1_pred, reward_hidden = fixed_model.recurrent_inference(
         s0, action_k0, training=False
     )
 

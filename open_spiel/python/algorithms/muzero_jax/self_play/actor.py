@@ -187,7 +187,7 @@ class Actor:
                 action_array = jnp.array([action])  # pragma: no cover
             
             # Use the actual network's recurrent inference
-            next_embedding, reward, value, policy_logits, _ = self.network.recurrent_inference(
+            next_embedding, reward, value, policy_logits, _, reward_hidden = self.network.recurrent_inference(
                 embedding, action_array, training=False
             )
             
@@ -368,7 +368,7 @@ class Actor:
             
             # Get initial inference from network
             obs_array = jnp.array([current_obs])  # Add batch dimension
-            hidden_state, reward, value, policy_logits, _ = self.network.initial_inference(
+            hidden_state, reward, value, policy_logits, _, reward_hidden = self.network.initial_inference(
                 obs_array, training=False
             )
             

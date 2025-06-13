@@ -68,19 +68,24 @@ class MockMuZeroNetwork(nnx.Module):
         policy_logits = output[:, 1:]
         return value, policy_logits
 
-    def initial_inference(self, observation, training=False):
+    def initial_inference(self, observation, training=False, reward_hidden=None):
         """Perform initial inference for GAE computation."""
         hidden = self.initial_model(observation, training=training)
         value, policy_logits = self.prediction_model(hidden, training=training)
-        # Return 4-element tuple to match expected interface: (hidden, reward, value, policy_logits)
+        # Return 6-element tuple to match LSTM interface: (hidden, reward, value, policy_logits, projection, reward_hidden)
         dummy_reward = jnp.zeros((hidden.shape[0],))  # Dummy reward for initial step
-        return hidden, dummy_reward, value, policy_logits
+        dummy_projection = None  # No projection for this simple model
+        dummy_reward_hidden = None  # No LSTM state for this simple model
+        return hidden, dummy_reward, value, policy_logits, dummy_projection, dummy_reward_hidden
 
-    def recurrent_inference(self, hidden, action, training=False):
+    def recurrent_inference(self, hidden, action, training=False, reward_hidden=None):
         """Perform recurrent inference for GAE computation."""
         next_hidden, reward = self.recurrent_model(hidden, action, training=training)
         value, policy_logits = self.prediction_model(next_hidden, training=training)
-        return next_hidden, reward, value, policy_logits
+        # Return 6-element tuple to match LSTM interface: (hidden, reward, value, policy_logits, projection, reward_hidden)
+        dummy_projection = None  # No projection for this simple model
+        dummy_reward_hidden = None  # No LSTM state for this simple model
+        return next_hidden, reward, value, policy_logits, dummy_projection, dummy_reward_hidden
 
     def recurrent_model(self, hidden, action, training=False):
         action_onehot = jnp.eye(self.config.num_actions)[action]
@@ -116,6 +121,7 @@ def test_compute_gae_value_targets_comprehensive_completion(common_key):
         learning_rate=1e-3,  # Increased for faster convergence
         value_loss_type="mse",
         num_actions=num_actions,
+        reanalyze_ratio=0.0,  # Disable policy reanalysis to avoid mctx differentiation issues
     )
 
     network_config = create_network_config_from_muzero_config(
@@ -218,6 +224,7 @@ def test_gae_mixed_value_targets_with_masks(common_key):
         batch_size=batch_size,
         learning_rate=1e-3,
         num_actions=num_actions,
+        reanalyze_ratio=0.0,  # Disable policy reanalysis to avoid mctx differentiation issues
     )
 
     network_config = create_network_config_from_muzero_config(

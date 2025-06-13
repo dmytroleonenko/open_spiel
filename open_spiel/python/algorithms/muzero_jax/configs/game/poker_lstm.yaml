@@ -1,0 +1,71 @@
+# Configuration for discrete games with imperfect observability (e.g., Poker, Hanabi)
+# This demonstrates using LSTM for temporal memory in discrete OpenSpiel games
+
+# Game configuration
+game_name: "kuhn_poker"  # Example imperfect information game
+num_players: 2
+
+# Network architecture for discrete games with LSTM
+network:
+  # Flat observations (no spatial structure)
+  use_image_observation: false
+  observation_shape: [12]  # Example: Kuhn poker observation size
+  num_actions: 2  # Fold/Call for Kuhn poker
+  
+  # Hidden state configuration
+  num_channels: 128  # Larger for complex reasoning
+  hidden_state_size: 128
+  
+  # LSTM configuration for imperfect observability
+  use_value_prefix: true  # Enable LSTM reward prediction
+  lstm_hidden_size: 256  # Larger LSTM for memory-intensive games
+  reduced_channels_reward: 32  # Feature reduction before LSTM
+  spatial_size: 32  # Target LSTM input size (reduced_channels * spatial_size)
+  lstm_horizon_length: 10  # Longer horizon for imperfect info games
+  
+  # Network depth
+  num_residual_blocks: 3  # More layers for complex reasoning
+  num_fc_residual_blocks: 2
+  num_hidden_units_fc: 256
+  
+  # Loss configuration
+  value_loss_type: "mse"  # Simple scalar values for discrete games
+  reward_loss_type: "mse"
+  
+# Training configuration
+training:
+  # Longer episodes for imperfect information games
+  max_episode_length: 50
+  
+  # LSTM-specific training parameters
+  start_use_mix_training_steps: 1000  # Start mixed value targets early
+  mixed_value_threshold: 5  # Use LSTM predictions for recent steps
+  
+  # Exploration for imperfect information
+  exploration_noise: 0.25  # Higher exploration for hidden information
+  
+  # Batch size considerations for LSTM
+  batch_size: 64  # Smaller batches for LSTM memory efficiency
+  num_unroll_steps: 8  # Longer unrolls for temporal dependencies
+  
+# MCTS configuration for imperfect information
+mcts:
+  num_simulations: 200  # More simulations for complex reasoning
+  c_puct: 1.5  # Higher exploration for uncertainty
+  
+# Comments explaining the LSTM benefits for discrete games:
+# 
+# 1. **Memory of Hidden Information**: LSTM remembers opponent actions and 
+#    inferred private information across the game sequence
+#
+# 2. **Temporal Patterns**: Learns opponent behavioral patterns and betting 
+#    strategies that evolve over time
+#
+# 3. **Reward Prediction**: Better reward prediction by considering the full 
+#    history of actions and observations, not just current state
+#
+# 4. **Partial Observability**: Maintains internal state about what has been 
+#    revealed and what remains hidden
+#
+# 5. **Sequence Dependencies**: Understands that current value depends on 
+#    the entire sequence of play, not just current observation 

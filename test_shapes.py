@@ -28,7 +28,7 @@ network = MuZeroNetwork(
 
 # Test with dummy observation
 dummy_obs = jnp.ones((1, 27))
-hidden_state, policy_logits, value, reward, _ = network.initial_inference(dummy_obs, training=False)
+hidden_state, policy_logits, value, reward, _, reward_hidden = network.initial_inference(dummy_obs, training=False)
 print('Hidden state shape:', hidden_state.shape)
 print('Policy logits shape:', policy_logits.shape)
 print('Value shape:', value.shape) 

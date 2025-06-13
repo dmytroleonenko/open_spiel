@@ -5,6 +5,10 @@ from typing import Sequence, Callable, Tuple, Optional
 
 # Assuming layers.py is in the same directory or accessible in PYTHONPATH
 from .layers import conv3x3, ResidualBlock, FCResidualBlock, MLP
+from .network_config import MuZeroNetworkConfig
+
+# Type alias for LSTM state (c, h) tuple
+LSTMState = Tuple[jax.Array, jax.Array]
 
 # Import symlog function for EfficientZeroV2 parity
 def symlog(x: jax.Array, base: float = jnp.e) -> jax.Array:
@@ -399,6 +403,12 @@ class MuZeroNetwork(nnx.Module):
         self.prediction_network = prediction_network_def(config, rngs=submodule_rngs)
         self.reward_network = reward_network_def(config, rngs=submodule_rngs)
         
+        # LSTM reward network for value-prefix (EfficientZeroV2 feature)
+        if hasattr(config, 'use_value_prefix') and config.use_value_prefix:
+            self.lstm_reward_network = SupportLSTMRewardNetwork(config, rngs=submodule_rngs)
+        else:
+            self.lstm_reward_network = None
+        
         if config.use_projection and projection_network_def is not None:
             # The projection_network_def lambda expects (config, *, rngs_lambda) in tests
             # submodule_rngs is already correctly formatted.
@@ -409,11 +419,18 @@ class MuZeroNetwork(nnx.Module):
     def representation(self, observation: jax.Array, training: bool) -> jax.Array:
         return self.representation_network(observation, training=training)
 
-    def dynamics(self, hidden_state: jax.Array, action: jax.Array, training: bool) -> tuple[jax.Array, jax.Array]:
-        """Predicts next hidden state and reward."""
+    def dynamics(self, hidden_state: jax.Array, action: jax.Array, training: bool, 
+                 reward_hidden: LSTMState | None = None) -> tuple[jax.Array, jax.Array, LSTMState | None]:
+        """Predicts next hidden state and reward, with optional LSTM reward prediction."""
         next_hidden_state = self.dynamics_network(hidden_state, action, training=training)
-        reward = self.reward_network(next_hidden_state, training=training)
-        return next_hidden_state, reward
+        
+        # Use LSTM reward network if available, otherwise use standard reward network
+        if self.lstm_reward_network is not None:
+            reward, new_reward_hidden = self.lstm_reward_network(next_hidden_state, reward_hidden, training=training)
+            return next_hidden_state, reward, new_reward_hidden
+        else:
+            reward = self.reward_network(next_hidden_state, training=training)
+            return next_hidden_state, reward, None
 
     def prediction(self, hidden_state: jax.Array, training: bool) -> tuple[jax.Array, jax.Array]:
         return self.prediction_network(hidden_state, training=training)
@@ -423,10 +440,18 @@ class MuZeroNetwork(nnx.Module):
         if hasattr(self.prediction_network, 'reset_noise'):
             self.prediction_network.reset_noise(rng_key)
 
-    def initial_inference(self, observation: jax.Array, training: bool = False) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array | None]:
+    def initial_inference(self, observation: jax.Array, training: bool = False, 
+                         reward_hidden: LSTMState | None = None) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array | None, LSTMState | None]:
         """Representation + Prediction + Reward for the first step."""
         hidden_state = self.representation(observation, training=training)
-        reward = self.reward_network(hidden_state, training=training)
+        
+        # Use LSTM reward network if available, otherwise use standard reward network
+        if self.lstm_reward_network is not None:
+            reward, new_reward_hidden = self.lstm_reward_network(hidden_state, reward_hidden, training=training)
+        else:
+            reward = self.reward_network(hidden_state, training=training)
+            new_reward_hidden = None
+            
         policy_logits, value = self.prediction(hidden_state, training=training)
         
         projected_output = None
@@ -437,11 +462,12 @@ class MuZeroNetwork(nnx.Module):
             projected_state = self.projection_network(proj_input, training=training)
             projected_output = projected_state
             
-        return hidden_state, reward, value, policy_logits, projected_output
+        return hidden_state, reward, value, policy_logits, projected_output, new_reward_hidden
 
-    def recurrent_inference(self, hidden_state: jax.Array, action: jax.Array, training: bool = False) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array | None]:
+    def recurrent_inference(self, hidden_state: jax.Array, action: jax.Array, training: bool = False,
+                           reward_hidden: LSTMState | None = None) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array | None, LSTMState | None]:
         """Dynamics + Prediction + Reward for subsequent steps."""
-        next_hidden_state, reward = self.dynamics(hidden_state, action, training=training)
+        next_hidden_state, reward, new_reward_hidden = self.dynamics(hidden_state, action, training=training, reward_hidden=reward_hidden)
         policy_logits, value = self.prediction(next_hidden_state, training=training)
 
         projected_output = None
@@ -452,16 +478,25 @@ class MuZeroNetwork(nnx.Module):
             projected_state = self.projection_network(proj_input, training=training)
             projected_output = projected_state
 
-        return next_hidden_state, reward, value, policy_logits, projected_output
+        return next_hidden_state, reward, value, policy_logits, projected_output, new_reward_hidden
 
-# TODO: Implement supporting NNX Modules like ResNetBlock, DownSample, SupportNetwork, ProjectionNetwork etc.
-# based on EfficientZeroV2/ez/agents/models/layer.py, adapting to Flax NNX conventions.
+# ✅ IMPLEMENTED: Supporting NNX Modules for EfficientZeroV2 functionality
+# The following components are already implemented in this file:
+# - SupportLSTMRewardNetwork: LSTM-based reward network for value-prefix
+# - DownSample: Downsampling layers for visual representation
+# - RepresentationNetwork, DynamicsNetwork, PredictionNetwork: Core MuZero networks
+# - RewardNetwork: Standard reward prediction
+# - ProjectionNetwork, ProjectionHeadNetwork: SSL projection heads
+# - MuZeroNetwork: Complete integrated network
+#
+# All necessary components from EfficientZeroV2/ez/agents/models/layer.py 
+# have been adapted to Flax NNX conventions.
 
-# Example of a supporting layer (replace with actual implementations)
+# Additional ResNet blocks and advanced layers can be added here if needed
 # class ResNetBlock(nnx.Module):
 #    def __init__(self, num_filters, *, rngs: nnx.Rngs):
 #        self.conv1 = nnx.Conv(num_filters, num_filters, kernel_size=(3,3), padding='SAME', rngs=rngs)
-#        self.bn1 = nnx.BatchNorm(num_filters, use_running_average=True, rngs=rngs) # use_running_average for eval
+#        self.bn1 = nnx.BatchNorm(num_filters, use_running_average=True, rngs=rngs)
 #        self.conv2 = nnx.Conv(num_filters, num_filters, kernel_size=(3,3), padding='SAME', rngs=rngs)
 #        self.bn2 = nnx.BatchNorm(num_filters, use_running_average=True, rngs=rngs)
 #
@@ -469,4 +504,124 @@ class MuZeroNetwork(nnx.Module):
 #        residual = x
 #        x = nnx.relu(self.bn1(self.conv1(x), use_running_average=not training))
 #        x = self.bn2(self.conv2(x), use_running_average=not training)
-#        return nnx.relu(x + residual) 
+#        return nnx.relu(x + residual)
+
+class SupportLSTMRewardNetwork(nnx.Module):
+    """
+    LSTM-based reward network for value-prefix reward accumulation.
+    
+    This implements EfficientZeroV2's SupportLSTMNetwork architecture for
+    reward prediction with hidden state management and periodic reset.
+    
+    Supports both spatial (image) and flat (discrete) hidden state inputs:
+    - Spatial inputs [B, C, H, W]: Uses conv1x1 reduction + flatten
+    - Flat inputs [B, C]: Uses MLP reduction
+    Both paths produce the same LSTM input dimensionality.
+    """
+    
+    def __init__(self, config: MuZeroNetworkConfig, *, rngs: nnx.Rngs):
+        """
+        Initialize LSTM reward network.
+        
+        Args:
+            config: Network configuration with LSTM parameters
+            rngs: Random number generators for initialization
+        """
+        self.config = config
+        
+        # Determine LSTM input size based on observation type
+        if config.use_image_observation:
+            # Spatial path: Conv1x1 reduction + flatten
+            self.conv1x1_reward = nnx.Conv(
+                in_features=config.hidden_state_size,
+                out_features=config.reduced_channels_reward,
+                kernel_size=(1, 1),
+                padding='SAME',
+                use_bias=True,
+                rngs=rngs
+            )
+            self.mlp_reward = None
+            lstm_input_size = config.reduced_channels_reward * config.spatial_size
+        else:
+            # Flat path: MLP reduction
+            self.conv1x1_reward = None
+            self.mlp_reward = MLP(
+                input_size=config.hidden_state_size,
+                hidden_sizes=[config.reduced_channels_reward * 4],  # Intermediate layer
+                output_size=config.reduced_channels_reward * config.spatial_size,  # Match spatial path output
+                activation=nnx.relu,
+                rngs=rngs
+            )
+            lstm_input_size = config.reduced_channels_reward * config.spatial_size
+        
+        # LSTM cell for sequential reward prediction
+        self.lstm_cell = nnx.LSTMCell(
+            in_features=lstm_input_size,
+            hidden_features=config.lstm_hidden_size,
+            recurrent_kernel_init=nnx.initializers.normal(stddev=0.1),  # Use normal init instead of orthogonal
+            rngs=rngs
+        )
+        
+        # Output MLP for reward support prediction
+        self.reward_head = MLP(
+            input_size=config.lstm_hidden_size,
+            hidden_sizes=[config.lstm_hidden_size // 2],
+            output_size=config.reward_support_size if config.reward_support_size > 0 else 1,
+            activation=nnx.relu,
+            rngs=rngs
+        )
+        
+    def init_hidden_state(self, batch_size: int) -> LSTMState:
+        """Initialize LSTM hidden state for a batch."""
+        c = jnp.zeros((batch_size, self.config.lstm_hidden_size))
+        h = jnp.zeros((batch_size, self.config.lstm_hidden_size))
+        return (c, h)
+        
+    def reset_hidden_state(self, hidden_state: LSTMState, reset_mask: jax.Array) -> LSTMState:
+        """Reset LSTM hidden state based on reset mask."""
+        # reset_mask: [B] - 1 where to reset, 0 where to keep
+        reset_mask = reset_mask.reshape(-1, 1)  # [B, 1]
+        
+        c, h = hidden_state
+        new_c = c * (1 - reset_mask)
+        new_h = h * (1 - reset_mask)
+        return (new_c, new_h)
+        
+    def __call__(self, 
+                 hidden_state: jax.Array, 
+                 reward_hidden: LSTMState | None = None,
+                 training: bool = False) -> Tuple[jax.Array, LSTMState]:
+        """
+        Forward pass through LSTM reward network.
+        
+        Args:
+            hidden_state: Hidden state from dynamics network 
+                         [B, C, H, W] for spatial or [B, C] for flat
+            reward_hidden: LSTM hidden state (h, c)
+            training: Whether in training mode
+            
+        Returns:
+            Tuple of (reward_prediction, new_reward_hidden)
+        """
+        batch_size = hidden_state.shape[0]
+        
+        # Initialize hidden state if None
+        if reward_hidden is None:
+            reward_hidden = self.init_hidden_state(batch_size)
+            
+        # Feature reduction: spatial vs flat paths
+        if self.config.use_image_observation:
+            # Spatial path: Conv1x1 reduction + flatten
+            x = self.conv1x1_reward(hidden_state)  # [B, reduced_channels, H, W]
+            x = x.reshape(batch_size, -1)  # [B, reduced_channels * H * W]
+        else:
+            # Flat path: MLP reduction
+            x = self.mlp_reward(hidden_state, training)  # [B, reduced_channels * spatial_size]
+        
+        # LSTM forward pass
+        new_reward_hidden, lstm_out = self.lstm_cell(reward_hidden, x)  # [B, lstm_hidden_size]
+        
+        # Predict reward support/scalar
+        reward_prediction = self.reward_head(lstm_out, training)  # [B, reward_support_size] or [B, 1]
+        
+        return reward_prediction, new_reward_hidden 

@@ -444,7 +444,7 @@ def test_muzero_initial_inference(config_fixture_name, request, rngs):
     dummy_obs = jnp.ones(dummy_obs_shape) # Use jnp.ones for dummy data
 
     # Test initial inference
-    hidden_state, reward, value, policy_logits, projected_output = model.initial_inference(dummy_obs, training=False)
+    hidden_state, reward, value, policy_logits, projected_output, reward_hidden = model.initial_inference(dummy_obs, training=False)
 
     if config.reward_support_size > 0:
         assert reward.shape == (config.batch_size, config.reward_support_size)
@@ -485,7 +485,7 @@ def test_muzero_recurrent_inference(config_fixture_name, request, rngs):
     else:
         current_hidden_state = jnp.ones((batch_size, config.num_channels))
 
-    next_hidden_state, reward, value, policy_logits, projected_output = model.recurrent_inference(current_hidden_state, dummy_action, training=False)
+    next_hidden_state, reward, value, policy_logits, projected_output, reward_hidden = model.recurrent_inference(current_hidden_state, dummy_action, training=False)
 
     if config.use_image_observation:
         assert next_hidden_state.shape == (batch_size, config.spatial_extents[0], config.spatial_extents[1], config.num_channels)
@@ -664,7 +664,7 @@ def test_muzero_network_initial_inference_with_projection_image(dummy_config_ima
     )
     obs_shape = config.observation_shape
     dummy_obs = jax.random.normal(obs_key, (config.batch_size, *obs_shape))
-    hidden_state, reward, value, policy_logits, projected_output = model.initial_inference(dummy_obs, training=False)
+    hidden_state, reward, value, policy_logits, projected_output, reward_hidden = model.initial_inference(dummy_obs, training=False)
     assert hidden_state.shape == (config.batch_size, config.spatial_extents[0], config.spatial_extents[1], config.num_channels)
     assert reward.shape == (config.batch_size,)
     assert value.shape == (config.batch_size,)
@@ -700,7 +700,7 @@ def test_muzero_network_recurrent_inference_with_projection_image(dummy_config_i
     )
     hidden_state = jax.random.normal(state_key, hidden_state_shape)
     action = jax.random.randint(action_key, (config.batch_size,), 0, config.num_actions)
-    next_hidden_state, reward, value, policy_logits, projected_output = model.recurrent_inference(hidden_state, action, training=False)
+    next_hidden_state, reward, value, policy_logits, projected_output, reward_hidden = model.recurrent_inference(hidden_state, action, training=False)
     assert next_hidden_state.shape == (config.batch_size, config.spatial_extents[0], config.spatial_extents[1], config.num_channels)
     assert reward.shape == (config.batch_size,)
     assert value.shape == (config.batch_size,)
@@ -728,7 +728,7 @@ def test_muzero_network_initial_inference_with_projection_flat(dummy_config_flat
     )
     obs_shape = config.observation_shape
     dummy_obs = jax.random.normal(jax.random.PRNGKey(123), (config.batch_size, *obs_shape))
-    hidden_state, reward, value, policy_logits, projected_output = model.initial_inference(dummy_obs, training=True)
+    hidden_state, reward, value, policy_logits, projected_output, reward_hidden = model.initial_inference(dummy_obs, training=True)
     assert hidden_state.shape == (config.batch_size, config.num_channels)
     if config.reward_support_size > 0:
         assert reward.shape == (config.batch_size, config.reward_support_size)
@@ -766,7 +766,7 @@ def test_muzero_network_recurrent_inference_with_projection_flat(dummy_config_fl
     )
     hidden_state = jax.random.normal(key, hidden_state_shape)
     action = jax.random.randint(key, (config.batch_size,), 0, config.num_actions)
-    next_hidden_state, reward, value, policy_logits, projected_output = model.recurrent_inference(hidden_state, action, training=True)
+    next_hidden_state, reward, value, policy_logits, projected_output, reward_hidden = model.recurrent_inference(hidden_state, action, training=True)
     assert next_hidden_state.shape == (config.batch_size, config.num_channels)
     if config.reward_support_size > 0:
         assert reward.shape == (config.batch_size, config.reward_support_size)
@@ -797,7 +797,7 @@ def test_muzero_network_initial_inference_without_projection(dummy_config_image)
     )
     obs_shape = config.observation_shape
     dummy_obs = jax.random.normal(obs_key, (config.batch_size, *obs_shape))
-    hidden_state, reward, value, policy_logits, projected_output = model.initial_inference(dummy_obs, training=False)
+    hidden_state, reward, value, policy_logits, projected_output, reward_hidden = model.initial_inference(dummy_obs, training=False)
     assert projected_output is None
 
 def test_muzero_network_recurrent_inference_without_projection(dummy_config_image):
@@ -823,7 +823,7 @@ def test_muzero_network_recurrent_inference_without_projection(dummy_config_imag
     )
     hidden_state = jax.random.normal(state_key, hidden_state_shape)
     action = jax.random.randint(action_key, (config.batch_size,), 0, config.num_actions)
-    next_hidden_state, reward, value, policy_logits, projected_output = model.recurrent_inference(hidden_state, action, training=False)
+    next_hidden_state, reward, value, policy_logits, projected_output, reward_hidden = model.recurrent_inference(hidden_state, action, training=False)
     assert projected_output is None
 
 # It might be good to add a test that raises ValueError if use_projection is True but dims are not set
@@ -899,8 +899,8 @@ def test_model_symlog_value_output():
     observation = jnp.array([[1.0, -2.0, 3.0, -4.0]])
     
     # Get initial inference outputs
-    _, _, value_symlog, _, _ = model_symlog.initial_inference(observation, training=False)
-    _, _, value_mse, _, _ = model_mse.initial_inference(observation, training=False)
+    _, _, value_symlog, _, _, reward_hidden = model_symlog.initial_inference(observation, training=False)
+    _, _, value_mse, _, _, reward_hidden = model_mse.initial_inference(observation, training=False)
     
     # The symlog model should output different values than the MSE model
     # (because symlog transformation is applied)
@@ -968,11 +968,11 @@ def test_model_symlog_reward_output():
     action = jnp.array([1])
     
     # Get initial inference to get hidden state, then do recurrent inference
-    hidden_state_symlog, _, _, _, _ = model_symlog.initial_inference(observation, training=False)
-    hidden_state_mse, _, _, _, _ = model_mse.initial_inference(observation, training=False)
+    hidden_state_symlog, _, _, _, _, reward_hidden = model_symlog.initial_inference(observation, training=False)
+    hidden_state_mse, _, _, _, _, reward_hidden = model_mse.initial_inference(observation, training=False)
     
-    _, reward_symlog, _, _, _ = model_symlog.recurrent_inference(hidden_state_symlog, action, training=False)
-    _, reward_mse, _, _, _ = model_mse.recurrent_inference(hidden_state_mse, action, training=False)
+    _, reward_symlog, _, _, _, reward_hidden = model_symlog.recurrent_inference(hidden_state_symlog, action, training=False)
+    _, reward_mse, _, _, _, reward_hidden = model_mse.recurrent_inference(hidden_state_mse, action, training=False)
     
     # The symlog model should output different rewards than the MSE model
     # (because symlog transformation is applied)
@@ -1043,8 +1043,8 @@ def test_model_symlog_base_configuration():
     action = jnp.array([1])
     
     # Get outputs from both models
-    _, reward_e, value_e, _, _ = model_base_e.initial_inference(observation, training=False)
-    _, reward_2, value_2, _, _ = model_base_2.initial_inference(observation, training=False)
+    _, reward_e, value_e, _, _, reward_hidden = model_base_e.initial_inference(observation, training=False)
+    _, reward_2, value_2, _, _, reward_hidden = model_base_2.initial_inference(observation, training=False)
     
     # Different bases should produce different outputs
     assert not jnp.allclose(value_e, value_2, atol=1e-6), \
@@ -1091,7 +1091,7 @@ def test_model_output_consistency_with_loss_functions():
     action = jr.randint(key, (batch_size,), 0, 5)
 
     # Test initial inference with categorical outputs
-    hidden_state, reward, value, policy_logits, _ = model.initial_inference(observation, training=False)
+    hidden_state, reward, value, policy_logits, _, reward_hidden = model.initial_inference(observation, training=False)
     
     # Verify shapes are compatible with loss functions
     assert reward.shape == (batch_size, 11), f"Expected reward shape (3, 11), got {reward.shape}"
@@ -1099,7 +1099,7 @@ def test_model_output_consistency_with_loss_functions():
     assert policy_logits.shape == (batch_size, 5), f"Expected policy shape (3, 5), got {policy_logits.shape}"
 
     # Test recurrent inference
-    next_hidden_state, reward_rec, value_rec, policy_logits_rec, _ = model.recurrent_inference(
+    next_hidden_state, reward_rec, value_rec, policy_logits_rec, _, reward_hidden = model.recurrent_inference(
         hidden_state, action, training=False
     )
     
@@ -1476,13 +1476,13 @@ def test_muzero_network_reset_noise_functionality():
     
     # Test initial inference
     observation = jax.random.normal(key, (batch_size, 32))
-    hidden_state1, reward1, value1, policy_logits1, proj1 = network.initial_inference(observation, training=False)
+    hidden_state1, reward1, value1, policy_logits1, proj1, reward_hidden = network.initial_inference(observation, training=False)
     
     # Reset noise
     network.reset_noise(jax.random.PRNGKey(777))
     
     # Test inference again - policy should be different due to noisy networks
-    hidden_state2, reward2, value2, policy_logits2, proj2 = network.initial_inference(observation, training=False)
+    hidden_state2, reward2, value2, policy_logits2, proj2, reward_hidden = network.initial_inference(observation, training=False)
     
     # Only policy should be different (since only policy network uses noisy layers in our implementation)
     assert not jnp.allclose(policy_logits1, policy_logits2, atol=1e-6)
@@ -1615,9 +1615,9 @@ def test_noisy_networks_action_item_25_completion():
     )
     
     observation = jnp.ones((batch_size, 32))
-    _, _, _, initial_policy, _ = full_network.initial_inference(observation)
+    _, _, _, initial_policy, _, reward_hidden = full_network.initial_inference(observation)
     full_network.reset_noise(jax.random.PRNGKey(888))
-    _, _, _, reset_policy, _ = full_network.initial_inference(observation)
+    _, _, _, reset_policy, _, reward_hidden = full_network.initial_inference(observation)
     assert not jnp.allclose(initial_policy, reset_policy, atol=1e-6), "Full network policy should change after noise reset"
     
     print("✅ Action Item 25: Noisy Networks Support - All completion criteria verified!")
