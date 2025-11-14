@@ -110,10 +110,18 @@ class TestVectorizedLossStrategy:
         
         # Convert targets to categorical format (host-side preparation)
         target_values_categorical = prepare_targets_for_loss_type_host(
-            batch_data['target_value'], "categorical", loss_config.value_support_size
+            batch_data['target_value'],
+            "categorical",
+            loss_config.value_support_size,
+            muzero_config.support_min,
+            muzero_config.support_max,
         )  # [B, K+1, S]
         target_rewards_categorical = prepare_targets_for_loss_type_host(
-            batch_data['target_reward'], "categorical", loss_config.reward_support_size
+            batch_data['target_reward'],
+            "categorical",
+            loss_config.reward_support_size,
+            muzero_config.support_min,
+            muzero_config.support_max,
         )  # [B, K+1, S]
         
         game_history_mask = batch_data['game_history_mask']
@@ -211,10 +219,18 @@ class TestVectorizedLossStrategy:
         
         # Convert scalar targets to categorical format
         target_values_categorical = prepare_targets_for_loss_type_host(
-            batch_data['target_value'], "categorical", S
+            batch_data['target_value'],
+            "categorical",
+            S,
+            muzero_config.support_min,
+            muzero_config.support_max,
         )
         target_rewards_categorical = prepare_targets_for_loss_type_host(
-            batch_data['target_reward'], "categorical", S
+            batch_data['target_reward'],
+            "categorical",
+            S,
+            muzero_config.support_min,
+            muzero_config.support_max,
         )
         target_policies = batch_data['target_policy']
         masks = jnp.ones((B, K + 1))  # Use full mask for cleaner comparison
@@ -308,7 +324,11 @@ class TestVectorizedLossStrategy:
         
         # Host-side preparation (pre-JIT) - CURRENT OPTIMIZED APPROACH
         prepared_targets = prepare_targets_for_loss_type_host(
-            scalar_targets, "categorical", loss_config.value_support_size
+            scalar_targets,
+            "categorical",
+            loss_config.value_support_size,
+            muzero_config.support_min,
+            muzero_config.support_max,
         )
         
         # Verify shape conversion happened correctly on host
@@ -512,7 +532,11 @@ class TestVectorizedLossStrategy:
             # Prepare inputs based on loss types
             if value_loss_type in ["categorical", "kl"]:
                 processed_values = prepare_targets_for_loss_type_host(
-                    batch_data['target_value'], "categorical", loss_config.value_support_size
+                    batch_data['target_value'],
+                    "categorical",
+                    loss_config.value_support_size,
+                    test_config.support_min,
+                    test_config.support_max,
                 )
                 predicted_values = jax.random.normal(jax.random.PRNGKey(42), (B, K + 1, loss_config.value_support_size))
             else:
@@ -521,7 +545,11 @@ class TestVectorizedLossStrategy:
             
             if reward_loss_type in ["categorical", "kl"]:
                 processed_rewards = prepare_targets_for_loss_type_host(
-                    batch_data['target_reward'], "categorical", loss_config.reward_support_size
+                    batch_data['target_reward'],
+                    "categorical",
+                    loss_config.reward_support_size,
+                    test_config.support_min,
+                    test_config.support_max,
                 )
                 predicted_rewards = jax.random.normal(jax.random.PRNGKey(43), (B, K + 1, loss_config.reward_support_size))
             else:
@@ -571,10 +599,18 @@ class TestVectorizedLossStrategy:
         
         # Convert scalar targets to categorical format
         target_values_categorical = prepare_targets_for_loss_type_host(
-            batch_data['target_value'], "categorical", S
+            batch_data['target_value'],
+            "categorical",
+            S,
+            muzero_config.support_min,
+            muzero_config.support_max,
         )
         target_rewards_categorical = prepare_targets_for_loss_type_host(
-            batch_data['target_reward'], "categorical", S
+            batch_data['target_reward'],
+            "categorical",
+            S,
+            muzero_config.support_min,
+            muzero_config.support_max,
         )
         target_policies = batch_data['target_policy']
         masks = batch_data['game_history_mask']
@@ -753,10 +789,18 @@ class TestVectorizedLossStrategy:
         
         # Convert scalar targets to categorical format ON HOST (optimization 1)
         target_values_categorical = prepare_targets_for_loss_type_host(
-            batch_data['target_value'], "categorical", S
+            batch_data['target_value'],
+            "categorical",
+            S,
+            muzero_config.support_min,
+            muzero_config.support_max,
         )
         target_rewards_categorical = prepare_targets_for_loss_type_host(
-            batch_data['target_reward'], "categorical", S
+            batch_data['target_reward'],
+            "categorical",
+            S,
+            muzero_config.support_min,
+            muzero_config.support_max,
         )
         target_policies = batch_data['target_policy']
         masks = batch_data['game_history_mask']
@@ -764,7 +808,13 @@ class TestVectorizedLossStrategy:
         # Test 1: Host-side preparation eliminates JIT overhead
         start_time = time.time()
         for _ in range(10):
-            _ = prepare_targets_for_loss_type_host(batch_data['target_value'], "categorical", S)
+            _ = prepare_targets_for_loss_type_host(
+                batch_data['target_value'],
+                "categorical",
+                S,
+                muzero_config.support_min,
+                muzero_config.support_max,
+            )
         host_prep_time = time.time() - start_time
         print(f"  ⏱️  Host-side preparation time (10 iterations): {host_prep_time:.4f}s")
         

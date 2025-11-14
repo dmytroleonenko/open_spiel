@@ -119,8 +119,10 @@ class TestCriticalActionItemsSummary:
         # Verify Action Item #3 fix: Full model state copying
         assert "full_model_state = nnx.state(self.model)" in trainer_code, \
             "Action Item #3: Full model state copying should be implemented"
-        assert "nnx.update(self.reanalysis_model, full_model_state)" in trainer_code, \
-            "Action Item #3: Reanalysis model should receive full state"
+        assert "def _sync_aux_model" in trainer_code and "nnx.update(target_model, full_model_state)" in trainer_code, \
+            "Action Item #3: Auxiliary sync helper must copy full state"
+        assert "self._sync_aux_model(self.reanalysis_model)" in trainer_code, \
+            "Action Item #3: Reanalysis model should receive full state via helper"
         
         # Verify Action Item #4 fix: Momentum clamping
         assert "jnp.clip(momentum, self.config.ema_m_final, self.config.ema_m_peak)" in trainer_code, \

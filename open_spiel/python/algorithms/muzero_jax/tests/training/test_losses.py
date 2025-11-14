@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 import flax.experimental.nnx as nnx # For creating mock parameters for L2 reg
 import optax
+from unittest.mock import patch
 from open_spiel.python.algorithms.muzero_jax.training import losses
 
 # --- Test scalar_mse_loss ---
@@ -116,6 +117,18 @@ def test_compute_categorical_value_loss():
     expected_loss = base_kl_loss * weights
     
     assert jnp.allclose(losses.compute_categorical_value_loss(logits, targets), expected_loss)
+
+def test_categorical_value_loss_reduces_mismatched_shapes():
+    """Branch with mismatched shapes should collapse per-step KL to per-sample."""
+    logits = jnp.zeros((2, 3))
+    targets = jnp.array([[0., 1., 0.], [1., 0., 0.]])
+    fake_loss = jnp.array([[1.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+
+    with patch('open_spiel.python.algorithms.muzero_jax.training.losses.compute_kl_loss', return_value=fake_loss):
+        loss = losses.compute_categorical_value_loss(logits, targets)
+
+    expected = jnp.sum(fake_loss, axis=-1) * 0.5  # symmetric IQL weights = 0.5
+    assert jnp.allclose(loss, expected)
 
 def test_categorical_value_loss_vs_cross_entropy():
     """Verify that categorical value loss uses KL divergence, not cross-entropy."""

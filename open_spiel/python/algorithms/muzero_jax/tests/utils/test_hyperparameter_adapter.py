@@ -127,6 +127,27 @@ class HyperparameterAdapterTest(parameterized.TestCase):
         self.assertTrue(jnp.allclose(lambdas_v, lambdas_s))
         self.assertTrue(jnp.array_equal(steps_v, steps_s))
 
+    def test_model_update_interval_interpolation(self):
+        """Adaptive interval decays from base to the configured minimum."""
+        cfg = HyperparameterAdapterConfig(auto_td_steps=100)
+        adapter = HyperparameterAdapter(cfg, collected_transitions=0)
+        base_interval = 40
+        min_interval = 10
+
+        early = adapter.compute_model_update_interval(0, base_interval, min_interval)
+        mid = adapter.compute_model_update_interval(50, base_interval, min_interval)
+        late = adapter.compute_model_update_interval(200, base_interval, min_interval)
+
+        self.assertEqual(early, base_interval)
+        self.assertLess(mid, base_interval)
+        self.assertEqual(late, min_interval)
+
+    def test_model_update_interval_handles_zero_base(self):
+        """If the base interval is zero we should return zero immediately."""
+        cfg = HyperparameterAdapterConfig(auto_td_steps=1)
+        adapter = HyperparameterAdapter(cfg, collected_transitions=0)
+        self.assertEqual(adapter.compute_model_update_interval(10, 0, 0), 0)
+
 
 if __name__ == "__main__":
     absltest.main() 

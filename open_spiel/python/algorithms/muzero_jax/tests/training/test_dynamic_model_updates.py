@@ -265,6 +265,73 @@ class DynamicModelUpdatesTest(parameterized.TestCase):
             )
         )
 
+    def test_adaptive_intervals_shrink_to_minimums(self):
+        """Adaptive scheduling should move towards the configured minimums."""
+        rng_key = jax.random.PRNGKey(123)
+        cfg, learner = self._get_config_and_learner(
+            rng_key,
+            auto_td_steps=4,
+            reanalyze_update_interval=8,
+            self_play_update_interval=6,
+            reanalyze_update_interval_min=2,
+            self_play_update_interval_min=1,
+        )
+        # Initial next syncs should match the base intervals since step=0
+        self.assertEqual(learner._next_reanalyze_sync, cfg.reanalyze_update_interval)
+        self.assertEqual(learner._next_self_play_sync, cfg.self_play_update_interval)
+
+        # Advance training far enough to hit the minimum interval
+        learner.num_training_steps = cfg.auto_td_steps
+        learner._reschedule_model_updates()
+
+        reanalyze_interval = learner._next_reanalyze_sync - learner.num_training_steps
+        self_play_interval = learner._next_self_play_sync - learner.num_training_steps
+
+        self.assertEqual(reanalyze_interval, learner._reanalyze_min_interval)
+        self.assertEqual(self_play_interval, learner._self_play_min_interval)
+
+    def test_compute_next_sync_step_handles_disabled_paths(self):
+        """Helper should return 0 if either disabled or interval collapses."""
+        rng_key = jax.random.PRNGKey(7)
+        cfg, learner = self._get_config_and_learner(
+            rng_key,
+            reanalyze_update_interval=0,
+            self_play_update_interval=5,
+            self_play_update_interval_min=2,
+        )
+        self.assertEqual(
+            learner._compute_next_sync_step(0, base_interval=0, min_interval=1, enabled=True), 0
+        )
+        self.assertEqual(
+            learner._compute_next_sync_step(0, base_interval=10, min_interval=2, enabled=False), 0
+        )
+
+    def test_resolve_min_interval_non_positive_base(self):
+        """_resolve_min_interval should short-circuit when base interval <= 0."""
+        rng_key = jax.random.PRNGKey(11)
+        cfg, learner = self._get_config_and_learner(rng_key)
+        self.assertEqual(learner._resolve_min_interval(base_interval=0, override=5), 0)
+        self.assertEqual(learner._resolve_min_interval(base_interval=-3, override=0), 0)
+
+    def test_compute_next_sync_step_collapsed_interval(self):
+        """If the adapter collapses the interval we should return zero."""
+        rng_key = jax.random.PRNGKey(13)
+        cfg, learner = self._get_config_and_learner(
+            rng_key,
+            reanalyze_update_interval=5,
+            self_play_update_interval=5,
+        )
+        learner._model_update_adapter.compute_model_update_interval = lambda *args, **kwargs: 0
+        self.assertEqual(
+            learner._compute_next_sync_step(
+                current_step=10,
+                base_interval=5,
+                min_interval=1,
+                enabled=True,
+            ),
+            0,
+        )
+
 
 if __name__ == "__main__":
     absltest.main() 

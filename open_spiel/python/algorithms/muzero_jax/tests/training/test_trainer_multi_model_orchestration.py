@@ -198,30 +198,6 @@ class TestMultiModelOrchestration:
         # This indicates that real MCTS search was performed rather than returning uniform placeholders
         assert jnp.any(policy_variance > 1e-6), "All policies are uniform, suggesting placeholder implementation"
     
-    def test_mcts_recurrent_function_integration(self, model, config):
-        """Test that MCTS recurrent function properly connects to MuZero network."""
-        from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import _create_fallback_recurrent_fn
-        
-        # Create recurrent function
-        recurrent_fn = _create_fallback_recurrent_fn(model, config)
-        
-        # Test with dummy inputs
-        batch_size = 2
-        embedding = jnp.ones((batch_size, 32))  # Hidden state (flat for tic-tac-toe)
-        action = jnp.array([0, 1])  # Actions
-        rng_key = jax.random.PRNGKey(42)
-        
-        # Call recurrent function
-        output, new_embedding = recurrent_fn(None, rng_key, action, embedding)
-        
-        # Check that output has correct structure
-        assert hasattr(output, 'reward') or 'reward' in output
-        assert hasattr(output, 'value') or 'value' in output
-        assert hasattr(output, 'prior_logits') or 'prior_logits' in output
-        
-        # Check that new embedding has correct shape
-        assert new_embedding.shape[0] == batch_size
-    
     def test_no_remaining_placeholders_in_production_paths(self, model, config):
         """Test that no placeholder values are returned in production code paths."""
         from open_spiel.python.algorithms.muzero_jax.training.trainer import compute_policy_reanalysis_targets

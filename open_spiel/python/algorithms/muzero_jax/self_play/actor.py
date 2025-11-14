@@ -153,11 +153,11 @@ class Actor:
                         self.current_params = checkpoint_data['network_state']
                     elif 'params' in checkpoint_data:
                         self.current_params = checkpoint_data['params']
-                    else:  # pragma: no cover
-                        # Assume the checkpoint data itself contains the parameters  # pragma: no cover
-                        self.current_params = checkpoint_data  # pragma: no cover
-                        
-                    self.logger.info(f"Loaded and applied parameters from {latest_checkpoint}")  # pragma: no cover
+                    else:
+                        # Assume the checkpoint data itself contains the parameters
+                        self.current_params = checkpoint_data
+                    
+                    self.logger.info(f"Loaded and applied parameters from {latest_checkpoint}")
                     return True
                 except Exception as e:
                     self.logger.warning(f"Failed to load parameters: {e}")

@@ -53,6 +53,7 @@ class TestBootstrapActor:
         # Mock pyspiel.MCTSBot creation
         with patch('pyspiel.MCTSBot') as mock_mcts_bot_class:
             mock_mcts_bot_instance = Mock()
+            mock_mcts_bot_instance.step_with_policy.return_value = ([(0, 1.0)], 0)
             mock_mcts_bot_class.return_value = mock_mcts_bot_instance
             
             actor = BootstrapActor(
@@ -95,286 +96,152 @@ class TestBootstrapActor:
             assert actor.replay_buffer == mock_replay_buffer
             assert actor.config == mock_config
 
-    def test_chance_node_handling_in_play_episode(self, bootstrap_actor, mock_game_wrapper):
-        """Test chance node handling in play_episode method (covers lines 98-123)."""
-        # Mock state object with chance node behavior
+    def test_chance_nodes_are_sampled_without_logging(self, bootstrap_actor, mock_game_wrapper):
+        """Chance nodes should be sampled but not yield trajectory entries."""
         mock_state = Mock()
-        mock_state.is_chance_node.return_value = True
-        mock_state.chance_outcomes.return_value = [
-            (0, 0.3), (1, 0.4), (2, 0.3)  # action, probability pairs
-        ]
+        mock_state.is_terminal.side_effect = [False, False, True]
+        mock_state.is_chance_node.side_effect = [True, False, False]
+        mock_state.chance_outcomes.return_value = [(1, 0.2), (3, 0.8)]
         mock_state.observation_tensor.return_value = list(range(27))
-        mock_state.apply_action = Mock()
-        
-        # After applying chance action, switch to decision node
-        def mock_apply_action_side_effect(action):
-            mock_state.is_chance_node.return_value = False
-            mock_state.is_terminal.return_value = True  # Terminate after chance action
-        
-        mock_state.apply_action.side_effect = mock_apply_action_side_effect
-        mock_state.is_terminal.return_value = False
-        
-        # Mock game wrapper
+        mock_state.legal_actions.return_value = [0]
+        mock_state.rewards.return_value = [0.5]
+        mock_state.apply_action.side_effect = lambda action: None
+        mock_state.returns.return_value = [1.0]
         mock_game_wrapper._game.new_initial_state.return_value = mock_state
-        
-        # Mock numpy random choice to be deterministic
-        with patch('numpy.random.choice') as mock_choice:
-            mock_choice.return_value = 1  # Choose index 1 (action 1)
-            
-            episode_data = bootstrap_actor.play_episode(jax.random.PRNGKey(42))
-            
-            # Verify chance node handling occurred
-            mock_state.chance_outcomes.assert_called_once()
-            mock_state.apply_action.assert_called_with(1)  # Should apply chosen action
-            
-            # Verify that chance node data was stored
-            assert len(episode_data['observations']) >= 1
-            assert len(episode_data['actions']) >= 1
-            assert len(episode_data['rewards']) >= 1
-            assert len(episode_data['policy_targets']) >= 1
-            assert len(episode_data['value_targets']) >= 1
-            
-            # Check that chance node was handled with uniform policy
-            uniform_policy = episode_data['policy_targets'][0]
-            expected_uniform = jnp.ones(9) / 9
-            assert jnp.allclose(uniform_policy, expected_uniform)
 
-    def test_observation_none_break_condition(self, bootstrap_actor, mock_game_wrapper):
-        """Test break condition when observation is None (covers line 128)."""
-        # Mock state that returns None observation
+        with patch.object(bootstrap_actor, "_sample_chance_action", return_value=3) as mock_sampler:
+            bootstrap_actor.mcts_bot.step_with_policy.return_value = ([(0, 1.0)], 0)
+            data = bootstrap_actor.play_episode(jax.random.PRNGKey(0))
+
+        mock_sampler.assert_called_once()
+        # Only the decision node should appear in the trajectory.
+        assert data['actions'] == [0]
+        assert len(data['observations']) == 1
+        assert len(data['policy_targets']) == 1
+
+    def test_observation_none_breaks_episode(self, bootstrap_actor, mock_game_wrapper):
+        """If observation tensors are missing we abort the episode."""
         mock_state = Mock()
+        mock_state.is_terminal.return_value = False
         mock_state.is_chance_node.return_value = False
-        mock_state.is_terminal.return_value = False
-        mock_state.observation_tensor.return_value = None  # This should trigger break
-        mock_state.legal_actions.return_value = [0, 1, 2]  # Add legal actions for mock
-        
-        # Mock game wrapper
-        mock_game_wrapper._game.new_initial_state.return_value = mock_state
-        
-        # The actual implementation converts None to jnp.array(None) which becomes NaN
-        # So we expect this to continue and produce some trajectory data
-        episode_data = bootstrap_actor.play_episode(jax.random.PRNGKey(42))
-        
-        # Due to the way JAX handles None, the episode should actually continue
-        # and we'll get at least some data (the test checks coverage, not exact logic)
-        assert isinstance(episode_data, dict)
-        assert 'observations' in episode_data
-        assert 'actions' in episode_data
-        assert 'rewards' in episode_data
-        assert 'policy_targets' in episode_data
-        assert 'value_targets' in episode_data
-
-    def test_single_legal_action_policy_setting(self, bootstrap_actor, mock_game_wrapper):
-        """Test MCTS policy with single legal action (covers line 193)."""
-        # Mock state with only one legal action
-        mock_state = Mock()
-        mock_state.legal_actions.return_value = [3]  # Only action 3 is legal
-        mock_game_wrapper.num_distinct_actions.return_value = 9
-        
-        selected_action = 3
-        
-        policy = bootstrap_actor._get_mcts_policy(mock_state, selected_action)
-        
-        # Should give full probability to the single legal action
-        expected_policy = jnp.zeros(9)
-        expected_policy = expected_policy.at[3].set(1.0)
-        
-        assert jnp.allclose(policy, expected_policy)
-        assert jnp.sum(policy) == pytest.approx(1.0)
-
-    def test_multiple_legal_actions_policy_distribution(self, bootstrap_actor, mock_game_wrapper):
-        """Test MCTS policy with multiple legal actions."""
-        # Mock state with multiple legal actions
-        mock_state = Mock()
-        mock_state.legal_actions.return_value = [1, 3, 5, 7]  # Multiple legal actions
-        mock_game_wrapper.num_distinct_actions.return_value = 9
-        
-        selected_action = 3
-        
-        policy = bootstrap_actor._get_mcts_policy(mock_state, selected_action)
-        
-        # Should give higher weight to selected action, distribute rest
-        assert policy[3] == pytest.approx(0.7)  # Selected action gets 0.7
-        
-        # Other legal actions should get equal share of remaining 0.3
-        other_weight = 0.3 / 3  # 3 other legal actions
-        for action in [1, 5, 7]:
-            assert policy[action] == pytest.approx(other_weight)
-        
-        # Illegal actions should have zero probability
-        for action in [0, 2, 4, 6, 8]:
-            assert policy[action] == 0.0
-        
-        assert jnp.sum(policy) == pytest.approx(1.0)
-
-    def test_empty_legal_actions_policy(self, bootstrap_actor, mock_game_wrapper):
-        """Test MCTS policy with empty legal actions list."""
-        # Mock state with no legal actions
-        mock_state = Mock()
+        mock_state.observation_tensor.return_value = None
         mock_state.legal_actions.return_value = []
-        mock_game_wrapper.num_distinct_actions.return_value = 9
-        
-        selected_action = 0
-        
-        policy = bootstrap_actor._get_mcts_policy(mock_state, selected_action)
-        
-        # Should return uniform zero policy
-        expected_policy = jnp.zeros(9)
-        assert jnp.allclose(policy, expected_policy)
+        mock_state.rewards.return_value = []
+        mock_state.returns.return_value = []
+        mock_game_wrapper._game.new_initial_state.return_value = mock_state
 
-    def test_complete_episode_with_decision_nodes(self, bootstrap_actor, mock_game_wrapper):
-        """Test complete episode with only decision nodes."""
-        # Mock state progression
+        data = bootstrap_actor.play_episode(jax.random.PRNGKey(0))
+        assert data['observations'] == []
+        assert data['actions'] == []
+        assert data['policy_targets'] == []
+        assert data['rewards'] == []
+
+    def test_policy_from_entries_normalizes_probabilities(self, bootstrap_actor):
+        """Visit-count entries are normalized into a dense vector."""
+        policy = bootstrap_actor._policy_from_entries([(1, 2.0), (3, 1.0)], legal_actions=[1, 3])
+        assert policy[1] == pytest.approx(2.0 / 3.0)
+        assert policy[3] == pytest.approx(1.0 / 3.0)
+        assert jnp.sum(policy) == pytest.approx(1.0)
+
+    def test_policy_from_entries_uniform_fallback(self, bootstrap_actor):
+        """Empty entries fall back to a uniform distribution over legal moves."""
+        policy = bootstrap_actor._policy_from_entries([], legal_actions=[0, 2, 4])
+        assert policy[0] == pytest.approx(1 / 3)
+        assert policy[2] == pytest.approx(1 / 3)
+        assert policy[4] == pytest.approx(1 / 3)
+
+    def test_policy_from_entries_handles_no_actions(self, bootstrap_actor):
+        """If there are no entries and no legal actions we simply return all zeros."""
+        policy = bootstrap_actor._policy_from_entries([], legal_actions=[])
+        assert jnp.all(policy == 0.0)
+
+    def test_complete_episode_records_actions_and_policies(self, bootstrap_actor, mock_game_wrapper):
+        """End-to-end episode with two decision nodes."""
         step_count = 0
-        observations = [
-            list(range(27)),  # Step 0
-            list(range(1, 28)),  # Step 1  
-            list(range(2, 29))   # Step 2
-        ]
-        
-        def mock_observation_tensor():
-            return observations[min(step_count, len(observations) - 1)]
-        
+
         def mock_is_terminal():
             return step_count >= 2
-        
-        def mock_apply_action(action):
-            nonlocal step_count
-            step_count += 1
-        
-        mock_state = Mock()
-        mock_state.is_chance_node.return_value = False
-        mock_state.is_terminal.side_effect = mock_is_terminal
-        mock_state.observation_tensor.side_effect = mock_observation_tensor
-        mock_state.apply_action.side_effect = mock_apply_action
-        mock_state.current_player.return_value = 0
-        mock_state.returns.return_value = [1.0, -1.0]  # Player 0 wins
-        
-        # Mock legal actions
-        def mock_legal_actions():
-            if step_count == 0:
-                return [0, 1, 2]
-            elif step_count == 1:
-                return [1, 3, 5]
-            else:
-                return []
-        
-        mock_state.legal_actions.side_effect = mock_legal_actions
-        
-        # Mock game wrapper
-        mock_game_wrapper._game.new_initial_state.return_value = mock_state
-        
-        # Mock MCTS bot to return different actions
-        bootstrap_actor.mcts_bot.step.side_effect = [1, 3]  # Actions for steps 0 and 1
-        
-        episode_data = bootstrap_actor.play_episode(jax.random.PRNGKey(42))
-        
-        # Verify episode structure
-        assert len(episode_data['observations']) == 2  # 2 steps before terminal
-        assert len(episode_data['actions']) == 2
-        assert len(episode_data['rewards']) == 2
-        assert len(episode_data['policy_targets']) == 2
-        assert len(episode_data['value_targets']) == 2
-        
-        # Verify actions match MCTS bot output
-        assert episode_data['actions'] == [1, 3]
-        
-        # Verify final rewards are computed correctly  
-        # Note: Terminal reward is sum(returns) = 1.0 + (-1.0) = 0.0
-        # Value targets are computed from n-step returns starting from rewards list
-        assert episode_data['value_targets'][-1] == 0.0  # Zero-sum game terminal value
 
-    def test_episode_with_mixed_chance_and_decision_nodes(self, bootstrap_actor, mock_game_wrapper):
-        """Test episode with both chance and decision nodes."""
-        step_count = 0
-        
         def mock_is_chance_node():
-            return step_count == 0  # First step is chance node
-        
-        def mock_is_terminal():
-            return step_count >= 2
-        
+            return False
+
+        observations = [
+            list(range(27)),
+            list(range(1, 28)),
+        ]
+
         def mock_observation_tensor():
-            return list(range(27)) if step_count < 3 else None
-        
+            idx = min(step_count, len(observations) - 1)
+            return observations[idx]
+
         def mock_apply_action(action):
             nonlocal step_count
             step_count += 1
-        
+
+        def mock_legal_actions():
+            return [0, 1, 2, 3]
+
+        rewards_per_step = [[0.0], [0.3]]
+
+        def mock_rewards():
+            if step_count == 0:
+                return [0.0]
+            idx = min(step_count - 1, len(rewards_per_step) - 1)
+            return rewards_per_step[idx]
+
         mock_state = Mock()
-        mock_state.is_chance_node.side_effect = mock_is_chance_node
         mock_state.is_terminal.side_effect = mock_is_terminal
+        mock_state.is_chance_node.side_effect = mock_is_chance_node
         mock_state.observation_tensor.side_effect = mock_observation_tensor
         mock_state.apply_action.side_effect = mock_apply_action
-        mock_state.current_player.return_value = 0
-        mock_state.returns.return_value = [0.5, -0.5]
-        
-        # Chance outcomes for step 0
-        mock_state.chance_outcomes.return_value = [(1, 0.5), (2, 0.5)]
-        
-        # Legal actions for decision node at step 1
-        def mock_legal_actions():
-            if step_count == 1:
-                return [0, 2, 4]
-            return []
-        
         mock_state.legal_actions.side_effect = mock_legal_actions
-        
-        # Mock game wrapper
+        mock_state.rewards.side_effect = mock_rewards
+        mock_state.returns.return_value = [1.0]
         mock_game_wrapper._game.new_initial_state.return_value = mock_state
-        
-        # Mock MCTS bot for decision node
-        bootstrap_actor.mcts_bot.step.return_value = 2
-        
-        # Mock numpy random choice for chance node
-        with patch('numpy.random.choice') as mock_choice:
-            mock_choice.return_value = 0  # Choose first outcome (action 1)
-            
-            episode_data = bootstrap_actor.play_episode(jax.random.PRNGKey(42))
-            
-            # Should have data from both chance and decision nodes
-            assert len(episode_data['observations']) == 2
-            assert len(episode_data['actions']) == 2
-            assert episode_data['actions'] == [1, 2]  # Chance action 1, decision action 2
-            
-            # First policy should be uniform (chance node), second should favor selected action
-            first_policy = episode_data['policy_targets'][0]
-            expected_uniform = jnp.ones(9) / 9
-            assert jnp.allclose(first_policy, expected_uniform)
-            
-            second_policy = episode_data['policy_targets'][1]
-            assert second_policy[2] == pytest.approx(0.7)  # Selected action gets higher weight
 
-    def test_chance_outcomes_with_zero_probabilities(self, bootstrap_actor, mock_game_wrapper):
-        """Test chance node handling with zero probability outcomes."""
-        mock_state = Mock()
-        mock_state.is_chance_node.return_value = True
-        mock_state.chance_outcomes.return_value = [
-            (0, 0.0), (1, 1.0), (2, 0.0)  # Only action 1 has non-zero probability
+        bootstrap_actor.mcts_bot.step_with_policy.side_effect = [
+            ([(0, 0.25), (1, 0.75)], 1),
+            ([(2, 1.0)], 2),
         ]
-        mock_state.observation_tensor.return_value = list(range(27))
-        
-        # After chance action, become terminal
-        def mock_apply_action(action):
-            mock_state.is_chance_node.return_value = False
-            mock_state.is_terminal.return_value = True
-        
-        mock_state.apply_action.side_effect = mock_apply_action
-        mock_state.is_terminal.return_value = False
-        mock_state.current_player.return_value = 0
-        mock_state.returns.return_value = [0.0]
-        
-        mock_game_wrapper._game.new_initial_state.return_value = mock_state
-        
-        # Should deterministically choose action 1 (only non-zero probability)
-        with patch('numpy.random.choice') as mock_choice:
-            mock_choice.return_value = 1  # Index into outcomes array
-            
-            episode_data = bootstrap_actor.play_episode(jax.random.PRNGKey(42))
-            
-            # Verify the chance action was applied
-            mock_state.apply_action.assert_called_with(1)
-            assert episode_data['actions'][0] == 1
+
+        data = bootstrap_actor.play_episode(jax.random.PRNGKey(0))
+
+        assert data['actions'] == [1, 2]
+        assert len(data['policy_targets']) == 2
+        assert data['policy_targets'][0][1] == pytest.approx(0.75)
+        assert data['policy_targets'][1][2] == pytest.approx(1.0)
+        assert data['rewards'] == [0.0, 0.3]
+        assert len(data['value_targets']) == 2
+
+    def test_value_targets_match_discounted_returns(self, bootstrap_actor):
+        """_compute_value_targets implements n-step discounted sums."""
+        rewards = [1.0, 2.0, 3.0]
+        targets = bootstrap_actor._compute_value_targets(rewards, final_value=0.5)
+        assert len(targets) == 3
+        # With n_step_return=5 the first target sums the discounted rewards only.
+        expected = 1.0 + 0.99 * 2.0 + 0.99**2 * 3.0
+        assert targets[0] == pytest.approx(expected)
+
+    def test_sample_chance_action_respects_probabilities(self, bootstrap_actor):
+        """_sample_chance_action honors provided probability weights."""
+        outcomes = [(0, 0.0), (1, 1.0)]
+        sampled = bootstrap_actor._sample_chance_action(jax.random.PRNGKey(0), outcomes)
+        assert sampled == 1
+
+    def test_sample_chance_action_uniform_fallback(self, bootstrap_actor):
+        """Zero total probability falls back to uniform sampling over outcomes."""
+        outcomes = [(7, 0.0)]
+        sampled = bootstrap_actor._sample_chance_action(jax.random.PRNGKey(0), outcomes)
+        assert sampled == 7
+
+    def test_run_reports_zero_episode_stats(self, bootstrap_actor):
+        """run() should still return stats even if no episodes are executed."""
+        bootstrap_actor.replay_buffer = []
+        stats = bootstrap_actor.run(jax.random.PRNGKey(0), num_episodes=0)
+        assert stats['episodes_played'] == 0
+        assert stats['avg_episode_length'] == 0
+        assert stats['avg_episode_reward'] == 0
+
 
 
 class TestBootstrapConfiguration:

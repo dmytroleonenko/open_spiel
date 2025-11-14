@@ -198,6 +198,57 @@ class TestActor:
                 max_num_considered_actions=4
             )
 
+    def test_maybe_load_parameters_plain_dict(self, mock_config, mock_muzero_network, mock_game_wrapper):
+        """Fallback branch should accept checkpoints that are raw parameter blobs."""
+        from open_spiel.python.algorithms.muzero_jax.self_play.actor import Actor
+        mock_replay_buffer = Mock(spec=TrajectoryBuffer)
+        actor = Actor(
+            network=mock_muzero_network,
+            game_wrapper=mock_game_wrapper,
+            replay_buffer=mock_replay_buffer,
+            config=mock_config,
+        )
+        with patch(
+            "open_spiel.python.algorithms.muzero_jax.self_play.actor.get_latest_checkpoint",
+            return_value="/tmp/fake.ckpt",
+        ), patch.object(
+            actor,
+            "load_network_parameters",
+            return_value={"weights_only": jnp.array([1.0, 2.0])},
+        ):
+            assert actor.maybe_load_latest_parameters("/tmp/dir") is True
+            assert jnp.allclose(actor.current_params["weights_only"], jnp.array([1.0, 2.0]))
+
+    def test_recurrent_fn_fallback_when_mcts_lacks_hooks(
+        self, mock_config, mock_muzero_network, mock_game_wrapper
+    ):
+        """When the underlying MCTS helper lacks custom hooks we fall back to deterministic fn."""
+        from open_spiel.python.algorithms.muzero_jax.self_play.actor import Actor
+        mock_replay_buffer = Mock(spec=TrajectoryBuffer)
+        actor = Actor(
+            network=mock_muzero_network,
+            game_wrapper=mock_game_wrapper,
+            replay_buffer=mock_replay_buffer,
+            config=mock_config,
+        )
+        actor.mcts = type("DummyMCTS", (), {})()  # No _create_* helpers -> fallback path
+
+        deterministic_fn = actor._create_recurrent_fn()
+        decision_fn = actor._create_decision_recurrent_fn()
+        chance_fn = actor._create_chance_recurrent_fn()
+
+        params = None
+        rng_key = jax.random.PRNGKey(0)
+        action = jnp.array([0])
+        embedding = jnp.zeros((1, 64))
+
+        expected_decision = deterministic_fn(params, rng_key, action, embedding)
+        dec_out = decision_fn(params, rng_key, action, embedding)
+        chance_out = chance_fn(params, rng_key, action, embedding)
+        assert jnp.allclose(dec_out[0].reward, expected_decision[0].reward)
+        assert jnp.allclose(dec_out[0].value, expected_decision[0].value)
+        assert jnp.allclose(chance_out[0].reward, expected_decision[0].reward)
+
         # Test valid parameters
         actor = Actor(
             network=mock_muzero_network,
@@ -269,12 +320,12 @@ class TestActor:
             result = actor.maybe_load_latest_parameters(checkpoint_dir)
             assert result is False
 
-        # Test when checkpoint exists and loads successfully
+        # Test when checkpoint exists and returns network_state blob
         with patch('open_spiel.python.algorithms.muzero_jax.self_play.actor.get_latest_checkpoint') as mock_get_latest, \
                 patch.object(actor, 'load_network_parameters') as mock_load_params:
 
             mock_get_latest.return_value = "/path/to/checkpoints/latest.ckpt"
-            mock_params = {'test': 'params'}
+            mock_params = {'network_state': {'weights': jnp.ones(2)}}
             mock_load_params.return_value = mock_params
 
             result = actor.maybe_load_latest_parameters(checkpoint_dir)
@@ -282,7 +333,7 @@ class TestActor:
             mock_load_params.assert_called_once_with(
                 "/path/to/checkpoints/latest.ckpt")
             # Check that parameters were stored
-            assert actor.current_params == mock_params
+            assert actor.current_params == mock_params['network_state']
 
         # Test when checkpoint exists but loading fails
         with patch('open_spiel.python.algorithms.muzero_jax.self_play.actor.get_latest_checkpoint') as mock_get_latest, \
@@ -293,6 +344,31 @@ class TestActor:
 
             result = actor.maybe_load_latest_parameters(checkpoint_dir)
             assert result is False
+
+    def test_actor_maybe_load_params_field(self, mock_config, mock_muzero_network):
+        """`maybe_load_latest_parameters` should store the `params` field when present."""
+        from open_spiel.python.algorithms.muzero_jax.self_play.actor import Actor
+
+        mock_game_wrapper = Mock(spec=GameWrapper)
+        mock_game_wrapper.is_stochastic.return_value = False
+        mock_replay_buffer = Mock(spec=TrajectoryBuffer)
+
+        actor = Actor(
+            network=mock_muzero_network,
+            game_wrapper=mock_game_wrapper,
+            replay_buffer=mock_replay_buffer,
+            config=mock_config,
+        )
+
+        with patch('open_spiel.python.algorithms.muzero_jax.self_play.actor.get_latest_checkpoint') as mock_get_latest, \
+                patch.object(actor, 'load_network_parameters') as mock_load_params:
+
+            mock_get_latest.return_value = "/path/to/checkpoints/latest.ckpt"
+            mock_params = {'params': {'weights': jnp.arange(3)}}
+            mock_load_params.return_value = mock_params
+
+            assert actor.maybe_load_latest_parameters("/unused/path") is True
+            assert actor.current_params == mock_params['params']
 
     def test_actor_action_selection_with_temperature(self, mock_config, mock_muzero_network):
         """Test action selection with different temperature values."""

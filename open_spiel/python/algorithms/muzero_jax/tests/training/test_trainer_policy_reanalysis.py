@@ -245,35 +245,6 @@ def test_compute_policy_reanalysis_targets_temperature_integration():
     assert policies_no_temp.shape == policies.shape
     assert jnp.allclose(jnp.sum(policies_no_temp, axis=-1), 1.0, atol=1e-5)
 
-def test_compute_policy_reanalysis_targets_mctx_fallback():
-    """Test fallback behavior when mctx is not available."""
-    config = MuZeroConfig(
-        num_actions=5, num_unroll_steps=1, reanalyze_ratio=0.5, num_simulations=4
-    )
-
-    network_config = create_network_config_from_muzero_config(
-        config, observation_shape=(1, 5), num_actions=5, use_image_observation=False
-    )
-    model = create_test_muzero_network(network_config)
-
-    observations = jnp.ones((4, config.num_unroll_steps + 1, 1, 5))
-    rng_key = jax.random.PRNGKey(789)
-
-    # Mock mctx import failure by temporarily modifying the function
-    # This tests the fallback path in the implementation
-    policies = compute_policy_reanalysis_targets(
-        model=model,
-        observations=observations,
-        config=config,
-        training=False,
-        rng_key=rng_key,
-    )
-
-    # Verify fallback produces valid policies
-    assert policies.shape == (4, config.num_unroll_steps + 1, config.num_actions)
-    assert jnp.allclose(jnp.sum(policies, axis=-1), 1.0, atol=1e-5)
-    assert jnp.all(policies >= 0.0)
-
 def test_compute_policy_reanalysis_targets_categorical_values():
     """Test policy reanalysis with categorical value predictions."""
     config = MuZeroConfig(

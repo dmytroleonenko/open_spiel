@@ -575,3 +575,58 @@ def test_loss_static_scalar_pred_categorical_reward_loss_zero_support(common_key
     assert jnp.isfinite(metrics["reward_loss"])
     # Further checks could involve verifying the 601 atoms were used in scalar_to_support for predicted_rew
     # but confirming the path is taken (no error and finite loss) is the main goal for coverage.
+
+
+def test_compute_total_loss_static_accepts_positional_args(common_key, common_cfg_flat):
+    """Legacy positional args for training/training_step must still function."""
+    cfg = make_cfg(
+        common_cfg_flat.value_support_size,
+        common_cfg_flat.reward_support_size,
+        NUM_UNROLL_STEPS,
+        False,
+        "positional_args",
+        use_ema=False,
+    )
+    model = make_model(common_key, common_cfg_flat)
+    batch = make_batch(
+        key_rng=common_key,
+        bs=cfg.batch_size,
+        obs_shape=common_cfg_flat.observation_shape,
+        nact=common_cfg_flat.num_actions,
+        steps=cfg.num_unroll_steps,
+        vsup=cfg.value_support_size,
+        rsup=cfg.reward_support_size,
+        use_proj=False,
+    )
+    loss, metrics = Learner._compute_total_loss_static(
+        model, cfg, batch, common_key, False, 2
+    )
+    assert jnp.isfinite(loss)
+    assert 'total_loss' in metrics
+
+
+def test_compute_total_loss_static_raises_on_time_mismatch(common_key, common_cfg_flat):
+    """The time-dimension guard should raise when tensors do not align."""
+    cfg = make_cfg(
+        common_cfg_flat.value_support_size,
+        common_cfg_flat.reward_support_size,
+        NUM_UNROLL_STEPS,
+        False,
+        "time_mismatch",
+        use_ema=False,
+    )
+    cfg = dataclasses.replace(cfg, reanalyze_ratio=0.0)
+    model = make_model(common_key, common_cfg_flat)
+    batch = make_batch(
+        key_rng=common_key,
+        bs=cfg.batch_size,
+        obs_shape=common_cfg_flat.observation_shape,
+        nact=common_cfg_flat.num_actions,
+        steps=cfg.num_unroll_steps,
+        vsup=cfg.value_support_size,
+        rsup=cfg.reward_support_size,
+        use_proj=False,
+    )
+    batch['target_policy'] = batch['target_policy'][:, :-1]
+    with pytest.raises(ValueError, match="Time-dimension mismatch"):
+        Learner._compute_total_loss_static(model, cfg, batch, common_key)

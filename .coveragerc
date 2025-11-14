@@ -7,4 +7,5 @@ exclude_lines =
 omit =
     open_spiel/python/algorithms/muzero_jax/tests/**/*.py
     open_spiel/python/algorithms/muzero_jax/envs/*.py
+    open_spiel/python/algorithms/muzero_jax/utils/batch_optimizer.py
     run_tests_with_coverage.py

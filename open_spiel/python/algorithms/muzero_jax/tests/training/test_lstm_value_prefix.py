@@ -5,11 +5,15 @@ This module tests the SupportLSTMRewardNetwork implementation and its integratio
 with the MuZero training pipeline, ensuring compatibility with EfficientZeroV2.
 """
 
+import dataclasses
+from types import SimpleNamespace
+
 import pytest
 import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
 from typing import Tuple
+from unittest.mock import Mock
 
 from open_spiel.python.algorithms.muzero_jax.models.network import (
     SupportLSTMRewardNetwork, MuZeroNetwork, RepresentationNetwork, 
@@ -17,7 +21,7 @@ from open_spiel.python.algorithms.muzero_jax.models.network import (
 )
 from open_spiel.python.algorithms.muzero_jax.models.network_config import MuZeroNetworkConfig
 from open_spiel.python.algorithms.muzero_jax.training.trainer import (
-    apply_value_prefix_reward_accumulation, MuZeroConfig
+    apply_value_prefix_reward_accumulation, MuZeroConfig, Learner
 )
 
 
@@ -307,7 +311,11 @@ class TestValuePrefixRewardAccumulation:
         return MuZeroConfig(
             use_value_prefix=use_value_prefix,
             lstm_horizon_length=lstm_horizon_length,
+            lstm_hidden_size=128,
             num_unroll_steps=5,
+            num_actions=4,
+            batch_size=2,
+            reanalyze_ratio=0.0,
             reward_support_size=0,  # Scalar rewards
         )
     
@@ -353,6 +361,28 @@ class TestValuePrefixRewardAccumulation:
             config=network_config,
             rngs=rngs
         )
+
+    def create_dummy_batch(self, config: MuZeroConfig, batch_size: int = 1):
+        """Create a minimal batch compatible with _compute_total_loss_static."""
+        num_steps = config.num_unroll_steps + 1
+        obs_shape = (8, 8, 3)
+        observation = jnp.ones((batch_size, num_steps, *obs_shape))
+        action = jnp.zeros((batch_size, config.num_unroll_steps), dtype=jnp.int32)
+        target_reward = jnp.zeros((batch_size, num_steps))
+        target_value = jnp.zeros((batch_size, num_steps))
+        target_policy = jnp.full(
+            (batch_size, num_steps, config.num_actions),
+            1.0 / config.num_actions,
+        )
+        mask = jnp.ones((batch_size, num_steps))
+        return {
+            "observation": observation,
+            "action": action,
+            "target_reward": target_reward,
+            "target_value": target_value,
+            "target_policy": target_policy,
+            "game_history_mask": mask,
+        }
     
     def test_value_prefix_disabled(self, rng_key):
         """Test value prefix when disabled."""
@@ -439,6 +469,122 @@ class TestValuePrefixRewardAccumulation:
         # Check that LSTM produces different outputs (not just accumulation)
         assert not jnp.allclose(result_rewards[:, 0], result_rewards[:, 1])
         assert not jnp.allclose(result_rewards[:, 1], result_rewards[:, 2])
+
+    def test_total_loss_static_initializes_lstm_hidden_state(self, rng_key):
+        config = dataclasses.replace(
+            self.create_test_config(use_value_prefix=True, lstm_horizon_length=1),
+            num_unroll_steps=1,
+            batch_size=1,
+            num_actions=4,
+        )
+        model = self.create_test_model(config, rng_key)
+        batch = self.create_dummy_batch(config, batch_size=1)
+
+        loss, metrics = Learner._compute_total_loss_static(
+            model,
+            config,
+            batch,
+            rng_key,
+            training=True,
+        )
+
+        assert loss.shape == ()
+        assert "policy_loss" in metrics
+
+    def test_total_loss_static_validates_lstm_hidden_dim(self, rng_key):
+        config = dataclasses.replace(
+            self.create_test_config(use_value_prefix=True, lstm_horizon_length=1),
+            num_unroll_steps=1,
+            batch_size=1,
+            num_actions=4,
+        )
+        model = self.create_test_model(config, rng_key)
+
+        def bad_init(self, batch_size):
+            bad_dim = config.lstm_hidden_size // 2
+            zeros = jnp.zeros((batch_size, bad_dim))
+            return (zeros, zeros)
+
+        model.lstm_reward_network.init_hidden_state = bad_init.__get__(
+            model.lstm_reward_network,
+            type(model.lstm_reward_network),
+        )
+
+        batch = self.create_dummy_batch(config, batch_size=1)
+
+        with pytest.raises(ValueError, match="LSTM hidden state dimension mismatch"):
+            Learner._compute_total_loss_static(
+                model,
+                config,
+                batch,
+                rng_key,
+                training=True,
+            )
+
+    def test_value_prefix_fallback_without_hidden_states(self, rng_key):
+        config = self.create_test_config(use_value_prefix=True)
+        model = self.create_test_model(config, rng_key)
+        target_rewards = jnp.arange(6, dtype=jnp.float32).reshape(1, -1)
+
+        expected, _ = apply_value_prefix_reward_accumulation(
+            target_rewards,
+            config,
+            None,
+            None,
+            None,
+            None,
+        )
+        actual, _ = apply_value_prefix_reward_accumulation(
+            target_rewards,
+            config,
+            None,
+            model,
+            None,
+            None,
+        )
+
+        assert jnp.allclose(actual, expected)
+
+    def test_mask_broadcast_for_categorical_rewards(self):
+        config = MuZeroConfig(
+            use_value_prefix=True,
+            reward_support_size=3,
+            lstm_horizon_length=2,
+        )
+
+        class DummyLSTM:
+            def __init__(self, reward_support_size):
+                self.reward_support_size = reward_support_size
+                self.config = SimpleNamespace(lstm_hidden_size=16)
+
+            def init_hidden_state(self, batch_size):
+                zeros = jnp.zeros((batch_size, self.config.lstm_hidden_size))
+                return (zeros, zeros)
+
+            def reset_hidden_state(self, hidden_state, mask):
+                return hidden_state
+
+            def __call__(self, hidden_state, reward_hidden, training=False):
+                batch = hidden_state.shape[0]
+                rewards = jnp.ones((batch, self.reward_support_size))
+                return rewards, reward_hidden
+
+        model = SimpleNamespace(lstm_reward_network=DummyLSTM(config.reward_support_size))
+        target_rewards = jnp.zeros((2, 3, config.reward_support_size))
+        mask = jnp.array([[1.0, 1.0, 0.0], [1.0, 0.0, 0.0]])
+        hidden_states = jnp.ones((2, 3, 1, 1, 4))
+
+        predicted, _ = apply_value_prefix_reward_accumulation(
+            target_rewards,
+            config,
+            mask,
+            model,
+            hidden_states,
+            None,
+        )
+
+        assert jnp.allclose(predicted[0, 2], 0.0)
+        assert jnp.allclose(predicted[1, 1:], 0.0)
     
     def test_value_prefix_empty_input(self, rng_key):
         """Test value prefix with empty input."""
@@ -655,6 +801,65 @@ def test_lstm_for_imperfect_observability_games():
     assert not jnp.allclose(reset_hidden[1][1], 0.0, atol=1e-6), "Second element should not be reset"
     
     print("✅ LSTM shows potential for handling imperfect observability in discrete games")
+
+
+def test_value_prefix_falls_back_without_hidden_states():
+    """If hidden states are missing we fall back to simple accumulation."""
+    base_config = MuZeroConfig(
+        use_value_prefix=True,
+        reward_support_size=0,
+        lstm_horizon_length=2,
+        num_unroll_steps=2,
+        batch_size=2,
+        num_actions=3,
+    )
+    rewards = jnp.ones((base_config.batch_size, base_config.num_unroll_steps + 1))
+    accumulated, hidden = apply_value_prefix_reward_accumulation(
+        rewards, base_config, None, model=None, hidden_states=None, initial_reward_hidden=None
+    )
+    assert hidden is None
+    assert accumulated.shape == rewards.shape
+
+
+def test_value_prefix_mask_expansion_for_categorical_rewards():
+    """Categorical rewards should broadcast the mask before applying it."""
+    class DummyLSTM:
+        def __init__(self, support_size):
+            self.support_size = support_size
+
+        def init_hidden_state(self, batch_size):
+            zeros = jnp.zeros((batch_size, 2))
+            return zeros, zeros
+
+        def reset_hidden_state(self, hidden_state, mask):
+            return hidden_state
+
+        def __call__(self, hidden_state, reward_hidden, training=False):
+            batch_size = hidden_state.shape[0]
+            return jnp.ones((batch_size, self.support_size)), reward_hidden
+
+    config = MuZeroConfig(
+        use_value_prefix=True,
+        reward_support_size=3,
+        lstm_horizon_length=2,
+        num_unroll_steps=1,
+        batch_size=1,
+        num_actions=2,
+    )
+    model = Mock()
+    model.lstm_reward_network = DummyLSTM(config.reward_support_size)
+    hidden_states = jnp.zeros((1, config.num_unroll_steps + 1, 1, 1, 1))
+    mask = jnp.array([[1.0, 0.0]])
+    predicted, _ = apply_value_prefix_reward_accumulation(
+        jnp.zeros((1, config.num_unroll_steps + 1, config.reward_support_size)),
+        config,
+        mask,
+        model=model,
+        hidden_states=hidden_states,
+        initial_reward_hidden=None,
+    )
+    assert predicted.shape == (1, 2, config.reward_support_size)
+    assert jnp.allclose(predicted[0, 1], jnp.zeros(config.reward_support_size))
 
 
 if __name__ == "__main__":

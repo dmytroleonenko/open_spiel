@@ -83,7 +83,13 @@ def half_gradient(x: jax.Array) -> jax.Array:
     return x + 0.5 * jax.lax.stop_gradient(x) - 0.5 * x
 
 
-def prepare_targets_for_loss_type_host(targets: jax.Array, loss_type: str, support_size: int) -> jax.Array:
+def prepare_targets_for_loss_type_host(
+    targets: jax.Array,
+    loss_type: str,
+    support_size: int,
+    support_min: float,
+    support_max: float,
+) -> jax.Array:
     """Prepare targets for specific loss type - HOST-SIDE PREPARATION (pre-JIT).
     
     This function performs all shape conversions and target transformations
@@ -98,7 +104,10 @@ def prepare_targets_for_loss_type_host(targets: jax.Array, loss_type: str, suppo
             original_shape = targets.shape
             targets_flat = targets.reshape(-1)
             targets_support = jax.vmap(losses_lib.scalar_to_support, in_axes=(0, None, None, None))(
-                targets_flat, -300.0, 300.0, support_size if support_size > 0 else 601
+                targets_flat,
+                support_min,
+                support_max,
+                support_size if support_size > 0 else 601,
             )
             # Reshape back to original batch structure plus support dimension
             targets = targets_support.reshape(original_shape + (targets_support.shape[-1],))
@@ -109,7 +118,10 @@ def prepare_targets_for_loss_type_host(targets: jax.Array, loss_type: str, suppo
             original_shape = targets.shape[:-1]  # Remove support dimension
             targets_flat = targets.reshape(-1, targets.shape[-1])
             targets_scalar = jax.vmap(losses_lib.support_to_scalar, in_axes=(0, None, None, None))(
-                targets_flat, -300.0, 300.0, targets.shape[-1]
+                targets_flat,
+                support_min,
+                support_max,
+                targets.shape[-1],
             )
             targets = targets_scalar.reshape(original_shape)
         elif targets.ndim == 3 and targets.shape[-1] == 1:
@@ -118,7 +130,13 @@ def prepare_targets_for_loss_type_host(targets: jax.Array, loss_type: str, suppo
     return targets
 
 
-def prepare_predictions_for_loss_type_host(predictions: jax.Array, loss_type: str, support_size: int) -> jax.Array:
+def prepare_predictions_for_loss_type_host(
+    predictions: jax.Array,
+    loss_type: str,
+    support_size: int,
+    support_min: float,
+    support_max: float,
+) -> jax.Array:
     """Prepares predictions for loss computation based on loss type.
     
     For categorical losses, predictions are logits that need to be converted to scalars.
@@ -134,7 +152,10 @@ def prepare_predictions_for_loss_type_host(predictions: jax.Array, loss_type: st
             # Convert logits to probabilities first, then to scalars
             predictions_probs = jax.nn.softmax(predictions_flat, axis=-1)
             predictions_scalar = jax.vmap(losses_lib.support_to_scalar, in_axes=(0, None, None, None))(
-                predictions_probs, -300.0, 300.0, predictions.shape[-1]
+                predictions_probs,
+                support_min,
+                support_max,
+                predictions.shape[-1],
             )
             predictions = predictions_scalar.reshape(original_shape)
         elif predictions.ndim == 3 and predictions.shape[-1] == 1:
@@ -149,7 +170,10 @@ def prepare_predictions_for_loss_type_host(predictions: jax.Array, loss_type: st
             # Convert logits to probabilities first, then to scalars
             predictions_probs = jax.nn.softmax(predictions_flat, axis=-1)
             predictions_scalar = jax.vmap(losses_lib.support_to_scalar, in_axes=(0, None, None, None))(
-                predictions_probs, -300.0, 300.0, predictions.shape[-1]
+                predictions_probs,
+                support_min,
+                support_max,
+                predictions.shape[-1],
             )
             predictions = predictions_scalar.reshape(original_shape)
         elif predictions.ndim == 3 and predictions.shape[-1] == 1:
@@ -224,7 +248,9 @@ class MuZeroConfig:
     # Reanalysis parameters - EfficientZeroV2 feature
     reanalyze_ratio: float = 1.0 # Fraction of batch to reanalyze with MCTS (config.train.reanalyze_ratio)
     reanalyze_update_interval: int = 200 # How often to update model weights for reanalysis
+    reanalyze_update_interval_min: int = 0 # Minimum interval for adaptive reanalysis syncs (0=auto)
     self_play_update_interval: int = 100 # How often to update model weights for self-play
+    self_play_update_interval_min: int = 0 # Minimum interval for adaptive self-play syncs (0=auto)
     
     # Training steps and data collection - EfficientZeroV2 parameters
     training_steps: int = 100000 # Total training steps
@@ -403,7 +429,25 @@ class Learner:
         self.rng_key = rng_key
         self._rng_key = rng_key
         self.num_training_steps = 0
-        
+        self.reanalysis_model = None
+        self.self_play_model = None
+
+        adapter_cfg = HyperparameterAdapterConfig(
+            td_lambda=config.td_lambda,
+            td_steps=config.td_steps,
+            auto_td_steps=config.auto_td_steps,
+            use_adaptive_td_steps=config.use_adaptive_td_steps,
+            value_target=config.value_target,
+        )
+        self._model_update_adapter = HyperparameterAdapter(adapter_cfg, collected_transitions=0)
+        self._reanalyze_min_interval = self._resolve_min_interval(
+            config.reanalyze_update_interval, config.reanalyze_update_interval_min
+        )
+        self._self_play_min_interval = self._resolve_min_interval(
+            config.self_play_update_interval, config.self_play_update_interval_min
+        )
+        self._next_reanalyze_sync = 0
+        self._next_self_play_sync = 0
 
 
 
@@ -444,6 +488,7 @@ class Learner:
             model, nnx.Param, nnx.BatchStat, nnx.Rngs, nnx_graph.Static, ...
         )
         self.self_play_model = nnx.merge(graphdef_s, params_s, batch_stats_s, rngs_s, static_s, ellipsis_s)
+        self._reschedule_model_updates()
 
     def _split_objects_for_jit(self):
         """Split NNX objects into GraphDef and State for functional JIT pattern."""
@@ -454,6 +499,51 @@ class Learner:
             objects_to_split.append(self.target_model)
         # Split graphdef and initial state for functional JIT
         self._graphdef, self._state = nnx.split(tuple(objects_to_split))
+
+    def _resolve_min_interval(self, base_interval: int, override: int) -> int:
+        if base_interval <= 0:
+            return 0
+        if override > 0:
+            return max(1, min(override, base_interval))
+        if base_interval <= 1:
+            return 1
+        return max(1, base_interval // 4)
+
+    def _compute_next_sync_step(
+        self,
+        current_step: int,
+        base_interval: int,
+        min_interval: int,
+        enabled: bool,
+    ) -> int:
+        if not enabled or base_interval <= 0:
+            return 0
+        interval = self._model_update_adapter.compute_model_update_interval(
+            current_step, base_interval, min_interval
+        )
+        if interval <= 0:
+            return 0
+        return current_step + interval
+
+    def _reschedule_model_updates(self):
+        current_step = self.num_training_steps
+        self._model_update_adapter.collected_transitions = current_step
+        self._next_reanalyze_sync = self._compute_next_sync_step(
+            current_step,
+            self.config.reanalyze_update_interval,
+            self._reanalyze_min_interval,
+            self.config.reanalyze_ratio > 0.0 and self.reanalysis_model is not None,
+        )
+        self._next_self_play_sync = self._compute_next_sync_step(
+            current_step,
+            self.config.self_play_update_interval,
+            self._self_play_min_interval,
+            self.self_play_model is not None,
+        )
+
+    def _sync_aux_model(self, target_model: nnx.Module):
+        full_model_state = nnx.state(self.model)
+        nnx.update(target_model, full_model_state)
 
     def _train_step_functional(self, state: nnx.State, batch: Batch, rng_key: PRNGKey, training_step: int) -> Tuple[nnx.State, dict, PRNGKey]:
         """Functional JIT-compiled training step.
@@ -581,7 +671,7 @@ class Learner:
         # Merge updated state back into Python-side objects
         try:
             merged_objects = nnx.merge(self._graphdef, new_state)
-        except ValueError:
+        except ValueError:  # pragma: no cover - defensive guard for Optax slot creation
             # GraphDef is stale due to new leaves (e.g., optimizer slot creation).
             # Regenerate GraphDef from existing objects and retry.
             self._split_objects_for_jit()
@@ -606,16 +696,35 @@ class Learner:
         # -----------------------------------------
         # Multi-model orchestration (EffZeroV2 style)
         # -----------------------------------------
-        # CRITICAL FIX (Action Item #3): Copy full model state, not just parameters
-        # This ensures BatchNorm statistics and RNG states are also updated
-        if self.num_training_steps % self.config.reanalyze_update_interval == 0:
-            # Copy complete model state including BatchStat and Rngs
-            full_model_state = nnx.state(self.model)
-            nnx.update(self.reanalysis_model, full_model_state)
-        if self.num_training_steps % self.config.self_play_update_interval == 0:
-            # Copy complete model state including BatchStat and Rngs
-            full_model_state = nnx.state(self.model)
-            nnx.update(self.self_play_model, full_model_state)
+        current_step = self.num_training_steps
+        self._model_update_adapter.collected_transitions = current_step
+
+        if (
+            self.reanalysis_model is not None
+            and self.config.reanalyze_ratio > 0.0
+            and self._next_reanalyze_sync > 0
+            and current_step >= self._next_reanalyze_sync
+        ):
+            self._sync_aux_model(self.reanalysis_model)
+            interval = self._model_update_adapter.compute_model_update_interval(
+                current_step,
+                self.config.reanalyze_update_interval,
+                self._reanalyze_min_interval,
+            )
+            self._next_reanalyze_sync = current_step + interval if interval > 0 else 0
+
+        if (
+            self.self_play_model is not None
+            and self._next_self_play_sync > 0
+            and current_step >= self._next_self_play_sync
+        ):
+            self._sync_aux_model(self.self_play_model)
+            interval = self._model_update_adapter.compute_model_update_interval(
+                current_step,
+                self.config.self_play_update_interval,
+                self._self_play_min_interval,
+            )
+            self._next_self_play_sync = current_step + interval if interval > 0 else 0
 
         return metrics
 
@@ -850,10 +959,19 @@ class Learner:
             # Verify LSTM state dimensions are correct
             if initial_reward_hidden is not None:
                 expected_hidden_dim = config.lstm_hidden_size
-                if hasattr(initial_reward_hidden, 'shape'):
-                    actual_hidden_dim = initial_reward_hidden.shape[-1]
-                    if actual_hidden_dim != expected_hidden_dim:
-                        raise ValueError(f"LSTM hidden state dimension mismatch: expected {expected_hidden_dim}, got {actual_hidden_dim}")
+
+                def _infer_hidden_dim(state):
+                    if isinstance(state, tuple) and len(state) > 0:
+                        ref = state[0]
+                    else:
+                        ref = state  # pragma: no cover - current implementations return tuples
+                    return ref.shape[-1] if hasattr(ref, 'shape') else expected_hidden_dim
+
+                actual_hidden_dim = _infer_hidden_dim(initial_reward_hidden)
+                if actual_hidden_dim != expected_hidden_dim:  # pragma: no cover - defensive guard
+                    raise ValueError(
+                        f"LSTM hidden state dimension mismatch: expected {expected_hidden_dim}, got {actual_hidden_dim}"
+                    )
         # For compatibility with configurations without LSTM reward network, initial_reward_hidden remains None
 
         initial_inference_output = model.initial_inference(
@@ -928,18 +1046,37 @@ class Learner:
 
         # Task 6.4: Loss Computation Strategy Optimization - HOST-SIDE PREPARATION
         # Pre-process targets and predictions on host to eliminate runtime conversions in JIT
+        support_min = getattr(config, "support_min", -300.0)
+        support_max = getattr(config, "support_max", 300.0)
+
         processed_target_values = prepare_targets_for_loss_type_host(
-            actual_target_values, config.value_loss_type, config.value_support_size
+            actual_target_values,
+            config.value_loss_type,
+            config.value_support_size,
+            support_min,
+            support_max,
         )
         processed_predicted_values = prepare_predictions_for_loss_type_host(
-            predicted_values, config.value_loss_type, config.value_support_size
+            predicted_values,
+            config.value_loss_type,
+            config.value_support_size,
+            support_min,
+            support_max,
         )
         
         processed_target_rewards = prepare_targets_for_loss_type_host(
-            target_rewards, config.reward_loss_type, config.reward_support_size
+            target_rewards,
+            config.reward_loss_type,
+            config.reward_support_size,
+            support_min,
+            support_max,
         )
         processed_predicted_rewards = prepare_predictions_for_loss_type_host(
-            predicted_rewards, config.reward_loss_type, config.reward_support_size
+            predicted_rewards,
+            config.reward_loss_type,
+            config.reward_support_size,
+            support_min,
+            support_max,
         )
 
         # Use vectorized loss computation with pre-processed inputs (no runtime conversions)
@@ -993,11 +1130,14 @@ class Learner:
             target_val_step0 = actual_target_values[:, 0]  # B or B, S
             
             # Convert to scalars if needed for priority computation
+            priority_support_min = getattr(config, "support_min", -300.0)
+            priority_support_max = getattr(config, "support_max", 300.0)
+
             if predicted_val_step0.ndim > 1 and predicted_val_step0.shape[-1] > 1: # pragma: no cover
                 predicted_val_step0 = losses_lib.support_to_scalar( # pragma: no cover
                     predicted_val_step0, # pragma: no cover
-                    support_min=-300.0, # pragma: no cover
-                    support_max=300.0, # pragma: no cover
+                    support_min=priority_support_min, # pragma: no cover
+                    support_max=priority_support_max, # pragma: no cover
                     num_atoms=predicted_val_step0.shape[-1] # pragma: no cover
                 ) # pragma: no cover
             elif predicted_val_step0.ndim == 2 and predicted_val_step0.shape[-1] == 1: # pragma: no cover
@@ -1006,8 +1146,8 @@ class Learner:
             if target_val_step0.ndim > 1 and target_val_step0.shape[-1] > 1: # pragma: no cover
                 target_val_step0 = losses_lib.support_to_scalar( # pragma: no cover
                     target_val_step0, # pragma: no cover
-                    support_min=-300.0, # pragma: no cover
-                    support_max=300.0, # pragma: no cover
+                    support_min=priority_support_min, # pragma: no cover
+                    support_max=priority_support_max, # pragma: no cover
                     num_atoms=target_val_step0.shape[-1] # pragma: no cover
                 ) # pragma: no cover
             elif target_val_step0.ndim == 2 and target_val_step0.shape[-1] == 1: # pragma: no cover
@@ -1132,6 +1272,7 @@ class Learner:
             self.optimizer = nnx.merge(optimizer_graphdef, checkpoint_data['optimizer'])
             self.num_training_steps = checkpoint_data['num_training_steps']
             self._rng_key = checkpoint_data['rng_key']
+            self._reschedule_model_updates()
             
             # Restore EMA state if available
             if (self.config.use_target_network_ema and 
@@ -2062,26 +2203,13 @@ def compute_policy_reanalysis_targets(
             else:
                 reward_scalar = reward
 
-        # Import mctx RecurrentFnOutput
-        try:
-            import mctx
-            from mctx._src.base import RecurrentFnOutput
-            
-            return RecurrentFnOutput(
-                reward=reward_scalar,
-                discount=jnp.ones_like(reward_scalar) * config.discount_factor,
-                prior_logits=policy_logits,
-                value=value_scalar
-            ), hidden_state
-        except ImportError:
-            # Fallback if mctx not available - return dummy values
-            batch_size = embedding.shape[0] if hasattr(embedding, 'shape') else 1
-            return {
-                'reward': jnp.zeros((batch_size,)),
-                'discount': jnp.ones((batch_size,)) * config.discount_factor,
-                'prior_logits': jnp.zeros((batch_size, num_actions)),
-                'value': jnp.zeros((batch_size,))
-            }, embedding
+        from mctx._src.base import RecurrentFnOutput
+        return RecurrentFnOutput(
+            reward=reward_scalar,
+            discount=jnp.ones_like(reward_scalar) * config.discount_factor,
+            prior_logits=policy_logits,
+            value=value_scalar
+        ), hidden_state
 
     # Get initial inference for all observations at once
     initial_output = model.initial_inference(flat_observations, training=training)
@@ -2106,51 +2234,33 @@ def compute_policy_reanalysis_targets(
             initial_values_scalar = initial_values
 
     # Run MCTS for each observation using vectorized approach
-    try:
-        import mctx
+    import mctx
 
-        # Create root for MCTS
-        root = mctx.RootFnOutput(
-            prior_logits=initial_policy_logits,
-            value=initial_values_scalar,
-            embedding=hidden_states
+    # Create root for MCTS
+    root = mctx.RootFnOutput(
+        prior_logits=initial_policy_logits,
+        value=initial_values_scalar,
+        embedding=hidden_states
+    )
+
+    # CRITICAL FIX: Use stop_gradient to prevent differentiation through MCTS
+    # MCTS search uses dynamic loops that can't be differentiated through with reverse-mode autodiff
+    # We only need the MCTS outputs, not gradients through the MCTS process itself
+    def run_mcts_search():
+        # Run Gumbel MuZero MCTS
+        policy_output = mctx.gumbel_muzero_policy(
+            params=None,  # Model parameters handled internally by recurrent_fn
+            rng_key=rng_key,
+            root=root,
+            recurrent_fn=recurrent_fn,
+            num_simulations=config.num_simulations,
+            max_num_considered_actions=min(config.num_actions, 16),  # Limit for efficiency
+            gumbel_scale=1.0
         )
+        return policy_output.action_weights
 
-        # CRITICAL FIX: Use stop_gradient to prevent differentiation through MCTS
-        # MCTS search uses dynamic loops that can't be differentiated through with reverse-mode autodiff
-        # We only need the MCTS outputs, not gradients through the MCTS process itself
-        def run_mcts_search():
-            # Run Gumbel MuZero MCTS
-            policy_output = mctx.gumbel_muzero_policy(
-                params=None,  # Model parameters handled internally by recurrent_fn
-                rng_key=rng_key,
-                root=root,
-                recurrent_fn=recurrent_fn,
-                num_simulations=config.num_simulations,
-                max_num_considered_actions=min(config.num_actions, 16),  # Limit for efficiency
-                gumbel_scale=1.0
-            )
-            return policy_output.action_weights
-
-        # Stop gradients through MCTS to avoid differentiation issues with dynamic loops
-        reanalyzed_policies_flat = jax.lax.stop_gradient(run_mcts_search())
-
-    except (ImportError, AttributeError):
-        # Fallback: Use improved policy based on initial inference with temperature scaling
-        temperature = jnp.maximum(temperature, 0.1)  # Avoid division by very small numbers
-        scaled_logits = initial_policy_logits / temperature
-
-        # Create clearly non-uniform policies for testing
-        # Use a simple pattern that creates significant differences from uniform
-        # This ensures tests can detect that reanalysis produces non-uniform results
-        action_prefs = jnp.arange(num_actions) * 2.0  # [0, 2, 4, 6, ...]
-        action_prefs = action_prefs.reshape(1, 1, -1)  # Shape for broadcasting
-        
-        # Add random variations based on observations and position
-        noise = jax.random.normal(rng_key, scaled_logits.shape) * 0.5
-        varied_logits = scaled_logits + action_prefs + noise
-        
-        reanalyzed_policies_flat = jax.nn.softmax(varied_logits, axis=-1)
+    # Stop gradients through MCTS to avoid differentiation issues with dynamic loops
+    reanalyzed_policies_flat = jax.lax.stop_gradient(run_mcts_search())
 
     # Reshape back to [reanalyze_B, K+1, num_actions]
     reanalyzed_policies = reanalyzed_policies_flat.reshape(reanalyze_batch_size, num_steps, num_actions)
@@ -2209,133 +2319,6 @@ def get_temperature(training_step: int, config: MuZeroConfig) -> float:
     
     # Ensure temperature doesn't go below final value
     return max(temperature, config.temperature_final)
-
-# Example usage (for testing/illustration - will be in tests)
-if __name__ == '__main__': # pragma: no cover
-    from open_spiel.python.algorithms.muzero_jax.models.network import VisualRepresentationNetwork, MLPValuePolicyNetwork, DynamicsNetwork, RewardNetwork, MuZeroNetwork as TestMuZeroNetwork # type: ignore # pragma: no cover
-    from open_spiel.python.algorithms.muzero_jax.models.layers import DownSample, ResidualBlock, FCResidualBlock, MLP # type: ignore # pragma: no cover
-
-    key = jax.random.PRNGKey(42) # pragma: no cover
-    key_model_init, key_learner_init, key_batch_gen = jax.random.split(key, 3) # pragma: no cover
-
-    # Using ActualMuZeroNetworkConfig to define the structure for the main example
-    net_config_main = ActualMuZeroNetworkConfig( # pragma: no cover
-        observation_shape=(3, 96, 96), # pragma: no cover
-        num_actions=18, # pragma: no cover
-        num_channels=16, # pragma: no cover
-        num_residual_blocks=1, # pragma: no cover
-        num_fc_residual_blocks=1, # pragma: no cover
-        num_hidden_units_fc=32, # pragma: no cover
-        value_support_size=0, # pragma: no cover
-        reward_support_size=0, # pragma: no cover
-        downsample_channels=8, # pragma: no cover
-        downsample_blocks=1, # pragma: no cover
-        use_batch_norm=True, # pragma: no cover
-        use_projection=False, # pragma: no cover
-        spatial_extents=(96,96), # Should match observation if image # pragma: no cover
-        use_image_observation=True, # pragma: no cover
-        projection_hidden_dim=64, # Example value # pragma: no cover
-        projection_head_output_dim=32, # Example value # pragma: no cover
-        action_embedding_dim=16 # Example value for dummy dynamics compatibility # pragma: no cover
-    )
-    
-    class MainVisualRepresentationNetwork(nnx.Module): # Renamed # pragma: no cover
-        def __init__(self, config: ActualMuZeroNetworkConfig, *, rngs: nnx.Rngs): # pragma: no cover
-            self.downsample = DownSample(config.observation_shape[0], config.downsample_channels, rngs=rngs) # Assuming obs_shape is (C,H,W) # pragma: no cover
-            self.conv3x3 = nnx.Conv(in_features=config.downsample_channels, out_features=config.num_channels, kernel_size=(3, 3), strides=(1, 1), padding='SAME', use_bias=False, rngs=rngs) # pragma: no cover
-            self.bn_initial = nnx.BatchNorm(config.num_channels, use_running_average=not config.use_batch_norm, rngs=rngs) if config.use_batch_norm else nnx.Identity(rngs=rngs) # pragma: no cover
-            self.residuals = [ResidualBlock(config.num_channels, config.num_channels, rngs=nnx.Rngs(params=jax.random.fold_in(rngs.params(), i), dropout=jax.random.fold_in(rngs.dropout(), i))) for i in range(config.num_residual_blocks)] # pragma: no cover
-        def __call__(self, x: jax.Array, training: bool): # pragma: no cover
-            # Input x expected as (B, C, H, W)
-            # Transpose to (B, H, W, C) for Flax NNX conv layers
-            if x.shape[1] == net_config_main.observation_shape[0] and x.shape[2] == net_config_main.observation_shape[1] and x.shape[3] == net_config_main.observation_shape[2]: # pragma: no cover
-                x = jnp.transpose(x, (0, 2, 3, 1)) # pragma: no cover
-            x = self.downsample(x, training) # pragma: no cover
-            x = self.conv3x3(x) # pragma: no cover
-            x = self.bn_initial(x, use_running_average=not training) # pragma: no cover
-            x = nnx.relu(x) # pragma: no cover
-            for block in self.residuals: # pragma: no cover
-                x = block(x, training) # pragma: no cover
-            return x # pragma: no cover
-
-    model_instance_main = TestMuZeroNetwork( # pragma: no cover
-        representation_network_def=lambda config, *, rngs: MainVisualRepresentationNetwork(config, rngs=rngs), # pragma: no cover
-        prediction_network_def=lambda config, *, rngs: MLPValuePolicyNetwork(config, rngs=rngs), # pragma: no cover
-        dynamics_network_def=lambda config, *, rngs: DynamicsNetwork(config, rngs=rngs), # pragma: no cover
-        reward_network_def=lambda config, *, rngs: RewardNetwork(config, rngs=rngs), # pragma: no cover
-        projection_network_def=None, # pragma: no cover
-        config=net_config_main, # Pass the ActualMuZeroNetworkConfig instance # pragma: no cover
-        rngs=nnx.Rngs(params=key_model_init) # pragma: no cover
-    )
-
-    learner_config_main = MuZeroConfig( # pragma: no cover
-        value_support_size=net_config_main.value_support_size, # pragma: no cover
-        reward_support_size=net_config_main.reward_support_size, # pragma: no cover
-        num_unroll_steps=2, # pragma: no cover
-        td_steps=2, # pragma: no cover
-        batch_size=2, # pragma: no cover
-        l2_weight=1e-4, # pragma: no cover
-        learning_rate=1e-3, # pragma: no cover
-        use_projection=False, # pragma: no cover
-        checkpoint_dir="/tmp/muzero_jax_test_checkpoints_main", # pragma: no cover
-        checkpoint_frequency=2, # Checkpoint more frequently for test # pragma: no cover
-        use_target_network_ema=True, # pragma: no cover
-        ema_decay=0.95, # pragma: no cover
-        resume_from_checkpoint=False # Start fresh for this example # pragma: no cover
-    )
-    
-    optimizer_instance_main = optax.adam(learning_rate=learner_config_main.learning_rate) # pragma: no cover
-    learner_main = Learner(model_instance_main, optimizer_instance_main, learner_config_main, key_learner_init) # pragma: no cover
-
-    B_main = learner_config_main.batch_size # pragma: no cover
-    K_main = learner_config_main.num_unroll_steps # pragma: no cover
-    obs_shape_main = net_config_main.observation_shape # pragma: no cover
-    
-    dummy_batches_main = [] # pragma: no cover
-    for i in range(5): # Generate a few batches # pragma: no cover
-        k_batch = jax.random.fold_in(key_batch_gen, i) # pragma: no cover
-        obs_batch = jax.random.uniform(k_batch, (B_main, obs_shape_main[0], obs_shape_main[1], obs_shape_main[2])) # pragma: no cover
-        act_batch = jax.random.randint(k_batch, (B_main, K_main), 0, net_config_main.num_actions) # pragma: no cover
-        
-        val_target = jax.random.normal(k_batch, (B_main, K_main + 1)) # pragma: no cover
-        rew_target = jax.random.normal(k_batch, (B_main, K_main + 1)) # pragma: no cover
-        pol_target = jax.random.uniform(k_batch, (B_main, K_main + 1, net_config_main.num_actions)) # pragma: no cover
-        pol_target = pol_target / jnp.sum(pol_target, axis=-1, keepdims=True) # pragma: no cover
-        mask = jnp.ones((B_main, K_main + 1), dtype=jnp.float32) # pragma: no cover
-
-        dummy_batches_main.append({ # pragma: no cover
-            'observation': obs_batch, 'action': act_batch, # pragma: no cover
-            'target_reward': rew_target, 'target_value': val_target, # pragma: no cover
-            'target_policy': pol_target, 'game_history_mask': mask, # pragma: no cover
-        })
-
-    def dummy_replay_buffer_iterator_fn_main() -> Generator[Batch, None, None]: # pragma: no cover
-        for batch_item in dummy_batches_main: # pragma: no cover
-            yield batch_item # pragma: no cover
-
-    print("Starting dummy training loop with JIT...") # pragma: no cover
-    learner_main.train(dummy_replay_buffer_iterator_fn_main, num_epochs=1, steps_per_epoch=len(dummy_batches_main)) # pragma: no cover
-
-    print("\nTrying to load from checkpoint...") # pragma: no cover
-    learner_config_resume = dataclasses.replace(learner_config_main, resume_from_checkpoint=True) # pragma: no cover
-    model_instance_resume = TestMuZeroNetwork( # Recreate model structure for new learner # pragma: no cover
-        representation_network_def=lambda config, *, rngs: MainVisualRepresentationNetwork(config, rngs=rngs), # pragma: no cover
-        prediction_network_def=lambda config, *, rngs: MLPValuePolicyNetwork(config, rngs=rngs), # pragma: no cover
-        dynamics_network_def=lambda config, *, rngs: DynamicsNetwork(config, rngs=rngs), # pragma: no cover
-        reward_network_def=lambda config, *, rngs: RewardNetwork(config, rngs=rngs), # pragma: no cover
-        projection_network_def=None, # pragma: no cover
-        config=net_config_main, # pragma: no cover
-        rngs=nnx.Rngs(params=jax.random.key(1)) # Can use a different key for init, loaded state will overwrite # pragma: no cover
-    )
-    optimizer_instance_resume = optax.adam(learning_rate=learner_config_resume.learning_rate) # pragma: no cover
-    learner_resume = Learner(model_instance_resume, optimizer_instance_resume, learner_config_resume, jax.random.key(2)) # pragma: no cover
-    
-    if learner_resume.num_training_steps > 0: # pragma: no cover
-        print(f"Resumed successfully from step {learner_resume.num_training_steps}") # pragma: no cover
-    else: # pragma: no cover
-        print("Did not resume or resumed at step 0.") # pragma: no cover
-
-    print("Done with dummy run.") # pragma: no cover 
 
 def create_muzero_config_for_game(game_name: str, **config_overrides) -> MuZeroConfig:
     """

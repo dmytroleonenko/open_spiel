@@ -24,6 +24,8 @@ class BootstrapConfig:
     temperature_threshold: int = 30
     n_step_return: int = 5
     discount_factor: float = 0.99
+    support_min: float = -300.0
+    support_max: float = 300.0
 
 
 class BootstrapActor:
@@ -82,11 +84,10 @@ class BootstrapActor:
         actions = []
         rewards = []
         policy_targets = []
-        mcts_values = []
-        
         step = 0
         max_steps = self.game_wrapper._game.max_game_length() + 1
-        
+        final_state = state
+
         while not state.is_terminal():
             if step >= max_steps:
                 self.logger.error(f"Episode exceeded max steps ({max_steps}), breaking loop.")  # pragma: no cover
@@ -97,164 +98,43 @@ class BootstrapActor:
                 # Sample from chance outcomes
                 chance_outcomes = state.chance_outcomes()
                 if chance_outcomes:
-                    outcomes, probs = zip(*chance_outcomes)
-                    # Convert to numpy for sampling
-                    outcomes_array = np.array(outcomes)
-                    probs_array = np.array(probs)
-                    choice_idx = np.random.choice(len(outcomes), p=probs_array)
-                    action = outcomes_array[choice_idx]
-                    
-                    # Apply chance action
-                    state.apply_action(action)
-                    
-                    # Store chance node data if needed
-                    obs = jnp.array(state.observation_tensor())
-                    if obs is not None:
-                        observations.append(obs)
-                        actions.append(action)
-                        rewards.append(0.0)  # Chance nodes typically have no immediate reward
-                        
-                        # Uniform policy for chance nodes
-                        num_actions = self.game_wrapper.num_distinct_actions()
-                        uniform_policy = jnp.ones(num_actions) / num_actions
-                        policy_targets.append(uniform_policy)
-                        mcts_values.append(0.0)
-                    
+                    rng_key, chance_key = jax.random.split(rng_key)
+                    sampled_action = self._sample_chance_action(chance_key, chance_outcomes)
+                    state.apply_action(sampled_action)
                     continue
             
             # Get current observation
-            current_obs = jnp.array(state.observation_tensor())
-            if current_obs is None:
-                break  # pragma: no cover
+            raw_observation = state.observation_tensor()
+            if raw_observation is None:
+                self.logger.warning("Encountered state with None observation tensor; aborting episode.")
+                break
                 
+            current_obs = jnp.array(raw_observation)
             observations.append(current_obs)
+            legal_actions = state.legal_actions()
             
-            # Use MCTS bot to select action
-            action = self.mcts_bot.step(state)
+            # Use MCTS bot to select action + visit-count policy
+            policy_entries, action = self.mcts_bot.step_with_policy(state)
             
-            # Get MCTS policy (visit counts) for this state
-            policy_target = self._get_mcts_policy(state, action)
+            # Build policy target from visit counts
+            policy_target = self._policy_from_entries(policy_entries, legal_actions)
             policy_targets.append(policy_target)
-            
-            # Get MCTS value estimate from the bot's root value or network prediction
-            if hasattr(self.mcts_bot, 'get_root_value') and callable(self.mcts_bot.get_root_value):
-                # If bot provides root value from MCTS search
-                mcts_value = self.mcts_bot.get_root_value()
-            elif hasattr(self.mcts_bot, '_model') and self.mcts_bot._model is not None:
-                # Fallback: use network's initial inference for value estimation
-                try:
-                    # Get current observation for value estimation
-                    current_obs = self.game_wrapper.get_observation(state, 0)
-                    if hasattr(current_obs, 'observation'):
-                        obs_array = current_obs.observation
-                    else:
-                        obs_array = current_obs
-                    
-                    # Convert to JAX array if needed
-                    if not isinstance(obs_array, jnp.ndarray):
-                        obs_array = jnp.array(obs_array)
-                    
-                    # Add batch dimension if needed
-                    if obs_array.ndim == len(self.game_wrapper.observation_shape):
-                        obs_array = jnp.expand_dims(obs_array, axis=0)
-                    
-                    # Get value from network
-                    initial_output = self.mcts_bot._model.initial_inference(obs_array, training=False)
-                    network_value = initial_output[2]  # Value is at index 2
-                    
-                    # Convert to scalar if categorical
-                    if network_value.ndim > 1 and network_value.shape[-1] > 1:
-                        # Categorical value - convert to scalar
-                        from ..utils import losses_lib
-                        mcts_value = float(losses_lib.support_to_scalar(
-                            network_value,
-                            support_min=-300.0,  # Default support range
-                            support_max=300.0,
-                            num_atoms=network_value.shape[-1]
-                        )[0])  # Take first element from batch
-                    else:
-                        # Scalar value
-                        if network_value.ndim > 1:
-                            mcts_value = float(jnp.squeeze(network_value)[0])
-                        else:
-                            mcts_value = float(network_value)
-                            
-                except Exception as e:
-                    # Fallback to 0.0 if network inference fails
-                    import warnings
-                    warnings.warn(f"Failed to get network value estimate: {e}")
-                    mcts_value = 0.0
-            else:
-                # Last resort: estimate value based on current game state
-                # For games with clear winning/losing states, we can provide better estimates
-                if state.is_terminal():
-                    # Terminal state - use actual return
-                    returns = state.returns()
-                    if len(returns) > 0:
-                        mcts_value = float(returns[0])
-                    else:
-                        mcts_value = 0.0
-                else:
-                    # Non-terminal state - extract value from MCTS root if available
-                    mcts_value = 0.0
-                    
-                    # Try to get MCTS search statistics from the bot
-                    if hasattr(self.mcts_bot, '_search_results') and self.mcts_bot._search_results is not None:
-                        # Extract root value from MCTS search results
-                        try:
-                            search_results = self.mcts_bot._search_results
-                            if hasattr(search_results, 'search_tree') and search_results.search_tree is not None:
-                                # Get root node value
-                                root_value = search_results.search_tree.node_values[0]  # Root is at index 0
-                                mcts_value = float(root_value)
-                            elif hasattr(search_results, 'root_value'):
-                                mcts_value = float(search_results.root_value)
-                        except (AttributeError, IndexError):
-                            # Fallback to 0.0 if MCTS values cannot be extracted
-                            mcts_value = 0.0
-                    
-                    # Alternative: try to get value from visit counts if available
-                    if mcts_value == 0.0 and hasattr(self.mcts_bot, '_action_values'):
-                        try:
-                            action_values = self.mcts_bot._action_values
-                            if action_values is not None and len(action_values) > 0:
-                                # Use expected value from action-value estimates
-                                # Weighted by visit counts if available
-                                if hasattr(self.mcts_bot, '_visit_counts'):
-                                    visit_counts = self.mcts_bot._visit_counts
-                                    if visit_counts is not None and sum(visit_counts) > 0:
-                                        # Weighted average of action values
-                                        total_visits = sum(visit_counts)
-                                        weighted_value = sum(v * c for v, c in zip(action_values, visit_counts)) / total_visits
-                                        mcts_value = float(weighted_value)
-                                    else:
-                                        # Unweighted average if no visit counts
-                                        mcts_value = float(sum(action_values) / len(action_values))
-                                else:
-                                    # Use maximum action value as heuristic
-                                    mcts_value = float(max(action_values))
-                        except (AttributeError, ValueError, ZeroDivisionError):
-                            # Keep 0.0 if extraction fails
-                            mcts_value = 0.0
-            
-            mcts_values.append(mcts_value)
             
             # Apply action
             state.apply_action(action)
             actions.append(action)
             
-            # Get reward (sum over all players for simplicity)
-            if state.is_terminal():
-                returns = state.returns()
-                episode_reward = sum(returns) if returns else 0.0
-            else:
-                episode_reward = 0.0
-            rewards.append(episode_reward)
+            # Get immediate reward for the reference player (default player 0)
+            rewards_vector = state.rewards()
+            reward_value = float(rewards_vector[0]) if rewards_vector else 0.0
+            rewards.append(reward_value)
             
             step += 1
+            final_state = state
             
         # Compute value targets using n-step returns
-        final_value = 0.0  # Terminal state value is 0
+        returns = final_state.returns() if final_state is not None else []
+        final_value = float(returns[0]) if returns else 0.0
         value_targets = self._compute_value_targets(rewards, final_value)
         
         self.logger.info(f"Bootstrap episode completed: {len(actions)} steps")
@@ -267,40 +147,31 @@ class BootstrapActor:
             'value_targets': value_targets
         }
     
-    def _get_mcts_policy(self, state, selected_action: int) -> jnp.ndarray:
-        """Get MCTS policy from visit counts.
-        
-        For plain MCTS, we approximate the policy by giving the selected action
-        higher probability and distributing the rest among legal actions.
-        
-        Args:
-            state: Current game state
-            selected_action: Action selected by MCTS
-            
-        Returns:
-            Policy target as probability distribution
-        """
+    def _policy_from_entries(
+        self,
+        policy_entries: List[Tuple[int, float]],
+        legal_actions: List[int],
+    ) -> jnp.ndarray:
+        """Convert mctx visit-count entries into a dense probability vector."""
         num_actions = self.game_wrapper.num_distinct_actions()
-        legal_actions = state.legal_actions()
-        
-        # Create policy target
         policy = jnp.zeros(num_actions)
-        
+
+        if policy_entries:
+            total = sum(max(prob, 0.0) for _, prob in policy_entries)
+            if total > 0:
+                for action, prob in policy_entries:
+                    if 0 <= action < num_actions:
+                        policy = policy.at[action].set(float(prob) / total)
+                return policy
+
+        # Fallback to uniform distribution over legal actions if entries are empty/invalid
         if legal_actions:
-            if len(legal_actions) == 1:
-                # Only one legal action - give it full probability
-                policy = policy.at[legal_actions[0]].set(1.0)
-            else:
-                # Give most weight to selected action, distribute rest among legal actions
-                selected_weight = 0.7
-                other_weight = (1.0 - selected_weight) / (len(legal_actions) - 1)
-                
-                for action in legal_actions:
-                    if action == selected_action:
-                        policy = policy.at[action].set(selected_weight)
-                    else:
-                        policy = policy.at[action].set(other_weight)
-        
+            weight = 1.0 / len(legal_actions)
+            for action in legal_actions:
+                if 0 <= action < num_actions:
+                    policy = policy.at[action].set(weight)
+            return policy
+
         return policy
     
     def _compute_value_targets(self, rewards: List[float], final_value: float) -> List[float]:
@@ -329,6 +200,19 @@ class BootstrapActor:
             value_targets.append(target)
             
         return value_targets
+
+    def _sample_chance_action(self, rng_key: jax.Array, chance_outcomes: List[Tuple[int, float]]) -> int:
+        """Sample a chance outcome using the provided RNG key."""
+        outcomes, probs = zip(*chance_outcomes)
+        probs_array = jnp.array(probs, dtype=jnp.float32)
+        total_prob = jnp.sum(probs_array)
+        if total_prob <= 0:
+            probs_array = jnp.ones_like(probs_array) / len(probs_array)
+        else:
+            probs_array = probs_array / total_prob
+
+        idx = int(jax.random.choice(rng_key, len(outcomes), p=probs_array))
+        return int(outcomes[idx])
     
     def run(self, rng_key: jax.Array, num_episodes: int = 1) -> Dict[str, Any]:
         """Run multiple episodes of plain MCTS self-play.

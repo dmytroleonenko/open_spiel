@@ -572,20 +572,8 @@ def test_mcts_policy_shape_validation_line_1462_1464(common_key, common_cfg_flat
             common_key, (batch_size, num_steps, *common_cfg_flat.observation_shape)
         )
 
-        # Run policy reanalysis - should trigger exception and fallback to temperature-scaled policy
-        policy_targets = compute_policy_reanalysis_targets(
-            model, observations, config, training=False, rng_key=common_key
-        )
-
-        # Verify the fallback policy was created with correct shape
-        assert policy_targets.shape == (batch_size, num_steps, common_cfg_flat.num_actions)
-
-        # Verify policies are normalized (fallback behavior uses softmax)
-        assert jnp.allclose(
-            jnp.sum(policy_targets, axis=-1), 1.0, atol=1e-6
-        ), "Policies should be normalized"
-        
-        # Verify policies are not uniform (fallback uses temperature scaling + noise)
-        # The fallback should produce non-uniform policies due to temperature scaling and noise
-        policy_variance = jnp.var(policy_targets)
-        assert policy_variance > 1e-6, "Fallback policies should not be uniform due to temperature scaling and noise" 
+        # With fallbacks removed, a downstream AttributeError should bubble up
+        with pytest.raises(AttributeError, match="Simulated mctx failure"):
+            compute_policy_reanalysis_targets(
+                model, observations, config, training=False, rng_key=common_key
+            )

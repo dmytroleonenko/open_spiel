@@ -11,6 +11,56 @@ This document outlines action items to align the JAX implementation of Efficient
 
 ---
 
+## 0. Current Verification Snapshot (Nov 14, 2025)
+
+### 0.1 Test & Coverage Summary
+*   ✅ `python run_tests_with_coverage.py --num-workers 12` succeeds: **784 / 784** passing tests (12 h 15 m wall-clock, slowest cases `RealNetworkIntegrationTest::test_checkpointing_with_real_network` and `::test_multi_model_orchestration_with_real_network` at ~111 s each).
+*   ✅ Overall coverage: **100 % (2632 stmts, 0 misses)**. `.coveragerc` continues to omit `open_spiel/python/algorithms/muzero_jax/utils/batch_optimizer.py` per §0.4. Remaining guard rails are annotated with `# pragma: no cover` and documented below.
+    *   `mcts/mctx_wrapper.py`: fully exercised via `test_stochastic_mcts.py::test_stochastic_mcts_run_stochastic`, which now drives both real recurrent functions and the q-transform plumbing.
+    *   `self_play/actor.py` & `bootstrap_actor.py`: new checkpoint-loading and chance-node sampling tests (`tests/self_play/test_actor.py`, `tests/self_play/test_bootstrap_actor.py`) cover every branch that manipulates replay trajectories.
+    *   `training/losses.py`: categorical weighting safeguard previously at line 130 is now hit by `tests/training/test_trainer_loss_edge_cases.py::test_loss_static_accepts_positional_args`.
+    *   `training/trainer.py`: `_compute_total_loss_static` positional-arg compatibility, time-dimension guards, and LSTM hidden-state initialization are covered by focused tests in `test_trainer_loss_computation.py`, `test_trainer_loss_edge_cases.py`, and `test_lstm_value_prefix.py`. Defensive checks that would only trigger on model misconfiguration are marked `# pragma: no cover` instead of bloating the suite with artificial failures.
+    *   `utils/hyperparameter_adapter.py`: zero-interval decay regression is captured in `tests/utils/test_hyperparameter_adapter.py::test_model_update_interval_handles_zero_base`.
+
+### 0.2 Immediate TODO Entries (validated Nov 13 2025)
+
+1.  [*] **Documentation + coverage housekeeping complete.**
+    *   ✅ Content from `MUZERO_JAX_IMPLEMENTATION_FIXES.md`, `test_failure_analysis.md`, and `test_failure_tracking.md` has been folded into this document; the originals were removed (see git history on Nov 13).
+    *   ✅ `.coveragerc` now omits `open_spiel/python/algorithms/muzero_jax/utils/batch_optimizer.py`, and §0.4 documents why the script is excluded.
+2.  [*] **Remove all silent `mctx` fallbacks.**
+    *   ✅ `compute_policy_reanalysis_targets` now imports `mctx` directly and always returns true MCTS outputs; fallback unit tests were deleted.
+    *   ✅ `_create_fallback_recurrent_fn` and deterministic fallback paths were removed from `mcts/mctx_wrapper.py`; `StochasticMCTS.run_stochastic` now requires a network instance and fails fast otherwise.
+3.  [*] **Strip embedded demo/test scaffolding from `trainer.py`.**
+    *   ✅ Removed the `MainVisualRepresentationNetwork` + dummy training loop block and the `__main__` debug entry point so the module now contains only production code.
+4.  [*] **Make multi-model scheduling adaptive.**
+    *   ✅ `Learner` now tracks the next sync step for each auxiliary model and asks `HyperparameterAdapter` to shrink the interval towards configurable minima, so reanalysis/self-play refreshes start frequent and taper off with training progress.
+    *   ✅ Added regression coverage in `test_dynamic_model_updates.py` to assert that intervals decay to the configured minima, plus updated orchestration tests continue to assert the early-phase cadence.
+5.  [*] **Plumb support ranges from config everywhere.**
+    *   ✅ `_compute_total_loss_static` now routes `support_min/max` through host-prep helpers and the priority calculation, and those helpers require explicit ranges rather than implying `[-300, 300]`.
+    *   ✅ `BootstrapConfig` exposes `support_min/max` so `bootstrap_actor.py` no longer hard-codes fallback ranges when converting categorical network values.
+6.  [*] **Add a JIT integration test for `Learner.train_step`.**
+    *   ✅ `test_integration_with_real_network.py` now includes a slow-path test that calls `learner.jit_train_step` via `jax.jit` using the full MuZero network, asserting the compiled path runs end-to-end and produces finite losses.
+7.  [*] **Bootstrap actor behavior + coverage decision.**
+    *   ✅ Simplified `bootstrap_actor.py` to rely on `pyspiel.MCTSBot.step_with_policy`, removed the legacy heuristic branches, and routed chance-node sampling through JAX RNG utilities so the trajectory only records decision nodes.
+    *   ✅ Rebuilt `tests/self_play/test_bootstrap_actor.py` with deterministic fixtures covering chance sampling, policy conversion, observation edge cases, and discounted value target math.
+8.  [*] **Loss utilities coverage.**
+    *   ✅ Added targeted tests in `test_trainer_loss_computation.py` and `test_trainer_loss_edge_cases.py` to execute the categorical weighting branch (`losses.py` line 130) and legacy positional-argument paths.
+9.  [ ] **Stabilize `run_tests_with_coverage.py` output controls (Task 1 & 2).**
+    *   Default run should emit only the tqdm progress bar plus final summary artifacts; worker-level logging moves behind a `--debug-worker-logs` switch.
+    *   `-q/--quiet` suppresses the progress bar entirely and prints only the end-of-run summary (pass/fail counts, slow tests, coverage table, and deferred failure logs).
+    *   Document behavior since the script remains excluded from automated tests; validation is manual via ad-hoc invocation.
+
+### 0.3 Verified Fixes (Previously flagged but now done)
+*   Policy reanalysis now performs real `mctx.gumbel_muzero_policy` searches (trainer.py:1970-2148). Uniform policies remain only for non-reanalyzed samples or when `reanalyze_ratio == 0`.
+*   LSTM reward network is initialized and reset per EfficientZeroV2 requirements (trainer.py:824-908). Hidden-state validation is enforced, and recurrent unrolls pass the LSTM state through `reward_hidden`.
+*   Stochastic MCTS wrapper’s primary path consumes actual network predictions; only the legacy fallback (now slated for removal) returns dummy tensors.
+*   Bootstrap actor extracts values from either MCTS root statistics or the current network before falling back to zero; terminal returns are respected. The issue is a lack of tests/coverage rather than missing logic.
+
+### 0.4 Deferred / Out-of-Scope Items
+*   `open_spiel/python/algorithms/muzero_jax/utils/batch_optimizer.py` is a diagnostics script for finding optimal batch sizes on specific hardware. It is **not** part of the current EfficientZeroV2 parity goals. Leave its CLI/tests skipped for now and revisit when we prioritize performance tooling. Document this status in any future coverage reports to avoid confusion.
+
+---
+
 ## 1. Value Target Computation (GAE/TD-Lambda) [DONE]
 
 *   **Objective:** Implement dynamic GAE/TD-Lambda value target calculation in JAX, using current (or target) model weights, mirroring PyTorch's `BatchWorker::prepare_reward_value_gae`.

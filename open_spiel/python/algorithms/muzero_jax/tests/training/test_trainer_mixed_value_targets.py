@@ -65,6 +65,10 @@ class TestMixedValueTargetValidation:
             reward_support_size=0,
         )
 
+    def test_generate_top_new_masks_requires_collected_transitions(self):
+        with pytest.raises(ValueError):
+            generate_top_new_masks(jnp.array([1, 2, 3]), None, 10)
+
     def test_training_step_transitions_comprehensive(self, common_key, base_config):
         """Test behavior across training step transitions."""
         # Test scenarios around start_use_mix_training_steps boundary
@@ -112,19 +116,29 @@ class TestMixedValueTargetValidation:
                 # Later training: should apply masks
                 expected_values = apply_mixed_value_targets(
                     search_values, sarsa_values, masks, base_config.num_unroll_steps
-                )
-                
+                 )
+
             # Verify expected mixed pattern for mixed_mode
             if expected_behavior == "mixed_mode":
                 # Samples 0,1 (old): should use search values (1.0)
                 # Samples 2,3 (new): should use sarsa values (2.0)
-                assert jnp.allclose(expected_values[0, :], 1.0), f"Sample 0 should use search at step {training_step}"
-                assert jnp.allclose(expected_values[1, :], 1.0), f"Sample 1 should use search at step {training_step}"
-                assert jnp.allclose(expected_values[2, :], 2.0), f"Sample 2 should use sarsa at step {training_step}"
-                assert jnp.allclose(expected_values[3, :], 2.0), f"Sample 3 should use sarsa at step {training_step}"
+                assert jnp.allclose(
+                    expected_values[0, :], 1.0
+                ), f"Sample 0 should use search at step {training_step}"
+                assert jnp.allclose(
+                    expected_values[1, :], 1.0
+                ), f"Sample 1 should use search at step {training_step}"
+                assert jnp.allclose(
+                    expected_values[2, :], 2.0
+                ), f"Sample 2 should use sarsa at step {training_step}"
+                assert jnp.allclose(
+                    expected_values[3, :], 2.0
+                ), f"Sample 3 should use sarsa at step {training_step}"
             elif expected_behavior == "search_only":
                 # All samples should use search values
-                assert jnp.allclose(expected_values, search_values), f"All should use search at step {training_step}"
+                assert jnp.allclose(
+                    expected_values, search_values
+                ), f"All should use search at step {training_step}"
 
     def test_collected_transitions_overflow_scenarios(self, common_key, base_config):
         """Test behavior with very large collected_transitions values."""

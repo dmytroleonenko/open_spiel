@@ -17,6 +17,10 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
 *   **Reference Implementation:** Closely follow the `EfficientZeroV2` codebase (`@EfficientZeroV2`) for algorithmic structure, network design, and training pipeline. Cite specific reference files in commit messages and comments where applicable.
 *   **Stochastic Integration:** The primary deviation from a direct `EfficientZeroV2` port will be the integration of stochastic environment handling, drawing from `@Stochastic-muzero` or OpenSpiel AlphaZero for MCTS and game wrapper adaptations.
 
+### Operational Tooling (Nov 14, 2025)
+
+[*] Align `run_tests_with_coverage.py` output controls with Task 1 (`-q` quiet mode hiding the progress bar + worker spam) and Task 2 (default run shows only the progress bar) so runners stay usable. Added `compute_output_controls`, the `--debug-worker-logs` switch, and deferred coverage printing. (Per repo policy the script stays excluded from automated tests.)
+
 ---
 
 ### Phase 1: Core MuZero JAX Implementation (Local - adapting EfficientZeroV2)

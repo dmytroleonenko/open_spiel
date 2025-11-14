@@ -67,4 +67,25 @@ class HyperparameterAdapter:
         """Return (td_lambdas, td_steps) for a 1-D array of indices."""
         td_lambda_vmap = jax.vmap(self.compute_td_lambda)
         td_steps_vmap = jax.vmap(self.compute_td_steps)
-        return td_lambda_vmap(sample_indices), td_steps_vmap(sample_indices) 
+        return td_lambda_vmap(sample_indices), td_steps_vmap(sample_indices)
+
+    # ------------------------------------------------------------------
+    # Scheduling helpers for host-side orchestration
+    # ------------------------------------------------------------------
+    def compute_model_update_interval(
+        self,
+        step_count: int,
+        base_interval: int,
+        min_interval: int,
+    ) -> int:
+        """Interpolate between base_interval and min_interval over training."""
+        if base_interval <= 0:
+            return 0
+        min_interval = max(1, min(min_interval, base_interval))
+        if base_interval == min_interval:
+            return base_interval
+        decay_steps = max(1, self.cfg.auto_td_steps)
+        progress = jnp.clip(step_count / decay_steps, 0.0, 1.0)
+        interval = base_interval - (base_interval - min_interval) * progress
+        interval = jnp.maximum(min_interval, jnp.round(interval))
+        return int(interval)

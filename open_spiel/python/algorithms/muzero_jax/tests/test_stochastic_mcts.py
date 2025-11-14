@@ -15,36 +15,15 @@ import numpy as np
 import pyspiel
 
 # Import the modules under test
-try:
-    import mctx
-    from mctx._src import base as mctx_base
-    MCTX_AVAILABLE = True
-except ImportError:
-    MCTX_AVAILABLE = False
-    # Mock classes for when mctx is not available
-    class MockBase:
-        class RootFnOutput:
-            def __init__(self, prior_logits, value, embedding):
-                self.prior_logits = prior_logits
-                self.value = value
-                self.embedding = embedding
-        
-        class PolicyOutput:
-            def __init__(self, action, action_weights, search_tree):
-                self.action = action
-                self.action_weights = action_weights
-                self.search_tree = search_tree
-    
-    mctx_base = MockBase()
-    mctx = MagicMock()
+import mctx
+from mctx._src import base as mctx_base
 
 from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import (
-    MCTS, StochasticMCTS, create_mcts_for_game, MCTX_AVAILABLE
+    MCTS, StochasticMCTS, create_mcts_for_game
 )
 from open_spiel.python.algorithms.muzero_jax.envs.game_wrapper import GameWrapper
 
 
-@pytest.mark.skipif(not MCTX_AVAILABLE, reason="mctx not available")
 class TestMCTXIntegration:
     """Test the official mctx integration."""
     
@@ -164,94 +143,80 @@ class TestMCTXIntegration:
     
     @patch('open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper.mctx')
     def test_stochastic_mcts_run_stochastic(self, mock_mctx):
-        """Test stochastic MCTS run_stochastic method."""
-        # Setup mock
+        """Test stochastic MCTS run_stochastic method wires real recurrent fns."""
         mock_policy_output = mctx_base.PolicyOutput(
             action=jnp.array([1]),
             action_weights=jnp.ones((1, 4)) / 4,
-            search_tree=None
+            search_tree=None,
         )
-        mock_mctx.gumbel_muzero_policy.return_value = mock_policy_output
-        
-        # Create StochasticMCTS instance
+        mock_mctx.stochastic_muzero_policy.return_value = mock_policy_output
+
+        class DummyNetwork:
+            def recurrent_inference(self, embedding, action, training=False):
+                batch = embedding.shape[0]
+                hidden = jnp.ones_like(embedding)
+                reward = jnp.zeros((batch,))
+                value = jnp.ones((batch,)) * 0.5
+                policy_logits = jnp.ones((batch, 4))
+                return hidden, reward, value, policy_logits, None, None
+
+        mcts = StochasticMCTS(
+            num_simulations=10,
+            max_num_considered_actions=4,
+            gumbel_scale=1.0,
+        )
+
+        rng_key = jax.random.PRNGKey(42)
+        root = mctx_base.RootFnOutput(
+            prior_logits=jnp.ones((1, 4)),
+            value=jnp.array([0.5]),
+            embedding=jnp.zeros((1, 8)),
+        )
+
+        dummy_qtransform = lambda *_args, **_kwargs: None
+
+        result = mcts.run_stochastic(
+            rng_key=rng_key,
+            root=root,
+            network=DummyNetwork(),
+            qtransform=dummy_qtransform,
+        )
+
+        assert result == mock_policy_output
+        assert mock_mctx.stochastic_muzero_policy.call_count == 1
+        kwargs = mock_mctx.stochastic_muzero_policy.call_args.kwargs
+        assert callable(kwargs["decision_recurrent_fn"])
+        assert callable(kwargs["chance_recurrent_fn"])
+        assert kwargs["qtransform"] is dummy_qtransform
+
+        # Smoke test the generated recurrent fns to ensure they execute end-to-end
+        decision_output, afterstate_embedding = kwargs["decision_recurrent_fn"](
+            None, rng_key, jnp.array(1), root.embedding
+        )
+        assert decision_output.afterstate_value.shape == (1,)
+        assert afterstate_embedding.shape == root.embedding.shape
+
+        chance_output, _ = kwargs["chance_recurrent_fn"](
+            None, rng_key, jnp.array(0), afterstate_embedding
+        )
+        assert chance_output.value.shape == (1,)
+        assert chance_output.action_logits.shape == (1, 4)
+
+    def test_stochastic_mcts_requires_network(self):
+        """Ensure run_stochastic fails loudly when no network is provided."""
         mcts = StochasticMCTS(
             num_simulations=10,
             max_num_considered_actions=4,
             gumbel_scale=1.0
         )
-        
-        # Create test inputs
-        rng_key = jax.random.PRNGKey(42)
+        rng_key = jax.random.PRNGKey(0)
         root = mctx_base.RootFnOutput(
             prior_logits=jnp.ones((1, 4)),
             value=jnp.array([0.5]),
             embedding=jnp.zeros((1, 8))
         )
-        
-        # Run stochastic MCTS
-        result = mcts.run_stochastic(
-            rng_key=rng_key,
-            root=root
-        )
-        
-        # Verify mctx was called (currently uses gumbel_muzero_policy as fallback)
-        mock_mctx.gumbel_muzero_policy.assert_called_once()
-        assert result == mock_policy_output
-    
-    def test_fallback_recurrent_function(self):
-        """Test the fallback recurrent function returns correct structure."""
-        mcts = StochasticMCTS(
-            num_simulations=10,
-            max_num_considered_actions=4,
-            gumbel_scale=1.0
-        )
-        
-        recurrent_fn = mcts._create_fallback_recurrent_fn()
-        
-        # Test with dummy inputs
-        embedding = jnp.zeros((2, 8))  # Batch size 2
-        result, next_embedding = recurrent_fn(
-            params=None,
-            rng_key=jax.random.PRNGKey(42),
-            action=1,
-            embedding=embedding
-        )
-        
-        # Check structure
-        assert hasattr(result, 'reward')
-        assert hasattr(result, 'discount')
-        assert hasattr(result, 'prior_logits')
-        assert hasattr(result, 'value')
-        
-        # Check shapes
-        assert result.reward.shape == (2,)
-        assert result.discount.shape == (2,)
-        assert result.prior_logits.shape == (2, 10)
-        assert result.value.shape == (2,)
-        assert next_embedding.shape == (2, 8)
-
-
-@pytest.mark.skipif(MCTX_AVAILABLE, reason="Test mctx unavailable fallback")
-class TestMCTXUnavailable:
-    """Test behavior when mctx is not available."""
-    
-    def test_mcts_creation_without_mctx(self):
-        """Test MCTS creation works without mctx."""
-        mcts = MCTS(
-            num_simulations=50,
-            max_num_considered_actions=16,
-            gumbel_scale=1.0
-        )
-        assert mcts.num_simulations == 50
-    
-    def test_stochastic_mcts_creation_without_mctx(self):
-        """Test StochasticMCTS creation fails without mctx."""
-        with pytest.raises(ImportError, match="mctx is required"):
-            StochasticMCTS(
-                num_simulations=50,
-                max_num_considered_actions=16,
-                gumbel_scale=1.0
-            )
+        with pytest.raises(ValueError, match="requires a network"):
+            mcts.run_stochastic(rng_key=rng_key, root=root, network=None)
 
 
 class TestIntegrationPoints:
@@ -292,7 +257,6 @@ class TestIntegrationPoints:
         else:
             assert isinstance(mcts, MCTS)
     
-    @pytest.mark.skipif(not MCTX_AVAILABLE, reason="mctx not available")
     def test_stochastic_mcts_with_real_network(self):
         """Test stochastic MCTS with a mock MuZero network."""
         from unittest.mock import MagicMock
@@ -363,7 +327,6 @@ class TestIntegrationPoints:
         assert chance_output.reward.shape == (1,)
         assert chance_output.discount.shape == (1,)
     
-    @pytest.mark.skipif(not MCTX_AVAILABLE, reason="mctx not available")
     def test_stochastic_game_detection(self):
         """Test detection of stochastic vs deterministic games."""
         # Test various OpenSpiel games
@@ -397,7 +360,6 @@ class TestIntegrationPoints:
                 # Skip if game is not available
                 pytest.skip(f"Game {game_name} not available: {e}")
     
-    @pytest.mark.skipif(not MCTX_AVAILABLE, reason="mctx not available")
     def test_simplified_api_compatibility(self):
         """Test that simplified API is compatible with actor expectations."""
         # Create stochastic MCTS
@@ -414,49 +376,26 @@ class TestIntegrationPoints:
         # Verify it has the run_stochastic method
         assert hasattr(mcts, 'run_stochastic')
         assert callable(mcts.run_stochastic)
-        
-        # Verify backward compatibility with run method
-        assert hasattr(mcts, 'run')
-        assert callable(mcts.run)
     
-    @pytest.mark.skipif(not MCTX_AVAILABLE, reason="mctx not available") 
-    def test_stochastic_mcts_fallback_behavior(self):
-        """Test stochastic MCTS fallback when no network provided."""
-        with patch('open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper.mctx') as mock_mctx:
-            # Setup mock
-            mock_policy_output = mctx_base.PolicyOutput(
-                action=jnp.array([1]),
-                action_weights=jnp.ones((1, 4)) / 4,
-                search_tree=None
-            )
-            mock_mctx.gumbel_muzero_policy.return_value = mock_policy_output
-            
-            # Create StochasticMCTS instance
-            mcts = StochasticMCTS(
-                num_simulations=10,
-                max_num_considered_actions=4,
-                gumbel_scale=1.0
-            )
-            
-            # Create test inputs
-            rng_key = jax.random.PRNGKey(42)
-            root = mctx_base.RootFnOutput(
-                prior_logits=jnp.ones((1, 4)),
-                value=jnp.array([0.5]),
-                embedding=jnp.zeros((1, 8))
-            )
-            
-            # Run without network (should fallback to deterministic)
-            result = mcts.run_stochastic(
+    def test_stochastic_mcts_requires_network_integration(self):
+        """Ensure run_stochastic fails fast when invoked without a network."""
+        mcts = StochasticMCTS(
+            num_simulations=10,
+            max_num_considered_actions=4,
+            gumbel_scale=1.0
+        )
+        rng_key = jax.random.PRNGKey(42)
+        root = mctx_base.RootFnOutput(
+            prior_logits=jnp.ones((1, 4)),
+            value=jnp.array([0.5]),
+            embedding=jnp.zeros((1, 8))
+        )
+        with pytest.raises(ValueError, match="requires a network"):
+            mcts.run_stochastic(
                 rng_key=rng_key,
                 root=root,
-                network=None  # No network provided
+                network=None,
             )
-            
-            # Should use gumbel_muzero_policy as fallback
-            mock_mctx.gumbel_muzero_policy.assert_called_once()
-            mock_mctx.stochastic_muzero_policy.assert_not_called()
-            assert result == mock_policy_output
 
 
 if __name__ == "__main__":

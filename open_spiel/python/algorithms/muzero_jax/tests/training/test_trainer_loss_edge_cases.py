@@ -220,4 +220,73 @@ def test_mse_value_and_reward_squeeze_coverage(common_key, common_cfg_flat):
     
     assert loss.shape == ()
     assert "value_loss" in metrics
-    assert "reward_loss" in metrics 
+    assert "reward_loss" in metrics
+
+
+def test_loss_static_accepts_positional_args(common_key, common_cfg_flat):
+    """Legacy positional args should still be honored for training flags."""
+    cfg = make_cfg(
+        vsup=0,
+        rsup=0,
+        steps=1,
+        proj=False,
+        suffix="_posargs",
+        use_ema=False,
+    )
+    model = make_model(common_key, common_cfg_flat)
+    batch = make_batch(
+        common_key,
+        cfg.batch_size,
+        common_cfg_flat.observation_shape,
+        common_cfg_flat.num_actions,
+        cfg.num_unroll_steps,
+        vsup=0,
+        rsup=0,
+        use_proj=False,
+    )
+
+    loss, metrics = Learner._compute_total_loss_static(
+        model,
+        cfg,
+        batch,
+        common_key,
+        False,
+        7,
+    )
+
+    assert loss.shape == ()
+    assert "policy_loss" in metrics
+
+
+def test_loss_static_raises_on_time_dimension_mismatch(common_key, common_cfg_flat):
+    """Time-dimension mismatches should raise a clear ValueError."""
+    cfg = make_cfg(
+        vsup=0,
+        rsup=0,
+        steps=2,
+        proj=False,
+        suffix="_timedim",
+        use_ema=False,
+    )
+    model = make_model(common_key, common_cfg_flat)
+    batch = make_batch(
+        common_key,
+        cfg.batch_size,
+        common_cfg_flat.observation_shape,
+        common_cfg_flat.num_actions,
+        cfg.num_unroll_steps,
+        vsup=0,
+        rsup=0,
+        use_proj=False,
+    )
+    # Drop the final timestep from the mask to force a mismatch
+    batch["game_history_mask"] = batch["game_history_mask"][:, :-1]
+
+    with pytest.raises(ValueError, match="Time-dimension mismatch"):
+        Learner._compute_total_loss_static(
+            model,
+            cfg,
+            batch,
+            common_key,
+            training=True,
+        )

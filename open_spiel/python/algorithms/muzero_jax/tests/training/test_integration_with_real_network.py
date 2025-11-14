@@ -239,7 +239,32 @@ class RealNetworkIntegrationTest(unittest.TestCase):
             )
         )
         self.assertTrue(self_play_changed, "Self-play model should have been updated")
-        
+
+    def test_functional_train_step_is_jittable(self):
+        """Ensure the functional train step compiles under jax.jit."""
+        learner = Learner(
+            model=self.model,
+            optimizer_def=self.optimizer_def,
+            config=self.config,
+            rng_key=self.rng_key
+        )
+        batch = self._create_realistic_batch()
+
+        def run(state, rng_key, step_idx):
+            return learner.jit_train_step(state, batch, rng_key, step_idx)
+
+        compiled = jax.jit(run)
+        new_state, metrics, next_key = compiled(
+            learner._state, learner._rng_key, learner.num_training_steps
+        )
+
+        self.assertIn('total_loss', metrics)
+        self.assertTrue(jnp.isfinite(metrics['total_loss']))
+
+        # Keep learner consistent for subsequent checks
+        learner._state = new_state
+        learner._rng_key = next_key
+    
     def test_adaptive_hyperparameters_with_real_network(self):
         """Test that adaptive hyperparameters work correctly with real network."""
         # Create learner with real network

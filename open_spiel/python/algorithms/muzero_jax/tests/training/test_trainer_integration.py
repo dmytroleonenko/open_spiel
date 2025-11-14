@@ -84,7 +84,7 @@ def test_policy_reanalysis_integration_in_training_pipeline(common_key, common_c
     }
 
     # Compute loss with reanalysis enabled
-    loss, metrics = learner._compute_total_loss_static(
+    loss, metrics = Learner._compute_total_loss_static(
         model, config, batch, common_key, training=True
     )
 
@@ -95,7 +95,7 @@ def test_policy_reanalysis_integration_in_training_pipeline(common_key, common_c
 
     # Test with reanalysis disabled
     config_no_reanalysis = dataclasses.replace(config, reanalyze_ratio=0.0)
-    loss_no_reanalysis, metrics_no_reanalysis = learner._compute_total_loss_static(
+    loss_no_reanalysis, metrics_no_reanalysis = Learner._compute_total_loss_static(
         model, config_no_reanalysis, batch, common_key, training=True
     )
 
@@ -151,7 +151,7 @@ def test_policy_reanalysis_temperature_scheduling_integration(common_key, common
         }
 
         # Should not crash with different training steps
-        loss, metrics = learner._compute_total_loss_static(
+        loss, metrics = Learner._compute_total_loss_static(
             model, config, batch, common_key, training=True
         )
         assert jnp.isfinite(
@@ -207,7 +207,7 @@ def test_policy_reanalysis_efficientzero_v2_integration_patterns(common_key, com
     }
 
     # Test computation with EfficientZeroV2 configuration
-    loss, metrics = learner._compute_total_loss_static(
+    loss, metrics = Learner._compute_total_loss_static(
         model, config, batch, common_key, training=True
     )
 
@@ -511,7 +511,7 @@ def test_error_handling_and_fallback_integration(common_key, common_cfg_flat):
     }
 
     # Should handle gracefully without optional components
-    loss, metrics = learner._compute_total_loss_static(
+    loss, metrics = Learner._compute_total_loss_static(
         model, config, minimal_batch, common_key, training=True
     )
     assert jnp.isfinite(loss), "Loss should be finite with minimal batch"
@@ -520,7 +520,7 @@ def test_error_handling_and_fallback_integration(common_key, common_cfg_flat):
     malformed_batch = minimal_batch.copy()
     malformed_batch["unknown_field"] = jnp.ones((1, 2))  # Extra field should be ignored
 
-    loss, metrics = learner._compute_total_loss_static(
+    loss, metrics = Learner._compute_total_loss_static(
         model, config, malformed_batch, common_key, training=True
     )
     assert jnp.isfinite(loss), "Loss should be finite with extra fields"

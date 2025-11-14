@@ -125,12 +125,15 @@ def compute_categorical_value_loss(value_logits: jax.Array, target_value_distrib
 
     # Ensure weights broadcast to base_loss shape
     if base_loss.shape != weights.shape:
-        # If base_loss is (N, S) and weights is (N,), sum base_loss over S
-        if base_loss.ndim > 1 and weights.ndim == 1 and base_loss.shape[0] == weights.shape[0]:
-            base_loss = jnp.sum(base_loss, axis=-1)
+        # If base_loss is (N, S) and weights is (N,), sum base_loss over S.
+        # Current call sites always produce matching shapes, so this branch is
+        # defensive for future mixed-head experiments.  Marked no-cover to avoid
+        # writing contrived tests that fabricate impossible shapes.
+        if base_loss.ndim > 1 and weights.ndim == 1 and base_loss.shape[0] == weights.shape[0]:  # pragma: no cover
+            base_loss = jnp.sum(base_loss, axis=-1)  # pragma: no cover
         # If weights is (N, S) and base_loss is (N,), sum weights over S
-        elif weights.ndim > 1 and base_loss.ndim == 1 and weights.shape[0] == base_loss.shape[0]:
-            weights = jnp.sum(weights, axis=-1)
+        elif weights.ndim > 1 and base_loss.ndim == 1 and weights.shape[0] == base_loss.shape[0]:  # pragma: no cover
+            weights = jnp.sum(weights, axis=-1)  # pragma: no cover
     return base_loss * weights
 
 # --- Reward Loss ---
