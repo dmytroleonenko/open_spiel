@@ -178,8 +178,30 @@ def test_load_checkpoint_no_checkpoint_exists(common_key, common_cfg_flat):
 
         with patch("builtins.print") as mock_print:
             loaded = learner.load_checkpoint()
-        assert not loaded
-        mock_print.assert_any_call("No checkpoint found to resume from.")
+    assert not loaded
+    mock_print.assert_any_call("No checkpoint found to resume from.")
+
+
+def test_extract_step_from_checkpoint_path_invalid_format(tmp_path, common_key, common_cfg_flat, caplog):
+    """Learner should warn and return None when checkpoint path lacks a step suffix."""
+    mk, lk = jax.random.split(common_key, 2)
+    model = make_model(mk, common_cfg_flat)
+    cfg = make_cfg(
+        common_cfg_flat.value_support_size,
+        common_cfg_flat.reward_support_size,
+        steps=1,
+        proj=False,
+        suffix="extract_step_invalid",
+        checkpoint_dir=str(tmp_path),
+    )
+    learner = Learner(model, optax.adam(cfg.learning_rate), cfg, lk)
+
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        extracted = learner._extract_step_from_checkpoint_path(str(tmp_path / "checkpoint_latest"))
+
+    assert extracted is None
+    assert any("Could not determine step from checkpoint path" in record.message for record in caplog.records)
 
 
 

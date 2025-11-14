@@ -737,6 +737,10 @@ class TestMuZeroOrchestrator:
             # Mock learner
             mock_learner_instance = Mock()
             mock_learner_instance.train_step.return_value = {'total_loss': 1.0, 'step': 1}
+            mock_learner_instance.num_training_steps = 0
+            mock_checkpoint_manager = Mock()
+            mock_checkpoint_manager.latest_step.return_value = None
+            mock_learner_instance.checkpoint_manager = mock_checkpoint_manager
             mock_learner.return_value = mock_learner_instance
             
             # Mock actor
@@ -1039,13 +1043,16 @@ class TestMuZeroOrchestrator:
                 mock_create_config.return_value = real_config
                 
                 mock_learner_instance = Mock()
+                mock_checkpoint_manager = Mock()
+                mock_checkpoint_manager.latest_step.return_value = None
+                mock_learner_instance.checkpoint_manager = mock_checkpoint_manager
+                mock_learner_instance.num_training_steps = 500
                 mock_learner_class.return_value = mock_learner_instance
                 
                 orchestrator = MuZeroOrchestrator(mock_hydra_config)
                 
-                # Verify checkpoint loading was attempted
+                # Verify checkpoint loading was attempted and training step mirrors learner state
                 mock_learner_instance.load_checkpoint.assert_called_once_with("/tmp/checkpoint_step_500.pkl")
-                # Check that training step was extracted from filename
                 assert orchestrator.training_step == 500
 
     def test_checkpoint_loading_error_handling(self, mock_hydra_config):
@@ -1076,6 +1083,10 @@ class TestMuZeroOrchestrator:
             mock_create_config.return_value = real_config
             
             mock_learner_instance = Mock()
+            mock_checkpoint_manager = Mock()
+            mock_checkpoint_manager.latest_step.return_value = None
+            mock_learner_instance.checkpoint_manager = mock_checkpoint_manager
+            mock_learner_instance.num_training_steps = 0
             mock_learner.return_value = mock_learner_instance
             
             # Mock checkpoint with invalid filename (no step number)
@@ -1083,9 +1094,8 @@ class TestMuZeroOrchestrator:
             
             orchestrator = MuZeroOrchestrator(mock_hydra_config)
             
-            # Verify checkpoint loading was attempted but step extraction failed gracefully
+            # Verify checkpoint loading fallback and that training step mirrors learner state
             mock_learner_instance.load_checkpoint.assert_called_once_with("/tmp/invalid_checkpoint.pkl")
-            # Training step should remain at initial value (0)
             assert orchestrator.training_step == 0
 
     def test_evaluation_functionality(self, mock_orchestrator_setup):
@@ -1238,8 +1248,8 @@ class TestMuZeroOrchestrator:
             
             orchestrator.cleanup()
             
-            # Verify final checkpoint was saved
-            orchestrator.learner.save_checkpoint.assert_called_once_with(orchestrator.training_step)
+            # Verify final checkpoint was saved with forced flag
+            orchestrator.learner.save_checkpoint.assert_called_once_with(force_save=True)
             # Verify wandb was finished
             mock_wandb.finish.assert_called_once()
 

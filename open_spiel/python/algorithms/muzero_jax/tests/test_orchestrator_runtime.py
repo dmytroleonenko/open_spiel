@@ -139,6 +139,10 @@ class TestOrchestratorRuntimeExecution:
             mock_learner_instance = Mock()
             mock_learner_instance.train_step.return_value = {
                 'total_loss': 1.0, 'step': 1}
+            mock_learner_instance.num_training_steps = 0
+            mock_checkpoint_manager = Mock()
+            mock_checkpoint_manager.latest_step.return_value = None
+            mock_learner_instance.checkpoint_manager = mock_checkpoint_manager
             mock_learner.return_value = mock_learner_instance
 
             # Mock actor

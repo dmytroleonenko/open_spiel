@@ -1181,11 +1181,11 @@ class Learner:
             
         return final_loss, metrics
 
-    def save_checkpoint(self, force_save: bool = False):
-        """Save model and optimizer state to checkpoint."""
+    def save_checkpoint(self, force_save: bool = False) -> Optional[str]:
+        """Save model and optimizer state to checkpoint and return the path."""
         if self.checkpoint_manager is None:
             print("Checkpoint manager not configured. Skipping save.") # pragma: no cover
-            return # pragma: no cover
+            return None # pragma: no cover
             
         # Check if we should save based on frequency
         should_save = (force_save or 
@@ -1197,7 +1197,7 @@ class Learner:
             logging.info(f"SAVE_CHECKPOINT: Condition met. force_save={force_save}, num_training_steps={self.num_training_steps}, freq={self.config.checkpoint_frequency}")
         else:
             logging.info(f"SAVE_CHECKPOINT: Condition NOT met. force_save={force_save}, num_training_steps={self.num_training_steps}, freq={self.config.checkpoint_frequency}") # pragma: no cover
-            return # pragma: no cover
+            return None # pragma: no cover
             
         try:
             # Prepare checkpoint data using nnx.Optimizer pattern
@@ -1221,20 +1221,30 @@ class Learner:
                 args=ocp.args.StandardSave(checkpoint_data)
             )
             
+            checkpoint_path = os.path.join(
+                self.config.checkpoint_dir,
+                f"checkpoint_{self.num_training_steps}"
+            )
             logging.info(f"Checkpoint saved at step {self.num_training_steps}")
+            return checkpoint_path
             
         except Exception as e:
             logging.error(f"Failed to save checkpoint: {e}") # pragma: no cover
+            return None
 
-    def load_checkpoint(self) -> bool:
+    def load_checkpoint(self, checkpoint_path: Optional[str] = None) -> bool:
         """Load model and optimizer state from checkpoint. Returns True if successful."""
         if self.checkpoint_manager is None:
             print("Checkpoint manager not configured. Skipping load.") # pragma: no cover
             return False # pragma: no cover
             
         try:
-            latest_step = self.checkpoint_manager.latest_step()
-            if latest_step is None:
+            restore_step = None
+            if checkpoint_path:
+                restore_step = self._extract_step_from_checkpoint_path(checkpoint_path)
+            if restore_step is None:
+                restore_step = self.checkpoint_manager.latest_step()
+            if restore_step is None:
                 print("No checkpoint found to resume from.") # pragma: no cover
                 return False # pragma: no cover
                 
@@ -1255,7 +1265,7 @@ class Learner:
                 
             # Load checkpoint data using modern Orbax API with target
             checkpoint_data = self.checkpoint_manager.restore(
-                step=latest_step,
+                step=restore_step,
                 args=ocp.args.StandardRestore(target_structure)
             )
             
@@ -1297,8 +1307,9 @@ class Learner:
                     # Crucial synchronization: ensure EMA internal average matches current online params
                     self.ema_params_state = self.ema_params_state._replace(ema=params)
             
-            print(f"Checkpoint restored from step {latest_step}") # pragma: no cover
-            return True # pragma: no cover
+            self._split_objects_for_jit()
+            logging.info(f"Checkpoint restored from step {self.num_training_steps}")
+            return True
             
         except Exception as e:
             logging.error(f"Failed to load checkpoint: {e}") # pragma: no cover
@@ -1312,6 +1323,15 @@ class Learner:
                 self.checkpoint_manager = None
             except Exception:
                 pass  # Ignore errors during cleanup
+
+    def _extract_step_from_checkpoint_path(self, checkpoint_path: str) -> Optional[int]:
+        """Helper to parse the step number from a checkpoint path."""
+        try:
+            stem = Path(checkpoint_path).stem
+            return int(stem.split('_')[-1])
+        except (ValueError, IndexError):
+            logging.warning(f"Could not determine step from checkpoint path: {checkpoint_path}")
+            return None
 
     def __del__(self):
         """Cleanup method to ensure CheckpointManager is properly closed."""

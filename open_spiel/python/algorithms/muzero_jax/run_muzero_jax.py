@@ -288,18 +288,24 @@ class MuZeroOrchestrator:
             rng_key=learner_key
         )
         
-        # Try to load existing checkpoint
-        latest_checkpoint = get_latest_checkpoint(str(self.checkpoint_dir))
-        if latest_checkpoint:
-            logger.info(f"Loading checkpoint: {latest_checkpoint}")
-            self.learner.load_checkpoint(latest_checkpoint)
-            # Extract step number from checkpoint if possible
-            try:
-                step_str = Path(latest_checkpoint).stem.split('_')[-1]
-                self.training_step = int(step_str)
-                logger.info(f"Resumed from training step: {self.training_step}")
-            except (ValueError, IndexError):
-                logger.warning("Could not extract step number from checkpoint")
+        # Try to load existing checkpoint via the learner's manager first
+        checkpoint_loaded = False
+        if self.learner.checkpoint_manager is not None:
+            latest_step = self.learner.checkpoint_manager.latest_step()
+            if latest_step is not None:
+                logger.info(f"Checkpoint manager reports latest step {latest_step}, attempting restore.")
+                checkpoint_loaded = self.learner.load_checkpoint()
+        
+        # Fallback to filesystem scan (legacy checkpoints saved without manager metadata)
+        if not checkpoint_loaded:
+            latest_checkpoint = get_latest_checkpoint(str(self.checkpoint_dir))
+            if latest_checkpoint:
+                logger.info(f"Loading checkpoint from path: {latest_checkpoint}")
+                checkpoint_loaded = self.learner.load_checkpoint(latest_checkpoint)
+        
+        if checkpoint_loaded:
+            self.training_step = self.learner.num_training_steps
+            logger.info(f"Resumed from training step: {self.training_step}")
         else:
             logger.info("No existing checkpoint found, starting from scratch")
             
@@ -410,8 +416,9 @@ class MuZeroOrchestrator:
                 
             # Save checkpoint
             if self.training_step % self.config.output.checkpoint_interval == 0:
-                checkpoint_path = self.learner.save_checkpoint(self.training_step)
-                logger.info(f"Saved checkpoint: {checkpoint_path}")  # pragma: no cover
+                checkpoint_path = self.learner.save_checkpoint(force_save=True)
+                if checkpoint_path:
+                    logger.info(f"Saved checkpoint: {checkpoint_path}")  # pragma: no cover
                 
             # Check if training is complete
             if self.training_step >= self.muzero_config.training_steps:
@@ -717,8 +724,9 @@ class MuZeroOrchestrator:
         """Clean up resources."""
         # Save final checkpoint
         if hasattr(self, 'learner'):
-            final_checkpoint = self.learner.save_checkpoint(self.training_step)
-            logger.info(f"Saved final checkpoint: {final_checkpoint}")
+            final_checkpoint = self.learner.save_checkpoint(force_save=True)
+            if final_checkpoint:
+                logger.info(f"Saved final checkpoint: {final_checkpoint}")
             
         # Close wandb
         if self.config.wandb.enabled:

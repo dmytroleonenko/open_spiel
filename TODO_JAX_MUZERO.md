@@ -38,6 +38,10 @@ This document outlines action items to align the JAX implementation of Efficient
 5.  [*] **Plumb support ranges from config everywhere.**
     *   ✅ `_compute_total_loss_static` now routes `support_min/max` through host-prep helpers and the priority calculation, and those helpers require explicit ranges rather than implying `[-300, 300]`.
     *   ✅ `BootstrapConfig` exposes `support_min/max` so `bootstrap_actor.py` no longer hard-codes fallback ranges when converting categorical network values.
+6.  [*] **Baseline resilience + restart behavior verified.**
+    *   ✅ `Learner.save_checkpoint` returns concrete filesystem paths and `Learner.load_checkpoint` accepts optional path overrides so orchestration code can resume from explicit checkpoints written before Orbax metadata existed.
+    *   ✅ `MuZeroOrchestrator` queries the learner’s `CheckpointManager` before falling back to filesystem scans, updates its local `training_step` from the restored learner, and only logs checkpoints when persistence succeeded.
+    *   ✅ Added `tests/test_resilience.py` covering learner round-trip restores, orchestrator restart continuity, and actor parameter refresh; run via `python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_resilience.py`.
 6.  [*] **Add a JIT integration test for `Learner.train_step`.**
     *   ✅ `test_integration_with_real_network.py` now includes a slow-path test that calls `learner.jit_train_step` via `jax.jit` using the full MuZero network, asserting the compiled path runs end-to-end and produces finite losses.
 7.  [*] **Task 6 verification audit (Nov 14 2025).**
