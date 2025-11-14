@@ -47,16 +47,20 @@ This document outlines action items to align the JAX implementation of Efficient
     *   ✅ Rebuilt `tests/self_play/test_bootstrap_actor.py` with deterministic fixtures covering chance sampling, policy conversion, observation edge cases, and discounted value target math.
 9.  [*] **Loss utilities coverage.**
     *   ✅ Added targeted tests in `test_trainer_loss_computation.py` and `test_trainer_loss_edge_cases.py` to execute the categorical weighting branch (`losses.py` line 130) and legacy positional-argument paths.
-10.  [ ] **Stabilize `run_tests_with_coverage.py` output controls (Task 1 & 2).**
-    *   Default run should emit only the tqdm progress bar plus final summary artifacts; worker-level logging moves behind a `--debug-worker-logs` switch.
-    *   `-q/--quiet` suppresses the progress bar entirely and prints only the end-of-run summary (pass/fail counts, slow tests, coverage table, and deferred failure logs).
-    *   Document behavior since the script remains excluded from automated tests; validation is manual via ad-hoc invocation.
+10.  [*] **Stabilize `run_tests_with_coverage.py` output controls (Task 1 & 2).**
+    *   `compute_output_controls` now governs the default progress bar, `--debug-worker-logs`, and `-q/--quiet` semantics with explicit documentation in the module docstring.
+    *   Default runs show the tqdm progress bar and final summary only; quiet mode suppresses mid-run output entirely; worker-level logs stay opt-in.
+    *   Added inline comments describing the policy so future contributors can honor Task 1/2 without reopening the script’s tests.
+11. [*] **Replay buffer contract & priority inspection.**
+    *   `_resolve_value_targets` backfills zero arrays before storage, so actors can enqueue partial trajectories while learner/reanalyze workers overwrite them later.
+    *   Added `priorities_snapshot`/`priority_values` helpers plus pytest coverage to replace direct `_priorities` access.
 
 ### 0.3 Verified Fixes (Previously flagged but now done)
 *   Policy reanalysis now performs real `mctx.gumbel_muzero_policy` searches (trainer.py:1970-2148). Uniform policies remain only for non-reanalyzed samples or when `reanalyze_ratio == 0`.
 *   LSTM reward network is initialized and reset per EfficientZeroV2 requirements (trainer.py:824-908). Hidden-state validation is enforced, and recurrent unrolls pass the LSTM state through `reward_hidden`.
 *   Stochastic MCTS wrapper’s primary path consumes actual network predictions; only the legacy fallback (now slated for removal) returns dummy tensors.
 *   Bootstrap actor extracts values from either MCTS root statistics or the current network before falling back to zero; terminal returns are respected. The issue is a lack of tests/coverage rather than missing logic.
+*   Dedicated reanalyze worker (`self_play/reanalyze_worker.py`) now samples trajectory IDs from both replay buffer flavors, refreshes policy/value targets via the current MuZero network, and writes updates in place. Regression coverage lives in `tests/test_reanalyze.py` and the buffers expose `sample_batch_with_ids`/`update_trajectory_targets` so Task 19 stays closed.
 
 ### 0.4 Deferred / Out-of-Scope Items
 *   `open_spiel/python/algorithms/muzero_jax/utils/batch_optimizer.py` is a diagnostics script for finding optimal batch sizes on specific hardware. It is **not** part of the current EfficientZeroV2 parity goals. Leave its CLI/tests skipped for now and revisit when we prioritize performance tooling. Document this status in any future coverage reports to avoid confusion.

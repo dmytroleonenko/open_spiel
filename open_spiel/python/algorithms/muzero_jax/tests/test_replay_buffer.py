@@ -2,7 +2,12 @@ import pytest
 import numpy as np
 import jax
 import jax.numpy as jnp
-from open_spiel.python.algorithms.muzero_jax.replay_buffer import ReplayBuffer, TrajectoryBuffer, PrioritizedTrajectoryBuffer
+from open_spiel.python.algorithms.muzero_jax.replay_buffer.replay_buffer import (
+    ReplayBuffer,
+    TrajectoryBuffer,
+    PrioritizedTrajectoryBuffer,
+    _make_numpy_rng,
+)
 
 
 def create_sample_trajectory(length=3, obs_shape=(8, 8), num_actions=9):
@@ -14,6 +19,13 @@ def create_sample_trajectory(length=3, obs_shape=(8, 8), num_actions=9):
         'value_targets': np.random.rand(length).astype(np.float32),
         'policy_targets': [np.random.rand(num_actions).astype(np.float32) for _ in range(length)]
     }
+
+
+def test_make_numpy_rng_handles_zero_seed():
+    """_make_numpy_rng should fallback to seed=1 when the derived seed is zero."""
+    rng = _make_numpy_rng(jax.random.PRNGKey(0))
+    sample = rng.integers(0, 10)
+    assert 0 <= sample < 10
 
 
 def test_trajectory_buffer_add_and_len():
@@ -64,6 +76,28 @@ def test_trajectory_buffer_sample_batch_returns_elements():
         assert 'value_targets' in trajectory
         assert 'policy_targets' in trajectory
         assert len(trajectory['observations']) == len(trajectory['actions'])
+
+
+def test_trajectory_buffer_missing_target_values_defaults_to_zero():
+    """Ensure trajectories without value targets are accepted and padded with zeros."""
+    buffer = TrajectoryBuffer(capacity=1, observation_shape=(4, 4), num_actions=3)
+    traj = create_sample_trajectory(length=2, obs_shape=(4, 4), num_actions=3)
+    traj.pop('value_targets')
+    traj.pop('target_values', None)
+    buffer.add_trajectory(traj)
+    sampled = buffer.sample_batch(1)[0]
+    np.testing.assert_array_equal(sampled['value_targets'], np.zeros(2, dtype=np.float32))
+
+
+def test_trajectory_buffer_accepts_array_policy_targets():
+    """When policy targets arrive as a NumPy array, the array branch is exercised."""
+    buffer = TrajectoryBuffer(capacity=1, observation_shape=(2, 2), num_actions=2)
+    traj = create_sample_trajectory(length=2, obs_shape=(2, 2), num_actions=2)
+    traj['policy_targets'] = np.stack(traj['policy_targets'], axis=0)
+    buffer.add_trajectory(traj)
+    sampled = buffer.sample_batch(1)[0]
+    assert isinstance(sampled['policy_targets'], list)
+    assert len(sampled['policy_targets']) == 2
 
 
 def test_trajectory_buffer_sample_batch_error_when_too_many():
@@ -118,6 +152,16 @@ def test_trajectory_buffer_variable_length_trajectories():
     batch = buffer.sample_batch(3)
     sampled_lengths = [len(traj['actions']) for traj in batch]
     assert set(sampled_lengths) == set(lengths)
+
+
+def test_trajectory_buffer_missing_trajectory_id_errors():
+    buffer = TrajectoryBuffer(capacity=1, observation_shape=(2, 2), num_actions=2)
+    traj = create_sample_trajectory(length=2, obs_shape=(2, 2), num_actions=2)
+    buffer.add_trajectory(traj)
+    with pytest.raises(KeyError):
+        buffer.get_trajectory(999)
+    with pytest.raises(KeyError):
+        buffer.update_trajectory_targets(999, value_targets=np.ones(2))
 
 
 def test_trajectory_buffer_jax_compatibility():
@@ -204,8 +248,9 @@ def test_prioritized_buffer_update_priorities():
     buffer.update_priorities(indices, new_priorities)
     
     # Verify priorities were updated
-    assert buffer._priorities[0] == 2.0
-    assert buffer._priorities[1] == 3.0
+    priorities = buffer.priority_values()
+    assert priorities[0] == 2.0
+    assert priorities[1] == 3.0
 
 
 def test_prioritized_buffer_invalid_alpha():
@@ -307,7 +352,7 @@ def test_prioritized_buffer_edge_cases():
     
     # Test updating priorities with very small values (tests the minimum clipping)
     buffer.update_priorities(jnp.array([0]), jnp.array([1e-10]))
-    assert buffer._priorities[0] >= 1e-9  # Should be clipped to minimum (allow for small precision error)
+    assert buffer.priority_values()[0] >= 1e-9  # Should be clipped to minimum (allow for small precision error)
 
 
 def test_prioritized_buffer_capacity_overflow():
@@ -327,12 +372,13 @@ def test_prioritized_buffer_capacity_overflow():
     
     buffer.add_trajectory(traj1, priority=1.0)
     buffer.add_trajectory(traj2, priority=2.0)
-    assert len(buffer._priorities) == 2
+    assert len(buffer.priority_values()) == 2
     
     # Adding third trajectory should trigger overflow
     buffer.add_trajectory(traj3, priority=3.0)
-    assert len(buffer._priorities) == 2  # Should cap at capacity
-    assert buffer._priorities == [2.0, 3.0]  # Should have removed oldest (1.0)
+    priorities_after = buffer.priority_values()
+    assert len(priorities_after) == 2  # Should cap at capacity
+    assert priorities_after == [2.0, 3.0]  # Should have removed oldest (1.0)
 
 
 def test_prioritized_buffer_invalid_capacity():

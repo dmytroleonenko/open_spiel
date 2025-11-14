@@ -1,9 +1,43 @@
+from collections import deque
 import jax
 import jax.numpy as jnp
 import flashbax as fbx
 import numpy as np
-from typing import Any, Dict, List, Optional, Tuple, NamedTuple
+from typing import Any, Dict, List, Optional, Tuple, NamedTuple, Sequence
 from dataclasses import dataclass
+
+
+def _make_numpy_rng(rng_key: Optional[jax.random.PRNGKey]) -> np.random.Generator:
+    """Convert an optional JAX PRNG key into a NumPy Generator."""
+    if rng_key is None:
+        return np.random.default_rng()
+    key_vals = np.asarray(rng_key, dtype=np.uint32).reshape(-1)
+    base_seed = int(key_vals[0])
+    if key_vals.size > 1:
+        base_seed ^= int(key_vals[-1]) << 1
+    seed = base_seed & 0xFFFFFFFF
+    if seed == 0:
+        seed = 1
+    return np.random.default_rng(seed)
+
+
+def _resolve_value_targets(
+    trajectory: Dict[str, Any], traj_length: int
+) -> np.ndarray:
+    """Return a float32 array of length traj_length for value targets."""
+    raw = None
+    for key in ("target_values", "value_targets"):
+        if key in trajectory:
+            raw = trajectory[key]
+            break
+    if raw is None:
+        return np.zeros(traj_length, dtype=np.float32)
+    raw_arr = np.array(raw, dtype=np.float32).reshape(-1)
+    resolved = np.zeros(traj_length, dtype=np.float32)
+    if raw_arr.size:
+        steps = min(traj_length, raw_arr.shape[0])
+        resolved[:steps] = raw_arr[:steps]
+    return resolved
 
 class Trajectory(NamedTuple):
     """Trajectory data structure for Flashbax buffers."""
@@ -43,6 +77,9 @@ class TrajectoryBuffer:
         self._current_size = 0
         self._buffer = None
         self._buffer_state = None
+        self._trajectory_store: Dict[int, Dict[str, np.ndarray]] = {}
+        self._trajectory_order: deque[int] = deque()
+        self._next_traj_id = 0
         # Immediate setup if shapes provided
         if self.observation_shape is not None and self.num_actions is not None:
             self._buffer = fbx.make_item_buffer(
@@ -60,6 +97,70 @@ class TrajectoryBuffer:
             }
             self._buffer_state = self._buffer.init(dummy_trajectory)
 
+    def _copy_for_storage(self, trajectory: Dict[str, Any]) -> Dict[str, np.ndarray]:
+        """Create a NumPy-based copy of a trajectory for internal storage."""
+        policy_targets = trajectory['policy_targets']
+        if isinstance(policy_targets, list):
+            policy_targets_array = np.stack(
+                [np.array(target, dtype=np.float32) for target in policy_targets],
+                axis=0
+            )
+        else:
+            policy_targets_array = np.array(policy_targets, dtype=np.float32)
+
+        return {
+            'observations': np.array(trajectory['observations'], dtype=np.float32),
+            'actions': np.array(trajectory['actions'], dtype=np.int32),
+            'rewards': np.array(trajectory['rewards'], dtype=np.float32),
+            'value_targets': np.array(trajectory['value_targets'], dtype=np.float32),
+            'policy_targets': policy_targets_array,
+            'length': int(len(trajectory['actions']))
+        }
+
+    def _copy_for_return(self, stored: Dict[str, np.ndarray]) -> Dict[str, Any]:
+        """Return a deepcopy-style version suitable for callers/tests."""
+        return {
+            'observations': np.array(stored['observations'], copy=True),
+            'actions': np.array(stored['actions'], copy=True),
+            'rewards': np.array(stored['rewards'], copy=True),
+            'value_targets': np.array(stored['value_targets'], copy=True),
+            'policy_targets': [
+                np.array(step, copy=True) for step in stored['policy_targets']
+            ]
+        }
+
+    def _store_trajectory(self, trajectory: Dict[str, Any]) -> int:
+        """Insert the trajectory into the in-memory store and return its ID."""
+        stored = self._copy_for_storage(trajectory)
+        traj_id = self._next_traj_id
+        self._next_traj_id += 1
+        if len(self._trajectory_order) >= self.capacity:
+            old_id = self._trajectory_order.popleft()
+            self._trajectory_store.pop(old_id, None)
+        self._trajectory_order.append(traj_id)
+        self._trajectory_store[traj_id] = stored
+        self._current_size = len(self._trajectory_store)
+        return traj_id
+
+    def _sample_ids(self, batch_size: int, rng_key: Optional[jax.random.PRNGKey]) -> np.ndarray:
+        """Sample trajectory IDs uniformly."""
+        if batch_size < 0:
+            raise ValueError(f"batch_size must be non-negative, got {batch_size}")
+        available = len(self._trajectory_order)
+        if batch_size > available:
+            raise ValueError(
+                f"Not enough elements to sample: requested {batch_size}, but buffer has {available}"
+            )
+        if batch_size == 0:
+            return np.array([], dtype=np.int64)
+        ordered_ids = np.array(self._trajectory_order, dtype=np.int64)
+        if batch_size == available:
+            return ordered_ids.copy()
+        rng = _make_numpy_rng(rng_key)
+        # Sample without replacement to avoid duplicates when possible
+        replace = batch_size > available
+        return rng.choice(ordered_ids, size=batch_size, replace=replace)
+
     def __len__(self) -> int:
         return self._current_size
 
@@ -71,7 +172,7 @@ class TrajectoryBuffer:
                 - observations: Array of observations
                 - actions: Array of actions
                 - rewards: Array of rewards 
-                - target_values: Array of value targets
+                - target_values/value_targets: Array of value targets (optional; defaults to zeros)
                 - policy_targets: Array of policy targets
         """
         if self._buffer is None:
@@ -101,6 +202,15 @@ class TrajectoryBuffer:
             }
             self._buffer_state = self._buffer.init(dummy_trajectory)
         traj_length = len(trajectory['actions'])
+        resolved_target_values = _resolve_value_targets(trajectory, traj_length)
+
+        self._store_trajectory({
+            'observations': trajectory['observations'],
+            'actions': trajectory['actions'],
+            'rewards': trajectory['rewards'],
+            'value_targets': resolved_target_values,
+            'policy_targets': trajectory['policy_targets']
+        })
         
         # Pad trajectory to max_trajectory_length
         padded_observations = np.zeros((self.max_trajectory_length, *self.observation_shape), dtype=np.float32)
@@ -113,7 +223,7 @@ class TrajectoryBuffer:
         padded_observations[:traj_length] = trajectory['observations']
         padded_actions[:traj_length] = trajectory['actions']
         padded_rewards[:traj_length] = trajectory['rewards']
-        padded_target_values[:traj_length] = trajectory['value_targets']
+        padded_target_values[:traj_length] = resolved_target_values
         
         for i in range(traj_length):
             padded_target_policies[i] = trajectory['policy_targets'][i]
@@ -130,93 +240,50 @@ class TrajectoryBuffer:
         
         # Add to buffer
         self._buffer_state = self._buffer.add(self._buffer_state, item)
-        self._current_size = min(self._current_size + 1, self.capacity)
+        self._current_size = len(self._trajectory_store)
 
     def sample_batch(self, batch_size: int, rng_key: Optional[jax.random.PRNGKey] = None) -> List[Dict[str, Any]]:
-        """Sample a batch of trajectories from the buffer.
-        
-        Args:
-            batch_size: Number of trajectories to sample
-            rng_key: Random key for sampling (if None, creates new one)
-            
-        Returns:
-            List of trajectory dictionaries
-        """
-        if batch_size < 0:
-            raise ValueError(f"batch_size must be non-negative, got {batch_size}")
-        if batch_size > self._current_size:
-            raise ValueError(
-                f"Not enough elements to sample: requested {batch_size}, but buffer has {self._current_size}"
-            )
-        if batch_size == 0:
-            return []
-            
-        if rng_key is None:
-            rng_key = jax.random.PRNGKey(np.random.randint(0, 2**31))
-        
-        # Special case: if we're sampling the entire buffer, ensure we get unique items
-        if batch_size == self._current_size:
-            trajectories = []
-            seen_lengths = set()
-            max_attempts = self._current_size * 5  # Allow more attempts for uniqueness
-            
-            for i in range(batch_size):
-                for attempt in range(max_attempts):
-                    # Use a different random key for each attempt
-                    attempt_key = jax.random.fold_in(rng_key, i * max_attempts + attempt)
-                    batch = self._buffer.sample(self._buffer_state, attempt_key).experience
-                    
-                    traj_length = int(batch['length'][0].item())
-                    
-                    # If we're trying to get all unique items and this length is new, use it
-                    if traj_length not in seen_lengths or len(seen_lengths) >= batch_size:
-                        trajectory = {
-                            'observations': np.array(batch['observations'][0][:traj_length]),
-                            'actions': np.array(batch['actions'][0][:traj_length]),
-                            'rewards': np.array(batch['rewards'][0][:traj_length]),
-                            'value_targets': np.array(batch['value_targets'][0][:traj_length]),
-                            'policy_targets': [np.array(batch['policy_targets'][0][j]) for j in range(traj_length)]
-                        }
-                        trajectories.append(trajectory)
-                        seen_lengths.add(traj_length)
-                        break
-                
-                # Safety: if we can't find a unique one, add whatever we got
-                if len(trajectories) <= i:
-                    trajectory = {
-                        'observations': np.array(batch['observations'][0][:traj_length]),
-                        'actions': np.array(batch['actions'][0][:traj_length]),
-                        'rewards': np.array(batch['rewards'][0][:traj_length]),
-                        'value_targets': np.array(batch['value_targets'][0][:traj_length]),
-                        'policy_targets': [np.array(batch['policy_targets'][0][j]) for j in range(traj_length)]
-                    }
-                    trajectories.append(trajectory)
-        else:
-            # Normal case: sample with replacement
-            trajectories = []
-            remaining = batch_size
-            
-            while remaining > 0:
-                # Sample one item at a time (since buffer was created with sample_batch_size=1)
-                rng_key, sample_key = jax.random.split(rng_key)
-                batch = self._buffer.sample(self._buffer_state, sample_key).experience
-                
-                # Get actual trajectory length
-                traj_length = int(batch['length'][0].item())  # batch['length'] has shape (1,)
-                
-                # Extract the actual trajectory data (not padded)
-                # Note: batch has shape (1, max_length, ...) so we need [0] to get the item
-                trajectory = {
-                    'observations': np.array(batch['observations'][0][:traj_length]),
-                    'actions': np.array(batch['actions'][0][:traj_length]),
-                    'rewards': np.array(batch['rewards'][0][:traj_length]),
-                    'value_targets': np.array(batch['value_targets'][0][:traj_length]),
-                    'policy_targets': [np.array(batch['policy_targets'][0][j]) for j in range(traj_length)]
-                }
-                trajectories.append(trajectory)
-                remaining -= 1
-            
+        """Sample a batch of trajectories from the buffer."""
+        trajectories, _ = self.sample_batch_with_ids(batch_size, rng_key=rng_key)
         return trajectories
+
+    def sample_batch_with_ids(
+        self, batch_size: int, rng_key: Optional[jax.random.PRNGKey] = None
+    ) -> Tuple[List[Dict[str, Any]], np.ndarray]:
+        """Sample trajectories and return their internal IDs."""
+        sampled_ids = self._sample_ids(batch_size, rng_key)
+        batch = [self._copy_for_return(self._trajectory_store[int(traj_id)]) for traj_id in sampled_ids]
+        return batch, sampled_ids
+
+    def get_trajectory(self, trajectory_id: int) -> Dict[str, Any]:
+        """Return a copy of a stored trajectory by ID."""
+        if trajectory_id not in self._trajectory_store:
+            raise KeyError(f"Trajectory id {trajectory_id} not found in buffer")
+        return self._copy_for_return(self._trajectory_store[trajectory_id])
+
+    def iter_trajectories(self) -> List[Tuple[int, Dict[str, Any]]]:
+        """Return all stored trajectories as (id, trajectory) pairs."""
+        return [(traj_id, self._copy_for_return(self._trajectory_store[traj_id])) for traj_id in self._trajectory_order]
+
+    def update_trajectory_targets(
+        self,
+        trajectory_id: int,
+        *,
+        policy_targets: Optional[np.ndarray] = None,
+        value_targets: Optional[np.ndarray] = None,
+    ):
+        """Update policy/value targets for a stored trajectory."""
+        if trajectory_id not in self._trajectory_store:
+            raise KeyError(f"Trajectory id {trajectory_id} not found in buffer")
+        stored = self._trajectory_store[trajectory_id]
+        if policy_targets is not None:
+            policy_arr = np.array(policy_targets, dtype=np.float32)
+            steps = min(policy_arr.shape[0], stored['policy_targets'].shape[0])
+            stored['policy_targets'][:steps] = policy_arr[:steps]
+        if value_targets is not None:
+            value_arr = np.array(value_targets, dtype=np.float32).reshape(-1)
+            steps = min(value_arr.shape[0], stored['value_targets'].shape[0])
+            stored['value_targets'][:steps] = value_arr[:steps]
 
 class PrioritizedTrajectoryBuffer:
     """
@@ -250,9 +317,6 @@ class PrioritizedTrajectoryBuffer:
             sample_batch_size=1  # Will be overridden during sampling
         )
         
-        # Track priorities separately (since Flashbax Item Buffer doesn't have built-in priorities)
-        self._priorities = []
-        
         # Create a dummy trajectory for initialization
         dummy_trajectory = {
             'observations': jnp.zeros((max_trajectory_length, *observation_shape), dtype=jnp.float32),
@@ -266,9 +330,88 @@ class PrioritizedTrajectoryBuffer:
         
         self._buffer_state = self._buffer.init(dummy_trajectory)
         self._current_size = 0
+        self._trajectory_store: Dict[int, Dict[str, np.ndarray]] = {}
+        self._trajectory_order: deque[int] = deque()
+        self._id_priorities: Dict[int, float] = {}
+        self._next_traj_id = 0
 
     def __len__(self) -> int:
         return self._current_size
+
+    def _copy_for_storage(self, trajectory: Dict[str, Any]) -> Dict[str, np.ndarray]:
+        policy_targets = trajectory['policy_targets']
+        if isinstance(policy_targets, list):
+            policy_targets_array = np.stack(
+                [np.array(target, dtype=np.float32) for target in policy_targets],
+                axis=0
+            )
+        else:
+            policy_targets_array = np.array(policy_targets, dtype=np.float32)
+
+        return {
+            'observations': np.array(trajectory['observations'], dtype=np.float32),
+            'actions': np.array(trajectory['actions'], dtype=np.int32),
+            'rewards': np.array(trajectory['rewards'], dtype=np.float32),
+            'value_targets': np.array(trajectory['value_targets'], dtype=np.float32),
+            'policy_targets': policy_targets_array,
+            'length': int(len(trajectory['actions']))
+        }
+
+    def _copy_for_return(self, stored: Dict[str, np.ndarray]) -> Dict[str, Any]:
+        return {
+            'observations': np.array(stored['observations'], copy=True),
+            'actions': np.array(stored['actions'], copy=True),
+            'rewards': np.array(stored['rewards'], copy=True),
+            'value_targets': np.array(stored['value_targets'], copy=True),
+            'policy_targets': [
+                np.array(step, copy=True) for step in stored['policy_targets']
+            ]
+        }
+
+    def _store_trajectory(self, trajectory: Dict[str, Any], priority: float) -> int:
+        stored = self._copy_for_storage(trajectory)
+        traj_id = self._next_traj_id
+        self._next_traj_id += 1
+        if len(self._trajectory_order) >= self.capacity:
+            old_id = self._trajectory_order.popleft()
+            self._trajectory_store.pop(old_id, None)
+            self._id_priorities.pop(old_id, None)
+        self._trajectory_order.append(traj_id)
+        self._trajectory_store[traj_id] = stored
+        self._id_priorities[traj_id] = float(priority)
+        self._current_size = len(self._trajectory_order)
+        return traj_id
+
+    def _sample_with_metadata(
+        self, batch_size: int, rng_key: Optional[jax.random.PRNGKey]
+    ) -> Tuple[List[Dict[str, Any]], np.ndarray, np.ndarray, np.ndarray]:
+        if batch_size < 0:
+            raise ValueError(f"batch_size must be non-negative, got {batch_size}")
+        if batch_size > self._current_size:
+            raise ValueError(
+                f"Not enough elements to sample: requested {batch_size}, but buffer has {self._current_size}"
+            )
+        if batch_size == 0:
+            empty = np.array([], dtype=np.int64)
+            return [], empty, empty, jnp.array([])
+
+        ordered_ids = np.array(self._trajectory_order, dtype=np.int64)
+        priorities = np.array([self._id_priorities[idx] for idx in ordered_ids], dtype=np.float32)
+        if batch_size == len(ordered_ids):
+            sampled_ids = ordered_ids.copy()
+            sampled_indices = np.arange(len(ordered_ids))
+            weights = np.ones(batch_size, dtype=np.float32)
+        else:
+            probs = priorities ** self.alpha
+            probs = probs / probs.sum()
+            rng = _make_numpy_rng(rng_key)
+            sampled_indices = rng.choice(len(ordered_ids), size=batch_size, replace=True, p=probs)
+            sampled_ids = ordered_ids[sampled_indices]
+            weights = (len(ordered_ids) * probs[sampled_indices]) ** (-1.0)
+            weights = weights / weights.max()
+
+        batch = [self._copy_for_return(self._trajectory_store[int(traj_id)]) for traj_id in sampled_ids]
+        return batch, sampled_ids, jnp.array(sampled_indices), jnp.array(weights)
 
     def add_trajectory(self, trajectory: Dict[str, Any], priority: Optional[float] = None):
         """Add a trajectory with optional priority to the buffer.
@@ -283,6 +426,15 @@ class PrioritizedTrajectoryBuffer:
             raise ValueError(f"Priority must be positive, got {priority}")
         
         traj_length = len(trajectory['actions'])
+        resolved_target_values = _resolve_value_targets(trajectory, traj_length)
+
+        self._store_trajectory({
+            'observations': trajectory['observations'],
+            'actions': trajectory['actions'],
+            'rewards': trajectory['rewards'],
+            'value_targets': resolved_target_values,
+            'policy_targets': trajectory['policy_targets']
+        }, priority)
         
         # Pad trajectory to max_trajectory_length
         padded_observations = np.zeros((self.max_trajectory_length, *self.observation_shape), dtype=np.float32)
@@ -295,7 +447,7 @@ class PrioritizedTrajectoryBuffer:
         padded_observations[:traj_length] = trajectory['observations']
         padded_actions[:traj_length] = trajectory['actions']
         padded_rewards[:traj_length] = trajectory['rewards']
-        padded_target_values[:traj_length] = trajectory['value_targets']
+        padded_target_values[:traj_length] = resolved_target_values
         
         for i in range(traj_length):
             padded_target_policies[i] = trajectory['policy_targets'][i]
@@ -314,74 +466,20 @@ class PrioritizedTrajectoryBuffer:
         # Add to buffer
         self._buffer_state = self._buffer.add(self._buffer_state, item)
         
-        # Track priorities separately for manual priority sampling
-        self._priorities.append(priority)
-        if len(self._priorities) > self.capacity:
-            self._priorities.pop(0)  # Remove oldest
-        
-        self._current_size = min(self._current_size + 1, self.capacity)
+        self._current_size = len(self._trajectory_order)
 
-    def sample_batch(self, batch_size: int, rng_key: Optional[jax.random.PRNGKey] = None) -> Tuple[List[Dict[str, Any]], jnp.ndarray, jnp.ndarray]:
-        """Sample a batch of trajectories according to their priorities.
-        
-        Args:
-            batch_size: Number of trajectories to sample
-            rng_key: Random key for sampling (if None, creates new one)
-            
-        Returns:
-            Tuple of (trajectories, indices, importance_weights)
-        """
-        if batch_size < 0:
-            raise ValueError(f"batch_size must be non-negative, got {batch_size}")
-        if batch_size > self._current_size:
-            raise ValueError(
-                f"Not enough elements to sample: requested {batch_size}, but buffer has {self._current_size}"
-            )
-        if batch_size == 0:
-            return [], jnp.array([]), jnp.array([])
-            
-        if rng_key is None:
-            rng_key = jax.random.PRNGKey(np.random.randint(0, 2**31))
-        
-        # Manual priority sampling
-        priorities = np.array(self._priorities[:self._current_size])
-        probs = priorities ** self.alpha
-        probs = probs / probs.sum()
-        
-        # Sample indices according to priorities
-        indices = np.random.choice(self._current_size, size=batch_size, p=probs, replace=True)
-        
-        # Compute importance sampling weights
-        weights = (self._current_size * probs[indices]) ** (-1.0)
-        weights = weights / weights.max()  # Normalize
-        
-        # NOTE: Flashbax Item Buffer doesn't support indexed sampling, so we use uniform sampling
-        # and manually weight the results. In practice, this means priorities affect importance weights
-        # but not actual sampling probabilities. For full priority sampling, a custom buffer would be needed.
-        
-        # Handle variable batch sizes by sampling multiple times if needed
-        trajectories = []
-        remaining = batch_size
-        
-        while remaining > 0:
-            # Sample one item at a time (since buffer was created with sample_batch_size=1)
-            rng_key, sample_key = jax.random.split(rng_key)
-            batch = self._buffer.sample(self._buffer_state, sample_key).experience
-            
-            # Get actual trajectory length
-            traj_length = int(batch['length'][0].item())  # batch['length'] has shape (1,)
-            
-            trajectory = {
-                'observations': np.array(batch['observations'][0][:traj_length]),
-                'actions': np.array(batch['actions'][0][:traj_length]),
-                'rewards': np.array(batch['rewards'][0][:traj_length]),
-                'value_targets': np.array(batch['value_targets'][0][:traj_length]),
-                'policy_targets': [np.array(batch['policy_targets'][0][j]) for j in range(traj_length)]
-            }
-            trajectories.append(trajectory)
-            remaining -= 1
-            
-        return trajectories, jnp.array(indices), jnp.array(weights)
+    def sample_batch(
+        self, batch_size: int, rng_key: Optional[jax.random.PRNGKey] = None
+    ) -> Tuple[List[Dict[str, Any]], jnp.ndarray, jnp.ndarray]:
+        """Sample a batch of trajectories according to their priorities."""
+        trajectories, _, indices, weights = self._sample_with_metadata(batch_size, rng_key)
+        return trajectories, indices, weights
+
+    def sample_batch_with_ids(
+        self, batch_size: int, rng_key: Optional[jax.random.PRNGKey] = None
+    ) -> Tuple[List[Dict[str, Any]], np.ndarray, jnp.ndarray, jnp.ndarray]:
+        """Sample trajectories and expose their IDs alongside indices/weights."""
+        return self._sample_with_metadata(batch_size, rng_key)
 
     def update_priorities(self, indices: jnp.ndarray, new_priorities: jnp.ndarray):
         """Update priorities for trajectories at given indices.
@@ -398,8 +496,62 @@ class PrioritizedTrajectoryBuffer:
         
         # Update local priorities tracking
         for idx, new_priority in zip(indices, new_priorities):
-            if 0 <= idx < len(self._priorities):
-                self._priorities[idx] = float(new_priority)
+            idx = int(idx)
+            if idx < 0 or idx >= len(self._trajectory_order):
+                continue
+            traj_id = self._trajectory_order[idx]
+            self._id_priorities[traj_id] = float(new_priority)
+
+    def update_priorities_by_ids(self, trajectory_ids: Sequence[int], new_priorities: Sequence[float]):
+        """Update priorities referenced directly by trajectory id."""
+        if len(trajectory_ids) != len(new_priorities):
+            raise ValueError("trajectory_ids and new_priorities must have the same length")
+        for traj_id, priority in zip(trajectory_ids, new_priorities):
+            if traj_id in self._id_priorities:
+                self._id_priorities[traj_id] = float(max(priority, 1e-8))
+
+    def get_trajectory(self, trajectory_id: int) -> Dict[str, Any]:
+        if trajectory_id not in self._trajectory_store:
+            raise KeyError(f"Trajectory id {trajectory_id} not found in prioritized buffer")
+        return self._copy_for_return(self._trajectory_store[trajectory_id])
+
+    def priorities_snapshot(self) -> List[Tuple[int, float]]:
+        """Return [(trajectory_id, priority)] in buffer order for inspection/testing."""
+        return [
+            (traj_id, float(self._id_priorities.get(traj_id, 0.0)))
+            for traj_id in self._trajectory_order
+        ]
+
+    def priority_values(self) -> List[float]:
+        """Return just the priority values in buffer order."""
+        return [priority for _, priority in self.priorities_snapshot()]
+
+    def iter_trajectories(self) -> List[Tuple[int, Dict[str, Any]]]:
+        return [(traj_id, self._copy_for_return(self._trajectory_store[traj_id])) for traj_id in self._trajectory_order]
+
+    def update_trajectory_targets(
+        self,
+        trajectory_id: int,
+        *,
+        policy_targets: Optional[np.ndarray] = None,
+        value_targets: Optional[np.ndarray] = None,
+    ):
+        if trajectory_id not in self._trajectory_store:
+            raise KeyError(f"Trajectory id {trajectory_id} not found in prioritized buffer")
+        stored = self._trajectory_store[trajectory_id]
+        if policy_targets is not None:
+            policy_arr = np.array(policy_targets, dtype=np.float32)
+            steps = min(policy_arr.shape[0], stored['policy_targets'].shape[0])
+            stored['policy_targets'][:steps] = policy_arr[:steps]
+        if value_targets is not None:
+            value_arr = np.array(value_targets, dtype=np.float32).reshape(-1)
+            steps = min(value_arr.shape[0], stored['value_targets'].shape[0])
+            stored['value_targets'][:steps] = value_arr[:steps]
+
+    def get_priority(self, trajectory_id: int) -> float:
+        if trajectory_id not in self._id_priorities:
+            raise KeyError(f"Trajectory id {trajectory_id} not found in prioritized buffer")
+        return float(self._id_priorities[trajectory_id])
 
 # Aliases for backward compatibility and test imports
 ReplayBuffer = TrajectoryBuffer

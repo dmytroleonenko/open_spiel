@@ -16,9 +16,17 @@ Key Features:
 6. **Parallel execution**: Configurable number of workers (default: min(cpu_count//2, 4))
 
 Usage:
-    python run_tests_with_coverage.py                           # Use defaults
+    python run_tests_with_coverage.py                           # Default: tqdm progress bar + final summary
     python run_tests_with_coverage.py --num-workers 6           # Use 6 workers
     python run_tests_with_coverage.py --test-dir other/tests/   # Use different test directory
+
+Output Modes:
+    - Default: show tqdm progress bar plus final summary (per Task 6 requirements). Per-worker
+      stdout/stderr stays hidden unless a test fails.
+    - Quiet (-q / --quiet): suppress the progress bar and any mid-run logs; only the final summary,
+      slow-test report, and coverage tables are printed.
+    - Debug (--debug-worker-logs): keep the progress bar visible but also stream per-worker lifecycle
+      events (start/finish/failure). This flag is ignored when --quiet is set so that quiet always wins.
 
 Requirements:
     - setproctitle package for better process naming (automatically installed)

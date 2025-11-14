@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from open_spiel.python.algorithms.muzero_jax.replay_buffer.replay_buffer import (
     PrioritizedTrajectoryBuffer,
-    TrajectoryBuffer
+    TrajectoryBuffer,
 )
 
 
@@ -140,6 +140,32 @@ def test_add_trajectory_negative_priority():
     
     with pytest.raises(ValueError):
         buf.add_trajectory(traj, priority=-5.0)
+
+
+def test_prioritized_buffer_missing_target_values_and_array_policies():
+    buf = PrioritizedTrajectoryBuffer(capacity=2, observation_shape=(4, 4), num_actions=3)
+    traj = create_dummy_trajectory(length=2, num_actions=3, obs_shape=(4, 4))
+    traj.pop('value_targets')
+    traj.pop('target_values', None)
+    traj['policy_targets'] = np.stack(traj['policy_targets'], axis=0)
+    buf.add_trajectory(traj, priority=1.0)
+    sampled, _, _ = buf.sample_batch(1)
+    np.testing.assert_array_equal(sampled[0]['value_targets'], np.zeros(2, dtype=np.float32))
+    assert isinstance(sampled[0]['policy_targets'], list)
+
+
+def test_prioritized_buffer_missing_trajectory_errors_and_update_by_ids():
+    buf = PrioritizedTrajectoryBuffer(capacity=1, observation_shape=(2, 2), num_actions=2)
+    traj = create_dummy_trajectory(length=2, num_actions=2, obs_shape=(2, 2))
+    buf.add_trajectory(traj, priority=1.0)
+    with pytest.raises(KeyError):
+        buf.get_trajectory(1234)
+    with pytest.raises(KeyError):
+        buf.update_trajectory_targets(1234, value_targets=np.ones(2))
+    with pytest.raises(ValueError):
+        buf.update_priorities_by_ids([0], [0.5, 0.7])
+    with pytest.raises(KeyError):
+        buf.get_priority(1234)
 
 
 def test_standard_trajectory_buffer():
