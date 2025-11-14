@@ -120,7 +120,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
             *   A main training function/class orchestrates the training process: initializes the model and optimizer, iteratively samples batches from the replay buffer, calls the `train_step` function, logs metrics (e.g., to WandB), and handles checkpointing. [DONE]
             *   Target network updates (e.g., EMA or periodic hard copy) are implemented and correctly managed. [DONE]
         *   All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/training/test_trainer.py` (covering loss components, `train_step`, and orchestration logic with mock data and models) pass (100%). [DONE]
-        *   100% code coverage for `trainer.py` is achieved and verified. [TODO]
+        *   100% code coverage for `trainer.py` is achieved and verified via `python run_tests_with_coverage.py --num-workers 12` (Nov 14 2025). [DONE]
 
 [DONE] 6.1.  **Connect Batch Optimizer Hooks to MuZeroNetwork:**
     *   Implement `create_muzero_model_and_params` to initialize the actual `MuZeroNetwork` (using `nnx.Rngs`).

@@ -1,14 +1,13 @@
 # Repository Guidelines
 
 ## Project Scope & Structure
-We extend OpenSpiel with a JAX/Flax EfficientZeroV2 port. Core code lives in `open_spiel/python/algorithms/muzero_jax/`, tests in `open_spiel/python/algorithms/muzero_jax/tests/`, and parity checks reference `EfficientZeroV2/`. Keep `TODO.md`, `TODO_JAX_MUZERO.md`, `TASK6_REVIEW.md`, and related task docs synchronized with every behavioral change.
+We extend OpenSpiel with a JAX/Flax EfficientZeroV2 port. Core code lives in `open_spiel/python/algorithms/muzero_jax/`, tests in `open_spiel/python/algorithms/muzero_jax/tests/`, and parity checks reference `EfficientZeroV2/`. Keep `TODO.md`, `TODO_JAX_MUZERO.md`, and related task docs synchronized with every behavioral change.
 
 ## Living Documents
 - `AGENTS.md` – source of truth for workflow/process. Update whenever expectations change.
 - `README.md` (and repo-specific READMEs) – front door for users; reflect any interface or dependency updates.
 - `TODO.md` – actionable task list (use `[ ]`/`[*]` states). Never start work without recording scope here.
 - `TODO_JAX_MUZERO.md` – deep algorithm/status tracker; consolidate technical findings and coverage snapshots.
-- `TASK6_REVIEW.md` – authoritative blocker list for the training loop; keep it aligned with code reality.
 
 ## Build, Test, and Run
 - `./install.sh` once for toolchains; `python -m pip install -r requirements.txt` inside the project uv env (`source .venv/bin/activate`).

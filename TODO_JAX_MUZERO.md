@@ -40,12 +40,14 @@ This document outlines action items to align the JAX implementation of Efficient
     *   ✅ `BootstrapConfig` exposes `support_min/max` so `bootstrap_actor.py` no longer hard-codes fallback ranges when converting categorical network values.
 6.  [*] **Add a JIT integration test for `Learner.train_step`.**
     *   ✅ `test_integration_with_real_network.py` now includes a slow-path test that calls `learner.jit_train_step` via `jax.jit` using the full MuZero network, asserting the compiled path runs end-to-end and produces finite losses.
-7.  [*] **Bootstrap actor behavior + coverage decision.**
+7.  [*] **Task 6 verification audit (Nov 14 2025).**
+    *   ✅ Nov 14 audit confirmed each former blocking issue with explicit code/test references, and `TODO.md` now records the 100 % coverage run (`python run_tests_with_coverage.py --num-workers 12`).
+8.  [*] **Bootstrap actor behavior + coverage decision.**
     *   ✅ Simplified `bootstrap_actor.py` to rely on `pyspiel.MCTSBot.step_with_policy`, removed the legacy heuristic branches, and routed chance-node sampling through JAX RNG utilities so the trajectory only records decision nodes.
     *   ✅ Rebuilt `tests/self_play/test_bootstrap_actor.py` with deterministic fixtures covering chance sampling, policy conversion, observation edge cases, and discounted value target math.
-8.  [*] **Loss utilities coverage.**
+9.  [*] **Loss utilities coverage.**
     *   ✅ Added targeted tests in `test_trainer_loss_computation.py` and `test_trainer_loss_edge_cases.py` to execute the categorical weighting branch (`losses.py` line 130) and legacy positional-argument paths.
-9.  [ ] **Stabilize `run_tests_with_coverage.py` output controls (Task 1 & 2).**
+10.  [ ] **Stabilize `run_tests_with_coverage.py` output controls (Task 1 & 2).**
     *   Default run should emit only the tqdm progress bar plus final summary artifacts; worker-level logging moves behind a `--debug-worker-logs` switch.
     *   `-q/--quiet` suppresses the progress bar entirely and prints only the end-of-run summary (pass/fail counts, slow tests, coverage table, and deferred failure logs).
     *   Document behavior since the script remains excluded from automated tests; validation is manual via ad-hoc invocation.
