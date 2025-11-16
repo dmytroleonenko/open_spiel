@@ -21,6 +21,11 @@ from open_spiel.python.algorithms.muzero_jax.envs.game_wrapper import GameWrappe
 from open_spiel.python.algorithms.muzero_jax.replay_buffer.replay_buffer import TrajectoryBuffer
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
 from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import MCTS, StochasticMCTS, create_mcts_for_game, is_stochastic_mcts_instance
+from open_spiel.python.algorithms.muzero_jax.services.inference_client import (
+    InferenceClient,
+    LocalInferenceClient,
+    InferenceNetworkAdapter,
+)
 from open_spiel.python.algorithms.muzero_jax.utils.checkpointing import load_checkpoint, get_latest_checkpoint
 
 
@@ -52,6 +57,8 @@ class Actor:
         discount_factor: float = 0.99,
         temperature: float = 1.0,
         temperature_threshold: int = 30,
+        inference_client: InferenceClient | None = None,
+        parameter_client=None,
     ):
         """
         Initialize Actor for self-play.
@@ -115,6 +122,10 @@ class Actor:
         # For NNX networks, we can use the network's parameters directly when current_params is None
         self.current_params = None
         
+        self.inference_client = inference_client or LocalInferenceClient(network)
+        self._parameter_client = parameter_client
+        self._inference_network_adapter = InferenceNetworkAdapter(self.inference_client)
+
         self.logger.info(f"Initialized Actor with {'stochastic' if self._is_stochastic_mcts else 'deterministic'} MCTS")
         
     def load_network_parameters(self, checkpoint_path: str) -> Dict[str, Any]:
@@ -165,7 +176,20 @@ class Actor:
             return False
         except Exception as e:
             self.logger.warning(f"Failed to get latest checkpoint: {e}")
-            return False        
+            return False
+
+    def _initial_inference(self, observation_batch):
+        """Dispatch initial network inference via the configured client."""
+        return self.inference_client.initial_inference(observation_batch, training=False)
+
+    def _recurrent_inference(self, hidden_state_batch, action_batch):
+        """Dispatch recurrent network inference via the configured client."""
+        return self.inference_client.recurrent_inference(hidden_state_batch, action_batch, training=False)
+
+    def refresh_params(self):
+        """Refresh inference client parameters if a remote publisher is configured."""
+        if self._parameter_client is not None and hasattr(self.inference_client, "refresh_params"):
+            self.inference_client.refresh_params()
     def _create_recurrent_fn(self) -> callable:
         """
         Create recurrent function for standard (deterministic) MCTS.
@@ -187,8 +211,8 @@ class Actor:
                 action_array = jnp.array([action])  # pragma: no cover
             
             # Use the actual network's recurrent inference
-            next_embedding, reward, value, policy_logits, _, reward_hidden = self.network.recurrent_inference(
-                embedding, action_array, training=False
+            next_embedding, reward, value, policy_logits, _, reward_hidden = self._recurrent_inference(
+                embedding, action_array
             )
             
             from mctx._src.base import RecurrentFnOutput
@@ -368,8 +392,8 @@ class Actor:
             
             # Get initial inference from network
             obs_array = jnp.array([current_obs])  # Add batch dimension
-            hidden_state, reward, value, policy_logits, _, reward_hidden = self.network.initial_inference(
-                obs_array, training=False
+            hidden_state, reward, value, policy_logits, _, reward_hidden = self._initial_inference(
+                obs_array
             )
             
             # Create root for MCTS using mctx.RootFnOutput
@@ -399,7 +423,7 @@ class Actor:
                 policy_output = self.mcts.run_stochastic(  # pragma: no cover
                     rng_key=subkey,
                     root=root,
-                    network=self.network,  # Pass the network for proper stochastic integration
+                    network=self._inference_network_adapter,  # Pass adapter for remote/local clients
                     invalid_actions=invalid_actions
                 )
             else:

@@ -181,6 +181,28 @@ class RealNetworkIntegrationTest(unittest.TestCase):
         )
         self.assertTrue(target_params_changed, "Target model parameters should have changed after momentum blend")
         
+    def test_ema_blend_skips_branch_without_tracer_leak(self):
+        """Run two steps with EMA frequency > 1 to ensure skip branch is safe."""
+        import dataclasses
+        cfg = dataclasses.replace(self.config, target_network_update_frequency=2)
+        network_config = create_network_config_from_muzero_config(
+            muzero_config=cfg,
+            observation_shape=self.observation_shape,
+            num_actions=self.num_actions,
+            use_image_observation=False
+        )
+        model = create_test_muzero_network(network_config)
+        learner = Learner(
+            model=model,
+            optimizer_def=self.optimizer_def,
+            config=cfg,
+            rng_key=self.rng_key
+        )
+        batch = self._create_realistic_batch()
+        learner.train_step(batch)  # training_step = 0 -> EMA updates
+        metrics = learner.train_step(batch)  # training_step = 1 -> skip branch
+        self.assertIn('total_loss', metrics)
+        
     def test_multi_model_orchestration_with_real_network(self):
         """Test that multi-model orchestration works with real network."""
         # Create learner with real network

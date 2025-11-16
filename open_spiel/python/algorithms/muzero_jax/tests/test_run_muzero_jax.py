@@ -11,14 +11,17 @@ import os
 import shutil
 import threading
 import time
+import queue
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 from dataclasses import replace, asdict
+from types import SimpleNamespace
 import dataclasses
 import jax
 import jax.numpy as jnp
 import numpy as np
 import flax.nnx as nnx
+from omegaconf import OmegaConf
 
 # Import the components that will be used by run_muzero_jax
 from open_spiel.python.algorithms.muzero_jax.training.trainer import (
@@ -30,7 +33,17 @@ from open_spiel.python.algorithms.muzero_jax.self_play.actor import Actor
 from open_spiel.python.algorithms.muzero_jax.replay_buffer.replay_buffer import TrajectoryBuffer
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
 from open_spiel.python.algorithms.muzero_jax.envs.game_wrapper import GameWrapper
-from open_spiel.python.algorithms.muzero_jax.run_muzero_jax import MuZeroOrchestrator
+import open_spiel.python.algorithms.muzero_jax.run_muzero_jax as run_module
+from open_spiel.python.algorithms.muzero_jax.run_muzero_jax import (
+    MuZeroOrchestrator,
+    _parse_cli_verbosity,
+    build_replay_buffer,
+)
+from open_spiel.python.algorithms.muzero_jax.services.replay_service import (
+    GrpcReplayServer,
+    InMemoryReplayService,
+    RemoteReplayBufferAdapter,
+)
 
 # Import the isolated checkpoint fixture
 from open_spiel.python.algorithms.muzero_jax.tests.utils.fixtures import isolated_checkpoint_dir
@@ -106,6 +119,59 @@ class TestMainOrchestrationSetup:
         
         assert len(buffer) == 0
         assert buffer.capacity == config.buffer_size
+
+    def test_remote_replay_buffer_factory_toggle(self):
+        """Remote replay flag creates adapter and registers client."""
+        cfg = OmegaConf.create(
+            {
+                "game": {"name": "tic_tac_toe"},
+                "replay_buffer": {
+                    "capacity": 8,
+                    "min_size_to_sample": 1,
+                    "max_trajectory_length": 4,
+                    "priority_alpha": 0.0,
+                    "remote_enabled": True,
+                    "rpc_endpoint": "",
+                },
+            }
+        )
+        backend = InMemoryReplayService(capacity=8, alpha=0.0)
+        server = GrpcReplayServer(backend)
+        server.start()
+        cfg.replay_buffer.rpc_endpoint = server.endpoint
+
+        registered = []
+        buf = build_replay_buffer(
+            cfg,
+            observation_shape=(3,),
+            num_actions=2,
+            game_obj=None,
+            register_replay_client=registered.append,
+        )
+        assert isinstance(buf, RemoteReplayBufferAdapter)
+        assert len(registered) == 1
+
+        traj = {
+            "observations": [[0.0, 0.0, 0.0]],
+            "actions": [1],
+            "rewards": [0.0],
+            "policy_targets": [[0.5, 0.5]],
+            "value_targets": [0.0],
+        }
+        buf.add_trajectory(traj)
+        sample, ids = buf.sample_batch_with_ids(batch_size=1, rng_key=None)
+        assert len(sample) == 1
+        assert ids.shape == (1,)
+
+        registered[0].close()
+        server.stop()
+
+
+@pytest.fixture
+def mock_wandb():
+    """Mock wandb for tests that need it."""
+    with patch('wandb.init'), patch('wandb.log'), patch('wandb.finish'):
+        yield
 
 
 class TestActorLearnerIntegration:
@@ -196,7 +262,7 @@ class TestActorLearnerIntegration:
             'game_wrapper': game_wrapper,
             'config': mock_config
         }
-        
+
     def test_actor_buffer_interaction(self, mock_components):
         """Test that actor can add trajectories to buffer."""
         actor = mock_components['actor']
@@ -273,15 +339,33 @@ class TestActorLearnerIntegration:
         # Note: This might be False if no checkpoint exists yet, but shouldn't error
         assert isinstance(success, bool)
 
+    def test_orchestrator_builds_local_batching_clients(self, mock_wandb, isolated_checkpoint_dir):
+        """Enabling inference batching should build LocalBatchingInferenceClient per actor."""
+        base_cfg = OmegaConf.load("open_spiel/python/algorithms/muzero_jax/configs/config.yaml")
+        cfg = OmegaConf.create(OmegaConf.to_container(base_cfg, resolve=True))
+        cfg.output.save_path = isolated_checkpoint_dir
+        cfg.actors.num_actors = 2
+        cfg.bootstrap.enabled = False
+        cfg.training.training_steps = 1
+        if not hasattr(cfg.training, "start_transitions"):
+            cfg.training.start_transitions = cfg.training.batch_size
+        cfg.evaluation.enabled = False
+        cfg.inference.remote_enabled = False
+        cfg.inference.enable_local_batching = True
+        cfg.inference.batch_size = 4
+        cfg.inference.max_wait_ms = 5
+
+        orchestrator = MuZeroOrchestrator(cfg)
+        try:
+            clients = orchestrator._inference_clients
+            assert len(clients) == cfg.actors.num_actors
+            assert {client.__class__.__name__ for client in clients} == {"LocalBatchingInferenceClient"}
+        finally:
+            orchestrator.cleanup()
+
 
 class TestOrchestrationWorkflow:
     """Test the overall workflow coordination."""
-    
-    @pytest.fixture
-    def mock_wandb(self):
-        """Mock wandb for testing."""
-        with patch('wandb.init'), patch('wandb.log'), patch('wandb.finish'):
-            yield
             
     def test_workflow_initialization(self, mock_wandb):
         """Test that all components can be initialized together."""
@@ -1384,3 +1468,199 @@ class TestMuZeroOrchestrator:
         
         # Verify no training step was attempted
         assert not hasattr(orchestrator.learner, 'train_step') or not orchestrator.learner.train_step.called 
+
+    def test_perform_training_step_handles_empty_batch(self, mock_orchestrator_setup):
+        orchestrator, mocks = mock_orchestrator_setup
+        mocks['buffer_instance'].sample_batch.return_value = []
+        assert orchestrator._perform_training_step() is None
+
+    def test_update_priorities_guard_clauses(self, monkeypatch):
+        orchestrator = MuZeroOrchestrator.__new__(MuZeroOrchestrator)
+        orchestrator.config = SimpleNamespace(output=SimpleNamespace(log_interval=1))
+        orchestrator.muzero_config = SimpleNamespace(min_priority=0.1)
+        orchestrator._buffer_lock = threading.Lock()
+
+        class DummyPrioritizedBuffer:
+            def update_priorities(self, indices, priorities):
+                self.updated = True
+
+        buffer_instance = DummyPrioritizedBuffer()
+        orchestrator.replay_buffer = buffer_instance
+        monkeypatch.setattr(run_module, "PrioritizedTrajectoryBuffer", DummyPrioritizedBuffer)
+
+        orchestrator._update_priorities(None, {'priorities': [1.0]})
+        orchestrator._update_priorities([0], {'not_priorities': [1.0]})
+
+    def test_evaluation_enabled_missing_config(self, mock_orchestrator_setup):
+        orchestrator, _ = mock_orchestrator_setup
+        orchestrator.config.evaluation = None
+        assert orchestrator._evaluation_enabled() is False
+        orchestrator.config.evaluation = OmegaConf.create({"interval": 5})
+        assert orchestrator._evaluation_enabled() is True
+
+    def test_maybe_run_periodic_evaluation_short_circuits(self, mock_orchestrator_setup):
+        orchestrator, _ = mock_orchestrator_setup
+        orchestrator.training_step = 1
+        orchestrator._last_eval_step = 0
+        orchestrator.config.evaluation.interval = 0
+        orchestrator._maybe_run_periodic_evaluation()
+
+        orchestrator.config.evaluation.interval = 2
+        orchestrator.training_step = 1
+        orchestrator._maybe_run_periodic_evaluation()
+
+        orchestrator.training_step = 2
+        orchestrator._last_eval_step = 2
+        orchestrator._maybe_run_periodic_evaluation()
+
+    def test_should_log_episode_metrics_branches(self, mock_orchestrator_setup, monkeypatch):
+        orchestrator, _ = mock_orchestrator_setup
+        monkeypatch.setattr(run_module, "get_cli_verbosity", lambda: 2)
+        assert orchestrator._should_log_episode_metrics() is True
+
+        monkeypatch.setattr(run_module, "get_cli_verbosity", lambda: 0)
+        orchestrator.config.output.log_interval = 0
+        orchestrator.total_episodes = 5
+        assert orchestrator._should_log_episode_metrics() is False
+
+    def test_start_actor_workers_requires_actor(self, mock_orchestrator_setup):
+        orchestrator, _ = mock_orchestrator_setup
+        orchestrator.actors = []
+        with pytest.raises(ValueError):
+            orchestrator._start_actor_workers(
+                trajectory_queue=queue.Queue(),
+                stop_event=threading.Event(),
+                bootstrap_event=threading.Event(),
+                error_queue=queue.Queue(),
+            )
+
+    def test_raise_worker_errors(self, mock_orchestrator_setup):
+        orchestrator, _ = mock_orchestrator_setup
+        err_queue = queue.Queue()
+        err_queue.put(RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            orchestrator._raise_worker_errors(err_queue)
+
+    def test_update_progress_sets_fields(self, mock_orchestrator_setup):
+        orchestrator, mocks = mock_orchestrator_setup
+        orchestrator.training_step = 3
+        orchestrator.muzero_config = dataclasses.replace(orchestrator.muzero_config, training_steps=5)
+        progress = SimpleNamespace(
+            n=0,
+            postfix=None,
+            refreshed=False,
+            set_postfix=lambda **kwargs: setattr(progress, "postfix", kwargs),
+            refresh=lambda: setattr(progress, "refreshed", True),
+        )
+        orchestrator._update_progress(progress)
+        assert progress.n == 3
+        assert progress.postfix == {'buffer': len(mocks['buffer_instance'])}
+        assert progress.refreshed is True
+
+    def test_run_concurrent_handles_empty_queue(self, mock_orchestrator_setup, monkeypatch):
+        orchestrator, _ = mock_orchestrator_setup
+        orchestrator.orchestration_config.concurrent = True
+        orchestrator.orchestration_config.actor_queue_capacity = 1
+
+        def stop_after_first_toggle():
+            if not getattr(orchestrator, "_already_ran", False):
+                orchestrator._already_ran = True
+                return True
+            return False
+
+        orchestrator.should_continue_training = stop_after_first_toggle
+
+        class DummyLearnerWorker:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                pass
+
+            def join(self, timeout=None):
+                pass
+
+        monkeypatch.setattr(run_module, "LearnerWorker", DummyLearnerWorker)
+        monkeypatch.setattr(
+            orchestrator,
+            "_start_actor_workers",
+            lambda *args, **kwargs: [SimpleNamespace(join=lambda timeout=None: None)],
+        )
+        monkeypatch.setattr(orchestrator, "_raise_worker_errors", lambda q=None: None)
+        monkeypatch.setattr(orchestrator, "_add_trajectory_to_buffer", lambda traj: None)
+        monkeypatch.setattr(orchestrator, "_maybe_run_periodic_evaluation", lambda: None)
+        monkeypatch.setattr(orchestrator, "log_episode_metrics", lambda length: None)
+        monkeypatch.setattr(orchestrator, "_update_progress", lambda progress: None)
+
+        class EmptyQueue:
+            def __init__(self, maxsize=None):
+                pass
+
+            def get(self, timeout=None):
+                raise queue.Empty
+
+            def task_done(self):
+                pass
+
+        monkeypatch.setattr(run_module.queue, "Queue", EmptyQueue)
+        orchestrator._run_concurrent(progress=None)
+
+    def test_run_creates_and_closes_progress(self, mock_orchestrator_setup, monkeypatch):
+        orchestrator, _ = mock_orchestrator_setup
+        orchestrator.orchestration_config.concurrent = False
+        orchestrator.orchestration_config.sequential_training = True
+
+        monkeypatch.setattr(run_module, "get_cli_verbosity", lambda: -1)
+
+        class DummyProgress:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        def fake_tqdm(*args, **kwargs):
+            progress = DummyProgress()
+            fake_tqdm.last = progress
+            return progress
+
+        monkeypatch.setattr(run_module, "tqdm", fake_tqdm)
+        orchestrator._run_sequential = lambda progress: None
+        called = {}
+
+        def fake_cleanup():
+            called['cleanup'] = True
+
+        orchestrator.cleanup = fake_cleanup
+        orchestrator.run()
+        assert getattr(fake_tqdm, "last").closed is True
+        assert called['cleanup'] is True
+
+    def test_replay_buffer_length_expands_for_long_games(self, mock_orchestrator_setup):
+        orchestrator, mocks = mock_orchestrator_setup
+        game = Mock()
+        game.max_game_length.return_value = 50
+        orchestrator.game_wrapper._game = game
+        orchestrator.config.replay_buffer.max_trajectory_length = 9
+
+        with patch.object(run_module, "TrajectoryBuffer") as mock_tb:
+            orchestrator.setup_replay_buffer((27,), 9)
+
+        mock_tb.assert_called_with(
+            capacity=orchestrator.config.replay_buffer.capacity,
+            observation_shape=(27,),
+            num_actions=9,
+            max_trajectory_length=51,
+        )
+
+
+def test_parse_cli_verbosity_quiet_branch():
+    argv = ["prog", "-q", "train"]
+    level = _parse_cli_verbosity(argv)
+    assert level == -1
+    assert argv == ["prog", "train"]
+    @pytest.fixture
+    def mock_wandb(self):
+        """Mock wandb for testing."""
+        with patch('wandb.init'), patch('wandb.log'), patch('wandb.finish'):
+            yield

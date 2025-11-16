@@ -38,26 +38,60 @@ This document outlines action items to align the JAX implementation of Efficient
 5.  [*] **Plumb support ranges from config everywhere.**
     *   ✅ `_compute_total_loss_static` now routes `support_min/max` through host-prep helpers and the priority calculation, and those helpers require explicit ranges rather than implying `[-300, 300]`.
     *   ✅ `BootstrapConfig` exposes `support_min/max` so `bootstrap_actor.py` no longer hard-codes fallback ranges when converting categorical network values.
-6.  [*] **Baseline resilience + restart behavior verified.**
+
+6.  [*] **Kick off distributed replay + parameter publisher scaffolding.**
+    *   ✅ Added transport-agnostic in-memory replay + gRPC wrappers in `services/replay_service.py`; covered by `tests/services/test_replay_service.py`.
+    *   ✅ Added parameter publisher with blocking wait + gRPC wrappers in `services/parameter_publisher.py`; covered by `tests/services/test_parameter_publisher.py`.
+    *   ✅ `build_replay_buffer` now selects a remote `RemoteReplayBufferAdapter` when `replay_buffer.remote_enabled=true` with endpoint set; regression covered by `tests/test_replay_buffer_factory.py` and `tests/test_distributed_replay_buffer.py`.
+    *   ↩ Next: wire learner/actors through these clients in the orchestrator hot path, then add integration coverage in `tests/self_play/test_distributed_actor.py`.
+6.  [*] **MuZero training loop smoke test.**
+    *   ✅ Introduced a strict buffer threshold of `max(start_transitions, batch_size)` before training begins or bootstrap actors hand off to MuZero actors, preventing the “requested N, have 1” crash observed in manual runs.
+    *   ✅ EMA blending now returns PyTrees from `jax.lax.cond`, eliminating the tracer leak surfaced by `python run_muzero_jax.py … batch_size=1 start_transitions=1`.
+    *   ✅ Regression coverage via `TestOrchestratorIntegration::test_bootstrap_waits_for_batch_sized_buffer` and `RealNetworkIntegrationTest::test_ema_blend_skips_branch_without_tracer_leak`.
+7.  [*] **Baseline resilience + restart behavior verified.**
     *   ✅ `Learner.save_checkpoint` returns concrete filesystem paths and `Learner.load_checkpoint` accepts optional path overrides so orchestration code can resume from explicit checkpoints written before Orbax metadata existed.
     *   ✅ `MuZeroOrchestrator` queries the learner’s `CheckpointManager` before falling back to filesystem scans, updates its local `training_step` from the restored learner, and only logs checkpoints when persistence succeeded.
     *   ✅ Added `tests/test_resilience.py` covering learner round-trip restores, orchestrator restart continuity, and actor parameter refresh; run via `python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_resilience.py`.
-6.  [*] **Add a JIT integration test for `Learner.train_step`.**
+8.  [*] **Add a JIT integration test for `Learner.train_step`.**
     *   ✅ `test_integration_with_real_network.py` now includes a slow-path test that calls `learner.jit_train_step` via `jax.jit` using the full MuZero network, asserting the compiled path runs end-to-end and produces finite losses.
-7.  [*] **Task 6 verification audit (Nov 14 2025).**
+9.  [*] **Task 6 verification audit (Nov 14 2025).**
     *   ✅ Nov 14 audit confirmed each former blocking issue with explicit code/test references, and `TODO.md` now records the 100 % coverage run (`python run_tests_with_coverage.py --num-workers 12`).
-8.  [*] **Bootstrap actor behavior + coverage decision.**
+10.  [*] **Bootstrap actor behavior + coverage decision.**
     *   ✅ Simplified `bootstrap_actor.py` to rely on `pyspiel.MCTSBot.step_with_policy`, removed the legacy heuristic branches, and routed chance-node sampling through JAX RNG utilities so the trajectory only records decision nodes.
     *   ✅ Rebuilt `tests/self_play/test_bootstrap_actor.py` with deterministic fixtures covering chance sampling, policy conversion, observation edge cases, and discounted value target math.
-9.  [*] **Loss utilities coverage.**
+11.  [*] **Loss utilities coverage.**
     *   ✅ Added targeted tests in `test_trainer_loss_computation.py` and `test_trainer_loss_edge_cases.py` to execute the categorical weighting branch (`losses.py` line 130) and legacy positional-argument paths.
-10.  [*] **Stabilize `run_tests_with_coverage.py` output controls (Task 1 & 2).**
+12.  [*] **Stabilize `run_tests_with_coverage.py` output controls (Task 1 & 2).**
     *   `compute_output_controls` now governs the default progress bar, `--debug-worker-logs`, and `-q/--quiet` semantics with explicit documentation in the module docstring.
     *   Default runs show the tqdm progress bar and final summary only; quiet mode suppresses mid-run output entirely; worker-level logs stay opt-in.
     *   Added inline comments describing the policy so future contributors can honor Task 1/2 without reopening the script’s tests.
-11. [*] **Replay buffer contract & priority inspection.**
+13. [*] **Replay buffer contract & priority inspection.**
     *   `_resolve_value_targets` backfills zero arrays before storage, so actors can enqueue partial trajectories while learner/reanalyze workers overwrite them later.
     *   Added `priorities_snapshot`/`priority_values` helpers plus pytest coverage to replace direct `_priorities` access.
+14. [*] **Asynchronous actor/learner orchestration refactor.**
+    *   `resource_management.concurrent=true` now spins up `ActorWorker` threads (one per configured actor) plus a background `LearnerWorker`. Actors feed a bounded `queue.Queue` (capacity via `resource_management.actor_queue_capacity`), while the learner drains the replay buffer under a lock and keeps GPU utilization steady instead of alternating idle/saturated phases.
+    *   CLI controls: sequential mode remains the default via `resource_management.sequential_training=true`; async runs can dial verbosity with `-q/-v/-vvv`, and `hydra.job_logging.root.level` still suppresses noisy hydra logs. Example:  
+        `python -q open_spiel/python/algorithms/muzero_jax/run_muzero_jax.py resource_management.concurrent=true actors.num_actors=4 training.batch_size=128 training.training_steps=3000 replay_buffer.capacity=2000 resource_management.actor_queue_capacity=64 evaluation.enabled=false wandb.enabled=false hydra.job_logging.root.level=WARNING`.
+    *   Added `_buffer_size()`/`_add_trajectory_to_buffer()` helpers plus periodic-eval guards so both sequential and concurrent paths share logging, tqdm progress, and evaluation scheduling logic.
+    *   Tests live in `tests/test_orchestrator_async.py`: (a) `test_actor_worker_switches_modes_and_stops` exercises bootstrap→MuZero transitions + stop handling, and (b) `test_async_orchestrator_runs_to_completion` / `test_async_orchestrator_runs_to_completion[slow actors]` drive a two-actor async run (with and without artificial sleeps) to confirm target training steps, bounded buffer usage, and absence of stalls. Run via `python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_orchestrator_async.py`.
+
+### 0.3 Breakthrough Regression Diagnostics (Nov 15 2025)
+
+*   **Context:** Acting on TODO.md “Breakthrough Training Regression Debug Plan”.
+*   **Artifacts:**
+    *   `/tmp/muzero_bt_debug_train2.log` – full 5 000-step concurrent run into `/tmp/muzero_breakthrough_debug_run1` (Orbax checkpoint `checkpoints/5000`).
+    *   `/tmp/muzero_bt_debug_train3.log` – verbose 300-step probe (Info-level logging) into `/tmp/muzero_breakthrough_debug_run_info`.
+    *   `/tmp/muzero_bt_debug_eval1.log` – `eval_vs_mcts` results vs. pure MCTS (100 simulations, 20 games) on `/tmp/muzero_breakthrough_big64`.
+*   **Findings:**
+    1. **Bootstrap handoff works, but actor throughput stalls:** Transition occurs after 128 bootstrap episodes (buffer ≥128) yet `total_episodes` only climbs to 183 by training step 300, so the learner performs 300 updates on ~55 MuZero-guided episodes plus the initial bootstrap set. Queue likely saturates because `resource_management.selfplay_phase_episodes=8` and Breakthrough games average ~45 moves, letting the learner outpace self-play.
+    2. **Replay buffer length adapts, yet effective sample count stays tiny:** Log shows auto-expansion from `max_traj_length=9` to `210`. Parsing bootstrap logs yields 180 trajectories (mean length ≈45, min 13, max 85), but buffer size plateaus at 183 despite capacity 2000 because actors stop producing once the queue drains.
+    3. **Learner metrics saturate prematurely:** `policy_loss` falls from ~41 (step 1) to ~4 (step 290), `value_loss` collapses to 0, and `grad_norm` drops below 1, indicating the network memorizes the limited dataset while receiving near-zero reward/value gradients (Breakthrough rewards only at terminal states).
+    4. **Evaluation remains degenerate:** Against MCTS with just 100 simulations MuZero still loses every game (0–20). This persists despite deterministic evaluation (temperature 0.0) and alternating starting players, confirming the learned policy provides no improvement over baseline search.
+*   **Next investigative steps:**
+    - Increase actor throughput (more actors, raise `selfplay_phase_episodes`, relax learner loop) and track `buffer_size` over time to ensure steady growth.
+    - Implement `debug_replay_buffer.py` to dump priority/value histograms mid-run and confirm targets are non-zero.
+    - Experiment with reward/value scaling (value prefix, longer TD targets, reward clipping) tailored to sparse Breakthrough terminals.
+    - Re-run evaluation sweeps (e.g., 50/100/200/400 simulations) once throughput and reward signal issues are addressed to look for inflection points.
 
 ### 0.3 Verified Fixes (Previously flagged but now done)
 *   Policy reanalysis now performs real `mctx.gumbel_muzero_policy` searches (trainer.py:1970-2148). Uniform policies remain only for non-reanalyzed samples or when `reanalyze_ratio == 0`.

@@ -373,7 +373,9 @@ class TestHalfGradientPerformance:
         if first_run_time > 1e-4:  # Only check if compilation took meaningful time
             speedup = first_run_time / max(subsequent_time, 1e-6)
             print(f"JIT speedup: {speedup:.2f}x")
-            assert speedup > 2, f"JIT should provide speedup, got: {speedup:.2f}x"
+            backend = jax.default_backend()
+            threshold = 1.3 if backend == "metal" else 2.0
+            assert speedup > threshold, f"JIT should provide speedup (backend={backend}), got: {speedup:.2f}x"
 
     def test_memory_efficiency(self):
         """Test memory efficiency of half-gradient implementations."""

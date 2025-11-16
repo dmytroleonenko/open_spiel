@@ -23,6 +23,46 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
 
 [*] Buffer contract clean-up: let `ReplayBuffer`/`PrioritizedTrajectoryBuffer` accept trajectories without `target_values`, defaulting to zeros until the learner overwrites them, and expose a public accessor for priority snapshots so tests stop reaching into `_priorities`.
 
+[*] Training loop smoke readiness: MuZero orchestration now keeps the bootstrap actor active until the replay buffer holds at least `max(start_transitions, batch_size)` trajectories, and the learner’s EMA blend returns PyTrees from the `jax.lax.cond` branch to satisfy tracer checks. Covered by `test_integration_workflow.py::TestOrchestratorIntegration::test_bootstrap_waits_for_batch_sized_buffer` and `RealNetworkIntegrationTest::test_ema_blend_skips_branch_without_tracer_leak`. To reproduce the minimal end-to-end run locally:  
+`python open_spiel/python/algorithms/muzero_jax/run_muzero_jax.py training.batch_size=1 +training.start_transitions=1 resource_management.training_phase_steps=1 resource_management.selfplay_phase_episodes=1 actors.num_actors=1 evaluation.enabled=false wandb.enabled=false`.
+
+[*] **Asynchronous Actor/Learner Orchestrator Refactor:**
+    *   Introduced `resource_management.concurrent=true` along with `actor_queue_capacity` and `learner_idle_sleep_ms` so Hydra configs can opt into a threaded actor/learner runtime. Sequential orchestration remains the default via `resource_management.sequential_training=true`.
+    *   Added `ActorWorker`, `LearnerWorker`, and a bounded `queue.Queue` pipeline. Actors (bootstrap + MuZero) enqueue serialized trajectories until the queue hits `actor_queue_capacity`, at which point they block; the learner drains the shared replay buffer under a lock and logs metrics at the same cadence as the sequential path. `_buffer_size()` + `_add_trajectory_to_buffer()` provide the necessary synchronization.
+    *   `run()` now picks `_run_concurrent` or `_run_sequential`, and both share periodic evaluation + tqdm progress handling. CLI verbosity gates per-episode logging (>=2) while `-v`/`-vvv` control training metrics.
+    *   Tests: `tests/test_orchestrator_async.py` covers (a) `ActorWorker` bootstrap→MuZero transitions and stop handling, (b) a short async training run with deterministic actors, and (c) a regression where slow actors still let the learner reach its target steps. Run with `python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_orchestrator_async.py`.
+    *   Usage example (quiet run with four actors + bounded queue):
+        ```
+        python -q open_spiel/python/algorithms/muzero_jax/run_muzero_jax.py \
+          resource_management.concurrent=true resource_management.actor_queue_capacity=64 \
+          actors.num_actors=4 training.training_steps=3000 training.batch_size=128 \
+          replay_buffer.capacity=2000 replay_buffer.priority_alpha=0.0 \
+          evaluation.enabled=false wandb.enabled=false hydra.job_logging.root.level=WARNING
+        ```
+      Progress output stays at the tqdm bar in `-q` mode; `-v` adds per-phase summaries, and `-vvv` restores per-move actor logs for debugging.
+    *   Follow-up hardening (Nov 14, 2025): bootstrap actor creation now respects runtime patching (tests can stub `self_play.bootstrap_actor.BootstrapActor`), periodic evaluation defaults to **enabled** when the config section omits `enabled`, and episode metric logging triggers whenever `output.log_interval` divides `total_episodes` (even at low CLI verbosity). These fixes keep `test_orchestrator_runtime.py`, `test_run_muzero_jax.py`, and `test_orchestrator_async.py` green after the refactor.
+    *   Async test harness now pins JAX to CPU via `JAX_PLATFORM_NAME=cpu` + `jax.config.update(...)` in `async_config` to avoid Metal GPU contention when hundreds of coverage workers run in parallel. This addresses the 600s timeouts seen when `run_tests_with_coverage.py --num-workers 13` hit the concurrent orchestrator tests.
+
+[ ] **Breakthrough Training Regression Debug Plan:**
+    *   Goal: understand why the Breakthrough MuZero run loses 0/100 vs. a 400-sim pure MCTS baseline despite completing 5 000 training steps in concurrent mode.
+    *   Preserve context window sanity during investigation: every long-running command must redirect stdout/stderr to a timestamped `/tmp/muzero_bt_debug_<slug>.log`, then use `wc -l` to confirm the log size before selectively `tail -n 200` or `rg` it—no raw multi-thousand-line dumps in the console.
+    *   Data collection checklist:
+        1. Capture training logs (`run_muzero_jax.py` output) to `/tmp` while rerunning the Breakthrough job; confirm via `grep` that “Transitioning from bootstrap…” appears and that `buffer=` post-fixes exceed `start_transitions`. If not, inspect actor queue/backpressure as a first root cause.
+        2. After the run, dump replay-buffer statistics (`python open_spiel/.../debug_replay_buffer.py … > /tmp/...log`) to confirm trajectory counts, average lengths (~50 for Breakthrough), and priority distributions. Ensure the new adaptive `max_trajectory_length` really matches `game.max_game_length()`.
+        3. Inspect learner metrics by enabling `-v` (while still redirecting to `/tmp`). Verify `total_loss`, `policy_loss`, `reward_loss`, `value_loss`, and gradient norms evolve instead of staying constant; if they’re flat, print a single batch (again via log redirect) to confirm labels aren’t all zeros.
+        4. Validate evaluation configuration by running `eval_vs_mcts` with `--override game.name=breakthrough` and lower baseline simulations (e.g., 100) to ensure we aren’t comparing against an overly strong opponent prematurely.
+    *   Hypotheses to test sequentially (mark results in TODO_JAX_MUZERO.md with log references):
+        - Bootstrap never hands off because concurrent queue starved learner → tune `resource_management.actor_queue_capacity` or ensure actor workers pull updated checkpoints.
+        - Reward/value scaling mismatch (Breakthrough returns only at terminal step) → consider enabling `use_value_prefix` or increasing `td_steps`/`num_unroll_steps`.
+        - Network action/state sizes misaligned (check `num_actions=128?` vs. actual 96) causing policy head to ignore some moves.
+        - Replay buffer truncated episodes due to miscomputed `max_trajectory_length` before the fix; delete stale checkpoints and rerun to confirm learning now occurs.
+    *   Deliverables for this task: annotated `/tmp` log paths, brief summaries in TODO_JAX_MUZERO.md for each hypothesis tested, and an updated evaluation table showing MuZero performance vs. varying MCTS simulation counts once the regression is resolved.
+    *   Progress (Nov 15, 2025):
+        - [x] Captured a verbose rerun with logging overrides (`/tmp/muzero_bt_debug_train3.log`, command variant: `training.training_steps=300` for inspectability) showing bootstrap → MuZero transition at episode 128, buffer growth to 183, and adaptive `max_traj_length=210`.
+        - [x] Ran full 5 000-step concurrent training into `/tmp/muzero_breakthrough_debug_run1` with logs archived at `/tmp/muzero_bt_debug_train2.log`; Orbax checkpoints land in `/tmp/muzero_breakthrough_debug_run1/checkpoints/5000`.
+        - [x] Evaluated Breakthrough checkpoint vs. pure MCTS (100 sims, 20 games) using `eval_vs_mcts` (`/tmp/muzero_bt_debug_eval1.log`), result 0–20 indicating no measurable improvement.
+        - [ ] Replay buffer inspection script still pending; interim stats derived from log parsing (180 bootstrap episodes, avg length ≈45, min 13 / max 85).
+
 ---
 
 ### Phase 1: Core MuZero JAX Implementation (Local - adapting EfficientZeroV2)
@@ -434,7 +474,7 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
 
 ---
 
-### Phase 2: Distributed Training and Data Generation (adapting `EfficientZeroV2`'s distributed setup)
+### Phase 2: Distributed Training, Inference, and Data Generation (adapting `EfficientZeroV2`'s distributed setup + new inference service)
 
 **Note:** Phase 2 tasks are now **deferred** until single-device training (Phase 1) is complete. We will revisit distributed training once local training is fully implemented.
 
@@ -444,38 +484,42 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
 
 (Test execution command: `source venv/bin/activate && python -m pytest path/to/your_test_file.py`)
 
-[DEFERRED] 11. **Distributed Replay Buffer (Flashbax Vault / Service):**
+[IN PROGRESS] 11. **Distributed Replay & Parameter Plane (Flashbax Vault + Inference RPC service):**
     *   **TDD:** Write tests for Flashbax Vault in distributed scenarios, or for a replay buffer service. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/test_distributed_replay_buffer.py`)
-    *   Set up Flashbax Vault with disk-backed store (e.g., S3, GCS, NFS) accessible by multiple processes/hosts.
-    *   Alternatively, design a replay buffer service (e.g., gRPC-based) that actors can send trajectories to.
+    *   Stand up a shared replay buffer (Flashbax Vault on NFS/S3 or a gRPC “replay service”) **and** a lightweight parameter publisher so inference servers/actors can poll the latest MuZero weights.
+    *   The replay buffer service exposes gRPC endpoints for `AppendTrajectory`, `SampleBatch`, and `PriorityUpdate`; the learner uses the same API the local buffer did. Parameter publisher exposes `GetLatestParams` + subscription hooks so inference nodes can refresh without touching checkpoints directly.
     *   **Completion Criteria:**
         *   The replay buffer solution (e.g., Flashbax Vault on shared storage, or a dedicated replay buffer service) can be concurrently accessed by multiple writer (actor) processes and a reader (learner) process, potentially across different hosts.
-        *   Actors (from Task 12) can successfully write trajectories to the distributed replay buffer.
-        *   The Learner (from Task 13) can successfully sample batches from the distributed replay buffer.
+        *   Actors (from Task 12) emit trajectories via the RPC service (or shared Vault) without local disk coupling.
+        *   The Learner (from Task 13) samples via RPC with backoff + batching logic, mirroring local buffer behavior.
+        *   Inference servers poll the parameter publisher and confirm versioned snapshots (matching learner checkpoint step) before serving requests.
         *   Data integrity and consistency are maintained under concurrent access.
         *   All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/test_distributed_replay_buffer.py` (simulating multiple processes adding to and sampling from the buffer, checking for data consistency and race conditions) pass (100%).
         *   100% code coverage for any custom wrapper/utility code related to managing the distributed replay buffer is achieved and verified.
+    *   **Progress (Nov 16, 2025):** Added transport-agnostic in-memory replay service plus gRPC wrappers (`services/replay_service.py`) with expanded edge coverage (`tests/services/test_replay_service_extras.py`, `test_replay_service_edge_cases.py`). Parameter publisher service + gRPC covered by `tests/services/test_parameter_publisher_integration.py`, `test_parameter_publisher_edge_cases.py`, and subscribe path now publishes-before-subscribe in tests to avoid macOS/Metal gRPC blocking; production push path unchanged. `build_replay_buffer` routes to `RemoteReplayBufferAdapter` when `replay_buffer.remote_enabled=true` and `replay_buffer.rpc_endpoint` is set; actors refresh params via publisher-aware inference clients; learner publishes params each training step per `publisher.publish_interval` and on shutdown. End-to-end remote wiring smoke test added (`tests/test_orchestrator_remote_end_to_end.py`). Remaining follow-up: multi-process replay/publisher soak test and basic RPC metrics (qps/latency).
 
-[DEFERRED] 12. **Distributed Data Generation (Actors - JAX processes on separate hosts):**
+[DEFERRED] 12. **Distributed Data Generation & Remote Inference (Actors + inference servers):**
     *   **TDD:** Write tests for actor processes writing to the distributed replay buffer and fetching parameters. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/self_play/test_distributed_actor.py`)
-    *   Actors run as independent JAX processes, potentially on different hosts than the Learner.
-    *   **Parameter Updates:** Actors periodically poll a shared storage location (e.g., S3, GCS, or a shared filesystem where Learner checkpoints are saved) for the latest (or sufficiently recent) `MuZeroNetwork` parameters.
-    *   **Trajectory Submission:** Actors run self-play and submit completed trajectories to the distributed replay buffer (Task 11), e.g., by writing to Flashbax Vault or sending via gRPC to a replay service.
+    *   Actors now run as separate **processes or hosts** that call a centralized inference RPC service (see design discussion) instead of carrying their own JAX models. On TPU, we keep one inference process per chip; on GPU/CPU we can run multiple inference servers per host.
+    *   **Remote Inference API:** Define gRPC proto for `InferenceRequest`/`InferenceResponse`, add Hydra flags `resource_management.remote_inference`, `inference.rpc_endpoint`, `inference.batch_size`, etc.
+    *   **Parameter Updates:** Inference servers subscribe to the parameter publisher (Task 11) and update their jit-compiled model when a new snapshot arrives; actors only need the inference RPC endpoint, not raw checkpoints.
+    *   **Trajectory Submission:** Actors run self-play, stream inference queries to the RPC service, and send completed trajectories to the replay service from Task 11. Support both multi-process on a single machine and multi-host deployments.
     *   **Completion Criteria:**
-        *   Self-play actors (based on Task 7) are implemented as independent JAX processes that can run on different devices/machines.
-        *   Actors can periodically load the latest model parameters by polling a shared checkpoint store updated by the Learner.
+        *   Self-play actors (based on Task 7) are implemented as independent processes/hosts that communicate solely via RPC (inference + replay), keeping accelerator ownership centralized.
+        *   Actors no longer touch checkpoints directly; inference servers demonstrate successful hot-reload of learner parameters pushed through the publisher.
         *   Each actor runs self-play episodes using the `MuZeroNetwork` and MCTS.
         *   Completed trajectories are serialized and written to the distributed replay buffer solution from Task 11.
         *   The system can scale to multiple actor processes generating data concurrently from different hosts.
         *   All Pytest tests in `open_spiel/python/algorithms/muzero_jax/tests/self_play/test_distributed_actor.py` (verifying actor process initialization, model parameter loading from a mock shared store, self-play execution, and trajectory writing to a mock/test distributed replay buffer) pass (100%).
         *   100% code coverage for the distributed actor logic (including parameter polling and data writing) is achieved and verified.
+    *   **Progress (Nov 15, 2025):** Introduced `InferenceClient` abstractions plus `LocalBatchingInferenceClient`/`BatchingInferenceServer`, and wired actors to build clients via Hydra (`inference.*` config). This local batching path mimics the remote RPC flow while we stand up the actual multi-process transport.
 
-[DEFERRED] 13. **Distributed Training (Learner - `pjit` on dedicated host(s)):**
+[DEFERRED] 13. **Distributed Learner (`pjit`) + Inference/Replay Integration:**
     *   **TDD:** Tests for `pjit` sharding, distributed checkpointing (to shared storage), and correct gradient aggregation across devices. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/training/test_distributed_trainer.py`)
     *   (Reference: `@EfficientZeroV2/ez/agents/base.py` DDP setup, `EfficientZeroV2/ez/train.py` DDP orchestration).
     *   Modify `open_spiel/python/algorithms/muzero_jax/training/trainer.py`. Use `pjit` for data/model parallelism. Define mesh, sharding for `nnx.State` and data.
-    *   Learner consumes batches from the distributed replay buffer (Task 11).
-    *   Learner saves Orbax checkpoints to a shared storage location (e.g., S3, GCS) for Actors to pick up (as per Task 12).
+    *   Learner consumes batches via the replay RPC (Task 11) and asynchronously pushes parameter snapshots to inference servers (e.g., gRPC `PushParams` with sharded payloads).
+    *   Orbax checkpoints still go to shared storage for durability, but actors/inference nodes rely on the live publisher rather than polling filesystems.
     *   **Completion Criteria:**
         *   The training loop in `open_spiel/python/algorithms/muzero_jax/training/trainer.py` (from Task 6) is modified to use `jax.pjit` for distributed training on potentially multiple devices on its dedicated host(s).
         *   A JAX device mesh is defined, and appropriate sharding strategies are applied.
@@ -723,14 +767,14 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
         *   All Pytest tests are added for continuous action support, covering network output, MCTS interaction, and training on a simple continuous action game (e.g., Pendulum if wrapped, or a custom simple environment). All these tests pass (100%).
         *   100% code coverage for all new or modified code related to continuous action support is achieved and verified.
 
-[TODO] 30. **More Sophisticated Distributed Setup (Optional - e.g., Ray-based):**
+[TODO] 30. **Advanced Distributed Orchestration (Ray/MPI) – optional upgrade:**
     *   (Reference: `EfficientZeroV2` Ray actor/server model for replay, storage).
     *   **Completion Criteria:**
         *   If `EfficientZeroV2`'s Ray-based actor/server model for replay and storage is adopted:
             *   Ray actors are implemented for self-play.
             *   A Ray-based distributed replay buffer server is implemented, potentially replacing or augmenting the Flashbax Vault setup for higher throughput or more complex sampling strategies.
             *   A Ray-based parameter server or mechanism for distributing model updates to actors is implemented.
-        *   The system demonstrates improved scalability or performance compared to the Phase 2 distributed setup on a benchmark task.
+        *   Demonstrate improved scalability over the base RPC design by colocating actors, inference, and replay as Ray actors (or MPI ranks), supporting e.g., multiple inference processes per GPU and dynamic load balancing across clusters.
         *   All Pytest tests are added for the new Ray-based components (actors, replay server, parameter server), verifying their individual functionality and interactions in a distributed mock environment. All these tests pass (100%).
         *   100% code coverage for the Ray-based distributed components is achieved and verified.
         *   The setup is documented, explaining how to deploy and run it.

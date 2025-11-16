@@ -14,13 +14,19 @@ Usage:
 import os
 import sys
 import time
+import queue
 import logging
-import tempfile
 import threading
 import dataclasses
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass
+import argparse
+
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover - tqdm optional during tests
+    tqdm = None
 
 import jax
 import jax.numpy as jnp
@@ -38,6 +44,16 @@ from open_spiel.python.algorithms.muzero_jax.training.trainer import (
     create_network_config_from_muzero_config
 )
 from open_spiel.python.algorithms.muzero_jax.self_play.actor import Actor
+from open_spiel.python.algorithms.muzero_jax.self_play import bootstrap_actor as bootstrap_module
+
+if TYPE_CHECKING:  # pragma: no cover - static typing helpers only
+    from open_spiel.python.algorithms.muzero_jax.self_play.bootstrap_actor import (
+        BootstrapActor as BootstrapActorType,
+        BootstrapConfig as BootstrapConfigType,
+    )
+else:
+    BootstrapActorType = Any  # pragma: no cover - typing helper
+    BootstrapConfigType = Any  # pragma: no cover - typing helper
 from open_spiel.python.algorithms.muzero_jax.replay_buffer.replay_buffer import (
     TrajectoryBuffer, 
     PrioritizedTrajectoryBuffer
@@ -49,20 +65,285 @@ from open_spiel.python.algorithms.muzero_jax.utils.checkpointing import (
     get_latest_checkpoint
 )
 from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import MCTS
+from open_spiel.python.algorithms.muzero_jax.services.inference_client import (
+    build_inference_client,
+    LocalInferenceClient,
+)
+from open_spiel.python.algorithms.muzero_jax.services.parameter_client_inference_adapter import (
+    ParameterRefreshingInferenceClient,
+)
+from open_spiel.python.algorithms.muzero_jax.services.replay_service import (
+    GrpcReplayClient,
+    RemoteReplayBufferAdapter,
+)
+from open_spiel.python.algorithms.muzero_jax.services.parameter_publisher import (
+    GrpcParameterPublisherClient,
+    GrpcParameterPublisherServer,
+    LocalParameterPublisher,
+    GrpcParameterPublisherServer,
+)
+from open_spiel.python.algorithms.muzero_jax.services.replay_service import (
+    GrpcReplayClient,
+    RemoteReplayBufferAdapter,
+)
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+def _parse_cli_verbosity(argv: List[str]) -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('-v', '--verbose', action='count', default=0, dest='verbosity')
+    parser.add_argument('-q', '--quiet', action='store_true', dest='quiet')
+    args, remaining = parser.parse_known_args(argv[1:])
+    argv[:] = [argv[0]] + remaining
+    if args.quiet:  # pragma: no cover - trivial CLI parsing
+        return -1
+    return args.verbosity  # pragma: no cover - trivial CLI parsing
+
+
+CLI_VERBOSITY = _parse_cli_verbosity(sys.argv)
+
+
+def get_cli_verbosity() -> int:
+    return CLI_VERBOSITY
+
+
+def build_replay_buffer(
+    config: DictConfig,
+    observation_shape,
+    num_actions: int,
+    game_obj,
+    register_replay_client=None,
+):
+    """Construct a local or remote replay buffer based on Hydra config."""
+    base_length = getattr(config.replay_buffer, "max_trajectory_length", 0) or 0
+    game_required_length = 0
+    if game_obj is not None and hasattr(game_obj, "max_game_length"):
+        try:
+            game_required_length = int(game_obj.max_game_length()) + 1
+        except Exception:  # pragma: no cover - defensive path
+            game_required_length = 0
+
+    if base_length <= 0 and game_required_length <= 0:
+        max_trajectory_length = 200
+    elif base_length <= 0:
+        max_trajectory_length = game_required_length
+    elif game_required_length <= 0:
+        max_trajectory_length = base_length
+    else:
+        if base_length < game_required_length:
+            logger.info(
+                "Replay buffer max_trajectory_length=%s is below %s max_game_length=%s; expanding to %s steps.",
+                base_length,
+                getattr(config.game, "name", "unknown"),
+                game_required_length - 1,
+                game_required_length,
+            )
+        max_trajectory_length = max(base_length, game_required_length)
+
+    if getattr(config.replay_buffer, "remote_enabled", False):
+        endpoint = getattr(config.replay_buffer, "rpc_endpoint", "") or ""
+        if not endpoint:
+            raise ValueError("replay_buffer.remote_enabled=true but no rpc_endpoint provided")
+        prioritized = getattr(config.replay_buffer, "priority_alpha", 0) > 0
+        client = GrpcReplayClient(endpoint)
+        if register_replay_client:
+            register_replay_client(client)
+        logger.info("Using remote replay buffer at %s (prioritized=%s)", endpoint, prioritized)
+        return RemoteReplayBufferAdapter(client, prioritized=prioritized)
+
+    if getattr(config.replay_buffer, "priority_alpha", 0) > 0:
+        return PrioritizedTrajectoryBuffer(
+            capacity=config.replay_buffer.capacity,
+            observation_shape=observation_shape,
+            num_actions=num_actions,
+            alpha=config.replay_buffer.priority_alpha,
+            max_trajectory_length=max_trajectory_length,
+        )
+
+    logger.info(
+        "Replay buffer initialized: capacity=%s, obs_shape=%s, num_actions=%s, max_traj_length=%s",
+        config.replay_buffer.capacity,
+        observation_shape,
+        num_actions,
+        max_trajectory_length,
+    )
+    return TrajectoryBuffer(
+        capacity=config.replay_buffer.capacity,
+        observation_shape=observation_shape,
+        num_actions=num_actions,
+        max_trajectory_length=max_trajectory_length,
+    )
+
+
+def build_parameter_publisher_client(config: DictConfig):
+    """
+    Build parameter publisher client (and optional server) based on config.
+
+    Returns (client, server_or_none). When remote_enabled=false, both are None.
+    """
+    pub_cfg = getattr(config, "publisher", None)
+    if pub_cfg is None or not getattr(pub_cfg, "remote_enabled", False):
+        return None, None
+    endpoint = getattr(pub_cfg, "rpc_endpoint", "") or ""
+    if not endpoint:
+        raise ValueError("publisher.remote_enabled=true but no publisher.rpc_endpoint provided")
+    client = GrpcParameterPublisherClient(endpoint)
+    return client, None
+
+
+logging_level = logging.WARNING if CLI_VERBOSITY <= 0 else logging.INFO
+logging.basicConfig(level=logging_level)
 logger = logging.getLogger(__name__)
+actor_logger = logging.getLogger('open_spiel.python.algorithms.muzero_jax.self_play.actor')
+actor_logger.setLevel(logging.INFO if CLI_VERBOSITY >= 3 else logging.WARNING)
+
 
 
 @dataclass
 class OrchestrationConfig:
     """Configuration for orchestration-specific settings."""
     sequential_training: bool = True
+    concurrent: bool = False
     training_phase_steps: int = 10
     selfplay_phase_episodes: int = 5
     max_episodes_without_training: int = 100
     max_training_steps_without_episodes: int = 50
+    actor_queue_capacity: int = 128
+    learner_idle_sleep_ms: int = 20
+
+
+@dataclass
+class TrajectoryPacket:
+    """Container for trajectories emitted by actor workers."""
+    trajectory: Dict[str, Any]
+    worker_id: int
+    actor_type: str
+    timestamp: float
+
+
+class ActorWorker(threading.Thread):
+    """Background worker that continuously generates trajectories."""
+
+    def __init__(
+        self,
+        worker_id: int,
+        trajectory_queue: "queue.Queue[TrajectoryPacket]",
+        stop_event: threading.Event,
+        bootstrap_event: threading.Event,
+        muzero_actor: Actor,
+        bootstrap_actor: Optional[BootstrapActorType],
+        checkpoint_dir: str,
+        checkpoint_sync_interval: int,
+        rng_seed: int,
+        error_queue: "queue.Queue[BaseException]",
+    ):
+        super().__init__(daemon=True)
+        self.worker_id = worker_id
+        self.trajectory_queue = trajectory_queue
+        self.stop_event = stop_event
+        self.bootstrap_event = bootstrap_event
+        self.muzero_actor = muzero_actor
+        self.bootstrap_actor = bootstrap_actor
+        self.checkpoint_dir = checkpoint_dir
+        self.checkpoint_sync_interval = checkpoint_sync_interval
+        self.error_queue = error_queue
+        self._rng_key = jax.random.PRNGKey(rng_seed + worker_id)
+        self._episodes_since_sync = 0
+        self._thread_logger = logging.getLogger(f"{__name__}.ActorWorker{worker_id}")
+
+    def run(self):
+        try:
+            while not self.stop_event.is_set():
+                actor_type, actor = self._select_actor()
+                if actor is None:  # pragma: no cover - unreachable in normal flow
+                    time.sleep(0.01)
+                    continue
+
+                if actor_type == "muzero" and hasattr(actor, "refresh_params"):
+                    actor.refresh_params()
+
+                self._rng_key, episode_key = jax.random.split(self._rng_key)
+                try:
+                    trajectory = actor.play_episode(episode_key)
+                except Exception as exc:  # pragma: no cover - defensive
+                    self._thread_logger.error(
+                        "Actor worker %s failed to generate trajectory: %s",
+                        self.worker_id,
+                        exc,
+                    )
+                    self.error_queue.put(exc)
+                    continue
+
+                packet = TrajectoryPacket(
+                    trajectory=trajectory,
+                    worker_id=self.worker_id,
+                    actor_type=actor_type,
+                    timestamp=time.time(),
+                )
+
+                self._put_packet(packet)
+                self._maybe_refresh_checkpoint(actor_type)
+        except Exception as exc:  # pragma: no cover
+            self.error_queue.put(exc)
+
+    def _select_actor(self):
+        if self.bootstrap_event.is_set() and self.bootstrap_actor is not None:
+            return "bootstrap", self.bootstrap_actor
+        return "muzero", self.muzero_actor
+
+    def _put_packet(self, packet: TrajectoryPacket):
+        while not self.stop_event.is_set():
+            try:
+                self.trajectory_queue.put(packet, timeout=0.5)
+                return
+            except queue.Full:
+                continue
+
+    def _maybe_refresh_checkpoint(self, actor_type: str):
+        if actor_type != "muzero":
+            return
+        if self.checkpoint_sync_interval <= 0:
+            return
+        self._episodes_since_sync += 1
+        if self._episodes_since_sync % self.checkpoint_sync_interval == 0:
+            try:
+                self.muzero_actor.maybe_load_latest_parameters(self.checkpoint_dir)
+            except Exception as exc:  # pragma: no cover
+                self._thread_logger.warning(
+                    "Actor worker %s failed to refresh checkpoint: %s",
+                    self.worker_id,
+                    exc,
+                )
+
+
+class LearnerWorker(threading.Thread):
+    """Background worker that continuously trains the learner."""
+
+    def __init__(
+        self,
+        orchestrator: "MuZeroOrchestrator",
+        stop_event: threading.Event,
+        idle_sleep_s: float,
+        error_queue: "queue.Queue[BaseException]",
+    ):
+        super().__init__(daemon=True)
+        self.orchestrator = orchestrator
+        self.stop_event = stop_event
+        self.idle_sleep_s = max(idle_sleep_s, 0.0)
+        self.error_queue = error_queue
+
+    def run(self):
+        try:
+            while not self.stop_event.is_set():
+                if not self.orchestrator.should_continue_training():
+                    break  # pragma: no cover - defensive
+
+                metrics = self.orchestrator._perform_training_step()
+                if metrics is None:
+                    time.sleep(self.idle_sleep_s)
+                    continue
+
+                self.orchestrator._maybe_log_training_metrics(metrics)
+        except Exception as exc:  # pragma: no cover
+            self.error_queue.put(exc)
 
 
 class MuZeroOrchestrator:
@@ -76,10 +357,20 @@ class MuZeroOrchestrator:
     def __init__(self, config: DictConfig):
         """Initialize the orchestrator with Hydra configuration."""
         self.config = config
+        concurrent_flag = bool(getattr(config.resource_management, 'concurrent', False))
+        sequential_flag = getattr(config.resource_management, 'sequential_training', True)
+        sequential_mode = sequential_flag and not concurrent_flag
         self.orchestration_config = OrchestrationConfig(
-            sequential_training=config.resource_management.sequential_training,
+            sequential_training=sequential_mode,
+            concurrent=concurrent_flag,
             training_phase_steps=config.resource_management.training_phase_steps,
             selfplay_phase_episodes=config.resource_management.selfplay_phase_episodes,
+            actor_queue_capacity=getattr(
+                config.resource_management, 'actor_queue_capacity', 128
+            ),
+            learner_idle_sleep_ms=getattr(
+                config.resource_management, 'learner_idle_sleep_ms', 20
+            ),
         )
         
         # Set up directories
@@ -96,9 +387,181 @@ class MuZeroOrchestrator:
         self.training_step = 0
         self.total_episodes = 0
         self.start_time = time.time()
+        self._last_eval_step = 0
+        self._buffer_lock = threading.Lock()
+        self._inference_clients: List[Any] = []
+        self._replay_clients: List[Any] = []
+        self._remote_replay = False
+        self._parameter_publisher = None
+        self._parameter_client = None
+        self._replay_clients: List[Any] = []
         
         # Initialize components (checkpoint loading may update training_step)
         self.setup_components()
+    
+    def _register_inference_client(self, client) -> None:
+        """Track inference clients for cleanup."""
+        if client is None:
+            return
+        self._inference_clients.append(client)
+
+    def _register_replay_client(self, client) -> None:
+        """Track replay clients for cleanup."""
+        if client is None:  # pragma: no cover - defensive
+            return
+        self._replay_clients.append(client)
+
+    def _buffer_size(self) -> int:
+        """Return current buffer size with locking for thread safety."""
+        with self._buffer_lock:
+            return len(self.replay_buffer)
+
+    def _add_trajectory_to_buffer(self, trajectory: Dict[str, Any]) -> None:
+        """Add a trajectory to the replay buffer under lock."""
+        with self._buffer_lock:
+            self.replay_buffer.add_trajectory(trajectory)
+
+    def _maybe_log_training_metrics(self, metrics: Dict[str, Any]) -> None:
+        """Log training metrics when verbosity or interval thresholds are met."""
+        log_interval = getattr(self.config.output, 'log_interval', 0) or 1
+        if get_cli_verbosity() >= 1 or self.training_step % log_interval == 0:
+            self.log_training_metrics(metrics)
+
+    def _perform_training_step(self) -> Optional[Dict[str, Any]]:
+        """Run a single training step. Returns metrics or None if skipped."""
+        min_required = self._min_buffer_before_training()
+        with self._buffer_lock:
+            current_buffer = len(self.replay_buffer)
+        if current_buffer < min_required:
+            return None
+
+        self.rng_key, sample_key = jax.random.split(self.rng_key)
+
+        sampled_indices = None
+        importance_weights = None
+        is_prioritized = isinstance(self.replay_buffer, PrioritizedTrajectoryBuffer) or hasattr(
+            self.replay_buffer, "update_priorities"
+        ) or hasattr(self.replay_buffer, "update_priorities_by_ids")
+        try:
+            if is_prioritized:
+                with self._buffer_lock:
+                    sample_out = self.replay_buffer.sample_batch(
+                        self.config.training.batch_size,
+                        rng_key=sample_key,
+                    )
+                # Normalize outputs: adapter may return 2 or 3 elements.
+                if isinstance(sample_out, tuple):
+                    if len(sample_out) == 3:
+                        trajectory_list, sampled_indices, importance_weights = sample_out
+                    elif len(sample_out) == 2:
+                        trajectory_list, sampled_indices = sample_out
+                        importance_weights = None
+                    elif len(sample_out) == 1:  # pragma: no cover - defensive adapter normalization
+                        trajectory_list = sample_out[0]
+                        sampled_indices = None
+                        importance_weights = None
+                    else:
+                        raise ValueError(f"Unexpected sample_batch output length: {len(sample_out)}")  # pragma: no cover
+                else:
+                    trajectory_list = sample_out
+            else:
+                with self._buffer_lock:
+                    trajectory_list = self.replay_buffer.sample_batch(
+                        self.config.training.batch_size,
+                        rng_key=sample_key,
+                    )
+        except ValueError:
+            # Buffer may be too small; defer training step
+            return None  # pragma: no cover - rare
+
+        if not trajectory_list:
+            return None
+
+        batch = self._convert_trajectories_to_batch(
+            trajectory_list,
+            sampled_indices,
+            importance_weights,
+        )
+        metrics = self.learner.train_step(batch)
+        self.training_step += 1
+        self._maybe_publish_params()
+        self._update_priorities(sampled_indices, metrics)
+        return metrics
+
+    def _update_priorities(self, sampled_indices, metrics: Optional[Dict[str, Any]]) -> None:
+        """Update replay priorities when prioritized replay is enabled."""
+        prioritized = isinstance(self.replay_buffer, PrioritizedTrajectoryBuffer) or hasattr(
+            self.replay_buffer, "update_priorities"
+        ) or hasattr(self.replay_buffer, "update_priorities_by_ids")
+        if not prioritized:
+            return
+        if sampled_indices is None or metrics is None:
+            return
+        if 'priorities' not in metrics:
+            return
+        try:
+            new_priorities = jnp.array(metrics['priorities'])
+            new_priorities = jnp.maximum(new_priorities, self.muzero_config.min_priority)
+            with self._buffer_lock:
+                if hasattr(self.replay_buffer, "update_priorities"):
+                    self.replay_buffer.update_priorities(sampled_indices, new_priorities)
+                elif hasattr(self.replay_buffer, "update_priorities_by_ids"):  # pragma: no cover - adapter path
+                    self.replay_buffer.update_priorities_by_ids(sampled_indices, new_priorities)
+            logger.debug(
+                "Updated %s priorities, mean priority: %.6f",
+                len(sampled_indices),
+                float(jnp.mean(new_priorities)),
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to update priorities: {exc}")
+
+    def _maybe_publish_params(self, force: bool = False):
+        """Publish parameters to remote inference servers if enabled."""
+        if self._parameter_client is None:
+            return
+        publish_interval = getattr(self.config.publisher, "publish_interval", 0) or 0
+        if not force and publish_interval > 0 and self.training_step % publish_interval != 0:
+            return
+        try:
+            params = self.network.get_variables()
+            self._parameter_client.publish(params, step=self.training_step)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to publish parameters: %s", exc)
+    
+    def _evaluation_enabled(self) -> bool:
+        """Safely determine if evaluation is enabled."""
+        eval_cfg = getattr(self.config, "evaluation", None)
+        if eval_cfg is None:
+            return False
+        enabled_value = getattr(eval_cfg, "enabled", None)
+        if enabled_value is None:
+            return True
+        return bool(enabled_value)
+
+    def _maybe_run_periodic_evaluation(self):
+        """Run evaluation when the configured interval elapses."""
+        if not self._evaluation_enabled():
+            return
+        if self.training_step <= 0:
+            return
+        interval = getattr(self.config.evaluation, 'interval', 0) or 0
+        if interval <= 0:
+            return
+        if self.training_step % interval != 0:
+            return
+        if self._last_eval_step == self.training_step:
+            return
+        self._last_eval_step = self.training_step
+        self.run_evaluation()
+    
+    def _should_log_episode_metrics(self) -> bool:
+        """Decide whether to log episode metrics for self-play."""
+        interval = getattr(self.config.output, "log_interval", 0) or 0
+        if get_cli_verbosity() >= 2:
+            return True
+        if interval <= 0:
+            return False
+        return (self.total_episodes % interval) == 0
         
     def setup_directories(self):
         """Set up output directories."""
@@ -164,6 +627,9 @@ class MuZeroOrchestrator:
         
         # Initialize replay buffer
         self.setup_replay_buffer(observation_shape, num_actions)
+
+        # Parameter publisher client (remote only; local path is no-op)
+        self._parameter_client, _ = build_parameter_publisher_client(self.config)
         
         # Initialize learner
         self.setup_learner()
@@ -172,6 +638,15 @@ class MuZeroOrchestrator:
         self.setup_actors()
         
         logger.info("All components initialized successfully")
+        
+    def _min_buffer_before_training(self) -> int:
+        """Return the minimum number of transitions required before training."""
+        # For remote buffers, size() is cached in adapter; rely on start_transitions/batch_size thresholds.
+        return max(
+            int(self.muzero_config.start_transitions),
+            int(self.config.training.batch_size),
+            int(getattr(self.config.replay_buffer, "min_size_to_sample", 0)),
+        )
         
     def create_muzero_config_from_hydra_config(self) -> MuZeroConfig:
         """Convert Hydra config to MuZeroConfig."""
@@ -243,32 +718,14 @@ class MuZeroOrchestrator:
         
     def setup_replay_buffer(self, observation_shape, num_actions):
         """Initialize the replay buffer."""
-        # Determine max trajectory length from config or use default
-        max_trajectory_length = getattr(self.config.replay_buffer, 'max_trajectory_length', 200)
-        
-        if hasattr(self.config.replay_buffer, 'priority_alpha') and self.config.replay_buffer.priority_alpha > 0:
-            # Use prioritized replay buffer
-            self.replay_buffer = PrioritizedTrajectoryBuffer(
-                capacity=self.config.replay_buffer.capacity,
-                observation_shape=observation_shape,
-                num_actions=num_actions,
-                alpha=self.config.replay_buffer.priority_alpha,
-                max_trajectory_length=max_trajectory_length
-            )
-            logger.info(f"Using prioritized replay buffer with alpha={self.config.replay_buffer.priority_alpha}")
-        else:
-            # Use standard replay buffer
-            self.replay_buffer = TrajectoryBuffer(
-                capacity=self.config.replay_buffer.capacity,
-                observation_shape=observation_shape,
-                num_actions=num_actions,
-                max_trajectory_length=max_trajectory_length
-            )
-            logger.info("Using standard replay buffer")
-        
-        logger.info(f"Replay buffer initialized: capacity={self.config.replay_buffer.capacity}, "
-                   f"obs_shape={observation_shape}, num_actions={num_actions}, "
-                   f"max_traj_length={max_trajectory_length}")
+        self.replay_buffer = build_replay_buffer(
+            self.config,
+            observation_shape,
+            num_actions,
+            self.game_wrapper._game if hasattr(self.game_wrapper, "_game") else None,
+            self._register_replay_client,
+        )
+        self._remote_replay = isinstance(self.replay_buffer, RemoteReplayBufferAdapter)
             
     def setup_learner(self):
         """Initialize the learner."""
@@ -313,27 +770,23 @@ class MuZeroOrchestrator:
         """Initialize the actors for self-play."""
         self.actors = []
         num_actors = self.config.actors.num_actors
+        inference_cfg = getattr(self.config, "inference", None)
         
-        # Create bootstrap actor for initial trajectory generation
-        from open_spiel.python.algorithms.muzero_jax.self_play.bootstrap_actor import (
-            BootstrapActor, BootstrapConfig
-        )
-        
-        bootstrap_config = BootstrapConfig(
+        bootstrap_config = bootstrap_module.BootstrapConfig(
             num_simulations=self.muzero_config.num_simulations,
             c_puct=getattr(self.config.bootstrap, 'c_puct', 1.25),
             n_step_return=self.muzero_config.td_steps,
             discount_factor=self.muzero_config.discount_factor,
         )
-        
-        self.bootstrap_actor = BootstrapActor(
-            game_wrapper=GameWrapper(self.config.game.name),
-            replay_buffer=self.replay_buffer,
-            config=bootstrap_config,
-        )
+        self.bootstrap_config = bootstrap_config
+        self.bootstrap_actor = self._make_bootstrap_actor()
         
         # Create MuZero actors for later use (when network is trained)
         for i in range(num_actors):
+            inference_client = build_inference_client(self.network, inference_cfg)
+            self._register_inference_client(inference_client)
+            if self._parameter_client is not None:
+                inference_client = ParameterRefreshingInferenceClient(inference_client, self._parameter_client)
             actor = Actor(
                 network=self.network,
                 game_wrapper=GameWrapper(self.config.game.name),
@@ -344,6 +797,7 @@ class MuZeroOrchestrator:
                 gumbel_scale=1.0,
                 n_step_return=self.muzero_config.td_steps,
                 discount_factor=self.muzero_config.discount_factor,
+                inference_client=inference_client,
             )
             self.actors.append(actor)
             
@@ -354,66 +808,38 @@ class MuZeroOrchestrator:
         
         logger.info(f"Initialized bootstrap actor and {num_actors} MuZero actors")
         logger.info(f"Will use bootstrap actor for first {self.min_bootstrap_episodes} episodes")
+
+    def _make_bootstrap_actor(self) -> BootstrapActorType:
+        """Create a new bootstrap actor instance."""
+        bootstrap_cls = getattr(bootstrap_module, "BootstrapActor")
+        return bootstrap_cls(
+            game_wrapper=GameWrapper(self.config.game.name),
+            replay_buffer=self.replay_buffer,
+            config=self.bootstrap_config,
+        )
         
     def run_training_phase(self) -> Dict[str, Any]:
         """Run a training phase and return metrics."""
         metrics_list = []
-        steps_trained = 0
-        
+        min_required = self._min_buffer_before_training()
+        skipped_due_to_buffer = False
+
         for _ in range(self.orchestration_config.training_phase_steps):
-            # Check if we have enough data in the buffer
-            if len(self.replay_buffer) < self.muzero_config.start_transitions:
-                logger.info(f"Buffer size ({len(self.replay_buffer)}) below minimum ({self.muzero_config.start_transitions}), skipping training")  # pragma: no cover
+            metrics = self._perform_training_step()
+            if metrics is None:
+                if not skipped_due_to_buffer:
+                    current_buffer = self._buffer_size()
+                    logger.info(
+                        "Buffer size (%s) below minimum for training (%s), skipping training",
+                        current_buffer,
+                        min_required,
+                    )
+                    skipped_due_to_buffer = True
                 break
-                
-            # Generate random key for sampling
-            self.rng_key, sample_key = jax.random.split(self.rng_key)
-            
-            # Sample batch from replay buffer
-            if isinstance(self.replay_buffer, PrioritizedTrajectoryBuffer):
-                # For prioritized replay, get trajectories, indices, and importance weights
-                trajectory_list, sampled_indices, importance_weights = self.replay_buffer.sample_batch(
-                    self.config.training.batch_size, 
-                    rng_key=sample_key
-                )
-            else:
-                # For standard replay, only get trajectories
-                trajectory_list = self.replay_buffer.sample_batch(
-                    self.config.training.batch_size,
-                    rng_key=sample_key
-                )
-                sampled_indices = None
-                importance_weights = None
-            
-            # Convert list of trajectories to proper batch format
-            batch = self._convert_trajectories_to_batch(trajectory_list, sampled_indices, importance_weights)
-            
-            # Perform training step
-            metrics = self.learner.train_step(batch)
+
             metrics_list.append(metrics)
-            steps_trained += 1
-            self.training_step += 1
+            self._maybe_log_training_metrics(metrics)
             
-            # Update priorities if using prioritized replay
-            if isinstance(self.replay_buffer, PrioritizedTrajectoryBuffer) and 'priorities' in metrics and sampled_indices is not None:
-                try:
-                    # Extract priorities from metrics (should be computed from TD errors)
-                    new_priorities = jnp.array(metrics['priorities'])
-                    
-                    # Ensure priorities are positive and valid
-                    new_priorities = jnp.maximum(new_priorities, self.muzero_config.min_priority)
-                    
-                    # Update priorities in the replay buffer using JAX arrays
-                    self.replay_buffer.update_priorities(sampled_indices, new_priorities)
-                    
-                    logger.debug(f"Updated {len(sampled_indices)} priorities, mean priority: {jnp.mean(new_priorities):.6f}")
-                except Exception as e:
-                    logger.warning(f"Failed to update priorities: {e}")
-            
-            # Log metrics
-            if self.training_step % self.config.output.log_interval == 0:
-                self.log_training_metrics(metrics)  # pragma: no cover
-                
             # Save checkpoint
             if self.training_step % self.config.output.checkpoint_interval == 0:
                 checkpoint_path = self.learner.save_checkpoint(force_save=True)
@@ -431,7 +857,7 @@ class MuZeroOrchestrator:
                 values = [m[key] for m in metrics_list if key in m]
                 if values:
                     aggregated_metrics[key] = np.mean(values)
-            aggregated_metrics['steps_trained'] = steps_trained
+            aggregated_metrics['steps_trained'] = len(metrics_list)
             return aggregated_metrics
         else:
             return {'steps_trained': 0}
@@ -519,11 +945,12 @@ class MuZeroOrchestrator:
         # Determine which actor to use
         if self.use_bootstrap:
             # Check if we should transition: need both min episodes AND enough transitions for training
+            min_required = self._min_buffer_before_training()
             if (self.bootstrap_episodes_generated >= self.min_bootstrap_episodes and 
-                len(self.replay_buffer) >= self.muzero_config.start_transitions):
+                self._buffer_size() >= min_required):
                 logger.info(f"Transitioning from bootstrap to MuZero actors after "
                            f"{self.bootstrap_episodes_generated} bootstrap episodes and "
-                           f"{len(self.replay_buffer)} transitions in buffer")
+                           f"{self._buffer_size()} transitions in buffer")
                 self.use_bootstrap = False
                 
         if self.use_bootstrap:
@@ -540,7 +967,7 @@ class MuZeroOrchestrator:
                 episode_data = self.bootstrap_actor.play_episode(episode_key)
                 
                 # Add episode data to replay buffer
-                self.replay_buffer.add_trajectory(episode_data)
+                self._add_trajectory_to_buffer(episode_data)
                 
                 # Extract episode length from episode data
                 episode_length = len(episode_data.get('observations', []))
@@ -550,7 +977,7 @@ class MuZeroOrchestrator:
                 self.bootstrap_episodes_generated += 1
                 
                 # Log episode metrics
-                if self.total_episodes % self.config.output.log_interval == 0:
+                if self._should_log_episode_metrics():
                     self.log_episode_metrics(episode_length)
                     
         else:
@@ -570,7 +997,7 @@ class MuZeroOrchestrator:
                 episode_data = actor.play_episode(episode_key)
                 
                 # Add episode data to replay buffer
-                self.replay_buffer.add_trajectory(episode_data)
+                self._add_trajectory_to_buffer(episode_data)
                 
                 # Extract episode length from episode data
                 episode_length = len(episode_data.get('observations', []))
@@ -579,13 +1006,13 @@ class MuZeroOrchestrator:
                 self.total_episodes += 1
                 
                 # Log episode metrics
-                if self.total_episodes % self.config.output.log_interval == 0:
+                if self._should_log_episode_metrics():
                     self.log_episode_metrics(episode_length)
                 
         return {
             'episodes_played': episodes_played,
             'avg_episode_length': total_episode_length / max(episodes_played, 1),
-            'buffer_size': len(self.replay_buffer),
+            'buffer_size': self._buffer_size(),
             'using_bootstrap': self.use_bootstrap,
             'bootstrap_episodes_generated': self.bootstrap_episodes_generated
         }
@@ -595,7 +1022,7 @@ class MuZeroOrchestrator:
         log_data = {
             'training_step': self.training_step,
             'total_episodes': self.total_episodes,
-            'buffer_size': len(self.replay_buffer),
+            'buffer_size': self._buffer_size(),
             'runtime_hours': (time.time() - self.start_time) / 3600,
             **metrics
         }
@@ -610,14 +1037,14 @@ class MuZeroOrchestrator:
         log_data = {
             'episode': self.total_episodes,
             'episode_length': episode_length,
-            'buffer_size': len(self.replay_buffer),
+            'buffer_size': self._buffer_size(),
             'training_step': self.training_step,
         }
         
         if self.config.wandb.enabled:
             wandb.log(log_data, step=self.training_step)
             
-        logger.info(f"Episode {self.total_episodes}: length={episode_length}, buffer_size={len(self.replay_buffer)}")
+        logger.info(f"Episode {self.total_episodes}: length={episode_length}, buffer_size={self._buffer_size()}")
         
     def run_evaluation(self) -> Dict[str, Any]:
         """Run evaluation episodes."""
@@ -633,6 +1060,7 @@ class MuZeroOrchestrator:
             max_num_considered_actions=eval_game_wrapper.num_distinct_actions(),
             gumbel_scale=1.0
         )
+        eval_inference_client = LocalInferenceClient(self.network)
         eval_actor = Actor(
             network=self.network,
             mcts=eval_mcts,
@@ -641,6 +1069,7 @@ class MuZeroOrchestrator:
             config=self.muzero_config,
             n_step_return=self.muzero_config.td_steps,
             discount_factor=self.muzero_config.discount_factor,
+            inference_client=eval_inference_client,
         )
         
         # Load latest parameters
@@ -669,56 +1098,187 @@ class MuZeroOrchestrator:
         
         if self.config.wandb.enabled:
             wandb.log(eval_metrics, step=self.training_step)  # pragma: no cover
-            
+        eval_inference_client.close()
         return eval_metrics
         
     def should_continue_training(self) -> bool:
         """Check if training should continue."""
         return self.training_step < self.muzero_config.training_steps
-        
-    def run(self):
-        """Main training loop."""
-        logger.info("Starting MuZero JAX training...")
-        logger.info(f"Configuration: {OmegaConf.to_yaml(self.config)}")
-        
+
+    def _start_actor_workers(
+        self,
+        trajectory_queue: "queue.Queue[TrajectoryPacket]",
+        stop_event: threading.Event,
+        bootstrap_event: threading.Event,
+        error_queue: "queue.Queue[BaseException]",
+    ) -> List[ActorWorker]:
+        """Launch actor workers for concurrent orchestration."""
+        workers = []
+        if not self.actors:
+            raise ValueError("At least one MuZero actor is required for concurrent mode")
+        num_workers = max(1, int(self.config.actors.num_actors))
+        checkpoint_sync = getattr(self.config.actors, 'checkpoint_sync_interval', 0)
+        base_seed = getattr(self.config.exp_config, 'seed', 0)
+
+        for worker_id in range(num_workers):
+            muzero_actor = self.actors[worker_id % len(self.actors)]
+            bootstrap_actor = self._make_bootstrap_actor() if self.use_bootstrap else None
+            worker = ActorWorker(
+                worker_id=worker_id,
+                trajectory_queue=trajectory_queue,
+                stop_event=stop_event,
+                bootstrap_event=bootstrap_event,
+                muzero_actor=muzero_actor,
+                bootstrap_actor=bootstrap_actor,
+                checkpoint_dir=str(self.checkpoint_dir),
+                checkpoint_sync_interval=checkpoint_sync,
+                rng_seed=base_seed,
+                error_queue=error_queue,
+            )
+            worker.start()
+            workers.append(worker)
+
+        return workers
+
+    def _raise_worker_errors(self, error_queue: "queue.Queue[BaseException]"):
+        """Raise any worker errors captured asynchronously."""
+        try:
+            exc = error_queue.get_nowait()
+        except queue.Empty:
+            return
+        raise RuntimeError("Asynchronous MuZero worker failed") from exc
+
+    def _update_progress(self, progress):
+        if progress is None:
+            return
+        progress.n = min(self.training_step, self.muzero_config.training_steps)
+        progress.set_postfix(buffer=self._buffer_size())
+        progress.refresh()
+
+    def _run_sequential(self, progress) -> None:
+        """Original sequential orchestration loop."""
+        while self.should_continue_training():
+            selfplay_metrics = self.run_selfplay_phase()
+            if get_cli_verbosity() >= 1:
+                logger.info(f"Self-play phase completed: {selfplay_metrics}")
+
+            if self._buffer_size() >= self.muzero_config.start_transitions:
+                training_metrics = self.run_training_phase()
+                if get_cli_verbosity() >= 1:
+                    logger.info(f"Training phase completed: {training_metrics}")
+            else:
+                if get_cli_verbosity() >= 1:
+                    logger.info(f"Skipping training phase, buffer size: {self._buffer_size()}")
+
+            self._maybe_run_periodic_evaluation()
+            self._update_progress(progress)
+
+    def _run_concurrent(self, progress) -> None:
+        """Concurrent actor/learner orchestration loop."""
+        queue_capacity = max(1, int(self.orchestration_config.actor_queue_capacity))
+        trajectory_queue: "queue.Queue[TrajectoryPacket]" = queue.Queue(maxsize=queue_capacity)
+        stop_event = threading.Event()
+        bootstrap_event = threading.Event()
+        if self.use_bootstrap:
+            bootstrap_event.set()
+        error_queue: "queue.Queue[BaseException]" = queue.Queue()
+
+        actor_workers = self._start_actor_workers(
+            trajectory_queue=trajectory_queue,
+            stop_event=stop_event,
+            bootstrap_event=bootstrap_event,
+            error_queue=error_queue,
+        )
+
+        learner_worker = LearnerWorker(
+            orchestrator=self,
+            stop_event=stop_event,
+            idle_sleep_s=self.orchestration_config.learner_idle_sleep_ms / 1000.0,
+            error_queue=error_queue,
+        )
+        learner_worker.start()
+
         try:
             while self.should_continue_training():
-                if self.orchestration_config.sequential_training:
-                    # Sequential mode: alternate between self-play and training
-                    
-                    # Self-play phase
-                    selfplay_metrics = self.run_selfplay_phase()
-                    logger.info(f"Self-play phase completed: {selfplay_metrics}")
-                    
-                    # Training phase (only if we have enough data)
-                    if len(self.replay_buffer) >= self.muzero_config.start_transitions:
-                        training_metrics = self.run_training_phase()
-                        logger.info(f"Training phase completed: {training_metrics}")
-                    else:
-                        logger.info(f"Skipping training phase, buffer size: {len(self.replay_buffer)}")
-                        
-                else:
-                    # Concurrent mode: run both simultaneously
-                    # This would require threading or multiprocessing
-                    # For now, fall back to sequential mode
-                    logger.warning("Concurrent mode not implemented, falling back to sequential")
-                    self.orchestration_config.sequential_training = True
+                self._raise_worker_errors(error_queue)
+                try:
+                    packet = trajectory_queue.get(timeout=0.5)
+                except queue.Empty:
                     continue
-                    
-                # Run evaluation periodically
-                if (self.training_step % self.config.evaluation.interval == 0 and 
-                    self.training_step > 0):
-                    self.run_evaluation()
-                    
+
+                self._add_trajectory_to_buffer(packet.trajectory)
+                self.total_episodes += 1
+
+                if packet.actor_type == "bootstrap":
+                    self.bootstrap_episodes_generated += 1
+                    min_required = self._min_buffer_before_training()
+                    if (
+                        bootstrap_event.is_set()
+                        and self.bootstrap_episodes_generated >= self.min_bootstrap_episodes
+                        and self._buffer_size() >= min_required
+                    ):
+                        bootstrap_event.clear()
+                        self.use_bootstrap = False
+                        logger.info(
+                            "Transitioning from bootstrap to MuZero actors after %s bootstrap episodes "
+                            "and %s transitions in buffer",
+                            self.bootstrap_episodes_generated,
+                            self._buffer_size(),
+                        )
+
+                episode_length = len(packet.trajectory.get('observations', []))
+                if self._should_log_episode_metrics():
+                    self.log_episode_metrics(episode_length)
+
+                trajectory_queue.task_done()
+                self._maybe_run_periodic_evaluation()
+                self._update_progress(progress)
+
+        finally:
+            stop_event.set()
+            learner_worker.join(timeout=5.0)
+            for worker in actor_workers:
+                worker.join(timeout=5.0)
+            self._raise_worker_errors(error_queue)
+
+    def run(self):
+        """Main training loop."""
+        if get_cli_verbosity() >= 1:
+            logger.info("Starting MuZero JAX training...")
+            logger.info(f"Configuration: {OmegaConf.to_yaml(self.config)}")
+
+        progress = None
+        if get_cli_verbosity() <= 0 and tqdm is not None:
+            progress = tqdm(total=self.muzero_config.training_steps, desc="Training", unit="step")
+
+        if (
+            not self.orchestration_config.sequential_training
+            and not self.orchestration_config.concurrent
+        ):
+            logger.warning(
+                "Concurrent mode requested but concurrency workers are disabled; falling back to sequential execution."
+            )
+            self.orchestration_config.sequential_training = True
+
+        try:
+            if self.orchestration_config.concurrent:
+                self._run_concurrent(progress)
+            else:
+                self._run_sequential(progress)
+            self._maybe_publish_params(force=True)
         except KeyboardInterrupt:
-            logger.info("Training interrupted by user")
+            if get_cli_verbosity() >= 1:
+                logger.info("Training interrupted by user")
         except Exception as e:
             logger.error(f"Training failed with error: {e}")
             raise
         finally:
             self.cleanup()
-            
-        logger.info("Training completed!")
+            if progress is not None:
+                progress.close()
+
+        if get_cli_verbosity() >= 1:
+            logger.info("Training completed!")
         
     def cleanup(self):
         """Clean up resources."""
@@ -727,10 +1287,25 @@ class MuZeroOrchestrator:
             final_checkpoint = self.learner.save_checkpoint(force_save=True)
             if final_checkpoint:
                 logger.info(f"Saved final checkpoint: {final_checkpoint}")
+            self.learner.wait_for_pending_checkpoints()
             
         # Close wandb
         if self.config.wandb.enabled:
             wandb.finish()
+
+        for client in getattr(self, "_inference_clients", []):
+            try:
+                client.close()
+            except Exception as exc:  # pragma: no cover - defensive cleanup
+                logger.warning("Failed to close inference client: %s", exc)
+        self._inference_clients.clear()
+        for client in getattr(self, "_replay_clients", []):
+            try:
+                client.close()
+            except Exception as exc:  # pragma: no cover - defensive cleanup
+                logger.warning("Failed to close replay client: %s", exc)
+        if hasattr(self, "_replay_clients"):
+            self._replay_clients.clear()
             
         logger.info("Cleanup completed")
 

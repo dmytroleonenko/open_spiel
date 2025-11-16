@@ -7,6 +7,7 @@ such as orchestrator properly adding episodes to replay buffer.
 import pytest
 import jax
 import jax.numpy as jnp
+import numpy as np
 import tempfile
 import shutil
 from pathlib import Path
@@ -139,28 +140,70 @@ class TestOrchestratorIntegration:
         import copy
         config = copy.deepcopy(minimal_config)
         
-        # Set high start_transitions to test conditional training
-        config.training.start_transitions = 10
+        # Force a scenario where batch_size > start_transitions so buffer
+        # must reach batch_size before training occurs
+        config.training.start_transitions = 1
+        config.training.batch_size = 4
+        config.resource_management.selfplay_phase_episodes = 1
         
         orchestrator = MuZeroOrchestrator(config)
         orchestrator.setup_components()
         
-        # Run self-play with fewer episodes than start_transitions
-        config.resource_management.selfplay_phase_episodes = 2
         selfplay_metrics = orchestrator.run_selfplay_phase()
         
         buffer_size = len(orchestrator.replay_buffer)
-        assert buffer_size < config.training.start_transitions
+        assert buffer_size < config.training.batch_size
         
-        # Attempt training - should be skipped
         initial_training_step = orchestrator.training_step
+        metrics = orchestrator.run_training_phase()
         
-        # Training should not advance when buffer is too small
-        # We can't easily test the skipping without modifying the method,
-        # but we can verify the buffer condition
-        assert buffer_size < config.training.start_transitions, (
-            "Training should be skipped when buffer size < start_transitions"
-        )
+        assert orchestrator.training_step == initial_training_step, "Training should be skipped"
+        assert metrics['steps_trained'] == 0
+        assert buffer_size < max(
+            config.training.start_transitions, config.training.batch_size
+        ), "Buffer should remain below the effective training threshold"
+
+    def test_bootstrap_waits_for_batch_sized_buffer(self, minimal_config):
+        """Bootstrap actor should keep running until buffer can satisfy training batch size."""
+        import copy
+        config = copy.deepcopy(minimal_config)
+        config.training.start_transitions = 1
+        config.training.batch_size = 3
+        config.resource_management.selfplay_phase_episodes = 1
+        config.bootstrap.min_episodes = 1
+        
+        orchestrator = MuZeroOrchestrator(config)
+        orchestrator.setup_components()
+        
+        def dummy_episode():
+            steps = 2
+            obs = [np.zeros(orchestrator.game_wrapper.observation_shape, dtype=np.float32) for _ in range(steps)]
+            actions = [0] * steps
+            rewards = [0.0] * steps
+            policy = [np.ones(orchestrator.muzero_config.num_actions, dtype=np.float32) / orchestrator.muzero_config.num_actions for _ in range(steps)]
+            values = [0.0] * steps
+            return {
+                'observations': obs,
+                'actions': actions,
+                'rewards': rewards,
+                'policy_targets': policy,
+                'value_targets': values,
+            }
+
+        with patch.object(orchestrator.bootstrap_actor, 'play_episode', side_effect=[dummy_episode() for _ in range(6)]):
+            # After first episode buffer < batch_size so bootstrap stays active
+            orchestrator.run_selfplay_phase()
+            assert orchestrator.use_bootstrap
+            assert len(orchestrator.replay_buffer) == 1
+            
+            # Generate additional bootstrap episodes until buffer >= batch_size
+            orchestrator.run_selfplay_phase()
+            orchestrator.run_selfplay_phase()
+            assert len(orchestrator.replay_buffer) >= config.training.batch_size
+            
+            # Next call should transition to MuZero actors automatically
+            orchestrator.run_selfplay_phase()
+            assert not orchestrator.use_bootstrap
     
     def test_complete_workflow_single_iteration(self, minimal_config):
         """Test complete workflow: self-play → buffer → training."""

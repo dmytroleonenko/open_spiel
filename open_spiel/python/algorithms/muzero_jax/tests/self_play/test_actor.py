@@ -15,6 +15,9 @@ from open_spiel.python.algorithms.muzero_jax.replay_buffer.replay_buffer import 
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
 from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import MCTS, StochasticMCTS
 from open_spiel.python.algorithms.muzero_jax.self_play.actor import Actor
+from open_spiel.python.algorithms.muzero_jax.services.inference_client import (
+    LocalInferenceClient,
+)
 from open_spiel.python.algorithms.muzero_jax.training.trainer import create_muzero_config_for_game
 
 def _get_unique_rng_key() -> jax.random.PRNGKey:
@@ -23,6 +26,43 @@ def _get_unique_rng_key() -> jax.random.PRNGKey:
     current_time_ns = time.time_ns()
     unique_seed = hash((thread_id, current_time_ns)) % (2**31)  # Keep it positive for PRNGKey
     return jax.random.PRNGKey(unique_seed)
+
+
+class RecordingInferenceClient:
+    """Inference client stub that records calls and returns deterministic tensors."""
+
+    def __init__(self):
+        self.initial_calls = 0
+        self.recurrent_calls = 0
+        self.last_initial_obs = None
+        self.last_recurrent_input = None
+
+    def initial_inference(self, observation_batch, training=False):
+        self.initial_calls += 1
+        self.last_initial_obs = observation_batch
+        batch_size = observation_batch.shape[0]
+        hidden_state = jnp.ones((batch_size, 64))
+        reward = jnp.zeros((batch_size,))
+        value = jnp.ones((batch_size,))
+        policy_logits = jnp.zeros((batch_size, 9))
+        projection = None
+        reward_hidden = None
+        return hidden_state, reward, value, policy_logits, projection, reward_hidden
+
+    def recurrent_inference(self, hidden_state_batch, action_batch, training=False):
+        self.recurrent_calls += 1
+        self.last_recurrent_input = (hidden_state_batch, action_batch)
+        batch_size = hidden_state_batch.shape[0]
+        next_hidden = jnp.ones_like(hidden_state_batch)
+        reward = jnp.zeros((batch_size,))
+        value = jnp.ones((batch_size,))
+        policy_logits = jnp.zeros((batch_size, 9))
+        projection = None
+        reward_hidden = None
+        return next_hidden, reward, value, policy_logits, projection, reward_hidden
+
+    def close(self):
+        return None
 
 
 class TestActor:
@@ -143,6 +183,52 @@ class TestActor:
         # Verify that stochastic MCTS was created
         assert actor._is_stochastic_mcts == True
         assert hasattr(actor, 'mcts')
+
+    def test_actor_uses_custom_inference_client_for_initial(self, mock_config, mock_muzero_network, mock_game_wrapper):
+        """Ensure actor routes initial inference through provided client."""
+        mock_replay_buffer = Mock(spec=TrajectoryBuffer)
+        recording_client = RecordingInferenceClient()
+
+        actor = Actor(
+            network=mock_muzero_network,
+            game_wrapper=mock_game_wrapper,
+            replay_buffer=mock_replay_buffer,
+            config=mock_config,
+            inference_client=recording_client,
+        )
+
+        mock_muzero_network.initial_inference.reset_mock()
+        obs = jnp.zeros((1, mock_config.observation_shape[0]))
+        actor._initial_inference(obs)
+
+        assert recording_client.initial_calls == 1
+        mock_muzero_network.initial_inference.assert_not_called()
+
+    def test_recurrent_fn_uses_inference_client(self, mock_config, mock_muzero_network, mock_game_wrapper):
+        """Recurrent function handed to MCTS should call the inference client."""
+        mock_replay_buffer = Mock(spec=TrajectoryBuffer)
+        recording_client = RecordingInferenceClient()
+
+        actor = Actor(
+            network=mock_muzero_network,
+            game_wrapper=mock_game_wrapper,
+            replay_buffer=mock_replay_buffer,
+            config=mock_config,
+            inference_client=recording_client,
+        )
+
+        mock_muzero_network.recurrent_inference.reset_mock()
+        recurrent_fn = actor._create_recurrent_fn()
+
+        params = None
+        rng_key = _get_unique_rng_key()
+        action = jnp.array(1)
+        embedding = jnp.ones((1, 64))
+
+        recurrent_fn(params, rng_key, action, embedding)
+
+        assert recording_client.recurrent_calls == 1
+        mock_muzero_network.recurrent_inference.assert_not_called()
 
     def test_actor_parameter_validation(self, mock_config, mock_muzero_network, mock_game_wrapper):
         """Test that the actor validates initialization parameters."""

@@ -61,11 +61,20 @@ mcts:
 
 # Replay buffer configuration
 replay_buffer:
-  capacity: 100000
-  min_size_to_sample: 2000
+  capacity: 2000
+  min_size_to_sample: 128
+  max_trajectory_length: 16
   priority_alpha: 0.6
   priority_beta_start: 0.4
   priority_beta_steps: 100000
+  remote_enabled: false
+  rpc_endpoint: ""
+
+publisher:
+  remote_enabled: false
+  rpc_endpoint: ""
+  min_step: 0
+  publish_interval: 0
 
 # Network architecture
 network:
@@ -105,8 +114,19 @@ distributed:
 resource_management:
   device: "auto"  # "cpu", "gpu", "tpu", or "auto"
   sequential_training: true  # If true, alternate between self-play and training phases
+  concurrent: false  # If true, enable asynchronous actor/learner orchestration
   training_phase_steps: 10  # Steps to train before switching to self-play
   selfplay_phase_episodes: 5  # Episodes to generate before switching to training
+  actor_queue_capacity: 256  # Max number of pending trajectories before actors block
+  learner_idle_sleep_ms: 20  # Sleep interval for learner thread when waiting for data
+
+# Inference service configuration
+inference:
+  remote_enabled: false           # When true, actors use a remote inference client/service
+  rpc_endpoint: ""                # URI for the inference RPC endpoint (gRPC, Ray, etc.)
+  batch_size: 32                  # Default batching size for remote inference
+  max_wait_ms: 5                  # Max wait before flushing partial inference batches
+  enable_local_batching: false    # Use local batching server (development/testing helper)
 
 # Logging and monitoring
 wandb:

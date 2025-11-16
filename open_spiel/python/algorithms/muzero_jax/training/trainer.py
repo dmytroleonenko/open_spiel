@@ -629,23 +629,23 @@ class Learner:
             momentum = jnp.clip(momentum, 0.0, 1.0)
 
             # Only perform the expensive tree_map computation at the configured frequency
-            def _blend():
-                current_params = nnx.state(model, nnx.Param)
-                target_params = nnx.state(target_model, nnx.Param)
+            current_target_state = nnx.state(target_model, nnx.Param)
 
-                blended = jax.tree_util.tree_map(
-                    lambda t, o: momentum * t + (1.0 - momentum) * o,
-                    target_params,
-                    current_params,
+            def _blend_params():
+                current_online = nnx.state(model, nnx.Param)
+                return jax.tree_util.tree_map(
+                    lambda tgt, src: momentum * tgt + (1.0 - momentum) * src,
+                    current_target_state,
+                    current_online,
                 )
-                nnx.update(target_model, blended)
 
-            _ = jax.lax.cond(
+            new_target_state = jax.lax.cond(
                 (training_step % self.config.target_network_update_frequency) == 0,
-                lambda _: _blend(),
-                lambda _: None,
+                lambda _: _blend_params(),
+                lambda _: current_target_state,
                 operand=None,
             )
+            nnx.update(target_model, new_target_state)
 
         # ---------------------------------------------------------------
         # Split objects at the end of the function to produce updated nnx.State
@@ -1319,6 +1319,7 @@ class Learner:
         """Explicit cleanup method for tests to call."""
         if hasattr(self, 'checkpoint_manager') and self.checkpoint_manager is not None:
             try:
+                self.wait_for_pending_checkpoints()
                 self.checkpoint_manager.close()
                 self.checkpoint_manager = None
             except Exception:
@@ -1332,6 +1333,25 @@ class Learner:
         except (ValueError, IndexError):
             logging.warning(f"Could not determine step from checkpoint path: {checkpoint_path}")
             return None
+
+    def wait_for_pending_checkpoints(self):
+        """Block until any asynchronous checkpoint saves finish."""
+        if not hasattr(self, 'checkpoint_manager') or self.checkpoint_manager is None:  # pragma: no cover - defensive
+            return
+        try:
+            wait_fn = getattr(self.checkpoint_manager, 'wait_until_finished', None)
+            if callable(wait_fn):
+                wait_fn()
+        except Exception as exc:  # pragma: no cover - best effort
+            logging.warning("CheckpointManager.wait_until_finished raised: %s", exc)
+        checkpointer = getattr(self.checkpoint_manager, '_checkpointer', None)
+        if checkpointer is not None:
+            try:
+                wait_fn = getattr(checkpointer, 'wait_until_finished', None)
+                if callable(wait_fn):
+                    wait_fn()
+            except Exception as exc:  # pragma: no cover - best effort
+                logging.warning("AsyncCheckpointer.wait_until_finished raised: %s", exc)
 
     def __del__(self):
         """Cleanup method to ensure CheckpointManager is properly closed."""
