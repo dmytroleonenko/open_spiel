@@ -96,11 +96,12 @@ def test_local_batching_recurrent_inference():
 
 
 def test_build_inference_client_remote_requires_endpoint():
-    # Remote inference removed; any attempt should raise.
+    # Remote inference removed; build should ignore and return local client.
     from types import SimpleNamespace
     cfg = SimpleNamespace(remote_enabled=True)
-    with pytest.raises(ValueError):
-        build_inference_client(DummyNetwork(), cfg)
+    client = build_inference_client(DummyNetwork(), cfg)
+    assert isinstance(client, LocalInferenceClient)
+    client.close()
 
 
 def test_inference_network_adapter_proxies_calls():
