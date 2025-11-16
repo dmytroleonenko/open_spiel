@@ -13,7 +13,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --replay) REPLAY_COUNT="$2"; shift 2 ;;
     --publisher) PUBLISHER_COUNT="$2"; shift 2 ;;
-    --inference) INFERENCE_COUNT="$2"; shift 2 ;;
+    --inference) echo "Inference launch removed; ignoring --inference." >&2; shift 2 ;;
     --log-dir) LOG_DIR="$2"; shift 2 ;;
     --python) PYTHON_BIN="$2"; shift 2 ;;
     -h|--help)
@@ -68,7 +68,6 @@ PY
   echo "PUBLISHER_ENDPOINT_${idx}=${ep} LOG=${log} PID=$(cat ${log}.pid)"
 }
 
-start_inference() {
   local idx=$1
   local seed=$2
   local log="${LOG_DIR}/mz_inf_${idx}.log"
@@ -112,8 +111,6 @@ PY
 echo "# Starting services (logs in ${LOG_DIR})"
 for i in $(seq 1 ${REPLAY_COUNT}); do start_replay "${i}"; done
 for i in $(seq 1 ${PUBLISHER_COUNT}); do start_publisher "${i}"; done
-seed=0
-for i in $(seq 1 ${INFERENCE_COUNT}); do start_inference "${i}" "${seed}"; seed=$((seed+1)); done
 
 echo "# Example exports (first instance of each):"
 echo "export REPLAY_ENDPOINT=$(grep -m1 -E '127\.0\.0\.1:[0-9]+' "${LOG_DIR}/mz_replay_1.log")"
