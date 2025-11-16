@@ -2395,4 +2395,3 @@ def create_muzero_config_for_game(game_name: str, **config_overrides) -> MuZeroC
     return MuZeroConfig(**config_dict)
 
 # JIT with static config/training to avoid tracing MuZeroConfig inside JIT.
-compute_policy_reanalysis_targets = jax.jit(compute_policy_reanalysis_targets, static_argnums=(0,2,3))
