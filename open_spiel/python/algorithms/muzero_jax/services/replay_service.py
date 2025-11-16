@@ -146,17 +146,31 @@ _RPC_SIZE = "/muzero.ReplayService/Size"
 class GrpcReplayServer:
     """Thin gRPC wrapper that exposes an InMemoryReplayService over RPC."""
 
-    def __init__(self, backend: InMemoryReplayService, host: str = "127.0.0.1", port: int = 0):
+    def __init__(
+        self,
+        backend: InMemoryReplayService,
+        host: str = "127.0.0.1",
+        port: int = 0,
+        *,
+        max_message_mb: int = 64,
+    ):
         self._backend = backend
         self._host = host
         self._port = port
         self._server = None
         self.endpoint = None
+        self._max_message_bytes = int(max_message_mb * 1024 * 1024)
 
     def start(self):
         if self._server is not None:  # pragma: no cover - idempotent
             return
-        self._server = grpc.server(thread_pool=futures.ThreadPoolExecutor(max_workers=8))
+        self._server = grpc.server(
+            thread_pool=futures.ThreadPoolExecutor(max_workers=8),
+            options=[
+                ("grpc.max_send_message_length", self._max_message_bytes),
+                ("grpc.max_receive_message_length", self._max_message_bytes),
+            ],
+        )
         handler = grpc.method_handlers_generic_handler(
             "muzero.ReplayService",
             {
@@ -246,10 +260,17 @@ class GrpcReplayServer:
 class GrpcReplayClient:
     """Client for the replay gRPC server."""
 
-    def __init__(self, endpoint: str, *, timeout_s: float = 10.0):
+    def __init__(self, endpoint: str, *, timeout_s: float = 10.0, max_message_mb: int = 64):
         self._endpoint = endpoint
-        self._channel = grpc.insecure_channel(endpoint)
         self._timeout = timeout_s
+        max_bytes = int(max_message_mb * 1024 * 1024)
+        self._channel = grpc.insecure_channel(
+            endpoint,
+            options=[
+                ("grpc.max_send_message_length", max_bytes),
+                ("grpc.max_receive_message_length", max_bytes),
+            ],
+        )
         self._append_stub = self._channel.unary_unary(
             _RPC_APPEND, request_serializer=_serialize_message, response_deserializer=_deserialize_message
         )

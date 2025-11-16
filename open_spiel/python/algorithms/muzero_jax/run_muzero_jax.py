@@ -143,7 +143,11 @@ def build_replay_buffer(
         if not endpoint:
             raise ValueError("replay_buffer.remote_enabled=true but no rpc_endpoint provided")
         prioritized = getattr(config.replay_buffer, "priority_alpha", 0) > 0
-        client = GrpcReplayClient(endpoint)
+        client = GrpcReplayClient(
+            endpoint,
+            timeout_s=float(getattr(config.replay_buffer, "timeout_s", 10.0)),
+            max_message_mb=int(getattr(config.replay_buffer, "grpc_max_message_mb", 64)),
+        )
         if register_replay_client:
             register_replay_client(client)
         logger.info("Using remote replay buffer at %s (prioritized=%s)", endpoint, prioritized)

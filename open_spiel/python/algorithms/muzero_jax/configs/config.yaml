@@ -69,6 +69,7 @@ replay_buffer:
   priority_beta_steps: 100000
   remote_enabled: false
   rpc_endpoint: ""
+  grpc_max_message_mb: 64
 
 publisher:
   remote_enabled: false
