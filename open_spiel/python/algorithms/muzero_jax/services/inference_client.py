@@ -175,13 +175,6 @@ def build_inference_client(network: MuZeroNetwork, inference_cfg) -> InferenceCl
     if inference_cfg is None:
         return LocalInferenceClient(network)
 
-    remote_enabled = bool(getattr(inference_cfg, "remote_enabled", False))
-    if remote_enabled:
-        raise ValueError(
-            "Remote inference over RPC is disabled: mctx/JAX actors run under JIT "
-            "and cannot call gRPC safely. Use inference.remote_enabled=false."
-        )
-
     if getattr(inference_cfg, "enable_local_batching", False):
         batch_size = getattr(inference_cfg, "batch_size", 32)
         max_wait_ms = getattr(inference_cfg, "max_wait_ms", 5)

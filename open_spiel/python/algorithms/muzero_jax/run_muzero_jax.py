@@ -523,7 +523,7 @@ class MuZeroOrchestrator:
             logger.warning(f"Failed to update priorities: {exc}")
 
     def _maybe_publish_params(self, force: bool = False):
-        """Publish parameters to remote inference servers if enabled."""
+        """Publish parameters to inference clients (local publisher)."""
         if self._parameter_client is None:
             return
         publish_interval = getattr(self.config.publisher, "publish_interval", 0) or 0
@@ -691,14 +691,7 @@ class MuZeroOrchestrator:
             self._launched_publisher_server = server
             logger.info("Auto-launched local parameter publisher at %s", server.endpoint)
 
-        # Inference: remote path disabled; enforce local usage.
-        inf_cfg = getattr(self.config, "inference", None)
-        if inf_cfg and getattr(inf_cfg, "remote_enabled", False):
-            logger.warning(
-                "inference.remote_enabled=true is not supported (RPC calls inside JIT mctx). "
-                "Falling back to local inference."
-            )
-            inf_cfg.remote_enabled = False
+        # Inference remains local-only; no remote endpoints handled here.
         
     def _min_buffer_before_training(self) -> int:
         """Return the minimum number of transitions required before training."""

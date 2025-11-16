@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Launch local MuZero gRPC services (replay, publisher, inference) and print endpoints/log paths.
+# Launch local MuZero gRPC services (replay, publisher) and print endpoints/log paths.
 # Example:
-#   ./scripts/launch_local_muzero_services.sh --replay 1 --publisher 1 --inference 2 --log-dir /tmp
+#   ./scripts/launch_local_muzero_services.sh --replay 1 --publisher 1 --log-dir /tmp
 set -euo pipefail
 
 REPLAY_COUNT=1
 PUBLISHER_COUNT=1
-INFERENCE_COUNT=0
 LOG_DIR="/tmp"
 PYTHON_BIN=${PYTHON_BIN:-python}
 

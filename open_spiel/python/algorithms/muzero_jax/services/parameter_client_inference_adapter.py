@@ -15,8 +15,7 @@ from open_spiel.python.algorithms.muzero_jax.services.inference_client import In
 class ParameterRefreshingInferenceClient:
     """
     Wraps an existing InferenceClient and refreshes parameters from a publisher.
-    For remote inference servers, this is a no-op; for local clients we just
-    call refresh_params on the underlying inference client.
+    Local-only helper: calls refresh_params on the underlying inference client.
     """
 
     def __init__(self, base_client: InferenceClient, publisher_client: Optional[GrpcParameterPublisherClient]):
