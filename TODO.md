@@ -515,6 +515,37 @@ Implementation of a MuZero-style agent in JAX/Flax NNX, drawing heavily from the
     *   **Progress (Nov 15, 2025):** Introduced `InferenceClient` abstractions plus `LocalBatchingInferenceClient`/`BatchingInferenceServer`, and wired actors to build clients via Hydra (`inference.*` config). This local batching path mimics the remote RPC flow while we stand up the actual multi-process transport.
 
 [DEFERRED] 13. **Distributed Learner (`pjit`) + Inference/Replay Integration:**
+
+[TODO] 31. **Separate Actor/Learner Processes (no remote inference, local inference per actor process):**
+    *   Problem: current "concurrent" mode is single-process, multi-threaded. Actors, learner, and local inference share one PID → GIL/Metal contention; remote replay/publisher are already in separate services.
+    *   Plan:
+        1) Introduce a role flag (Hydra `role=actor|learner|all`). Default: `all` (current behavior).
+        2) Actor role:
+            - Build local inference client (no remote inference).
+            - Pull params from publisher before each episode (reuse ParameterRefreshingInferenceClient).
+            - Push trajectories to remote replay; no learner, no checkpoints.
+            - Disable evaluation/learner initialization.
+        3) Learner role:
+            - Only learner; no actors/inference queues.
+            - Sample batches from remote replay, publish params to publisher (if enabled).
+            - Checkpointing/logging unchanged.
+        4) Presets/CLI:
+            - Add presets `roles/actor.yaml` and `roles/learner.yaml` with required endpoints (replay/publisher).
+            - Update `localhost_remote.yaml` to keep replay/publisher only; document multi-process launch recipe.
+        5) Launcher:
+            - Small helper script to start N actor processes + 1 learner (reusing existing replay/publisher endpoints).
+            - Log endpoints and PIDs; no inference servers started.
+        6) Tests:
+            - Smoke test actor-only role writes trajectories to fake remote replay (in-memory server).
+            - Smoke test learner-only role samples from that replay and runs 1 training step.
+            - Ensure `role=all` keeps current behavior.
+        7) Docs:
+            - Update `AGENTS.md`, `docs/muzero_jax_distributed.md` with new role-based launch and deprecation of single-process concurrency for multi-CPU/GPU setups.
+    *   Acceptance:
+        - Running `role=actor` spawns only actors (no learner threads) and produces trajectories remotely.
+        - Running `role=learner` trains from remote replay and publishes params.
+        - `ps` shows separate PIDs for actors vs learner; GIL no longer co-locates them.
+
     *   **TDD:** Tests for `pjit` sharding, distributed checkpointing (to shared storage), and correct gradient aggregation across devices. (Test execution: `source venv/bin/activate && python -m pytest open_spiel/python/algorithms/muzero_jax/tests/training/test_distributed_trainer.py`)
     *   (Reference: `@EfficientZeroV2/ez/agents/base.py` DDP setup, `EfficientZeroV2/ez/train.py` DDP orchestration).
     *   Modify `open_spiel/python/algorithms/muzero_jax/training/trainer.py`. Use `pjit` for data/model parallelism. Define mesh, sharding for `nnx.State` and data.
