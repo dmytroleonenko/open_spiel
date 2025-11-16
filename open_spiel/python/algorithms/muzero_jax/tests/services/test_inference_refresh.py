@@ -2,7 +2,6 @@ import numpy as np
 
 from open_spiel.python.algorithms.muzero_jax.services.inference_client import (
     LocalBatchingInferenceClient,
-    GrpcInferenceClient,
 )
 
 
@@ -23,7 +22,4 @@ def test_local_batching_refresh_noop():
 
 
 def test_grpc_client_refresh_noop(monkeypatch):
-    # Use insecure channel to nowhere; we won't actually call inference
-    client = GrpcInferenceClient("127.0.0.1:0", timeout_s=0.1)
-    client.refresh_params()  # Should not raise
-    client.close()
+    pass  # remote inference removed

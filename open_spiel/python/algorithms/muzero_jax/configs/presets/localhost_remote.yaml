@@ -6,17 +6,11 @@ defaults:
 remote_localhost:
   enabled: true
   replay_endpoint: ${env:REPLAY_ENDPOINT,""}
-  inference_endpoint: ${env:INFERENCE_ENDPOINT,""}
   publisher_endpoint: ${env:PUBLISHER_ENDPOINT,""}
 
 replay_buffer:
   remote_enabled: true
   rpc_endpoint: ${remote_localhost.replay_endpoint}
-
-inference:
-  remote_enabled: true
-  rpc_endpoint: ${remote_localhost.inference_endpoint}
-  timeout_s: 1.0
 
 publisher:
   remote_enabled: true

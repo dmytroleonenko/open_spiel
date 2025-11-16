@@ -15,50 +15,12 @@ from open_spiel.python.algorithms.muzero_jax.services.parameter_publisher import
     GrpcParameterPublisherServer,
     LocalParameterPublisher,
 )
-from open_spiel.python.algorithms.muzero_jax.services.inference_client import GrpcInferenceServer
-from open_spiel.python.algorithms.muzero_jax.models.network import (
-    MuZeroNetwork,
-    RepresentationNetwork,
-    DynamicsNetwork,
-    PredictionNetwork,
-    RewardNetwork,
-    ProjectionNetwork,
-)
 from open_spiel.python.algorithms.muzero_jax.envs.game_wrapper import GameWrapper
-from open_spiel.python.algorithms.muzero_jax.training.trainer import create_network_config_from_muzero_config, MuZeroConfig
-import jax
-import flax.nnx as nnx
 
 
 def _base_config():
     cfg_path = Path(__file__).resolve().parents[1] / "configs" / "config.yaml"
     return OmegaConf.load(cfg_path)
-
-
-def _tiny_network(game_name: str = "tic_tac_toe"):
-    gw = GameWrapper(game_name)
-    mu_cfg = MuZeroConfig(
-        num_actions=gw.num_distinct_actions(),
-        batch_size=1,
-        training_steps=1,
-        learning_rate=0.1,
-        priority_exponent=0.6,
-        priority_beta=0.4,
-        buffer_size=16,
-        support_min=-1,
-        support_max=1,
-    )
-    net_cfg = create_network_config_from_muzero_config(mu_cfg, gw.observation_shape, mu_cfg.num_actions, False)
-    rngs = nnx.Rngs(params=jax.random.PRNGKey(0))
-    return MuZeroNetwork(
-        representation_network_def=RepresentationNetwork,
-        dynamics_network_def=DynamicsNetwork,
-        prediction_network_def=PredictionNetwork,
-        reward_network_def=RewardNetwork,
-        projection_network_def=ProjectionNetwork if mu_cfg.use_projection else None,
-        config=net_cfg,
-        rngs=rngs,
-    )
 
 
 @pytest.mark.timeout(8)
@@ -97,16 +59,13 @@ def test_orchestrator_runs_with_localhost_remote_services():
     cfg.replay_buffer.rpc_endpoint = ""
     cfg.publisher.remote_enabled = True
     cfg.publisher.rpc_endpoint = ""
-    cfg.inference.remote_enabled = True
-    cfg.inference.rpc_endpoint = ""
-    cfg.inference.timeout_s = 1.0
+    cfg.inference.enable_local_batching = False
 
     with tempfile.TemporaryDirectory(prefix="muzero_localhost_remote_") as tmpdir:
         cfg.output.save_path = tmpdir + "/"
         orch = MuZeroOrchestrator(cfg)
         metrics = orch.run_training_phase()
         assert metrics is None or isinstance(metrics, dict)
-        # Auto-launched endpoints should now be populated (unless TPU fallback disables remote inference).
+        # Auto-launched endpoints should now be populated for replay/publisher.
         assert cfg.replay_buffer.rpc_endpoint
         assert cfg.publisher.rpc_endpoint
-        assert cfg.inference.rpc_endpoint or not cfg.inference.remote_enabled

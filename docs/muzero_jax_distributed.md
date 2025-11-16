@@ -11,8 +11,8 @@ This document explains how we scale the MuZero JAX stack from the current single
 | Component | Role | Notes |
 |-----------|------|-------|
 | **Learner Node(s)** | Runs the MuZero optimizer loop, samples batches from the replay service, applies gradients (eventually via `pjit`), and pushes parameter snapshots. | Only process allowed to update checkpoints. |
-| **Inference Server(s)** | Stateless services hosting JAX-compiled inference. Accept batched requests over RPC, optionally across multiple hosts/devices. | On TPU: one server per chip. On GPU/CPU: multiple per host is acceptable via device contexts. |
-| **Actor Nodes** | Run self-play (bootstrap + MuZero actors). They stream inference requests to the servers and upload trajectories to replay. | Default path keeps actors lightweight Python processes; future work can use Ray/MPI actors. |
+| **Inference (local)** | Actors call the JAX network directly (optionally via local batching helper) inside their process. | Remote RPC inference was removed; keep inference co-located with actors. |
+| **Actor Nodes** | Run self-play (bootstrap + MuZero actors) and upload trajectories to replay. | Default path keeps actors lightweight Python processes; future work can use Ray/MPI actors. |
 | **Replay Service / Flashbax Vault** | Central buffer accessible by actors (append) and learner (sample). Manages priorities and backpressure. | Implementation can be gRPC microservice, Flashbax Vault on shared storage, or Ray-based store. |
 | **Parameter Publisher** | Manages live parameter snapshots. Learner->publisher updates, inference servers subscribe, actors never read checkpoints directly. | Enables hot reload so inference weight drift stays minimal. |
 
@@ -26,9 +26,9 @@ This document explains how we scale the MuZero JAX stack from the current single
 3. **Monitoring** – All nodes emit metrics (prometheus/json) for queue depth, request latency, gradient stats, actor throughput, etc.
 
 ### 2.2 Data Plane
-1. **Inference RPC** – Actors send `InferenceRequest(observation, optional hidden state, metadata)` to inference servers. Servers batch requests (size + timeout) before invoking JAX. Responses include policy logits, value, reward, projection, hidden states.
+1. **Inference is local** – Actors run JAX inference directly (or with local batching helper). No RPC.
 2. **Replay Transport** – Actors push completed trajectories (`observations`, `actions`, `rewards`, `target_values`, `policy_targets`, `length`, `priorities`). Service enforces capacity, priority sampling, and optional shard replication.
-3. **Parameter Streaming** – Learner publishes serialized weights after checkpoints (or at a higher cadence). Inference servers acknowledge receipt and swap params using zero-copy if possible. Actors only talk to inference servers, never to the publisher.
+3. **Parameter Streaming** – Learner publishes serialized weights; actors pull before episodes via the publisher client.
 
 ---
 
@@ -36,8 +36,8 @@ This document explains how we scale the MuZero JAX stack from the current single
 
 | Topology | Description | Targets |
 |----------|-------------|---------|
-| **Local Dev (Single Host)** | `inference.enable_local_batching=true` spins up background batching servers inside the process. Actors remain threads/processes; no external RPC needed. | Quick validation / CI. |
-| **Single Host, Multi-Process** | Separate Python processes for learner, actors, and inference servers. Communication uses gRPC or multiprocessing queues over loopback. | Pre-production rehearsal. |
+| **Local Dev (Single Host)** | `inference.enable_local_batching=true` spins up background batching inside the process. Actors remain threads/processes; no external RPC needed. | Quick validation / CI. |
+| **Single Host, Multi-Process** | Separate Python processes for learner/actors; inference stays in-process with actors. Replay/publisher run over gRPC loopback. | Pre-production rehearsal. |
 | **Multi-Host Cluster** | Dedicated hosts for learners (often TPU/GPU), inference servers (GPU-heavy), and actor pools (CPU-heavy). Replay service runs on redundant nodes backed by NFS/S3. Parameter publisher sits with the learner. | Production-scale experiments. |
 | **Ray/MPI (Task 30 in `TODO.md`)** | Wrap actors/inference/replay in Ray actors or MPI ranks for auto-scaling and scheduling. | Optional advanced scaling once baseline distributed stack is stable. |
 
@@ -71,28 +71,7 @@ These correspond to `TODO.md` Phase 2 tasks:
 
 ## 5. APIs & Message Shapes
 
-### 5.1 Inference RPC (proto sketch)
-```proto
-message InferenceRequest {
-  repeated float observation = 1;       // flattened obs
-  repeated float hidden_state = 2;      // optional
-  repeated float reward_hidden = 3;     // optional
-  uint32 player_id = 4;
-  uint64 request_id = 5;
-}
-
-message InferenceResponse {
-  repeated float policy_logits = 1;
-  float value = 2;
-  float reward = 3;
-  repeated float hidden_state = 4;
-  repeated float reward_hidden = 5;
-  uint64 request_id = 6;
-}
-```
-Servers batch multiple `InferenceRequest`s before calling JAX; `request_id` lets clients correlate responses.
-
-### 5.2 Replay RPC
+### 5.1 Replay RPC
 ```proto
 message Trajectory {
   repeated float observations = 1;  // flattened (len = length * obs_dim)

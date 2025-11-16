@@ -691,25 +691,14 @@ class MuZeroOrchestrator:
             self._launched_publisher_server = server
             logger.info("Auto-launched local parameter publisher at %s", server.endpoint)
 
-        # Inference server (skip auto-launch on TPU to keep learner+inference in one process).
+        # Inference: remote path disabled; enforce local usage.
         inf_cfg = getattr(self.config, "inference", None)
-        if inf_cfg and getattr(inf_cfg, "remote_enabled", False) and not getattr(inf_cfg, "rpc_endpoint", ""):
-            if self._is_tpu():
-                logger.warning(
-                    "TPU detected; skipping external inference server and falling back to local inference. "
-                    "Set inference.remote_enabled=false for TPU single-process runs."
-                )
-                inf_cfg.remote_enabled = False
-            else:
-                from open_spiel.python.algorithms.muzero_jax.services.inference_client import GrpcInferenceServer
-
-                batch_size = int(getattr(inf_cfg, "batch_size", 32))
-                max_wait_ms = int(getattr(inf_cfg, "max_wait_ms", 5))
-                server = GrpcInferenceServer(self.network, batch_size=batch_size, max_wait_ms=max_wait_ms)
-                server.start()
-                inf_cfg.rpc_endpoint = server.endpoint
-                self._launched_inference_server = server
-                logger.info("Auto-launched local inference server at %s", server.endpoint)
+        if inf_cfg and getattr(inf_cfg, "remote_enabled", False):
+            logger.warning(
+                "inference.remote_enabled=true is not supported (RPC calls inside JIT mctx). "
+                "Falling back to local inference."
+            )
+            inf_cfg.remote_enabled = False
         
     def _min_buffer_before_training(self) -> int:
         """Return the minimum number of transitions required before training."""

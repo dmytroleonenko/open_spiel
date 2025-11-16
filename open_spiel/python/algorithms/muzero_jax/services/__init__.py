@@ -4,8 +4,6 @@ from open_spiel.python.algorithms.muzero_jax.services.inference_client import (
     InferenceClient,
     LocalInferenceClient,
     LocalBatchingInferenceClient,
-    GrpcInferenceClient,
-    GrpcInferenceServer,
     build_inference_client,
 )
 from open_spiel.python.algorithms.muzero_jax.services.replay_service import (
@@ -27,8 +25,6 @@ __all__ = [
     "InferenceClient",
     "LocalInferenceClient",
     "LocalBatchingInferenceClient",
-    "GrpcInferenceClient",
-    "GrpcInferenceServer",
     "build_inference_client",
     "InMemoryReplayService",
     "GrpcReplayClient",

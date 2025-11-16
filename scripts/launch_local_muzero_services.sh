@@ -6,7 +6,7 @@ set -euo pipefail
 
 REPLAY_COUNT=1
 PUBLISHER_COUNT=1
-INFERENCE_COUNT=1
+INFERENCE_COUNT=0
 LOG_DIR="/tmp"
 PYTHON_BIN=${PYTHON_BIN:-python}
 
@@ -108,7 +108,6 @@ PY
     [[ -n "${ep}" ]] && break
     sleep 0.1
   done
-  echo "INFERENCE_ENDPOINT_${idx}=${ep} LOG=${log} PID=$(cat ${log}.pid)"
 }
 
 echo "# Starting services (logs in ${LOG_DIR})"
@@ -120,4 +119,3 @@ for i in $(seq 1 ${INFERENCE_COUNT}); do start_inference "${i}" "${seed}"; seed=
 echo "# Example exports (first instance of each):"
 echo "export REPLAY_ENDPOINT=$(grep -m1 -E '127\.0\.0\.1:[0-9]+' "${LOG_DIR}/mz_replay_1.log")"
 echo "export PUBLISHER_ENDPOINT=$(grep -m1 -E '127\.0\.0\.1:[0-9]+' "${LOG_DIR}/mz_pub_1.log")"
-echo "export INFERENCE_ENDPOINT=$(grep -m1 -E '127\.0\.0\.1:[0-9]+' "${LOG_DIR}/mz_inf_1.log")"

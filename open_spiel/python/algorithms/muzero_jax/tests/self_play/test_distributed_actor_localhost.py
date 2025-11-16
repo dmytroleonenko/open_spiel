@@ -20,7 +20,7 @@ from open_spiel.python.algorithms.muzero_jax.models.network import (
     RewardNetwork,
     ProjectionNetwork,
 )
-from open_spiel.python.algorithms.muzero_jax.services.inference_client import GrpcInferenceServer, GrpcInferenceClient
+from open_spiel.python.algorithms.muzero_jax.services.inference_client import LocalInferenceClient
 from open_spiel.python.algorithms.muzero_jax.services.parameter_publisher import (
     GrpcParameterPublisherClient,
     GrpcParameterPublisherServer,
@@ -85,9 +85,7 @@ def test_actor_remote_inference_and_replay_end_to_end():
     param_client = GrpcParameterPublisherClient(param_server.endpoint, timeout_s=1.0)
 
     network = _small_network(cfg)
-    infer_server = GrpcInferenceServer(network, batch_size=2, max_wait_ms=2)
-    infer_server.start()
-    infer_client = GrpcInferenceClient(infer_server.endpoint, timeout_s=1.0)
+    infer_client = LocalInferenceClient(network)
     wrapped_client = ParameterRefreshingInferenceClient(infer_client, param_client)
 
     # Publish once so actor refresh doesn't block.
@@ -127,5 +125,4 @@ def test_actor_remote_inference_and_replay_end_to_end():
     infer_client.close()
     param_client.close()
     replay_server.stop()
-    infer_server.stop()
     param_server.stop()

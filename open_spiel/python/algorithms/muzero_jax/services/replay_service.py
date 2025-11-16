@@ -16,6 +16,7 @@ schemas for now and rely on pickle (same as the inference RPC path).
 from __future__ import annotations
 
 import threading
+import pickle
 from typing import Any, Dict, List, Sequence, Tuple
 
 import grpc
@@ -23,10 +24,6 @@ import numpy as np
 
 from open_spiel.python.algorithms.muzero_jax.replay_buffer.replay_buffer import (
     _make_numpy_rng,
-)
-from open_spiel.python.algorithms.muzero_jax.services.inference_client import (
-    _deserialize_message,
-    _serialize_message,
 )
 
 
@@ -141,6 +138,14 @@ _RPC_UPDATE = "/muzero.ReplayService/UpdatePriorities"
 _RPC_GET = "/muzero.ReplayService/GetTrajectory"
 _RPC_UPDATE_TARGETS = "/muzero.ReplayService/UpdateTargets"
 _RPC_SIZE = "/muzero.ReplayService/Size"
+
+
+def _serialize_message(obj: Any) -> bytes:
+    return pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _deserialize_message(data: bytes) -> Any:
+    return pickle.loads(data)
 
 
 class GrpcReplayServer:

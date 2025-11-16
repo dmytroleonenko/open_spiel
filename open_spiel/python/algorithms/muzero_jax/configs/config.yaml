@@ -131,11 +131,10 @@ resource_management:
 
 # Inference service configuration
 inference:
-  remote_enabled: false           # When true, actors use a remote inference client/service
-  rpc_endpoint: ""                # URI for the inference RPC endpoint (gRPC, Ray, etc.)
-  batch_size: 32                  # Default batching size for remote inference
-  max_wait_ms: 5                  # Max wait before flushing partial inference batches
-  enable_local_batching: false    # Use local batching server (development/testing helper)
+  # Local inference only. Set enable_local_batching=true to exercise the batching path.
+  batch_size: 32
+  max_wait_ms: 5
+  enable_local_batching: false
 
 # Logging and monitoring
 wandb:

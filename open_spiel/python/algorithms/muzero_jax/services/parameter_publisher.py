@@ -10,14 +10,10 @@ from __future__ import annotations
 
 import threading
 import queue
+import pickle
 from typing import Any, Tuple
 
 import grpc
-
-from open_spiel.python.algorithms.muzero_jax.services.inference_client import (
-    _deserialize_message,
-    _serialize_message,
-)
 
 _RPC_PUBLISH = "/muzero.ParameterService/Publish"
 _RPC_LATEST = "/muzero.ParameterService/Latest"
@@ -199,3 +195,9 @@ class GrpcParameterPublisherClient:
         call = self._subscribe_stub({"min_step": int(min_step)}, timeout=timeout_s)
         for item in call:
             yield item["params"], int(item["step"])
+def _serialize_message(obj: Any) -> bytes:
+    return pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _deserialize_message(data: bytes) -> Any:
+    return pickle.loads(data)
