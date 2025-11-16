@@ -116,6 +116,7 @@ message Trajectory {
 | Learner | `pjit` correctness, distributed checkpointing, sampling via RPC. | `tests/training/test_distributed_trainer.py`. |
 | Integration | Mini cluster with in-process RPC stubs verifying end-to-end training progress. | `tests/test_orchestrator_async.py` (future distributed variants). |
 | Soak | Multi-process replay + publisher via gRPC with basic QPS sanity checks. | `tests/services/test_replay_publisher_soak.py`. |
+| Localhost preset | Orchestrator + actors using gRPC endpoints on localhost. | `tests/test_orchestrator_localhost_remote.py`, preset `configs/presets/localhost_remote.yaml`. |
 
 CI should pin `JAX_PLATFORM_NAME=cpu` for deterministic reproducibility; GPU/TPU tests live behind opt-in markers.
 

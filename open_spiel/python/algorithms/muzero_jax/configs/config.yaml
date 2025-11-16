@@ -75,6 +75,14 @@ publisher:
   rpc_endpoint: ""
   min_step: 0
   publish_interval: 0
+  timeout_s: 5.0
+
+# Convenience preset can override these to point to local gRPC services.
+remote_localhost:
+  enabled: false
+  replay_endpoint: ""
+  inference_endpoint: ""
+  publisher_endpoint: ""
 
 # Network architecture
 network:
