@@ -936,7 +936,7 @@ class Learner:
                     model=model,
                     observations=full_observations,  # B, K+1, *obs_shape
                     config=config,
-                    training=training,
+                    training=False,  # Reanalysis runs in eval mode to avoid BatchStat mutation
                     rng_key=rng_key
                 )
                 
