@@ -18,6 +18,7 @@ import queue
 import logging
 import threading
 import dataclasses
+import json
 from pathlib import Path
 from typing import Dict, List, Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass
@@ -651,6 +652,16 @@ class MuZeroOrchestrator:
         
         logger.info("All components initialized successfully")
 
+    def _write_metrics(self, step: int, metrics: Dict[str, Any]) -> None:
+        """Persist metrics alongside checkpoints for eval scripts."""
+        try:
+            ckpt_dir = Path(self.config.output.save_path) / "checkpoints" / str(step) / "metrics"
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            with (ckpt_dir / "metrics.json").open("w") as f:
+                json.dump(metrics, f)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to write metrics: %s", exc)
+
     def _is_tpu(self) -> bool:
         try:
             devices = jax.devices()
@@ -914,6 +925,8 @@ class MuZeroOrchestrator:
                 if values:
                     aggregated_metrics[key] = np.mean(values)
             aggregated_metrics['steps_trained'] = len(metrics_list)
+            # Persist metrics alongside checkpoints for downstream eval tools.
+            self._write_metrics(self.training_step, aggregated_metrics)
             return aggregated_metrics
         else:
             return {'steps_trained': 0}
