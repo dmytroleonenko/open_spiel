@@ -117,6 +117,7 @@ message Trajectory {
 | Integration | Mini cluster with in-process RPC stubs verifying end-to-end training progress. | `tests/test_orchestrator_async.py` (future distributed variants). |
 | Soak | Multi-process replay + publisher via gRPC with basic QPS sanity checks. | `tests/services/test_replay_publisher_soak.py`. |
 | Localhost preset | Orchestrator + actors using gRPC endpoints on localhost. | `tests/test_orchestrator_localhost_remote.py`, preset `configs/presets/localhost_remote.yaml`. |
+| Auto-launch | Orchestrator auto-starts local gRPC replay/publisher/inference if `remote_enabled=true` and endpoints are empty (CPU/GPU). | `run_muzero_jax._maybe_launch_local_services`; TPU skips inference auto-launch to keep learner+inference in one process. |
 
 CI should pin `JAX_PLATFORM_NAME=cpu` for deterministic reproducibility; GPU/TPU tests live behind opt-in markers.
 

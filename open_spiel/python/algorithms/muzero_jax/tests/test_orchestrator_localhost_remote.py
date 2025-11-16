@@ -92,27 +92,13 @@ def test_orchestrator_runs_with_localhost_remote_services():
     cfg.publisher.publish_interval = 1
     cfg.wandb.enabled = False
 
-    # Start services.
-    replay_backend = InMemoryReplayService(capacity=16, alpha=0.6)
-    replay_server = GrpcReplayServer(replay_backend)
-    replay_server.start()
-
-    param_backend = LocalParameterPublisher()
-    param_server = GrpcParameterPublisherServer(param_backend)
-    param_server.start()
-    param_backend.publish({"w": 1}, step=1)  # prime publisher to avoid subscriber block
-
-    tiny_net = _tiny_network(cfg.game.name)
-    infer_server = GrpcInferenceServer(tiny_net, batch_size=2, max_wait_ms=2)
-    infer_server.start()
-
-    # Point config to endpoints.
+    # Auto-start services (leave endpoints empty).
     cfg.replay_buffer.remote_enabled = True
-    cfg.replay_buffer.rpc_endpoint = replay_server.endpoint
+    cfg.replay_buffer.rpc_endpoint = ""
     cfg.publisher.remote_enabled = True
-    cfg.publisher.rpc_endpoint = param_server.endpoint
+    cfg.publisher.rpc_endpoint = ""
     cfg.inference.remote_enabled = True
-    cfg.inference.rpc_endpoint = infer_server.endpoint
+    cfg.inference.rpc_endpoint = ""
     cfg.inference.timeout_s = 1.0
 
     with tempfile.TemporaryDirectory(prefix="muzero_localhost_remote_") as tmpdir:
@@ -120,9 +106,7 @@ def test_orchestrator_runs_with_localhost_remote_services():
         orch = MuZeroOrchestrator(cfg)
         metrics = orch.run_training_phase()
         assert metrics is None or isinstance(metrics, dict)
-        assert len(replay_backend) >= 0
-
-    # Cleanup
-    infer_server.stop()
-    replay_server.stop()
-    param_server.stop()
+        # Auto-launched endpoints should now be populated (unless TPU fallback disables remote inference).
+        assert cfg.replay_buffer.rpc_endpoint
+        assert cfg.publisher.rpc_endpoint
+        assert cfg.inference.rpc_endpoint or not cfg.inference.remote_enabled

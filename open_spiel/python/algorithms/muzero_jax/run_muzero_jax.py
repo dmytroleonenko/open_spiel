@@ -395,6 +395,9 @@ class MuZeroOrchestrator:
         self._parameter_publisher = None
         self._parameter_client = None
         self._replay_clients: List[Any] = []
+        self._launched_replay_server = None
+        self._launched_publisher_server = None
+        self._launched_inference_server = None
         
         # Initialize components (checkpoint loading may update training_step)
         self.setup_components()
@@ -624,6 +627,9 @@ class MuZeroOrchestrator:
         
         # Initialize network
         self.setup_network(observation_shape, num_actions)
+
+        # Auto-launch local services if remote is enabled but endpoint not provided.
+        self._maybe_launch_local_services()
         
         # Initialize replay buffer
         self.setup_replay_buffer(observation_shape, num_actions)
@@ -638,6 +644,68 @@ class MuZeroOrchestrator:
         self.setup_actors()
         
         logger.info("All components initialized successfully")
+
+    def _is_tpu(self) -> bool:
+        try:
+            devices = jax.devices()
+            return bool(devices) and devices[0].platform == "tpu"
+        except Exception:  # pragma: no cover - defensive
+            return False
+
+    def _maybe_launch_local_services(self):
+        """Start local gRPC services when remote flags are on but endpoints are empty."""
+        # Replay service
+        rb_cfg = getattr(self.config, "replay_buffer", None)
+        if rb_cfg and getattr(rb_cfg, "remote_enabled", False) and not getattr(rb_cfg, "rpc_endpoint", ""):
+            from open_spiel.python.algorithms.muzero_jax.services.replay_service import (
+                InMemoryReplayService,
+                GrpcReplayServer,
+            )
+
+            backend = InMemoryReplayService(
+                capacity=int(getattr(rb_cfg, "capacity", 2000)),
+                alpha=float(getattr(rb_cfg, "priority_alpha", 0.0)),
+            )
+            server = GrpcReplayServer(backend)
+            server.start()
+            rb_cfg.rpc_endpoint = server.endpoint
+            self._launched_replay_server = server
+            logger.info("Auto-launched local replay server at %s", server.endpoint)
+
+        # Parameter publisher
+        pub_cfg = getattr(self.config, "publisher", None)
+        if pub_cfg and getattr(pub_cfg, "remote_enabled", False) and not getattr(pub_cfg, "rpc_endpoint", ""):
+            from open_spiel.python.algorithms.muzero_jax.services.parameter_publisher import (
+                GrpcParameterPublisherServer,
+                LocalParameterPublisher,
+            )
+
+            backend = LocalParameterPublisher()
+            server = GrpcParameterPublisherServer(backend)
+            server.start()
+            pub_cfg.rpc_endpoint = server.endpoint
+            self._launched_publisher_server = server
+            logger.info("Auto-launched local parameter publisher at %s", server.endpoint)
+
+        # Inference server (skip auto-launch on TPU to keep learner+inference in one process).
+        inf_cfg = getattr(self.config, "inference", None)
+        if inf_cfg and getattr(inf_cfg, "remote_enabled", False) and not getattr(inf_cfg, "rpc_endpoint", ""):
+            if self._is_tpu():
+                logger.warning(
+                    "TPU detected; skipping external inference server and falling back to local inference. "
+                    "Set inference.remote_enabled=false for TPU single-process runs."
+                )
+                inf_cfg.remote_enabled = False
+            else:
+                from open_spiel.python.algorithms.muzero_jax.services.inference_client import GrpcInferenceServer
+
+                batch_size = int(getattr(inf_cfg, "batch_size", 32))
+                max_wait_ms = int(getattr(inf_cfg, "max_wait_ms", 5))
+                server = GrpcInferenceServer(self.network, batch_size=batch_size, max_wait_ms=max_wait_ms)
+                server.start()
+                inf_cfg.rpc_endpoint = server.endpoint
+                self._launched_inference_server = server
+                logger.info("Auto-launched local inference server at %s", server.endpoint)
         
     def _min_buffer_before_training(self) -> int:
         """Return the minimum number of transitions required before training."""
@@ -1306,6 +1374,18 @@ class MuZeroOrchestrator:
                 logger.warning("Failed to close replay client: %s", exc)
         if hasattr(self, "_replay_clients"):
             self._replay_clients.clear()
+
+        # Stop auto-launched servers
+        for srv in [
+            getattr(self, "_launched_inference_server", None),
+            getattr(self, "_launched_replay_server", None),
+            getattr(self, "_launched_publisher_server", None),
+        ]:
+            if srv is not None:
+                try:
+                    srv.stop()
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("Failed to stop server: %s", exc)
             
         logger.info("Cleanup completed")
 
