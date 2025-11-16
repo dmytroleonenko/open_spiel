@@ -67,7 +67,15 @@ def test_grpc_client_subscribe_timeout(monkeypatch):
 
 
 def test_local_subscribe_timeout_with_no_data():
-    """Cover the no-data wait path using wait_for_step timeout (no hangs)."""
+    """Cover the no-data wait path using wait_for_step timeout (no hangs).
+
+    This test is intentionally bounded by a local wall clock guard. On rare
+    occasions macOS/Metal runners can stall inside condition variables; the
+    guard keeps the test well under the global 600s fixture timeout while still
+    exercising the real blocking code path.
+    """
     pub = pp.LocalParameterPublisher()
+    start = time.perf_counter()
     with pytest.raises(TimeoutError):
         pub.wait_for_step(min_step=1, timeout_s=0.05)
+    assert time.perf_counter() - start < 0.5, "wait_for_step should respect timeout_s"
