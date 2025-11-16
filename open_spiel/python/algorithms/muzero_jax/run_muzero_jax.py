@@ -530,6 +530,8 @@ class MuZeroOrchestrator:
         if not force and publish_interval > 0 and self.training_step % publish_interval != 0:
             return
         try:
+            if not hasattr(self.network, "get_variables"):
+                return
             params = self.network.get_variables()
             self._parameter_client.publish(params, step=self.training_step)
         except Exception as exc:  # pragma: no cover - defensive
