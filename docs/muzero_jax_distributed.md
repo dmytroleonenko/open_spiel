@@ -115,6 +115,7 @@ message Trajectory {
 | Actors | Parameter refresh cadence, inference client injection, trajectory upload. | `tests/self_play/test_distributed_actor.py`. |
 | Learner | `pjit` correctness, distributed checkpointing, sampling via RPC. | `tests/training/test_distributed_trainer.py`. |
 | Integration | Mini cluster with in-process RPC stubs verifying end-to-end training progress. | `tests/test_orchestrator_async.py` (future distributed variants). |
+| Soak | Multi-process replay + publisher via gRPC with basic QPS sanity checks. | `tests/services/test_replay_publisher_soak.py`. |
 
 CI should pin `JAX_PLATFORM_NAME=cpu` for deterministic reproducibility; GPU/TPU tests live behind opt-in markers.
 
