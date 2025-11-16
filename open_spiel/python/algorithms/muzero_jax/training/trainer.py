@@ -1689,6 +1689,7 @@ def apply_value_prefix_reward_accumulation(
     return predicted_rewards, final_reward_hidden
 
 
+
 def generate_top_new_masks(
     sample_indices: jax.Array,
     collected_transitions: int | jax.Array,
@@ -2151,7 +2152,6 @@ def compute_gae_value_targets(
     
     return compute_gae_vectorized()
 
-@jax.jit
 def compute_policy_reanalysis_targets(
     model: MuZeroNetwork,
     observations: jax.Array,  # B, K+1, *obs_shape
@@ -2393,3 +2393,6 @@ def create_muzero_config_for_game(game_name: str, **config_overrides) -> MuZeroC
     config_dict.update(config_overrides)
     
     return MuZeroConfig(**config_dict)
+
+# JIT with static config/training to avoid tracing MuZeroConfig inside JIT.
+compute_policy_reanalysis_targets = jax.jit(compute_policy_reanalysis_targets, static_argnums=(0,2,3))
