@@ -93,6 +93,8 @@ class TrajectoryBuffer:
                 'rewards': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
                 'value_targets': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
                 'policy_targets': jnp.zeros((self.max_trajectory_length, self.num_actions), dtype=jnp.float32),
+                'target_search_value': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
+                'target_sarsa_value': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
                 'length': jnp.int32(1)
             }
             self._buffer_state = self._buffer.init(dummy_trajectory)
@@ -108,12 +110,18 @@ class TrajectoryBuffer:
         else:
             policy_targets_array = np.array(policy_targets, dtype=np.float32)
 
+        # Handle optional fields with fallbacks
+        target_search_value = trajectory.get('target_search_value', trajectory['value_targets'])
+        target_sarsa_value = trajectory.get('target_sarsa_value', trajectory['value_targets'])
+
         return {
             'observations': np.array(trajectory['observations'], dtype=np.float32),
             'actions': np.array(trajectory['actions'], dtype=np.int32),
             'rewards': np.array(trajectory['rewards'], dtype=np.float32),
             'value_targets': np.array(trajectory['value_targets'], dtype=np.float32),
             'policy_targets': policy_targets_array,
+            'target_search_value': np.array(target_search_value, dtype=np.float32),
+            'target_sarsa_value': np.array(target_sarsa_value, dtype=np.float32),
             'length': int(len(trajectory['actions']))
         }
 
@@ -126,7 +134,9 @@ class TrajectoryBuffer:
             'value_targets': np.array(stored['value_targets'], copy=True),
             'policy_targets': [
                 np.array(step, copy=True) for step in stored['policy_targets']
-            ]
+            ],
+            'target_search_value': np.array(stored.get('target_search_value', stored['value_targets']), copy=True),
+            'target_sarsa_value': np.array(stored.get('target_sarsa_value', stored['value_targets']), copy=True),
         }
 
     def _store_trajectory(self, trajectory: Dict[str, Any]) -> int:
@@ -204,12 +214,18 @@ class TrajectoryBuffer:
         traj_length = len(trajectory['actions'])
         resolved_target_values = _resolve_value_targets(trajectory, traj_length)
 
+        # Handle optional fields with fallbacks
+        target_search_value = trajectory.get('target_search_value', resolved_target_values)
+        target_sarsa_value = trajectory.get('target_sarsa_value', resolved_target_values)
+
         self._store_trajectory({
             'observations': trajectory['observations'],
             'actions': trajectory['actions'],
             'rewards': trajectory['rewards'],
             'value_targets': resolved_target_values,
-            'policy_targets': trajectory['policy_targets']
+            'policy_targets': trajectory['policy_targets'],
+            'target_search_value': target_search_value,
+            'target_sarsa_value': target_sarsa_value
         })
         
         # Pad trajectory to max_trajectory_length
@@ -218,12 +234,16 @@ class TrajectoryBuffer:
         padded_rewards = np.zeros(self.max_trajectory_length, dtype=np.float32)
         padded_target_values = np.zeros(self.max_trajectory_length, dtype=np.float32)
         padded_target_policies = np.zeros((self.max_trajectory_length, self.num_actions), dtype=np.float32)
+        padded_target_search_value = np.zeros(self.max_trajectory_length, dtype=np.float32)
+        padded_target_sarsa_value = np.zeros(self.max_trajectory_length, dtype=np.float32)
         
         # Fill with actual data
         padded_observations[:traj_length] = trajectory['observations']
         padded_actions[:traj_length] = trajectory['actions']
         padded_rewards[:traj_length] = trajectory['rewards']
         padded_target_values[:traj_length] = resolved_target_values
+        padded_target_search_value[:traj_length] = target_search_value
+        padded_target_sarsa_value[:traj_length] = target_sarsa_value
         
         for i in range(traj_length):
             padded_target_policies[i] = trajectory['policy_targets'][i]
@@ -235,6 +255,8 @@ class TrajectoryBuffer:
             'rewards': jnp.array(padded_rewards),
             'value_targets': jnp.array(padded_target_values),
             'policy_targets': jnp.array(padded_target_policies),
+            'target_search_value': jnp.array(padded_target_search_value),
+            'target_sarsa_value': jnp.array(padded_target_sarsa_value),
             'length': jnp.int32(traj_length)  # Store actual length
         }
         
@@ -324,6 +346,8 @@ class PrioritizedTrajectoryBuffer:
             'rewards': jnp.zeros(max_trajectory_length, dtype=jnp.float32),
             'value_targets': jnp.zeros(max_trajectory_length, dtype=jnp.float32),
             'policy_targets': jnp.zeros((max_trajectory_length, num_actions), dtype=jnp.float32),
+            'target_search_value': jnp.zeros(max_trajectory_length, dtype=jnp.float32),
+            'target_sarsa_value': jnp.zeros(max_trajectory_length, dtype=jnp.float32),
             'length': jnp.int32(1),
             'priority': jnp.float32(1.0)
         }
@@ -348,12 +372,18 @@ class PrioritizedTrajectoryBuffer:
         else:
             policy_targets_array = np.array(policy_targets, dtype=np.float32)
 
+        # Handle optional fields with fallbacks
+        target_search_value = trajectory.get('target_search_value', trajectory['value_targets'])
+        target_sarsa_value = trajectory.get('target_sarsa_value', trajectory['value_targets'])
+
         return {
             'observations': np.array(trajectory['observations'], dtype=np.float32),
             'actions': np.array(trajectory['actions'], dtype=np.int32),
             'rewards': np.array(trajectory['rewards'], dtype=np.float32),
             'value_targets': np.array(trajectory['value_targets'], dtype=np.float32),
             'policy_targets': policy_targets_array,
+            'target_search_value': np.array(target_search_value, dtype=np.float32),
+            'target_sarsa_value': np.array(target_sarsa_value, dtype=np.float32),
             'length': int(len(trajectory['actions']))
         }
 
@@ -365,7 +395,9 @@ class PrioritizedTrajectoryBuffer:
             'value_targets': np.array(stored['value_targets'], copy=True),
             'policy_targets': [
                 np.array(step, copy=True) for step in stored['policy_targets']
-            ]
+            ],
+            'target_search_value': np.array(stored.get('target_search_value', stored['value_targets']), copy=True),
+            'target_sarsa_value': np.array(stored.get('target_sarsa_value', stored['value_targets']), copy=True),
         }
 
     def _store_trajectory(self, trajectory: Dict[str, Any], priority: float) -> int:
@@ -428,12 +460,18 @@ class PrioritizedTrajectoryBuffer:
         traj_length = len(trajectory['actions'])
         resolved_target_values = _resolve_value_targets(trajectory, traj_length)
 
+        # Handle optional fields with fallbacks
+        target_search_value = trajectory.get('target_search_value', resolved_target_values)
+        target_sarsa_value = trajectory.get('target_sarsa_value', resolved_target_values)
+
         self._store_trajectory({
             'observations': trajectory['observations'],
             'actions': trajectory['actions'],
             'rewards': trajectory['rewards'],
             'value_targets': resolved_target_values,
-            'policy_targets': trajectory['policy_targets']
+            'policy_targets': trajectory['policy_targets'],
+            'target_search_value': target_search_value,
+            'target_sarsa_value': target_sarsa_value
         }, priority)
         
         # Pad trajectory to max_trajectory_length
@@ -442,12 +480,16 @@ class PrioritizedTrajectoryBuffer:
         padded_rewards = np.zeros(self.max_trajectory_length, dtype=np.float32)
         padded_target_values = np.zeros(self.max_trajectory_length, dtype=np.float32)
         padded_target_policies = np.zeros((self.max_trajectory_length, self.num_actions), dtype=np.float32)
+        padded_target_search_value = np.zeros(self.max_trajectory_length, dtype=np.float32)
+        padded_target_sarsa_value = np.zeros(self.max_trajectory_length, dtype=np.float32)
         
         # Fill with actual data
         padded_observations[:traj_length] = trajectory['observations']
         padded_actions[:traj_length] = trajectory['actions']
         padded_rewards[:traj_length] = trajectory['rewards']
         padded_target_values[:traj_length] = resolved_target_values
+        padded_target_search_value[:traj_length] = target_search_value
+        padded_target_sarsa_value[:traj_length] = target_sarsa_value
         
         for i in range(traj_length):
             padded_target_policies[i] = trajectory['policy_targets'][i]
@@ -459,6 +501,8 @@ class PrioritizedTrajectoryBuffer:
             'rewards': jnp.array(padded_rewards),
             'value_targets': jnp.array(padded_target_values),
             'policy_targets': jnp.array(padded_target_policies),
+            'target_search_value': jnp.array(padded_target_search_value),
+            'target_sarsa_value': jnp.array(padded_target_sarsa_value),
             'length': jnp.int32(traj_length),
             'priority': jnp.float32(priority)
         }

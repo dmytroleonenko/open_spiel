@@ -962,6 +962,8 @@ class MuZeroOrchestrator:
         batch_target_values = np.zeros((batch_size, max_length))
         batch_target_policies = np.zeros((batch_size, max_length, num_actions))
         batch_masks = np.zeros((batch_size, max_length), dtype=np.float32)
+        batch_target_search_values = np.zeros((batch_size, max_length))
+        batch_target_sarsa_values = np.zeros((batch_size, max_length))
         
         # Fill batch arrays
         for i, trajectory in enumerate(trajectories):
@@ -982,6 +984,17 @@ class MuZeroOrchestrator:
             batch_target_rewards[i, :effective_length] = trajectory['rewards'][:effective_length]
             batch_target_values[i, :effective_length] = trajectory['value_targets'][:effective_length]
             
+            # Handle optional mixed value targets
+            if 'target_search_value' in trajectory:
+                batch_target_search_values[i, :effective_length] = trajectory['target_search_value'][:effective_length]
+            else:
+                batch_target_search_values[i, :effective_length] = trajectory['value_targets'][:effective_length]
+
+            if 'target_sarsa_value' in trajectory:
+                batch_target_sarsa_values[i, :effective_length] = trajectory['target_sarsa_value'][:effective_length]
+            else:
+                batch_target_sarsa_values[i, :effective_length] = trajectory['value_targets'][:effective_length]
+
             for j in range(effective_length):
                 batch_target_policies[i, j] = trajectory['policy_targets'][j]
             
@@ -996,11 +1009,15 @@ class MuZeroOrchestrator:
             'target_value': jnp.array(batch_target_values),
             'target_policy': jnp.array(batch_target_policies),
             'game_history_mask': jnp.array(batch_masks),
+            'target_search_value': jnp.array(batch_target_search_values),
+            'target_sarsa_value': jnp.array(batch_target_sarsa_values),
+            'collected_transitions': jnp.array(self._buffer_size()),
         }
         
         # Add priority replay fields if provided
         if indices is not None:
             batch['indices'] = jnp.array(indices)
+            batch['sample_indices'] = jnp.array(indices)  # Alias for mixed value targets/adaptive TD
         if weights is not None:
             batch['weights'] = jnp.array(weights)
             
