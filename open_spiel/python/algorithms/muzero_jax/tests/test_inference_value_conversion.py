@@ -22,6 +22,9 @@ class MockConfig:
         self.num_channels = 8
         self.use_image_observation = False
         self.use_projection = False
+        # Support range defaults
+        self.support_min = -300.0
+        self.support_max = 300.0
 
 class MockNetwork:
     def __init__(self, config):
@@ -105,6 +108,42 @@ def test_inference_value_conversion_symlog():
     assert np.allclose(value, expected_value, atol=0.1), f"Value {value} does not match expected real value {expected_value}. It might still be in symlog space."
     assert np.allclose(reward, expected_reward, atol=0.1), f"Reward {reward} does not match expected real value {expected_reward}."
 
+def test_inference_value_conversion_categorical_custom_support():
+    """Test that InferenceClient converts categorical logits to scalar using custom support."""
+    # Config with custom support range
+    config = MockConfig("categorical", "categorical", value_support_size=21, reward_support_size=21)
+    config.support_min = -10.0
+    config.support_max = 10.0
+
+    class DeterministicMockNetwork(MockNetwork):
+        def initial_inference(self, observation, training=False):
+            batch_size = observation.shape[0]
+            # Max value logits: index 20 (for size 21) has high logit
+            value = jnp.zeros((batch_size, self.config.value_support_size))
+            value = value.at[:, -1].set(100.0) # High probability for max value
+
+            # Min reward logits: index 0 has high logit
+            reward = jnp.zeros((batch_size, self.config.reward_support_size))
+            reward = reward.at[:, 0].set(100.0) # High probability for min value
+
+            hidden = jnp.zeros((batch_size, self.config.num_channels))
+            policy = jnp.zeros((batch_size, self.config.num_actions))
+            return hidden, reward, value, policy, None, None
+
+    network = DeterministicMockNetwork(config)
+    client = LocalInferenceClient(network)
+
+    batch_size = 2
+    obs = jnp.zeros((batch_size, 10))
+
+    _, reward, value, _, _, _ = client.initial_inference(obs)
+
+    print(f"Value (expected ~10.0): {value}")
+    print(f"Reward (expected ~-10.0): {reward}")
+
+    assert np.allclose(value, 10.0, atol=0.1), f"Value {value} should be close to support_max 10.0"
+    assert np.allclose(reward, -10.0, atol=0.1), f"Reward {reward} should be close to support_min -10.0"
+
 if __name__ == "__main__":
     # Manually run tests if executed as script
     try:
@@ -118,3 +157,9 @@ if __name__ == "__main__":
         print("Symlog test PASSED")
     except Exception as e:
         print(f"Symlog test FAILED: {e}")
+
+    try:
+        test_inference_value_conversion_categorical_custom_support()
+        print("Categorical custom support test PASSED")
+    except Exception as e:
+        print(f"Categorical custom support test FAILED: {e}")

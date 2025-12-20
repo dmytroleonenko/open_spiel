@@ -33,7 +33,15 @@ def _convert_scalar_value(network, value_output, is_reward=False):
     if loss_type == "categorical":
         support_size = config.reward_support_size if is_reward else config.value_support_size
         num_atoms = support_size if support_size > 0 else 601
-        return support_to_scalar(value_output, num_atoms=num_atoms)
+        # Use configured support range (defaulting to [-300, 300] if not set)
+        support_min = getattr(config, 'support_min', -300.0)
+        support_max = getattr(config, 'support_max', 300.0)
+        return support_to_scalar(
+            value_output,
+            support_min=support_min,
+            support_max=support_max,
+            num_atoms=num_atoms
+        )
     elif loss_type == "symlog":
         base = getattr(config, 'symlog_base', jnp.e)
         return symexp(value_output, base=base)
