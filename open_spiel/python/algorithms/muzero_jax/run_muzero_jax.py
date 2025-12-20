@@ -457,11 +457,25 @@ class MuZeroOrchestrator:
                         self.config.training.batch_size,
                         rng_key=sample_key,
                     )
-                if len(sample_out) == 3:
+
+                # Robust unpacking for 2, 3, or 4 return values
+                traj_ids = None
+                sampled_indices = None
+                importance_weights = None
+
+                if len(sample_out) == 4:
+                    # (trajectories, traj_ids, buffer_indices, weights)
+                    trajectory_list, traj_ids, sampled_indices, importance_weights = sample_out
+                elif len(sample_out) == 3:
+                    # (trajectories, ids, weights) - IDs are used as indices and traj_ids (e.g. Remote)
                     trajectory_list, sampled_indices, importance_weights = sample_out
-                else:
+                    traj_ids = sampled_indices
+                elif len(sample_out) == 2:
+                    # (trajectories, ids)
                     trajectory_list, sampled_indices = sample_out
-                    importance_weights = None
+                    traj_ids = sampled_indices
+                else:
+                    raise ValueError(f"Unexpected sample_batch_with_ids return length: {len(sample_out)}")
             elif is_prioritized:
                 with self._buffer_lock:
                     sample_out = self.replay_buffer.sample_batch(
@@ -500,6 +514,7 @@ class MuZeroOrchestrator:
             trajectory_list,
             sampled_indices,
             importance_weights,
+            traj_ids,
         )
         metrics = self.learner.train_step(batch)
         self.training_step += 1
@@ -942,7 +957,7 @@ class MuZeroOrchestrator:
         else:
             return {'steps_trained': 0}
             
-    def _convert_trajectories_to_batch(self, trajectories: List[Dict], indices: Optional[np.ndarray] = None, weights: Optional[np.ndarray] = None) -> Dict:
+    def _convert_trajectories_to_batch(self, trajectories: List[Dict], indices: Optional[np.ndarray] = None, weights: Optional[np.ndarray] = None, traj_ids: Optional[np.ndarray] = None) -> Dict:
         """Convert list of trajectories to batched format expected by trainer.
         
         Args:
@@ -1001,10 +1016,28 @@ class MuZeroOrchestrator:
             else:
                 batch_target_search_values[i, :effective_length] = trajectory['value_targets'][:effective_length]
 
-            if 'target_sarsa_value' in trajectory:
-                batch_target_sarsa_values[i, :effective_length] = trajectory['target_sarsa_value'][:effective_length]
-            else:
-                batch_target_sarsa_values[i, :effective_length] = trajectory['value_targets'][:effective_length]
+            # Compute dynamic SARSA targets using stored rewards and search values
+            gamma = self.muzero_config.discount_factor
+            td_steps = self.muzero_config.td_steps
+            rewards = trajectory['rewards']
+
+            # Use search values for bootstrapping if available, otherwise 0
+            bootstrap_values = trajectory.get('target_search_value', np.zeros(len(rewards)))
+
+            for t in range(effective_length):
+                g_val = 0.0
+                # N-step return accumulation
+                for k in range(td_steps):
+                    if t + k < len(rewards):
+                        g_val += (gamma ** k) * rewards[t + k]
+                    else:
+                        break
+
+                # Bootstrap from search value at t+n
+                if t + td_steps < len(bootstrap_values):
+                    g_val += (gamma ** td_steps) * bootstrap_values[t + td_steps]
+
+                batch_target_sarsa_values[i, t] = g_val
 
             for j in range(effective_length):
                 batch_target_policies[i, j] = trajectory['policy_targets'][j]
@@ -1023,15 +1056,18 @@ class MuZeroOrchestrator:
             'target_search_value': jnp.array(batch_target_search_values),
             'target_sarsa_value': jnp.array(batch_target_sarsa_values),
             'collected_transitions': jnp.array(
-                getattr(self.replay_buffer, "_next_traj_id", np.max(indices) + 1 if indices is not None and len(indices) > 0 else self._buffer_size()) * self.muzero_config.trajectory_size
+                getattr(self.replay_buffer, "_next_traj_id", np.max(traj_ids) + 1 if traj_ids is not None and len(traj_ids) > 0 else self._buffer_size()) * self.muzero_config.trajectory_size
             ),
         }
         
         # Add priority replay fields if provided
         if indices is not None:
             batch['indices'] = jnp.array(indices)
-            # Scale sample indices to transition space for mixed value targets
-            batch['sample_indices'] = jnp.array(indices) * self.muzero_config.trajectory_size
+
+        # Use traj_ids for mixed value target age if available, otherwise indices
+        age_indices = traj_ids if traj_ids is not None else indices
+        if age_indices is not None:
+            batch['sample_indices'] = jnp.array(age_indices) * self.muzero_config.trajectory_size
         if weights is not None:
             batch['weights'] = jnp.array(weights)
             
