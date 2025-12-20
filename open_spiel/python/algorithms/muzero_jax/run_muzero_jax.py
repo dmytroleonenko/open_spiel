@@ -451,7 +451,18 @@ class MuZeroOrchestrator:
             self.replay_buffer, "update_priorities"
         ) or hasattr(self.replay_buffer, "update_priorities_by_ids")
         try:
-            if is_prioritized:
+            if hasattr(self.replay_buffer, "sample_batch_with_ids"):
+                with self._buffer_lock:
+                    sample_out = self.replay_buffer.sample_batch_with_ids(
+                        self.config.training.batch_size,
+                        rng_key=sample_key,
+                    )
+                if len(sample_out) == 3:
+                    trajectory_list, sampled_indices, importance_weights = sample_out
+                else:
+                    trajectory_list, sampled_indices = sample_out
+                    importance_weights = None
+            elif is_prioritized:
                 with self._buffer_lock:
                     sample_out = self.replay_buffer.sample_batch(
                         self.config.training.batch_size,
@@ -1011,13 +1022,16 @@ class MuZeroOrchestrator:
             'game_history_mask': jnp.array(batch_masks),
             'target_search_value': jnp.array(batch_target_search_values),
             'target_sarsa_value': jnp.array(batch_target_sarsa_values),
-            'collected_transitions': jnp.array(self._buffer_size()),
+            'collected_transitions': jnp.array(
+                getattr(self.replay_buffer, "_next_traj_id", np.max(indices) + 1 if indices is not None and len(indices) > 0 else self._buffer_size()) * self.muzero_config.trajectory_size
+            ),
         }
         
         # Add priority replay fields if provided
         if indices is not None:
             batch['indices'] = jnp.array(indices)
-            batch['sample_indices'] = jnp.array(indices)  # Alias for mixed value targets/adaptive TD
+            # Scale sample indices to transition space for mixed value targets
+            batch['sample_indices'] = jnp.array(indices) * self.muzero_config.trajectory_size
         if weights is not None:
             batch['weights'] = jnp.array(weights)
             
