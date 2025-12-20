@@ -1619,9 +1619,6 @@ def apply_value_prefix_reward_accumulation(
             return jnp.stack(accumulated_rewards, axis=0)
         
         # Process each batch item
-        # TODO(perf): Consider jax.lax.scan + vmap to avoid Python loops under JIT
-        # for large batch sizes or long unrolls. Current logic is correct but can
-        # inflate compile time and HLO size.
         accumulated_batch = []
         for batch_idx in range(batch_size):
             accumulated_item = accumulate_batch_step(batch_idx)
