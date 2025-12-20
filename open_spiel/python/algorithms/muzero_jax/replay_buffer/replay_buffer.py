@@ -208,6 +208,8 @@ class TrajectoryBuffer:
                 'rewards': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
                 'value_targets': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
                 'policy_targets': jnp.zeros((self.max_trajectory_length, self.num_actions), dtype=jnp.float32),
+                'target_search_value': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
+                'target_sarsa_value': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
                 'length': jnp.int32(1)
             }
             self._buffer_state = self._buffer.init(dummy_trajectory)
