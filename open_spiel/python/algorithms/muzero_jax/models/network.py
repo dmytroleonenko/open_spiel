@@ -36,30 +36,49 @@ def symlog(x: jax.Array, base: float = jnp.e) -> jax.Array:
 class DownSample(nnx.Module):
     """Downsampling network for image observations (Flax NNX version)."""
     def __init__(self, in_channels: int, out_channels: int, *, rngs: nnx.Rngs):
-        # Simplified version of EZv2 DownSample, focusing on core structure
-        # Uses two strided convolutions with ResBlocks
+        # Implements EfficientZeroV2 DownSample path with 4 stages
+
+        # Stage 1: Conv (stride 2) + ResBlock
         self.conv1 = nnx.Conv(in_channels, out_channels // 2, kernel_size=(3,3), strides=(2,2), padding='SAME', use_bias=False, rngs=rngs)
         self.bn1 = nnx.BatchNorm(out_channels // 2, use_running_average=True, rngs=rngs)
-        # EZv2 uses ModuleList of ResBlocks, here one for simplicity per stage
         self.resblock1 = ResidualBlock(out_channels // 2, out_channels // 2, rngs=rngs)
         
-        self.conv2 = nnx.Conv(out_channels // 2, out_channels, kernel_size=(3,3), strides=(2,2), padding='SAME', use_bias=False, rngs=rngs)
-        # EZv2 uses a ResBlock with downsample_conv for the second stride, this is a simplified direct conv + resblock
+        # Stage 2: Conv (stride 1) + DownSampleBlock (stride 2) + ResBlock
+        self.conv2 = nnx.Conv(out_channels // 2, out_channels, kernel_size=(3,3), strides=(1,1), padding='SAME', use_bias=False, rngs=rngs)
         self.bn2 = nnx.BatchNorm(out_channels, use_running_average=True, rngs=rngs)
+
+        # Downsample block: ResidualBlock with stride 2 and projection shortcut
+        self.downsample_block = ResidualBlock(out_channels, out_channels, stride=2,
+                                              downsample_conv=nnx.Conv(out_channels, out_channels, kernel_size=(1,1), strides=(2,2), use_bias=False, rngs=rngs),
+                                              rngs=rngs)
         self.resblock2 = ResidualBlock(out_channels, out_channels, rngs=rngs)
         
-        # EZv2 has further pooling and ResBlocks, omitted for initial brevity
+        # Stage 3: Pooling + ResBlock
+        self.resblock3 = ResidualBlock(out_channels, out_channels, rngs=rngs)
+
+        # Stage 4: Pooling (only pooling)
 
     def __call__(self, x: jax.Array, training: bool) -> jax.Array:
+        # Stage 1
         x = self.conv1(x)
         x = self.bn1(x, use_running_average=not training)
         x = nnx.relu(x)
         x = self.resblock1(x, training=training)
         
+        # Stage 2
         x = self.conv2(x)
         x = self.bn2(x, use_running_average=not training)
         x = nnx.relu(x)
+        x = self.downsample_block(x, training=training)
         x = self.resblock2(x, training=training)
+
+        # Stage 3
+        x = nnx.avg_pool(x, window_shape=(3, 3), strides=(2, 2), padding='SAME')
+        x = self.resblock3(x, training=training)
+
+        # Stage 4
+        x = nnx.avg_pool(x, window_shape=(3, 3), strides=(2, 2), padding='SAME')
+
         return x
 
 class RepresentationNetwork(nnx.Module):

@@ -1141,8 +1141,8 @@ def test_downsample_network():
     
     # Test training=True
     output_train = downsampler(x, training=True)
-    expected_h = height // 4  # Two stride-2 convs: 96 -> 48 -> 24
-    expected_w = width // 4
+    expected_h = height // 16  # Four stride-2 operations: 96 -> 48 -> 24 -> 12 -> 6
+    expected_w = width // 16
     assert output_train.shape == (batch_size, expected_h, expected_w, out_channels), \
         f"Expected shape (2, {expected_h}, {expected_w}, {out_channels}), got {output_train.shape}"
     

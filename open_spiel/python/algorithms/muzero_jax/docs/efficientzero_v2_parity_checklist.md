@@ -101,7 +101,7 @@ TODO 4 (P0): Convert categorical/symlog values to scalar before MCTS
 
 ## P1 - Network Architecture Parity
 
-TODO 5 (P1): Implement full EfficientZeroV2 `DownSample` path
+TODO 5 (P1): Implement full EfficientZeroV2 `DownSample` path (DONE)
 - Gap: JAX `DownSample` is simplified (missing downsample block, resblocks, and pooling stages).
 - JAX location: `open_spiel/python/algorithms/muzero_jax/models/network.py` class `DownSample`.
 - PyTorch location: `EfficientZeroV2/ez/agents/models/base_model.py` class `DownSample`.
