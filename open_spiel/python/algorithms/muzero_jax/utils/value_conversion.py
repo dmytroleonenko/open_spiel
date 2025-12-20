@@ -8,17 +8,31 @@ def convert_value(value, config):
 
     Args:
         value: The value output from the network (logits, symlog, or scalar)
-        config: The configuration object
+        config: The configuration object. Can be MuZeroConfig or MuZeroNetworkConfig.
+                Handles both support_min/max (MuZeroConfig) and min/max_value (MuZeroNetworkConfig).
 
     Returns:
         Scalar value in the real value range
     """
-    if config.value_loss_type == "categorical":
+    value_loss_type = getattr(config, "value_loss_type", "mse")
+
+    if value_loss_type == "categorical":
+        # Handle different field names for support range
+        # MuZeroConfig uses support_min/support_max
+        # MuZeroNetworkConfig uses min_value/max_value (added recently)
+        min_val = getattr(config, "min_value", getattr(config, "support_min", -300.0))
+        max_val = getattr(config, "max_value", getattr(config, "support_max", 300.0))
+
+        # Default support size if not present
+        support_size = getattr(config, "value_support_size", 0)
+        if support_size <= 0:
+            support_size = 601
+
         return support_to_scalar(value,
-                                 support_min=config.min_value,
-                                 support_max=config.max_value,
-                                 num_atoms=config.value_support_size)
-    elif config.value_loss_type == "symlog":
+                                 support_min=min_val,
+                                 support_max=max_val,
+                                 num_atoms=support_size)
+    elif value_loss_type == "symlog":
         return symexp(value)
     else: # mse
         # Ensure it's squeezed if it has shape (B, 1)
