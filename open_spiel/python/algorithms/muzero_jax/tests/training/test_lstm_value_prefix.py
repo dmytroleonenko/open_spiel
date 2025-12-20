@@ -518,7 +518,7 @@ class TestValuePrefixRewardAccumulation:
         model = self.create_test_model(config, rng_key)
         target_rewards = jnp.arange(6, dtype=jnp.float32).reshape(1, -1)
 
-        expected, _ = apply_value_prefix_reward_accumulation(
+        expected = apply_value_prefix_reward_accumulation(
             target_rewards,
             config,
             None,
@@ -526,7 +526,7 @@ class TestValuePrefixRewardAccumulation:
             None,
             None,
         )
-        actual, _ = apply_value_prefix_reward_accumulation(
+        actual = apply_value_prefix_reward_accumulation(
             target_rewards,
             config,
             None,
@@ -544,29 +544,13 @@ class TestValuePrefixRewardAccumulation:
             lstm_horizon_length=2,
         )
 
-        class DummyLSTM:
-            def __init__(self, reward_support_size):
-                self.reward_support_size = reward_support_size
-                self.config = SimpleNamespace(lstm_hidden_size=16)
-
-            def init_hidden_state(self, batch_size):
-                zeros = jnp.zeros((batch_size, self.config.lstm_hidden_size))
-                return (zeros, zeros)
-
-            def reset_hidden_state(self, hidden_state, mask):
-                return hidden_state
-
-            def __call__(self, hidden_state, reward_hidden, training=False):
-                batch = hidden_state.shape[0]
-                rewards = jnp.ones((batch, self.reward_support_size))
-                return rewards, reward_hidden
-
-        model = SimpleNamespace(lstm_reward_network=DummyLSTM(config.reward_support_size))
+        # Model is irrelevant now
+        model = None
         target_rewards = jnp.zeros((2, 3, config.reward_support_size))
         mask = jnp.array([[1.0, 1.0, 0.0], [1.0, 0.0, 0.0]])
         hidden_states = jnp.ones((2, 3, 1, 1, 4))
 
-        predicted, _ = apply_value_prefix_reward_accumulation(
+        predicted = apply_value_prefix_reward_accumulation(
             target_rewards,
             config,
             mask,
@@ -584,12 +568,11 @@ class TestValuePrefixRewardAccumulation:
         
         empty_rewards = jnp.array([]).reshape(0, 0)
         
-        result_rewards, result_hidden = apply_value_prefix_reward_accumulation(
+        result_rewards = apply_value_prefix_reward_accumulation(
             empty_rewards, config, None, None, None, None
         )
         
         assert result_rewards.shape == empty_rewards.shape
-        assert result_hidden is None
 
 
 class TestLSTMNumericalStability:
