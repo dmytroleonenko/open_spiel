@@ -768,13 +768,6 @@ class MuZeroOrchestrator:
             'explore_frac': self.config.mcts.exploration_fraction,  # Note: field name is explore_frac
         }
         
-        # Scale mixed_value_threshold to trajectory units
-        # We convert the transition-based threshold to a trajectory-based one
-        # to match the monotonic trajectory IDs used in the trainer.
-        trajectory_size = getattr(self.config.replay_buffer, "max_trajectory_length", 200) or 200
-        threshold_transitions = getattr(self.config.training, 'mixed_value_threshold', 5000)
-        config_overrides['mixed_value_threshold'] = max(1, int(threshold_transitions / trajectory_size))
-
         # Filter overrides to only include fields that exist in MuZeroConfig
         valid_overrides = {}
         for key, value in config_overrides.items():
@@ -1050,6 +1043,10 @@ class MuZeroOrchestrator:
             # Convert to scalar
             if values.ndim > 1 and values.shape[-1] > 1:
                  values = losses_lib.support_to_scalar(values, self.muzero_config.support_min, self.muzero_config.support_max, values.shape[-1])
+            elif self.muzero_config.value_loss_type == "symlog":
+                 values = losses_lib.symexp(values, self.muzero_config.symlog_base)
+                 if values.ndim > 1:
+                     values = jnp.squeeze(values, axis=-1)
             elif values.ndim > 1:
                  values = jnp.squeeze(values, axis=-1)
 
@@ -1076,6 +1073,10 @@ class MuZeroOrchestrator:
 
                 batch_target_sarsa_values[i, t] = g_val
 
+        # For value_target="max" or default fallback, populate target_value with max(search, sarsa)
+        # This prevents training on zeros if the config falls through to target_value.
+        batch_target_values = np.maximum(batch_target_search_values, batch_target_sarsa_values)
+
         # Create base batch dictionary
         batch = {
             'observation': jnp.array(batch_observations),
@@ -1088,7 +1089,7 @@ class MuZeroOrchestrator:
             'target_sarsa_value': jnp.array(batch_target_sarsa_values),
             # Use raw trajectory counts (unscaled) for collected_transitions
             'collected_transitions': jnp.array(
-                getattr(self.replay_buffer, "_next_traj_id", np.max(traj_ids) + 1 if traj_ids is not None and len(traj_ids) > 0 else self._buffer_size())
+                getattr(self.replay_buffer, "_total_transitions", self._buffer_size() * self.muzero_config.trajectory_size)
             ),
         }
         
@@ -1096,10 +1097,19 @@ class MuZeroOrchestrator:
         if indices is not None:
             batch['indices'] = jnp.array(indices)
 
-        # Use traj_ids for mixed value target age (unscaled)
-        age_indices = traj_ids if traj_ids is not None else indices
-        if age_indices is not None:
-            batch['sample_indices'] = jnp.array(age_indices) # No scaling
+        # Use start_transition_index for accurate age, fallback to scaled indices
+        batch_sample_indices = np.zeros(batch_size, dtype=np.int64)
+        for i, trajectory in enumerate(trajectories):
+            if 'start_transition_index' in trajectory:
+                batch_sample_indices[i] = trajectory['start_transition_index']
+            elif traj_ids is not None:
+                # Fallback to trajectory ID scaling if start index missing (e.g. old data or remote)
+                batch_sample_indices[i] = int(traj_ids[i]) * self.muzero_config.trajectory_size
+            else:
+                batch_sample_indices[i] = 0
+
+        batch['sample_indices'] = jnp.array(batch_sample_indices)
+
         if weights is not None:
             batch['weights'] = jnp.array(weights)
             

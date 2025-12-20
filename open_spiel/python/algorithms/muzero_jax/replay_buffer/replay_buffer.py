@@ -80,6 +80,7 @@ class TrajectoryBuffer:
         self._trajectory_store: Dict[int, Dict[str, np.ndarray]] = {}
         self._trajectory_order: deque[int] = deque()
         self._next_traj_id = 0
+        self._total_transitions = 0
         # Immediate setup if shapes provided
         if self.observation_shape is not None and self.num_actions is not None:
             self._buffer = fbx.make_item_buffer(
@@ -95,7 +96,8 @@ class TrajectoryBuffer:
                 'policy_targets': jnp.zeros((self.max_trajectory_length, self.num_actions), dtype=jnp.float32),
                 'target_search_value': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
                 'target_sarsa_value': jnp.zeros(self.max_trajectory_length, dtype=jnp.float32),
-                'length': jnp.int32(1)
+                'length': jnp.int32(1),
+                'start_transition_index': jnp.int64(0)
             }
             self._buffer_state = self._buffer.init(dummy_trajectory)
 
@@ -122,7 +124,8 @@ class TrajectoryBuffer:
             'policy_targets': policy_targets_array,
             'target_search_value': np.array(target_search_value, dtype=np.float32),
             'target_sarsa_value': np.array(target_sarsa_value, dtype=np.float32),
-            'length': int(len(trajectory['actions']))
+            'length': int(len(trajectory['actions'])),
+            'start_transition_index': int(trajectory.get('start_transition_index', 0))
         }
 
     def _copy_for_return(self, stored: Dict[str, np.ndarray]) -> Dict[str, Any]:
@@ -137,6 +140,7 @@ class TrajectoryBuffer:
             ],
             'target_search_value': np.array(stored.get('target_search_value', stored['value_targets']), copy=True),
             'target_sarsa_value': np.array(stored.get('target_sarsa_value', stored['value_targets']), copy=True),
+            'start_transition_index': int(stored.get('start_transition_index', 0))
         }
 
     def _store_trajectory(self, trajectory: Dict[str, Any]) -> int:
@@ -220,6 +224,10 @@ class TrajectoryBuffer:
         target_search_value = trajectory.get('target_search_value', resolved_target_values)
         target_sarsa_value = trajectory.get('target_sarsa_value', resolved_target_values)
 
+        # Track start transition index
+        start_transition_index = self._total_transitions
+        self._total_transitions += traj_length
+
         self._store_trajectory({
             'observations': trajectory['observations'],
             'actions': trajectory['actions'],
@@ -227,7 +235,8 @@ class TrajectoryBuffer:
             'value_targets': resolved_target_values,
             'policy_targets': trajectory['policy_targets'],
             'target_search_value': target_search_value,
-            'target_sarsa_value': target_sarsa_value
+            'target_sarsa_value': target_sarsa_value,
+            'start_transition_index': start_transition_index
         })
         
         # Pad trajectory to max_trajectory_length
@@ -259,7 +268,8 @@ class TrajectoryBuffer:
             'policy_targets': jnp.array(padded_target_policies),
             'target_search_value': jnp.array(padded_target_search_value),
             'target_sarsa_value': jnp.array(padded_target_sarsa_value),
-            'length': jnp.int32(traj_length)  # Store actual length
+            'length': jnp.int32(traj_length),  # Store actual length
+            'start_transition_index': jnp.int64(start_transition_index)
         }
         
         # Add to buffer
@@ -351,6 +361,7 @@ class PrioritizedTrajectoryBuffer:
             'target_search_value': jnp.zeros(max_trajectory_length, dtype=jnp.float32),
             'target_sarsa_value': jnp.zeros(max_trajectory_length, dtype=jnp.float32),
             'length': jnp.int32(1),
+            'start_transition_index': jnp.int64(0),
             'priority': jnp.float32(1.0)
         }
         
@@ -360,6 +371,7 @@ class PrioritizedTrajectoryBuffer:
         self._trajectory_order: deque[int] = deque()
         self._id_priorities: Dict[int, float] = {}
         self._next_traj_id = 0
+        self._total_transitions = 0
 
     def __len__(self) -> int:
         return self._current_size
@@ -386,7 +398,8 @@ class PrioritizedTrajectoryBuffer:
             'policy_targets': policy_targets_array,
             'target_search_value': np.array(target_search_value, dtype=np.float32),
             'target_sarsa_value': np.array(target_sarsa_value, dtype=np.float32),
-            'length': int(len(trajectory['actions']))
+            'length': int(len(trajectory['actions'])),
+            'start_transition_index': int(trajectory.get('start_transition_index', 0))
         }
 
     def _copy_for_return(self, stored: Dict[str, np.ndarray]) -> Dict[str, Any]:
@@ -400,6 +413,7 @@ class PrioritizedTrajectoryBuffer:
             ],
             'target_search_value': np.array(stored.get('target_search_value', stored['value_targets']), copy=True),
             'target_sarsa_value': np.array(stored.get('target_sarsa_value', stored['value_targets']), copy=True),
+            'start_transition_index': int(stored.get('start_transition_index', 0))
         }
 
     def _store_trajectory(self, trajectory: Dict[str, Any], priority: float) -> int:
@@ -466,6 +480,10 @@ class PrioritizedTrajectoryBuffer:
         target_search_value = trajectory.get('target_search_value', resolved_target_values)
         target_sarsa_value = trajectory.get('target_sarsa_value', resolved_target_values)
 
+        # Track start transition index
+        start_transition_index = self._total_transitions
+        self._total_transitions += traj_length
+
         self._store_trajectory({
             'observations': trajectory['observations'],
             'actions': trajectory['actions'],
@@ -473,7 +491,8 @@ class PrioritizedTrajectoryBuffer:
             'value_targets': resolved_target_values,
             'policy_targets': trajectory['policy_targets'],
             'target_search_value': target_search_value,
-            'target_sarsa_value': target_sarsa_value
+            'target_sarsa_value': target_sarsa_value,
+            'start_transition_index': start_transition_index
         }, priority)
         
         # Pad trajectory to max_trajectory_length
@@ -506,6 +525,7 @@ class PrioritizedTrajectoryBuffer:
             'target_search_value': jnp.array(padded_target_search_value),
             'target_sarsa_value': jnp.array(padded_target_sarsa_value),
             'length': jnp.int32(traj_length),
+            'start_transition_index': jnp.int64(start_transition_index),
             'priority': jnp.float32(priority)
         }
         
