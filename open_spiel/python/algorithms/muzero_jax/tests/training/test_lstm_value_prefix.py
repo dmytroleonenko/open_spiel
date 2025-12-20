@@ -391,49 +391,36 @@ class TestValuePrefixRewardAccumulation:
         batch_size, num_steps = 2, 6
         target_rewards = jax.random.normal(rng_key, (batch_size, num_steps))
         
-        result_rewards, result_hidden = apply_value_prefix_reward_accumulation(
+        result_rewards = apply_value_prefix_reward_accumulation(
             target_rewards, config, None, None, None, None
         )
         
         # Should return original rewards unchanged
         assert jnp.allclose(result_rewards, target_rewards)
-        assert result_hidden is None
     
-    def test_value_prefix_fallback_no_model(self, rng_key):
-        """Test value prefix fallback when model is None."""
-        config = self.create_test_config(use_value_prefix=True)
-        
-        batch_size, num_steps = 2, 6
-        target_rewards = jax.random.normal(rng_key, (batch_size, num_steps))
-        
-        result_rewards, result_hidden = apply_value_prefix_reward_accumulation(
-            target_rewards, config, None, None, None, None
-        )
-        
-        # Should use simple accumulation fallback
-        assert result_rewards.shape == target_rewards.shape
-        assert result_hidden is None
-    
-    def test_value_prefix_with_lstm_model(self, rng_key):
-        """Test value prefix with actual LSTM model."""
+    def test_value_prefix_target_accumulation(self, rng_key):
+        """Test value prefix target accumulation (ignoring model)."""
         config = self.create_test_config(use_value_prefix=True, lstm_horizon_length=3)
+        # Even if model is passed, it should be ignored for target generation
         model = self.create_test_model(config, rng_key)
         
         batch_size, num_steps = 2, 6
-        target_rewards = jax.random.normal(rng_key, (batch_size, num_steps))
+        # Use simple ones for predictable accumulation
+        target_rewards = jnp.ones((batch_size, num_steps))
         hidden_states = jax.random.normal(rng_key, (batch_size, num_steps, 2, 2, 64))
         initial_reward_hidden = model.lstm_reward_network.init_hidden_state(batch_size)
         
-        result_rewards, result_hidden = apply_value_prefix_reward_accumulation(
+        result_rewards = apply_value_prefix_reward_accumulation(
             target_rewards, config, None, model, hidden_states, initial_reward_hidden
         )
         
         # Check output structure
         assert result_rewards.shape == target_rewards.shape
-        assert isinstance(result_hidden, tuple) and len(result_hidden) == 2
-        result_c, result_h = result_hidden
-        assert result_h.shape == (batch_size, 128)  # lstm_hidden_size
-        assert result_c.shape == (batch_size, 128)
+
+        # Verify accumulation: 1, 2, 3 (reset) 1, 2, 3
+        expected_row = jnp.array([1.0, 2.0, 3.0, 1.0, 2.0, 3.0])
+        assert jnp.allclose(result_rewards[0], expected_row)
+        assert jnp.allclose(result_rewards[1], expected_row)
     
     def test_value_prefix_with_game_mask(self, rng_key):
         """Test value prefix with game history mask."""
@@ -441,17 +428,22 @@ class TestValuePrefixRewardAccumulation:
         model = self.create_test_model(config, rng_key)
         
         batch_size, num_steps = 2, 6
-        target_rewards = jax.random.normal(rng_key, (batch_size, num_steps))
+        target_rewards = jnp.ones((batch_size, num_steps))
         hidden_states = jax.random.normal(rng_key, (batch_size, num_steps, 2, 2, 64))
         game_mask = jnp.array([[1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 0, 0]], dtype=jnp.float32)
         
-        result_rewards, result_hidden = apply_value_prefix_reward_accumulation(
+        result_rewards = apply_value_prefix_reward_accumulation(
             target_rewards, config, game_mask, model, hidden_states, None
         )
         
         # Check that masked positions are zeroed
         assert jnp.allclose(result_rewards[0, 3:], 0.0)  # Last 3 steps masked
         assert jnp.allclose(result_rewards[1, 4:], 0.0)  # Last 2 steps masked
+
+        # Verify accumulation where mask is 1
+        # Horizon is 5 (default).
+        # Row 0: 1, 2, 3, 0, 0, 0
+        assert jnp.allclose(result_rewards[0, :3], jnp.array([1.0, 2.0, 3.0]))
     
     def test_value_prefix_horizon_reset_behavior(self, rng_key):
         """Test LSTM horizon reset behavior."""
@@ -462,13 +454,13 @@ class TestValuePrefixRewardAccumulation:
         target_rewards = jnp.ones((batch_size, num_steps))
         hidden_states = jax.random.normal(rng_key, (batch_size, num_steps, 2, 2, 64))
         
-        result_rewards, result_hidden = apply_value_prefix_reward_accumulation(
+        result_rewards = apply_value_prefix_reward_accumulation(
             target_rewards, config, None, model, hidden_states, None
         )
         
-        # Check that LSTM produces different outputs (not just accumulation)
-        assert not jnp.allclose(result_rewards[:, 0], result_rewards[:, 1])
-        assert not jnp.allclose(result_rewards[:, 1], result_rewards[:, 2])
+        # With horizon 2 and ones input: 1, 2, 1, 2
+        expected = jnp.array([[1.0, 2.0, 1.0, 2.0]])
+        assert jnp.allclose(result_rewards, expected)
 
     def test_total_loss_static_initializes_lstm_hidden_state(self, rng_key):
         config = dataclasses.replace(
@@ -814,30 +806,14 @@ def test_value_prefix_falls_back_without_hidden_states():
         num_actions=3,
     )
     rewards = jnp.ones((base_config.batch_size, base_config.num_unroll_steps + 1))
-    accumulated, hidden = apply_value_prefix_reward_accumulation(
+    accumulated = apply_value_prefix_reward_accumulation(
         rewards, base_config, None, model=None, hidden_states=None, initial_reward_hidden=None
     )
-    assert hidden is None
     assert accumulated.shape == rewards.shape
 
 
 def test_value_prefix_mask_expansion_for_categorical_rewards():
     """Categorical rewards should broadcast the mask before applying it."""
-    class DummyLSTM:
-        def __init__(self, support_size):
-            self.support_size = support_size
-
-        def init_hidden_state(self, batch_size):
-            zeros = jnp.zeros((batch_size, 2))
-            return zeros, zeros
-
-        def reset_hidden_state(self, hidden_state, mask):
-            return hidden_state
-
-        def __call__(self, hidden_state, reward_hidden, training=False):
-            batch_size = hidden_state.shape[0]
-            return jnp.ones((batch_size, self.support_size)), reward_hidden
-
     config = MuZeroConfig(
         use_value_prefix=True,
         reward_support_size=3,
@@ -846,11 +822,11 @@ def test_value_prefix_mask_expansion_for_categorical_rewards():
         batch_size=1,
         num_actions=2,
     )
-    model = Mock()
-    model.lstm_reward_network = DummyLSTM(config.reward_support_size)
+    # Model is irrelevant now
+    model = None
     hidden_states = jnp.zeros((1, config.num_unroll_steps + 1, 1, 1, 1))
     mask = jnp.array([[1.0, 0.0]])
-    predicted, _ = apply_value_prefix_reward_accumulation(
+    predicted = apply_value_prefix_reward_accumulation(
         jnp.zeros((1, config.num_unroll_steps + 1, config.reward_support_size)),
         config,
         mask,
