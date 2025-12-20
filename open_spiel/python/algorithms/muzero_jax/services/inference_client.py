@@ -19,9 +19,36 @@ from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
 from open_spiel.python.algorithms.muzero_jax.services.inference_server import (
     BatchingInferenceServer,
 )
+from open_spiel.python.algorithms.muzero_jax.training.losses import support_to_scalar, symexp
 
 
 InferenceOutput = Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, object, object]
+
+
+def _convert_scalar_value(network, value_output, is_reward=False):
+    """Converts network output (categorical logits or symlog) to scalar value for MCTS."""
+    config = network.config
+    loss_type = config.reward_loss_type if is_reward else config.value_loss_type
+
+    if loss_type == "categorical":
+        support_size = config.reward_support_size if is_reward else config.value_support_size
+        num_atoms = support_size if support_size > 0 else 601
+        return support_to_scalar(value_output, num_atoms=num_atoms)
+    elif loss_type == "symlog":
+        base = getattr(config, 'symlog_base', jnp.e)
+        return symexp(value_output, base=base)
+    else:
+        return value_output
+
+
+def _process_inference_output(network, output: InferenceOutput) -> InferenceOutput:
+    """Processes raw network output to ensure values/rewards are scalars for MCTS."""
+    hidden_state, reward, value, policy_logits, projected_output, reward_hidden = output
+
+    value = _convert_scalar_value(network, value, is_reward=False)
+    reward = _convert_scalar_value(network, reward, is_reward=True)
+
+    return (hidden_state, reward, value, policy_logits, projected_output, reward_hidden)
 
 
 class InferenceClient(Protocol):
@@ -53,10 +80,12 @@ class LocalInferenceClient:
     network: MuZeroNetwork
 
     def initial_inference(self, observation_batch, training: bool = False) -> InferenceOutput:
-        return self.network.initial_inference(observation_batch, training=training)
+        output = self.network.initial_inference(observation_batch, training=training)
+        return _process_inference_output(self.network, output)
 
     def recurrent_inference(self, hidden_state_batch, action_batch, training: bool = False) -> InferenceOutput:
-        return self.network.recurrent_inference(hidden_state_batch, action_batch, training=training)
+        output = self.network.recurrent_inference(hidden_state_batch, action_batch, training=training)
+        return _process_inference_output(self.network, output)
 
     def close(self) -> None:  # pragma: no cover - trivial
         return None
@@ -133,15 +162,15 @@ class LocalBatchingInferenceClient:
     async def _batched_initial(self, batch: Sequence[Any]) -> Sequence[InferenceOutput]:
         stacked = jnp.concatenate(batch, axis=0)
         outputs = self._network.initial_inference(stacked, training=False)
+        outputs = _process_inference_output(self._network, outputs)
         return _split_batched_outputs(outputs, len(batch))
 
     async def _batched_recurrent(self, batch: Sequence[Tuple[Any, Any]]) -> Sequence[InferenceOutput]:
         hidden = jnp.concatenate([item[0] for item in batch], axis=0)
         actions = jnp.concatenate([item[1] for item in batch], axis=0)
         outputs = self._network.recurrent_inference(hidden, actions, training=False)
+        outputs = _process_inference_output(self._network, outputs)
         return _split_batched_outputs(outputs, len(batch))
-
-
 
 
 class InferenceNetworkAdapter:
