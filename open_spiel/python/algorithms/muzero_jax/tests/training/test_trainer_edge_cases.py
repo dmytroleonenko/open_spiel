@@ -138,9 +138,8 @@ def test_utility_functions_fast(common_key, common_cfg_flat):
 
     config_no_prefix = MuZeroConfig(use_value_prefix=False)
     test_rewards = jnp.ones((2, 3))
-    result_no_prefix, reward_hidden = apply_value_prefix_reward_accumulation(test_rewards, config_no_prefix)
+    result_no_prefix = apply_value_prefix_reward_accumulation(test_rewards, config_no_prefix)
     assert jnp.allclose(result_no_prefix, test_rewards)
-    assert reward_hidden is None  # Should be None when use_value_prefix=False
 
     # Test generate_top_new_masks with conversion
     sample_indices = jnp.array([100, 200, 300])

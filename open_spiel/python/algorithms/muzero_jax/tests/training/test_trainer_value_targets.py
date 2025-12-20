@@ -333,8 +333,8 @@ def test_apply_value_prefix_reward_accumulation_scalar_basic(common_key, common_
         [[1.0, 3.0, 6.0, 4.0, 9.0, 15.0], [2.0, 4.0, 6.0, 1.0, 2.0, 3.0]]
     )
 
-    # Apply function - unpack tuple since it now returns (result, hidden_state)
-    result, _ = apply_value_prefix_reward_accumulation(rewards, config)
+    # Apply function
+    result = apply_value_prefix_reward_accumulation(rewards, config)
 
     # Verify accumulation
     assert jnp.allclose(result, expected), f"Expected {expected}, got {result}"
