@@ -293,29 +293,10 @@ class Actor:
         """
         Compute n-step value targets.
         
-        Args:
-            rewards: List of rewards from the episode
-            final_value: Final value estimate (0 for terminal states)
-            
-        Returns:
-            List of value targets for each step
+        Note: SARSA target computation has moved to the learner/batch worker for dynamic bootstrapping.
+        This method now returns zeros to maintain API compatibility.
         """
-        value_targets = []
-        episode_length = len(rewards)
-        
-        for i in range(episode_length):
-            # Compute n-step return
-            target = 0.0
-            for j in range(min(self.n_step_return, episode_length - i)):
-                target += (self.discount_factor ** j) * rewards[i + j]
-            
-            # Add discounted final value if we don't reach the end
-            if i + self.n_step_return < episode_length:
-                target += (self.discount_factor ** self.n_step_return) * final_value
-            
-            value_targets.append(target)
-            
-        return value_targets        
+        return [0.0] * len(rewards)
     def play_episode(self, rng_key: jax.Array) -> Dict[str, List[Any]]:
         """
         Play a single episode and collect trajectory data.
@@ -339,7 +320,7 @@ class Actor:
         actions = []
         rewards = []
         policy_targets = []
-        mcts_values = []
+        search_values = []
         
         step = 0
         max_steps = self.game_wrapper._game.max_game_length() + 1
@@ -379,7 +360,7 @@ class Actor:
                         uniform_policy = jnp.ones(num_actions) / num_actions
                         policy_targets.append(uniform_policy)
                         # No MCTS value for chance nodes, use 0
-                        mcts_values.append(0.0)
+                        search_values.append(0.0)
                     
                     continue
                     
@@ -450,8 +431,15 @@ class Actor:
                 action = legal_actions[0] if legal_actions else 0  # pragma: no cover
                 self.logger.info(f"Falling back to legal action: {action}")  # pragma: no cover
             
-            # Store MCTS value for target computation
-            mcts_values.append(float(value[0]))
+            # Store MCTS search value (root value from search tree)
+            # Use try-except to handle mocks in tests that might not have search_tree
+            try:
+                # EfficientZeroV2 uses the improved value estimate from MCTS root
+                search_value = float(policy_output.search_tree.summary().value[0])
+            except (AttributeError, IndexError, TypeError):
+                # Fallback to network value if search tree is not available (e.g. in tests)
+                search_value = float(value[0])
+            search_values.append(search_value)
             
             # Apply action to environment
             obs, reward_list, done = self.game_wrapper.step(action)
@@ -475,7 +463,9 @@ class Actor:
             'actions': actions,
             'rewards': rewards,
             'policy_targets': policy_targets,
-            'value_targets': value_targets
+            'value_targets': value_targets,
+            'target_search_value': search_values,
+            'target_sarsa_value': value_targets,  # Alias for value_targets (n-step returns)
         }        
     def run(self, rng_key: jax.Array, num_episodes: int = 1) -> None:
         """

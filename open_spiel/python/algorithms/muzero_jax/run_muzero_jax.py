@@ -44,6 +44,7 @@ from open_spiel.python.algorithms.muzero_jax.training.trainer import (
     create_muzero_config_for_game,
     create_network_config_from_muzero_config
 )
+from open_spiel.python.algorithms.muzero_jax.training import losses as losses_lib
 from open_spiel.python.algorithms.muzero_jax.self_play.actor import Actor
 from open_spiel.python.algorithms.muzero_jax.self_play import bootstrap_actor as bootstrap_module
 
@@ -451,7 +452,32 @@ class MuZeroOrchestrator:
             self.replay_buffer, "update_priorities"
         ) or hasattr(self.replay_buffer, "update_priorities_by_ids")
         try:
-            if is_prioritized:
+            if hasattr(self.replay_buffer, "sample_batch_with_ids"):
+                with self._buffer_lock:
+                    sample_out = self.replay_buffer.sample_batch_with_ids(
+                        self.config.training.batch_size,
+                        rng_key=sample_key,
+                    )
+
+                # Robust unpacking for 2, 3, or 4 return values
+                traj_ids = None
+                sampled_indices = None
+                importance_weights = None
+
+                if len(sample_out) == 4:
+                    # (trajectories, traj_ids, buffer_indices, weights)
+                    trajectory_list, traj_ids, sampled_indices, importance_weights = sample_out
+                elif len(sample_out) == 3:
+                    # (trajectories, ids, weights) - IDs are used as indices and traj_ids (e.g. Remote)
+                    trajectory_list, sampled_indices, importance_weights = sample_out
+                    traj_ids = sampled_indices
+                elif len(sample_out) == 2:
+                    # (trajectories, ids)
+                    trajectory_list, sampled_indices = sample_out
+                    traj_ids = sampled_indices
+                else:
+                    raise ValueError(f"Unexpected sample_batch_with_ids return length: {len(sample_out)}")
+            elif is_prioritized:
                 with self._buffer_lock:
                     sample_out = self.replay_buffer.sample_batch(
                         self.config.training.batch_size,
@@ -489,6 +515,7 @@ class MuZeroOrchestrator:
             trajectory_list,
             sampled_indices,
             importance_weights,
+            traj_ids,
         )
         metrics = self.learner.train_step(batch)
         self.training_step += 1
@@ -931,7 +958,7 @@ class MuZeroOrchestrator:
         else:
             return {'steps_trained': 0}
             
-    def _convert_trajectories_to_batch(self, trajectories: List[Dict], indices: Optional[np.ndarray] = None, weights: Optional[np.ndarray] = None) -> Dict:
+    def _convert_trajectories_to_batch(self, trajectories: List[Dict], indices: Optional[np.ndarray] = None, weights: Optional[np.ndarray] = None, traj_ids: Optional[np.ndarray] = None) -> Dict:
         """Convert list of trajectories to batched format expected by trainer.
         
         Args:
@@ -947,47 +974,109 @@ class MuZeroOrchestrator:
         
         # Get dimensions
         batch_size = len(trajectories)
-        # Use num_unroll_steps + 1 as the expected time dimension for training
         expected_length = self.muzero_config.num_unroll_steps + 1
         observation_shape = trajectories[0]['observations'][0].shape
         num_actions = self.game_wrapper.num_distinct_actions()
-        
-        # Use expected_length instead of max trajectory length to match model unrolling
         max_length = expected_length
         
-        # Initialize batch arrays with padding
+        # Initialize batch arrays
         batch_observations = np.zeros((batch_size, max_length, *observation_shape))
         batch_actions = np.zeros((batch_size, max_length), dtype=np.int32)
         batch_target_rewards = np.zeros((batch_size, max_length))  
         batch_target_values = np.zeros((batch_size, max_length))
         batch_target_policies = np.zeros((batch_size, max_length, num_actions))
         batch_masks = np.zeros((batch_size, max_length), dtype=np.float32)
+        batch_target_search_values = np.zeros((batch_size, max_length))
+        batch_target_sarsa_values = np.zeros((batch_size, max_length))
         
-        # Fill batch arrays
+        # Prepare for bootstrapping SARSA targets
+        bootstrap_requests = [] # list of (batch_idx, time_idx, obs)
+        gamma = self.muzero_config.discount_factor
+        td_steps = self.muzero_config.td_steps
+
+        # First pass: fill observations and collect bootstrap requests
         for i, trajectory in enumerate(trajectories):
             traj_length = len(trajectory['actions'])
-            # Limit to the expected length to match model unrolling
             effective_length = min(traj_length, max_length)
+            rewards = trajectory['rewards']
             
-            # Fill observations (pad with last observation if needed)
+            # Fill observations
             for j in range(max_length):
                 if j < len(trajectory['observations']) and j < max_length:
                     batch_observations[i, j] = trajectory['observations'][j]
                 elif len(trajectory['observations']) > 0:
-                    # Pad with last observation
                     batch_observations[i, j] = trajectory['observations'][min(j, len(trajectory['observations']) - 1)]
             
-            # Fill actions, rewards, values, policies (only up to effective_length)
+            # Fill basic targets
             batch_actions[i, :effective_length] = trajectory['actions'][:effective_length]
-            batch_target_rewards[i, :effective_length] = trajectory['rewards'][:effective_length]
+            batch_target_rewards[i, :effective_length] = rewards[:effective_length]
             batch_target_values[i, :effective_length] = trajectory['value_targets'][:effective_length]
             
+            # Search values
+            if 'target_search_value' in trajectory:
+                batch_target_search_values[i, :effective_length] = trajectory['target_search_value'][:effective_length]
+            else:
+                batch_target_search_values[i, :effective_length] = trajectory['value_targets'][:effective_length]
+
+            # Policies
             for j in range(effective_length):
                 batch_target_policies[i, j] = trajectory['policy_targets'][j]
-            
-            # Set mask (1.0 for valid steps, 0.0 for padding)
+
             batch_masks[i, :effective_length] = 1.0
-        
+
+            # Collect bootstrap requests for SARSA
+            for t in range(effective_length):
+                bootstrap_t = t + td_steps
+                if bootstrap_t < len(rewards): # Within trajectory
+                    obs = trajectory['observations'][bootstrap_t]
+                    bootstrap_requests.append((i, t, obs))
+
+        # Run inference for bootstrapping if needed
+        bootstrap_values_map = {}
+        if bootstrap_requests:
+            obs_batch = np.stack([req[2] for req in bootstrap_requests])
+            obs_batch_jax = jnp.array(obs_batch)
+
+            # Run inference
+            _, _, values, _, _, _ = self.network.initial_inference(obs_batch_jax, training=False)
+
+            # Convert to scalar
+            if values.ndim > 1 and values.shape[-1] > 1:
+                 values = losses_lib.support_to_scalar(values, self.muzero_config.support_min, self.muzero_config.support_max, values.shape[-1])
+            elif self.muzero_config.value_loss_type == "symlog":
+                 values = losses_lib.symexp(values, self.muzero_config.symlog_base)
+                 if values.ndim > 1:
+                     values = jnp.squeeze(values, axis=-1)
+            elif values.ndim > 1:
+                 values = jnp.squeeze(values, axis=-1)
+
+            values_np = np.array(values)
+            for idx, (i, t, _) in enumerate(bootstrap_requests):
+                bootstrap_values_map[(i, t)] = values_np[idx]
+
+        # Second pass: compute SARSA targets
+        for i, trajectory in enumerate(trajectories):
+            effective_length = min(len(trajectory['actions']), max_length)
+            rewards = trajectory['rewards']
+
+            for t in range(effective_length):
+                g_val = 0.0
+                for k in range(td_steps):
+                    if t + k < len(rewards):
+                        g_val += (gamma ** k) * rewards[t + k]
+                    else:
+                        break
+
+                # Bootstrap
+                if (i, t) in bootstrap_values_map:
+                    g_val += (gamma ** td_steps) * bootstrap_values_map[(i, t)]
+
+                batch_target_sarsa_values[i, t] = g_val
+
+        # For value_target="max" or default fallback, populate target_value with max(search, sarsa)
+        # This prevents training on zeros if the config falls through to target_value.
+        batch_target_values = np.maximum(batch_target_search_values, batch_target_sarsa_values)
+
         # Create base batch dictionary
         batch = {
             'observation': jnp.array(batch_observations),
@@ -996,11 +1085,31 @@ class MuZeroOrchestrator:
             'target_value': jnp.array(batch_target_values),
             'target_policy': jnp.array(batch_target_policies),
             'game_history_mask': jnp.array(batch_masks),
+            'target_search_value': jnp.array(batch_target_search_values),
+            'target_sarsa_value': jnp.array(batch_target_sarsa_values),
+            # Use raw trajectory counts (unscaled) for collected_transitions
+            'collected_transitions': jnp.array(
+                getattr(self.replay_buffer, "_total_transitions", self._buffer_size() * self.muzero_config.trajectory_size)
+            ),
         }
         
-        # Add priority replay fields if provided
+        # Add priority replay fields
         if indices is not None:
             batch['indices'] = jnp.array(indices)
+
+        # Use start_transition_index for accurate age, fallback to scaled indices
+        batch_sample_indices = np.zeros(batch_size, dtype=np.int64)
+        for i, trajectory in enumerate(trajectories):
+            if 'start_transition_index' in trajectory:
+                batch_sample_indices[i] = trajectory['start_transition_index']
+            elif traj_ids is not None:
+                # Fallback to trajectory ID scaling if start index missing (e.g. old data or remote)
+                batch_sample_indices[i] = int(traj_ids[i]) * self.muzero_config.trajectory_size
+            else:
+                batch_sample_indices[i] = 0
+
+        batch['sample_indices'] = jnp.array(batch_sample_indices)
+
         if weights is not None:
             batch['weights'] = jnp.array(weights)
             

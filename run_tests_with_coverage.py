@@ -436,8 +436,8 @@ def main(
     """Main function to coordinate parallel test execution with coverage."""
     
     # Change to the project root
-    project_root = "/Users/dleonenko/open_spiel"
-    os.chdir(project_root)
+    project_root = os.getcwd()
+    # os.chdir(project_root) # Already in current working directory
     
     controls = compute_output_controls(quiet, debug_worker_logs)
     quiet_mode = controls.quiet

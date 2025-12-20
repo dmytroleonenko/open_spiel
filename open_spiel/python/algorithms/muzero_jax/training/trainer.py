@@ -1687,6 +1687,7 @@ def apply_mixed_value_targets(
     """
     Apply EfficientZeroV2 mixed value target logic using top_new_masks.
     
+    Implements P0 item 2 from parity checklist: Ensure mixed value targets use real search/SARSA sources.
     Recent samples (mask=1) use sarsa values, old samples (mask=0) use search values.
     
     Args:
