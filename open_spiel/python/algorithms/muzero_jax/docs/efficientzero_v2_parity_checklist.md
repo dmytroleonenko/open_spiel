@@ -88,7 +88,7 @@ TODO 3 (P0): Align MCTS implementation with EfficientZeroV2 sequential halving +
 - Test/validation:
   - Parity test: For a fixed root prior/value and RNG seed, compare root action distribution between PyTorch MCTS and JAX MCTS over multiple runs; measure KL divergence (target < 1e-3 for deterministic cases).
 
-TODO 4 (P0): Convert categorical/symlog values to scalar before MCTS
+TODO 4 (P0): Convert categorical/symlog values to scalar before MCTS (DONE)
 - Gap: JAX passes raw value head outputs to MCTS even when value loss type is categorical/symlog.
 - JAX location: `open_spiel/python/algorithms/muzero_jax/self_play/actor.py` (root value), `open_spiel/python/algorithms/muzero_jax/mcts/mctx_wrapper.py`.
 - PyTorch location: `EfficientZeroV2/ez/agents/models/__init__.py` (value conversion in `initial_inference` / `recurrent_inference`).

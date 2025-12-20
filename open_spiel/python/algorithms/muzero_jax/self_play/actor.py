@@ -26,6 +26,7 @@ from open_spiel.python.algorithms.muzero_jax.services.inference_client import (
     LocalInferenceClient,
     InferenceNetworkAdapter,
 )
+from open_spiel.python.algorithms.muzero_jax.utils import convert_value
 from open_spiel.python.algorithms.muzero_jax.utils.checkpointing import load_checkpoint, get_latest_checkpoint
 
 
@@ -396,11 +397,14 @@ class Actor:
                 obs_array
             )
             
+            # Apply value conversion (categorical/symlog to scalar)
+            value_scalar = convert_value(value, self.config)
+
             # Create root for MCTS using mctx.RootFnOutput
             from mctx._src.base import RootFnOutput
             root = RootFnOutput(
                 prior_logits=policy_logits,  # Keep batch dimension for mctx
-                value=value,
+                value=value_scalar,
                 embedding=hidden_state
             )
             

@@ -27,6 +27,10 @@ InferenceOutput = Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, obje
 class InferenceClient(Protocol):
     """Protocol describing the inference operations actors require."""
 
+    @property
+    def config(self) -> Any:
+        ...
+
     def initial_inference(self, observation_batch, training: bool = False) -> InferenceOutput:
         ...
 
@@ -51,6 +55,10 @@ class LocalInferenceClient:
     """
 
     network: MuZeroNetwork
+
+    @property
+    def config(self) -> Any:
+        return self.network.config
 
     def initial_inference(self, observation_batch, training: bool = False) -> InferenceOutput:
         return self.network.initial_inference(observation_batch, training=training)
@@ -89,6 +97,10 @@ class LocalBatchingInferenceClient:
         self._initial_server = self._run_coro(self._create_server(self._batched_initial))
         self._recurrent_server = self._run_coro(self._create_server(self._batched_recurrent))
         self._closed = False
+
+    @property
+    def config(self) -> Any:
+        return self._network.config
 
     def initial_inference(self, observation_batch, training: bool = False) -> InferenceOutput:
         del training  # Training flag unused in inference client wrapper
@@ -156,6 +168,10 @@ class InferenceNetworkAdapter:
 
     def __init__(self, client: InferenceClient):
         self._client = client
+
+    @property
+    def config(self) -> Any:
+        return self._client.config
 
     def initial_inference(self, observation_batch, training: bool = False) -> InferenceOutput:
         return self._client.initial_inference(observation_batch, training=training)
