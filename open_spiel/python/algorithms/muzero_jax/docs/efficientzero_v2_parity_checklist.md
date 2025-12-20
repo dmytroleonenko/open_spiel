@@ -96,6 +96,7 @@ TODO 4 (P0): Convert categorical/symlog values to scalar before MCTS
   - Add conversion logic in JAX inference outputs: support-to-scalar or symexp conversion prior to MCTS usage.
 - Test/validation:
   - Unit test: Create categorical value logits, confirm MCTS receives scalar values identical to PyTorch conversion.
+- Status: **Implemented** in `open_spiel/python/algorithms/muzero_jax/services/inference_client.py` and validated by `open_spiel/python/algorithms/muzero_jax/tests/test_inference_value_conversion.py`.
 
 ---
 

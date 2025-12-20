@@ -354,6 +354,9 @@ def create_network_config_from_muzero_config(
         spatial_extents=spatial_extents,
         value_support_size=muzero_config.value_support_size,
         reward_support_size=muzero_config.reward_support_size,
+        # Transfer support transformation parameters
+        support_min=muzero_config.support_min,
+        support_max=muzero_config.support_max,
         # Transfer loss types from trainer config to network config
         value_loss_type=muzero_config.value_loss_type,
         reward_loss_type=muzero_config.reward_loss_type,
