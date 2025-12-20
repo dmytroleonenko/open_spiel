@@ -51,7 +51,7 @@ This section consolidates `TODO_JAX_MUZERO.md` into this single file. Each item 
 
 ## P0 - Value Prefix / Reward Targets (Training-Critical)
 
-TODO 1 (P0): Align value-prefix target computation with EfficientZeroV2
+DONE 1 (P0): Align value-prefix target computation with EfficientZeroV2
 - Gap: JAX applies `apply_value_prefix_reward_accumulation` to replace targets with LSTM-predicted rewards (self-referential). PyTorch uses cumulative environment rewards as value-prefix targets and uses LSTM only in inference for value-prefix prediction.
 - JAX location: `open_spiel/python/algorithms/muzero_jax/training/trainer.py` in `apply_value_prefix_reward_accumulation` and the call site in `_compute_total_loss_static`.
 - PyTorch location: `EfficientZeroV2/ez/worker/batch_worker.py` (value_prefix accumulation on env rewards), and `EfficientZeroV2/ez/agents/models/__init__.py` (reward prediction in inference).
@@ -62,6 +62,7 @@ TODO 1 (P0): Align value-prefix target computation with EfficientZeroV2
 - Test/validation:
   - Unit test: Create a deterministic reward sequence and verify JAX `value_prefix` targets match PyTorch `batch_worker` logic for identical rewards and horizon.
   - Integration test: Compare JAX vs PyTorch value-prefix targets for a fixed trajectory and config (same `lstm_horizon_length`).
+- Status: **Completed**. JAX now computes value-prefix targets as cumulative sums of environment rewards (reset by `lstm_horizon_length`), independent of model predictions.
 
 TODO 2 (P0): Ensure mixed value targets use real search/SARSA sources
 - Gap: JAX `Actor` only returns `value_targets` and lacks `target_search_value`, `target_sarsa_value`, and `sample_indices`/`collected_transitions`, so mixed targets are effectively degenerate.

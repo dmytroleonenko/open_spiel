@@ -154,16 +154,12 @@ class TestMultiModelOrchestration:
         hidden_states = jnp.ones((batch_size, num_steps, 32))  # Flat hidden states
         
         # Test value prefix accumulation with LSTM
-        accumulated_rewards, final_hidden = apply_value_prefix_reward_accumulation(
+        accumulated_rewards = apply_value_prefix_reward_accumulation(
             target_rewards, config, None, model, hidden_states, None
         )
         
         # Check output shapes
         assert accumulated_rewards.shape == target_rewards.shape
-        
-        # If LSTM is used, final_hidden should not be None
-        if config.use_value_prefix:
-            assert final_hidden is not None
     
     def test_policy_reanalysis_with_mcts(self, model, config):
         """Test that policy reanalysis uses real MCTS instead of placeholders."""

@@ -89,12 +89,10 @@ def test_trainer_module_edge_cases_and_fallbacks(common_key, common_cfg_flat):
 
     test_rewards = jnp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
     config_no_prefix = MuZeroConfig(use_value_prefix=False)
-    result_rewards, result_hidden = apply_value_prefix_reward_accumulation(
+    result_rewards = apply_value_prefix_reward_accumulation(
         test_rewards, config_no_prefix
     )
     assert jnp.allclose(result_rewards, test_rewards)
-    # When use_value_prefix=False, hidden state should be None
-    assert result_hidden is None
 
     # Test 4: Cover mctx_wrapper ImportError fallback by verifying the module works normally
     from open_spiel.python.algorithms.muzero_jax.mcts.mctx_wrapper import MCTS

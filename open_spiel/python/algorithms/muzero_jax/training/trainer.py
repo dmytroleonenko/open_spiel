@@ -1031,9 +1031,10 @@ class Learner:
         
         # Apply LSTM-based value prefix reward accumulation if enabled
         if config.use_value_prefix:
-            hidden_states_tensor = jnp.stack(hidden_states_list, axis=1)  # B, K+1, C, H, W
-            target_rewards, final_reward_hidden = apply_value_prefix_reward_accumulation(
-                target_rewards_original, config, game_history_mask, model, hidden_states_tensor, initial_reward_hidden
+            # EfficientZeroV2 parity: value prefix targets are cumulative sums of environment rewards
+            # independent of model predictions (which are only used for the forward pass losses).
+            target_rewards = apply_value_prefix_reward_accumulation(
+                target_rewards_original, config, game_history_mask
             )
         else:
             target_rewards = target_rewards_original
@@ -1547,146 +1548,93 @@ def apply_value_prefix_reward_accumulation(
     target_reward: jax.Array, 
     config: MuZeroConfig,
     game_history_mask: jax.Array | None = None,
-    model: MuZeroNetwork | None = None,
-    hidden_states: jax.Array | None = None,
-    initial_reward_hidden: LSTMState | None = None
-) -> Tuple[jax.Array, LSTMState | None]:
+    *args, **kwargs # Ignore legacy arguments (model, hidden_states, etc.)
+) -> jax.Array:
     """
-    Apply value prefix reward accumulation using LSTM network for EfficientZeroV2.
+    Apply value prefix reward accumulation to generate targets for EfficientZeroV2.
 
-    When value_prefix is enabled, this function uses the LSTM reward network to predict
-    rewards based on hidden states, with periodic reset every lstm_horizon_length steps.
+    This function accumulates the ground truth rewards (target_reward) over the LSTM horizon.
+    It does NOT use the model for prediction, as targets must be ground truth.
     
     Args:
         target_reward: Target reward tensor, shape (B, K+1) or (B, K+1, support_size)
         config: MuZero configuration
         game_history_mask: Optional mask for valid steps, shape (B, K+1)
-        model: MuZero model with LSTM reward network (required if use_value_prefix=True)
-        hidden_states: Hidden states from dynamics network, shape (B, K+1, C, H, W)
-        initial_reward_hidden: Initial LSTM hidden state
         
     Returns:
-        Tuple of (accumulated_rewards, final_reward_hidden)
+        Accumulated rewards (value prefix targets), shape matches target_reward
     """
     if not config.use_value_prefix:
-        return target_reward, None
+        return target_reward
     
     # Handle empty input (edge case)
     if target_reward.size == 0:
-        return target_reward, None
+        return target_reward
     
     batch_size, num_steps = target_reward.shape[0], target_reward.shape[1]
     
     # Handle edge case where batch_size is 0
     if batch_size == 0: # pragma: no cover
-        return target_reward, None # pragma: no cover
+        return target_reward # pragma: no cover
     
-    # If model is not provided or doesn't have LSTM reward network, fall back to simple accumulation
-    if model is None or not hasattr(model, 'lstm_reward_network') or model.lstm_reward_network is None:
-        # Simple accumulation fallback (original implementation)
-        def accumulate_batch_step(batch_idx):
-            """Accumulate rewards for a single batch item."""
-            rewards = target_reward[batch_idx]  # K+1 or K+1, S
-            mask = game_history_mask[batch_idx] if game_history_mask is not None else jnp.ones(num_steps)
+    # Simple accumulation logic (EfficientZeroV2 parity)
+    # Value prefix target is sum of rewards in the current LSTM horizon segment.
+    def accumulate_batch_step(batch_idx):
+        """Accumulate rewards for a single batch item."""
+        rewards = target_reward[batch_idx]  # K+1 or K+1, S
+        mask = game_history_mask[batch_idx] if game_history_mask is not None else jnp.ones(num_steps)
+
+        def step_accumulation(step_idx, accumulator):
+            """Accumulate reward for a single step."""
+            current_reward = rewards[step_idx]
+            current_mask = mask[step_idx]
             
-            def step_accumulation(step_idx, accumulator):
-                """Accumulate reward for a single step."""
-                current_reward = rewards[step_idx]
-                current_mask = mask[step_idx]
-                
-                # Reset accumulation every lstm_horizon_length steps (EfficientZeroV2 pattern)
-                should_reset = (step_idx % config.lstm_horizon_length == 0)
-                
-                if should_reset:
-                    # Reset: start fresh accumulation
-                    new_accumulator = current_reward * current_mask
-                else:
-                    # Accumulate: add to previous
-                    new_accumulator = accumulator + current_reward * current_mask
-                
-                return new_accumulator
+            # Reset accumulation every lstm_horizon_length steps (EfficientZeroV2 pattern)
+            should_reset = (step_idx % config.lstm_horizon_length == 0)
             
-            # Use jax.lax.scan for efficient sequential accumulation
-            init_accumulator = jnp.zeros_like(rewards[0])
+            if should_reset:
+                # Reset: start fresh accumulation
+                new_accumulator = current_reward * current_mask
+            else:
+                # Accumulate: add to previous
+                new_accumulator = accumulator + current_reward * current_mask
             
-            # Scan over steps to accumulate rewards
-            accumulated_rewards = []
-            accumulator = init_accumulator
-            for step_idx in range(num_steps):
-                accumulator = step_accumulation(step_idx, accumulator)
-                accumulated_rewards.append(accumulator)
-            
-            return jnp.stack(accumulated_rewards, axis=0)
+            return new_accumulator
         
-        # Process each batch item
-        accumulated_batch = []
-        for batch_idx in range(batch_size):
-            accumulated_item = accumulate_batch_step(batch_idx)
-            accumulated_batch.append(accumulated_item)
+        # Use simple Python loop for short unrolls
+        init_accumulator = jnp.zeros_like(rewards[0])
         
-        return jnp.stack(accumulated_batch, axis=0), None
-    
-    # LSTM-based reward prediction (EfficientZeroV2 implementation)
-    if hidden_states is None:
-        # If hidden states not provided, fall back to simple accumulation
-        return apply_value_prefix_reward_accumulation(
-            target_reward, config, game_history_mask, None, None, None
-        )
-    
-    # Initialize LSTM hidden state if not provided
-    if initial_reward_hidden is None:
-        initial_reward_hidden = model.lstm_reward_network.init_hidden_state(batch_size)
-    
-    def lstm_step(carry, step_inputs):
-        """Single LSTM step for reward prediction."""
-        reward_hidden, step_idx = carry
-        hidden_state = step_inputs  # [B, C, H, W]
+        # Scan over steps to accumulate rewards
+        accumulated_rewards = []
+        accumulator = init_accumulator
+        for step_idx in range(num_steps):
+            accumulator = step_accumulation(step_idx, accumulator)
+            accumulated_rewards.append(accumulator)
         
-        # Reset LSTM hidden state every lstm_horizon_length steps
-        reset_condition = step_idx % config.lstm_horizon_length == 0
-        reset_mask = jnp.array(reset_condition).astype(jnp.float32)
-        reset_mask_expanded = jnp.broadcast_to(reset_mask, (batch_size,))
-        
-        if reset_mask.any():
-            reward_hidden = model.lstm_reward_network.reset_hidden_state(
-                reward_hidden, reset_mask_expanded
-            )
-        
-        # Predict reward using LSTM network
-        predicted_reward, new_reward_hidden = model.lstm_reward_network(
-            hidden_state, reward_hidden, training=False
-        )
-        
-        return (new_reward_hidden, step_idx + 1), predicted_reward
+        return jnp.stack(accumulated_rewards, axis=0)
     
-    # Apply LSTM across all time steps using scan
-    initial_carry = (initial_reward_hidden, 0)
-    final_carry, predicted_rewards = jax.lax.scan(
-        lstm_step, 
-        initial_carry, 
-        hidden_states.transpose(1, 0, 2, 3, 4)  # [K+1, B, C, H, W]
-    )
+    # Process each batch item
+    # TODO(perf): Consider jax.lax.scan + vmap to avoid Python loops under JIT
+    # for large batch sizes or long unrolls. Current logic is correct but can
+    # inflate compile time and HLO size.
+    accumulated_batch = []
+    for batch_idx in range(batch_size):
+        accumulated_item = accumulate_batch_step(batch_idx)
+        accumulated_batch.append(accumulated_item)
     
-    # Transpose back to [B, K+1, ...]
-    predicted_rewards = predicted_rewards.transpose(1, 0, *range(2, predicted_rewards.ndim))
-    final_reward_hidden = final_carry[0]
-    
-    # For scalar rewards, squeeze the last dimension if it's size 1
-    if config.reward_support_size == 0 and predicted_rewards.shape[-1] == 1:
-        predicted_rewards = jnp.squeeze(predicted_rewards, axis=-1)
-    
-    # Apply game history mask if provided
+    result = jnp.stack(accumulated_batch, axis=0)
+
+    # Mask out values for invalid steps to prevent leaking old accumulators
     if game_history_mask is not None:
-        mask_expanded = game_history_mask
-        if predicted_rewards.ndim > 2:
-            # Expand mask for categorical rewards
-            for _ in range(predicted_rewards.ndim - 2):
-                mask_expanded = jnp.expand_dims(mask_expanded, axis=-1)
-            mask_expanded = jnp.broadcast_to(mask_expanded, predicted_rewards.shape)
-        
-        predicted_rewards = predicted_rewards * mask_expanded
-    
-    return predicted_rewards, final_reward_hidden
+        mask = game_history_mask
+        if result.ndim > 2:
+            # Expand mask for support dimension (B, T, S)
+            expand_dims = result.ndim - mask.ndim
+            for _ in range(expand_dims):
+                mask = jnp.expand_dims(mask, axis=-1)
+        result = result * mask
+
+    return result
 
 
 
