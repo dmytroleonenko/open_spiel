@@ -293,29 +293,10 @@ class Actor:
         """
         Compute n-step value targets.
         
-        Args:
-            rewards: List of rewards from the episode
-            final_value: Final value estimate (0 for terminal states)
-            
-        Returns:
-            List of value targets for each step
+        Note: SARSA target computation has moved to the learner/batch worker for dynamic bootstrapping.
+        This method now returns zeros to maintain API compatibility.
         """
-        value_targets = []
-        episode_length = len(rewards)
-        
-        for i in range(episode_length):
-            # Compute n-step return
-            target = 0.0
-            for j in range(min(self.n_step_return, episode_length - i)):
-                target += (self.discount_factor ** j) * rewards[i + j]
-            
-            # Add discounted final value if we don't reach the end
-            if i + self.n_step_return < episode_length:
-                target += (self.discount_factor ** self.n_step_return) * final_value
-            
-            value_targets.append(target)
-            
-        return value_targets        
+        return [0.0] * len(rewards)
     def play_episode(self, rng_key: jax.Array) -> Dict[str, List[Any]]:
         """
         Play a single episode and collect trajectory data.
