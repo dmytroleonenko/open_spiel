@@ -1619,7 +1619,19 @@ def apply_value_prefix_reward_accumulation(
         accumulated_item = accumulate_batch_step(batch_idx)
         accumulated_batch.append(accumulated_item)
     
-    return jnp.stack(accumulated_batch, axis=0)
+    result = jnp.stack(accumulated_batch, axis=0)
+
+    # Mask out values for invalid steps to prevent leaking old accumulators
+    if game_history_mask is not None:
+        mask = game_history_mask
+        if result.ndim > 2:
+            # Expand mask for support dimension (B, T, S)
+            expand_dims = result.ndim - mask.ndim
+            for _ in range(expand_dims):
+                mask = jnp.expand_dims(mask, axis=-1)
+        result = result * mask
+
+    return result
 
 
 

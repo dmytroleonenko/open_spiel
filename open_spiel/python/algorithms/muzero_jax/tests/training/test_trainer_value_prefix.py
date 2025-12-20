@@ -107,11 +107,11 @@ def test_apply_value_prefix_reward_accumulation_with_mask(common_key, common_cfg
     )  # Steps 1,3 are invalid
 
     # Expected accumulation:
-    # Batch 0: Step 0: 0+1=1, Step 1: 1+2=3, Step 2: 3+0=3 (masked),
+    # Batch 0: Step 0: 0+1=1, Step 1: 1+2=3, Step 2: 0 (masked),
     #          Step 3: 0+4=4 (reset), Step 4: 4+5=9
-    # Batch 1: Step 0: 0+1=1, Step 1: 1+0=1 (masked), Step 2: 1+1=2,
-    #          Step 3: 0+0=0 (reset+masked), Step 4: 0+1=1
-    expected = jnp.array([[1.0, 3.0, 3.0, 4.0, 9.0], [1.0, 1.0, 2.0, 0.0, 1.0]])
+    # Batch 1: Step 0: 0+1=1, Step 1: 0 (masked), Step 2: 1+1=2,
+    #          Step 3: 0 (reset+masked), Step 4: 0+1=1
+    expected = jnp.array([[1.0, 3.0, 0.0, 4.0, 9.0], [1.0, 0.0, 2.0, 0.0, 1.0]])
 
     # Apply function with mask
     result = apply_value_prefix_reward_accumulation(rewards, config, mask)
