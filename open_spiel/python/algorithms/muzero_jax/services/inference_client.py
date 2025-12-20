@@ -30,7 +30,7 @@ def _convert_scalar_value(network, value_output, is_reward=False):
     config = network.config
     loss_type = config.reward_loss_type if is_reward else config.value_loss_type
 
-    if loss_type == "categorical":
+    if loss_type in ["categorical", "kl"]:
         support_size = config.reward_support_size if is_reward else config.value_support_size
         num_atoms = support_size if support_size > 0 else 601
         # Use configured support range (defaulting to [-300, 300] if not set)

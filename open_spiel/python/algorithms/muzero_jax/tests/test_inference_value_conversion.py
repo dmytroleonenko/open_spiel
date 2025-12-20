@@ -34,7 +34,7 @@ class MockNetwork:
         batch_size = observation.shape[0]
 
         # Determine output shapes based on config
-        if self.config.value_loss_type == "categorical":
+        if self.config.value_loss_type in ["categorical", "kl"]:
             # Return logits
             value = jax.random.normal(jax.random.PRNGKey(0), (batch_size, self.config.value_support_size))
         elif self.config.value_loss_type == "symlog":
@@ -44,7 +44,7 @@ class MockNetwork:
         else:
             value = jnp.zeros((batch_size,))
 
-        if self.config.reward_loss_type == "categorical":
+        if self.config.reward_loss_type in ["categorical", "kl"]:
             reward = jax.random.normal(jax.random.PRNGKey(1), (batch_size, self.config.reward_support_size))
         elif self.config.reward_loss_type == "symlog":
              real_reward = jnp.array([5.0] * batch_size)
@@ -144,6 +144,21 @@ def test_inference_value_conversion_categorical_custom_support():
     assert np.allclose(value, 10.0, atol=0.1), f"Value {value} should be close to support_max 10.0"
     assert np.allclose(reward, -10.0, atol=0.1), f"Reward {reward} should be close to support_min -10.0"
 
+def test_inference_value_conversion_kl_reward():
+    """Test that InferenceClient converts KL reward logits to scalar."""
+    config = MockConfig("categorical", "kl", value_support_size=601, reward_support_size=601)
+    network = MockNetwork(config)
+    client = LocalInferenceClient(network)
+
+    batch_size = 2
+    obs = jnp.zeros((batch_size, 10))
+
+    _, reward, value, _, _, _ = client.initial_inference(obs)
+
+    print(f"KL Reward shape: {reward.shape}")
+
+    assert reward.ndim == 1, f"KL Reward output is not scalar! Shape: {reward.shape}"
+
 if __name__ == "__main__":
     # Manually run tests if executed as script
     try:
@@ -163,3 +178,9 @@ if __name__ == "__main__":
         print("Categorical custom support test PASSED")
     except Exception as e:
         print(f"Categorical custom support test FAILED: {e}")
+
+    try:
+        test_inference_value_conversion_kl_reward()
+        print("KL Reward test PASSED")
+    except Exception as e:
+        print(f"KL Reward test FAILED: {e}")
