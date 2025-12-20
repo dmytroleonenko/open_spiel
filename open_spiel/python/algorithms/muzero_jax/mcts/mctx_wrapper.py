@@ -4,6 +4,7 @@ from typing import Callable, Optional, Tuple, Any, TYPE_CHECKING
 
 # Import MuZero components for type hints
 from open_spiel.python.algorithms.muzero_jax.models.network import MuZeroNetwork
+from open_spiel.python.algorithms.muzero_jax.utils import convert_value
 
 if TYPE_CHECKING:  # pragma: no cover - type-checking only
     from open_spiel.python.algorithms.muzero_jax.training.trainer import MuZeroConfig
@@ -211,7 +212,8 @@ class StochasticMCTS:
             chance_logits = jnp.zeros((batch_size, num_chance_outcomes))  # Uniform distribution
             
             # Use predicted value as afterstate value
-            afterstate_value = value
+            # Apply value conversion (categorical/symlog to scalar)
+            afterstate_value = convert_value(value, network.config)
             
             from mctx._src.base import DecisionRecurrentFnOutput
             output = DecisionRecurrentFnOutput(
@@ -262,10 +264,13 @@ class StochasticMCTS:
             # Chance transitions don't end episodes (full discount)
             discount = jnp.ones((batch_size,))
             
+            # Apply value conversion (categorical/symlog to scalar)
+            value_scalar = convert_value(value, network.config)
+
             from mctx._src.base import ChanceRecurrentFnOutput
             output = ChanceRecurrentFnOutput(
                 action_logits=action_logits,
-                value=value,
+                value=value_scalar,
                 reward=reward,
                 discount=discount
             )

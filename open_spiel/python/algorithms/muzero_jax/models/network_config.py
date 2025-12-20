@@ -20,6 +20,8 @@ class MuZeroNetworkConfig:
     # Supports
     value_support_size: int = 0 # 0 for scalar, >0 for categorical
     reward_support_size: int = 0 # 0 for scalar, >0 for categorical
+    min_value: float = -300.0 # Minimum value for support transformation
+    max_value: float = 300.0 # Maximum value for support transformation
     # Projection head (for SSL)
     use_projection: bool = False
     projection_hidden_dim: int = 128
