@@ -12,12 +12,50 @@ Reference codebase: `EfficientZeroV2/` (PyTorch)
 
 ---
 
+## Consolidated TODO_JAX_MUZERO Mapping (Validated)
+
+This section consolidates `TODO_JAX_MUZERO.md` into this single file. Each item is validated for parity relevance.
+
+- 0.x Verification snapshot / coverage / orchestration / infra: **Not parity tasks** (engineering/coverage only).
+- 1 (GAE/TD-Lambda dynamic targets): **Implemented**; no parity action needed.
+- 1.1/1.1a/1.1b (GAE vectorization/perf): **Implemented**; no parity action needed.
+- 1.2 (GAE delta formula): **Validated**; no parity action needed.
+- 2 (Policy reanalysis with mctx): **Implemented**; no parity action needed.
+- 3 (Categorical value loss + IQL): **Implemented**; no parity action needed.
+- 4 (Categorical reward loss): **Implemented**; no parity action needed.
+- 5 (Symlog loss/base handling): **Implemented**; no parity action needed.
+- 6 (SSL projection consistency loss): **Implemented**; no parity action needed.
+- 7 (Gradient scaling): **Implemented**; no parity action needed.
+- 8 (Discrete support transform): **Implemented for DMC/Gym only**; OpenSpiel parity still needs non-DMC/Gym branch (see TODO 11).
+- 9 (Continuous action distribution_type): **Out of scope for OpenSpiel parity**.
+- 10 (Batch content alignment): **Implemented**; no parity action needed.
+- 11 (Half-gradient in unroll): **Implemented**; no parity action needed.
+- 12 (Entropy regularization): **Implemented**; no parity action needed.
+- 13 (use_IQL/IQL_weight): **Implemented**; no parity action needed.
+- 14 (Head output dims per loss type): **Implemented**, but **multi-head v_num** parity still missing (see TODO 7).
+- 15 (Config consistency): **Implemented**; no parity action needed.
+- 16 (td_steps/auto_td_steps): **Implemented**; no parity action needed.
+- 17 (Consistency loss coeff naming): **Implemented**; no parity action needed.
+- 18 (symlog IQL error in scalar space): **Implemented**; no parity action needed.
+- 19 (value_prefix target logic): **Implemented but still mismatched**; see TODO 1.
+- 20 (Temperature schedule utilities): **Implemented**, but actor sampling still deterministic; see TODO 13.
+- 21 (top_new_masks/mixed_value_threshold): **Implemented**, but mixed target inputs missing; see TODO 2.
+- 22 (DMC/Gym vs Atari support transforms): **Out of scope there**, but OpenSpiel parity still needs non-DMC/Gym branch; see TODO 11.
+- 23 (Optimizer choice AdamW/Adam): **Implemented**; no parity action needed.
+- 24 (Checkpointing + EMA resume): **Implemented**; no parity action needed.
+- 25 (Noisy networks): **Implemented**; no parity action needed.
+- 26 (moveaxis for continuous policy loss): **Out of scope for OpenSpiel parity**.
+- 27 (Gradient clipping): **Implemented**; no parity action needed.
+
+---
+
 ## P0 - Value Prefix / Reward Targets (Training-Critical)
 
 TODO 1 (P0): Align value-prefix target computation with EfficientZeroV2
 - Gap: JAX applies `apply_value_prefix_reward_accumulation` to replace targets with LSTM-predicted rewards (self-referential). PyTorch uses cumulative environment rewards as value-prefix targets and uses LSTM only in inference for value-prefix prediction.
 - JAX location: `open_spiel/python/algorithms/muzero_jax/training/trainer.py` in `apply_value_prefix_reward_accumulation` and the call site in `_compute_total_loss_static`.
 - PyTorch location: `EfficientZeroV2/ez/worker/batch_worker.py` (value_prefix accumulation on env rewards), and `EfficientZeroV2/ez/agents/models/__init__.py` (reward prediction in inference).
+- Note: `TODO_JAX_MUZERO.md` item 19 marks this as done, but the current JAX implementation still uses model-predicted rewards as targets, so parity is not achieved.
 - Deliverable:
   - Change JAX value-prefix targets to be cumulative reward sums (reset by `lstm_horizon_length`) computed from env rewards in the batch, not from the model.
   - Use LSTM reward network only for predicted reward/value-prefix outputs (forward pass), not as the target generator.
@@ -29,6 +67,7 @@ TODO 2 (P0): Ensure mixed value targets use real search/SARSA sources
 - Gap: JAX `Actor` only returns `value_targets` and lacks `target_search_value`, `target_sarsa_value`, and `sample_indices`/`collected_transitions`, so mixed targets are effectively degenerate.
 - JAX location: `open_spiel/python/algorithms/muzero_jax/self_play/actor.py` (trajectory output), `open_spiel/python/algorithms/muzero_jax/training/trainer.py` (mixed target selection).
 - PyTorch location: `EfficientZeroV2/ez/worker/batch_worker.py` (search vs TD targets & mixed selection).
+- Note: `TODO_JAX_MUZERO.md` item 21 implemented `top_new_masks` logic, but the upstream targets are still missing in JAX data generation.
 - Deliverable:
   - Extend JAX trajectory/batch to include search values and TD/SARSA values (and sample indices) so `value_target="mixed"` is meaningful.
 - Test/validation:
@@ -128,6 +167,7 @@ TODO 11 (P2): Support transform selection based on environment
 - Gap: JAX `scalar_to_support` / `support_to_scalar` always use the DMC/Gym transform; PyTorch uses a separate branch for non-DMC/Gym based on `range/scale`.
 - JAX location: `open_spiel/python/algorithms/muzero_jax/training/losses.py`.
 - PyTorch location: `EfficientZeroV2/ez/utils/format.py`.
+- Note: `TODO_JAX_MUZERO.md` item 22 marks this as out-of-scope for Atari/DMC/Gym, but OpenSpiel parity still requires the non-DMC/Gym branch.
 - Deliverable:
   - Add env-aware transform selection and parity with PyTorch for non-DMC/Gym environments (OpenSpiel).
 - Test/validation:
@@ -155,12 +195,29 @@ TODO 13 (P3): Sample actions stochastically when temperature > 0
 - Gap: JAX actor uses argmax even when temperature > 0; PyTorch samples from visit count distribution.
 - JAX location: `open_spiel/python/algorithms/muzero_jax/self_play/actor.py` in `_select_action`.
 - PyTorch location: `EfficientZeroV2/ez/worker/data_worker.py` and MCTS selection logic.
+- Note: `TODO_JAX_MUZERO.md` item 20 added temperature scheduling utilities, but actor sampling is still deterministic.
 - Deliverable:
   - Implement actual sampling from softmax(visit counts / temperature).
 - Test/validation:
-  - Unit test: For a fixed policy distribution and temperature, verify sampling frequencies approximate expected probabilities.
+- Unit test: For a fixed policy distribution and temperature, verify sampling frequencies approximate expected probabilities.
 
 ---
+
+## Cross-check with TODO_JAX_MUZERO.md (validated)
+
+Items marked DONE in `TODO_JAX_MUZERO.md` that are already implemented for parity and therefore not repeated as TODOs here:
+- Dynamic GAE/TD-Lambda target computation and vectorized inference.
+- Policy reanalysis with real `mctx` search in trainer.
+- Categorical value/reward loss with KL divergence, symlog loss handling, and IQL weighting.
+- SSL projection consistency loss, half-gradient on hidden state, entropy regularization, and gradient clipping.
+- Support range plumbing in trainer, configuration consistency checks, optimizer selection, noisy networks, and checkpoint/EMA handling.
+
+Items marked DONE in `TODO_JAX_MUZERO.md` but still require parity fixes (tracked above):
+- Value-prefix target computation (see TODO 1).
+- Temperature-based action sampling in actors (see TODO 13).
+
+Items marked OUT OF SCOPE in `TODO_JAX_MUZERO.md` but still relevant for OpenSpiel parity:
+- Environment-specific support transforms for non-DMC/Gym cases (see TODO 11).
 
 # Parity Test Plan (PyTorch vs JAX)
 
@@ -198,4 +255,3 @@ Prerequisite: weight-translation bridge (PyTorch -> JAX parameter mapping).
 - Linear: PyTorch (O, I) -> JAX (I, O)
 - BatchNorm: copy gamma/beta/running mean/running var; align eps/momentum
 - LSTM: map gate ordering (PyTorch i, f, g, o) to JAX implementation; ensure biases match
-
