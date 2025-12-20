@@ -1,5 +1,6 @@
 """Value conversion utilities for MuZero JAX."""
 
+import math
 from open_spiel.python.algorithms.muzero_jax.training.losses import support_to_scalar, symexp
 
 def convert_value(value, config):
@@ -33,7 +34,9 @@ def convert_value(value, config):
                                  support_max=max_val,
                                  num_atoms=support_size)
     elif value_loss_type == "symlog":
-        return symexp(value)
+        # Use configured symlog_base or default to e (EfficientZeroV2 parity)
+        symlog_base = getattr(config, "symlog_base", math.e)
+        return symexp(value, base=symlog_base)
     else: # mse
         # Ensure it's squeezed if it has shape (B, 1)
         if value.ndim == 2 and value.shape[-1] == 1:
