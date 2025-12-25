@@ -243,6 +243,7 @@ def main() -> None:
     parser.add_argument("--selfplay_progress", type=int, default=1)
     parser.add_argument("--selfplay_report_every", type=int, default=100)
     parser.add_argument("--eval_games", type=int, default=1000)
+    parser.add_argument("--eval_depth", type=int, default=-1)
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=2048)
@@ -364,12 +365,13 @@ def main() -> None:
         )
 
         eval_seed = args.seed + iteration * 1000000 + 777
+        eval_depth = args.eval_depth if args.eval_depth > 0 else args.depth
         summary_random = _run_eval(
             eval_bin,
             nnue_path,
             None,
             args.eval_games,
-            args.depth,
+            eval_depth,
             eval_seed,
         )
         summary_prev = _run_eval(
@@ -377,7 +379,7 @@ def main() -> None:
             nnue_path,
             prev_nnue,
             args.eval_games,
-            args.depth,
+            eval_depth,
             eval_seed + 1,
         )
 
