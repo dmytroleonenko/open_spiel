@@ -180,14 +180,13 @@ SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
           std::lock_guard<std::mutex> lock(*cout_mutex);
           double pct =
               100.0 * static_cast<double>(done) / total_games;
-          std::cout << "\r[selfplay] " << done << "/" << total_games << " ("
-                    << std::fixed << std::setprecision(1) << pct
-                    << "%) " << std::setprecision(2) << rate
-                    << " games/s ETA " << std::setprecision(0) << eta
-                    << "s" << std::flush;
-          if (done == total_games) {
-            std::cout << "\n";
-          }
+          std::ostream& out = std::cerr;
+          out << "[selfplay] " << done << "/" << total_games << " ("
+              << std::fixed << std::setprecision(1) << pct
+              << "%) " << std::setprecision(2) << rate
+              << " games/s ETA " << std::setprecision(0) << eta
+              << "s\n";
+          out.flush();
         }
       }
     }
