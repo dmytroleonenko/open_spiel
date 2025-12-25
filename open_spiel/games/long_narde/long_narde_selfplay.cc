@@ -15,9 +15,14 @@
 #include "open_spiel/games/long_narde/long_narde_selfplay.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <functional>
+#include <iomanip>
+#include <iostream>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <random>
 #include <thread>
@@ -105,7 +110,10 @@ SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
                         const nnue::NnueEvaluator& evaluator,
                         const SearchConfig& search_config,
                         const SelfPlayConfig& config, int games,
-                        uint64_t seed) {
+                        uint64_t seed, int total_games,
+                        std::atomic<int>* games_done,
+                        const std::chrono::steady_clock::time_point* start_time,
+                        std::mutex* cout_mutex) {
   SelfPlayBatch batch;
   if (games <= 0) {
     return batch;
@@ -155,6 +163,34 @@ SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
     }
     batch.stats.games += 1;
     batch.stats.total_moves += moves;
+
+    if (games_done != nullptr && config.progress && config.report_every > 0) {
+      int done = games_done->fetch_add(1) + 1;
+      if (done % config.report_every == 0 || done == total_games) {
+        double elapsed = 0.0;
+        if (start_time != nullptr) {
+          elapsed = std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - *start_time)
+                        .count();
+        }
+        double rate = elapsed > 0.0 ? done / elapsed : 0.0;
+        int remaining = std::max(total_games - done, 0);
+        double eta = rate > 0.0 ? remaining / rate : 0.0;
+        if (cout_mutex != nullptr) {
+          std::lock_guard<std::mutex> lock(*cout_mutex);
+          double pct =
+              100.0 * static_cast<double>(done) / total_games;
+          std::cout << "\r[selfplay] " << done << "/" << total_games << " ("
+                    << std::fixed << std::setprecision(1) << pct
+                    << "%) " << std::setprecision(2) << rate
+                    << " games/s ETA " << std::setprecision(0) << eta
+                    << "s" << std::flush;
+          if (done == total_games) {
+            std::cout << "\n";
+          }
+        }
+      }
+    }
   }
 
   return batch;
@@ -179,6 +215,9 @@ SelfPlayBatch RunSelfPlay(std::shared_ptr<const Game> game,
   std::vector<SelfPlayBatch> partials(workers);
   std::vector<Thread> threads;
   threads.reserve(workers);
+  std::atomic<int> games_done{0};
+  std::mutex cout_mutex;
+  auto start_time = std::chrono::steady_clock::now();
 
   int base = total_games / workers;
   int extra = total_games % workers;
@@ -188,7 +227,7 @@ SelfPlayBatch RunSelfPlay(std::shared_ptr<const Game> game,
     threads.emplace_back([&, i, count, seed]() {
       partials[i] =
           RunWorker(game, evaluator, search_config, selfplay_config, count,
-                    seed);
+                    seed, total_games, &games_done, &start_time, &cout_mutex);
     });
   }
 

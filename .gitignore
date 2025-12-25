@@ -62,3 +62,6 @@ Package.resolved
 # Visual Studio generated files
 open_spiel/.vs
 /.env
+
+# Long Narde NNUE artifacts
+results/

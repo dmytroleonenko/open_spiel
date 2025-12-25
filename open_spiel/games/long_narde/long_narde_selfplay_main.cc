@@ -93,7 +93,8 @@ void PrintUsage(const char* bin) {
   std::cout << "Usage: " << bin << " [--out path] [--games N] [--seed N]\n"
             << "             [--shard_id N]\n"
             << "             [--depth N] [--temperature T] [--alpha A]\n"
-            << "             [--workers N] [--chunk N] [--nnue path]\n";
+            << "             [--workers N] [--chunk N] [--nnue path]\n"
+            << "             [--progress 0|1] [--report_every N]\n";
 }
 
 }  // namespace
@@ -128,6 +129,10 @@ int main(int argc, char** argv) {
   double temperature =
       open_spiel::long_narde::GetDoubleArg(args, "temperature", 1.0);
   double alpha = open_spiel::long_narde::GetDoubleArg(args, "alpha", 0.5);
+  int progress =
+      open_spiel::long_narde::GetIntArg(args, "progress", 0);
+  int report_every =
+      open_spiel::long_narde::GetIntArg(args, "report_every", 100);
   std::string nnue_path =
       open_spiel::long_narde::GetStringArg(args, "nnue", "");
 
@@ -151,6 +156,8 @@ int main(int argc, char** argv) {
   selfplay_config.temperature = temperature;
   selfplay_config.alpha = alpha;
   selfplay_config.seed = seed;
+  selfplay_config.progress = (progress != 0);
+  selfplay_config.report_every = report_every;
 
   LnueShardConfig shard_config;
   shard_config.samples_per_chunk = chunk;

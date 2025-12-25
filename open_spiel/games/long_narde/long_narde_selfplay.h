@@ -33,6 +33,8 @@ struct SelfPlayConfig {
   double temperature = 1.0;
   double alpha = 0.5;
   uint64_t seed = 0;
+  bool progress = false;
+  int report_every = 100;
 };
 
 struct SelfPlaySample {
