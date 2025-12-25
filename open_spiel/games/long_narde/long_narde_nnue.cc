@@ -443,6 +443,38 @@ void CollectActiveFeatureIndices(const LongNardeState& state,
   out->assign(active.indices.begin(), active.indices.begin() + active.count);
 }
 
+NnueRawOutput EvaluateRawFromFeatures(
+    const NnueNetwork& network, const std::vector<int>& active_features) {
+  NnueRawOutput output;
+  ActiveFeatures active;
+  active.count = 0;
+  for (int idx : active_features) {
+    SPIEL_CHECK_GE(idx, 0);
+    SPIEL_CHECK_LT(idx, kNnueFeatureDim);
+    SPIEL_CHECK_LT(active.count, kMaxActiveFeatures);
+    active.indices[active.count++] = idx;
+  }
+
+  std::array<int16_t, kNnueL1> acc;
+  BuildAccumulator(network, active, &acc);
+
+  std::array<int8_t, kNnueL1> l1;
+  for (int i = 0; i < kNnueL1; ++i) {
+    l1[i] = ClampAcc(acc[i]);
+  }
+
+  std::array<int8_t, kNnueL2> l2;
+  ComputeLayerFn compute_layer = GetComputeLayerKernel();
+  compute_layer(l1.data(), network.w1.data(), network.b1.data(), kNnueL1,
+                kNnueL2, l2.data());
+
+  output.logit_win =
+      ComputeOutput(l2.data(), network.w2.data(), &network.b2[0], kNnueL2);
+  output.logit_mars = ComputeOutput(l2.data(), network.w2.data() + kNnueL2,
+                                    &network.b2[1], kNnueL2);
+  return output;
+}
+
 }  // namespace nnue
 }  // namespace long_narde
 }  // namespace open_spiel

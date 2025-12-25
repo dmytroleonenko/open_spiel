@@ -246,7 +246,10 @@ Alpha schedule:
 - total_feature_dim u32
 - flags bitset (has_run_features, dual_head, has_game_id, has_ply)
 - feature_index_bytes u32 (u16 expected for current dims)
-- reserved u32[9]
+- seed u64
+- shard_id u32
+- run_block_threshold u32
+- reserved u32[5]
 
 11.2 Chunk header (fixed-size, per chunk)
 - magic "CHNK"
@@ -266,13 +269,31 @@ Alpha schedule:
 
 Note: compression is reserved; start uncompressed and add zstd later.
 
-12) Python Training Pipeline
+12) Golden Pipeline Harness (correctness gate)
 
-12.1 Reader
+12.1 Determinism (C++ self-play)
+- Run self-play twice with identical args and seed (single worker).
+- Expect bit-identical LNUE shards (hash match).
+  Example: `python -m open_spiel.python.algorithms.long_narde_nnue.golden_pipeline`.
+
+12.2 LNUE reader sanity (Python)
+- Validate header fields (magic/version/schema/feature_dim/flags/index_bytes).
+- Validate payload integrity (offsets monotonic, indices bounds).
+- Validate label ranges (v_search/target in [-2, 2], outcome in {-2,-1,+1,+2}).
+
+12.3 NNUE round-trip (Python -> C++)
+- Train one optimizer step on a small batch.
+- Export NNUE (LNNU) and reload in C++.
+- Compare raw logits for N fixed samples between Python and C++.
+  Uses `long_narde_lnue_probe` under `build/games`.
+
+13) Python Training Pipeline
+
+13.1 Reader
 - LNUE shard reader yields chunked columnar arrays.
 - Feature indices are used directly to avoid feature drift between C++ and Python.
 
-12.2 Trainer
+13.2 Trainer
 - EmbeddingBag for sparse accumulator, two-headed BCE loss (win/mars).
 - Auxiliary EV loss on sigmoid(win)+sigmoid(mars) vs target.
 - Quantization-aware clamp + optional quantization penalty.

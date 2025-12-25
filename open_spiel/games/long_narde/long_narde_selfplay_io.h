@@ -24,7 +24,7 @@
 namespace open_spiel {
 namespace long_narde {
 
-constexpr uint32_t kLnueFormatVersion = 1;
+constexpr uint32_t kLnueFormatVersion = 2;
 constexpr uint32_t kLnueEndianMarker = 0x01020304u;
 constexpr uint32_t kLnueSchemaId = 1;
 constexpr uint32_t kLnueFlagHasRunFeatures = 1u << 0;
@@ -36,6 +36,9 @@ constexpr uint32_t kLnueFeatureIndexBytes = 2;
 struct LnueShardConfig {
   int samples_per_chunk = 4096;
   bool write_tmp = true;
+  uint64_t seed = 0;
+  uint32_t shard_id = 0;
+  uint32_t run_block_threshold = 1;
 };
 
 bool WriteLnueShard(const std::string& path, const SelfPlayBatch& batch,

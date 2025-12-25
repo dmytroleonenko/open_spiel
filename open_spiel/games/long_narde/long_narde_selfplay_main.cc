@@ -60,6 +60,16 @@ int GetIntArg(const std::unordered_map<std::string, std::string>& args,
   return std::stoi(it->second);
 }
 
+uint64_t GetUint64Arg(
+    const std::unordered_map<std::string, std::string>& args,
+    const std::string& key, uint64_t default_value) {
+  auto it = args.find(key);
+  if (it == args.end() || it->second.empty()) {
+    return default_value;
+  }
+  return static_cast<uint64_t>(std::stoull(it->second));
+}
+
 double GetDoubleArg(const std::unordered_map<std::string, std::string>& args,
                     const std::string& key, double default_value) {
   auto it = args.find(key);
@@ -81,6 +91,7 @@ std::string GetStringArg(
 
 void PrintUsage(const char* bin) {
   std::cout << "Usage: " << bin << " [--out path] [--games N] [--seed N]\n"
+            << "             [--shard_id N]\n"
             << "             [--depth N] [--temperature T] [--alpha A]\n"
             << "             [--workers N] [--chunk N] [--nnue path]\n";
 }
@@ -95,6 +106,7 @@ int main(int argc, char** argv) {
   using open_spiel::long_narde::SearchConfig;
   using open_spiel::long_narde::SelfPlayConfig;
   using open_spiel::long_narde::WriteLnueShard;
+  using open_spiel::long_narde::nnue::kNnueRunBlockThreshold;
   using open_spiel::long_narde::nnue::NnueEvaluator;
   using open_spiel::long_narde::nnue::NnueModel;
 
@@ -107,7 +119,9 @@ int main(int argc, char** argv) {
   std::string out_path =
       open_spiel::long_narde::GetStringArg(args, "out", "selfplay.lnue");
   int games = open_spiel::long_narde::GetIntArg(args, "games", 10);
-  int seed = open_spiel::long_narde::GetIntArg(args, "seed", 7);
+  uint64_t seed = open_spiel::long_narde::GetUint64Arg(args, "seed", 7);
+  uint32_t shard_id = static_cast<uint32_t>(
+      open_spiel::long_narde::GetIntArg(args, "shard_id", 0));
   int depth = open_spiel::long_narde::GetIntArg(args, "depth", 2);
   int workers = open_spiel::long_narde::GetIntArg(args, "workers", 0);
   int chunk = open_spiel::long_narde::GetIntArg(args, "chunk", 4096);
@@ -136,10 +150,13 @@ int main(int argc, char** argv) {
   selfplay_config.num_workers = workers;
   selfplay_config.temperature = temperature;
   selfplay_config.alpha = alpha;
-  selfplay_config.seed = static_cast<uint64_t>(seed);
+  selfplay_config.seed = seed;
 
   LnueShardConfig shard_config;
   shard_config.samples_per_chunk = chunk;
+  shard_config.seed = seed;
+  shard_config.shard_id = shard_id;
+  shard_config.run_block_threshold = kNnueRunBlockThreshold;
 
   auto batch = RunSelfPlay(game, evaluator, search_config, selfplay_config);
   if (!WriteLnueShard(out_path, batch, shard_config)) {

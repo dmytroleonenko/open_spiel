@@ -353,6 +353,9 @@ add_test(random_sim_test random_sim_test)
 add_executable(long_narde_selfplay long_narde/long_narde_selfplay_main.cc
                ${OPEN_SPIEL_OBJECTS})
 
+add_executable(long_narde_lnue_probe long_narde/long_narde_lnue_probe.cc
+               ${OPEN_SPIEL_OBJECTS})
+
 add_executable(bargaining_instance_generator bargaining/bargaining_instance_generator.cc
                ${OPEN_SPIEL_OBJECTS})
 add_executable(bargaining_test bargaining/bargaining_test.cc ${OPEN_SPIEL_OBJECTS}

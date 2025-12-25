@@ -43,7 +43,7 @@ void WriteU64(std::ofstream* out, uint64_t value) {
   WriteRaw(out, &value, sizeof(value));
 }
 
-void WriteHeader(std::ofstream* out) {
+void WriteHeader(std::ofstream* out, const LnueShardConfig& config) {
   WriteRaw(out, kLnueMagic.data(), kLnueMagic.size());
   WriteU32(out, kLnueFormatVersion);
   WriteU32(out, kLnueEndianMarker);
@@ -53,7 +53,10 @@ void WriteHeader(std::ofstream* out) {
                    kLnueFlagHasGameId | kLnueFlagHasPly;
   WriteU32(out, flags);
   WriteU32(out, kLnueFeatureIndexBytes);
-  std::array<uint32_t, 9> reserved{};
+  WriteU64(out, config.seed);
+  WriteU32(out, config.shard_id);
+  WriteU32(out, config.run_block_threshold);
+  std::array<uint32_t, 5> reserved{};
   WriteRaw(out, reserved.data(), reserved.size() * sizeof(uint32_t));
 }
 
@@ -130,7 +133,7 @@ bool WriteLnueShard(const std::string& path, const SelfPlayBatch& batch,
     return false;
   }
 
-  WriteHeader(&out);
+  WriteHeader(&out, config);
 
   int total_samples = static_cast<int>(batch.samples.size());
   int samples_per_chunk = std::max(1, config.samples_per_chunk);
