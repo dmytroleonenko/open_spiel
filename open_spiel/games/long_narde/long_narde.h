@@ -78,6 +78,7 @@ class LongNardeState : public State {
   const std::array<int, 2>& dice() const { return dice_; }
   Player current_player_id() const { return current_player_; }
   bool awaiting_roll() const { return awaiting_roll_; }
+  bool initial_roll() const { return initial_roll_; }
   bool is_doubles() const { return is_doubles_; }
   int phase() const { return phase_; }
   int head_moved_count() const { return head_moved_count_; }
