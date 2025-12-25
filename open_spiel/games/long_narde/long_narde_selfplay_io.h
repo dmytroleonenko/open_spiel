@@ -17,7 +17,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <string>
+#include <vector>
 
 #include "open_spiel/games/long_narde/long_narde_selfplay.h"
 
@@ -41,8 +43,52 @@ struct LnueShardConfig {
   uint32_t run_block_threshold = 1;
 };
 
+struct LnueTrajectoryHeader {
+  char magic[4];
+  uint32_t version;
+  uint32_t endian;
+  uint32_t schema_id;
+  uint32_t feature_dim;
+  uint32_t flags;
+  uint32_t feature_index_bytes;
+  uint32_t num_samples;
+  uint32_t bytes_offsets;
+  uint32_t bytes_indices;
+  uint32_t bytes_search;
+  uint32_t bytes_outcome;
+  uint32_t bytes_target;
+  uint32_t bytes_game_id;
+  uint32_t bytes_ply;
+};
+
 bool WriteLnueShard(const std::string& path, const SelfPlayBatch& batch,
                     const LnueShardConfig& config);
+
+bool SerializeLnueTrajectory(const std::vector<SelfPlaySample>& samples,
+                             const LnueShardConfig& config,
+                             std::string* out);
+bool DeserializeLnueTrajectory(const std::string& payload,
+                               std::vector<SelfPlaySample>* samples);
+
+class LnueStreamWriter {
+ public:
+  LnueStreamWriter() = default;
+  ~LnueStreamWriter();
+
+  bool Open(const std::string& path, const LnueShardConfig& config);
+  bool AddSamples(const std::vector<SelfPlaySample>& samples);
+  void Close();
+  int samples_in_buffer() const { return static_cast<int>(buffer_.size()); }
+
+ private:
+  bool FlushChunk(int count);
+
+  std::ofstream* out_ = nullptr;
+  LnueShardConfig config_{};
+  std::string path_;
+  std::string tmp_path_;
+  std::vector<SelfPlaySample> buffer_;
+};
 
 }  // namespace long_narde
 }  // namespace open_spiel

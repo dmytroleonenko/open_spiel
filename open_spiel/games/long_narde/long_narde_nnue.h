@@ -102,6 +102,7 @@ class NnueModel {
  public:
   // Loads a headered NNUE file or a raw NnueNetwork blob.
   bool Load(const std::string& path);
+  bool LoadFromBytes(const std::string& payload);
   bool IsLoaded() const { return loaded_; }
   const NnueNetwork& network() const { return network_; }
 

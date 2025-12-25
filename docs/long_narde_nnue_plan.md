@@ -299,6 +299,28 @@ Note: compression is reserved; start uncompressed and add zstd later.
 - Quantization-aware clamp + optional quantization penalty.
 - Export headered NNUE binary (magic "LNNU") aligned with C++ loader.
 
+14) Distributed Self-Play (NATS)
+
+14.1 Components
+- `long_narde_nats_worker`: generates one game per message and publishes to NATS.
+- `long_narde_nats_learner`: subscribes to trajectories, writes LNUE shards.
+- `long_narde_nats_publish`: publishes new NNUE weights to workers.
+
+14.2 Subject layout
+- Trajectories: `lnue.traj.<run_id>`
+- Weights: `nnue.weights.<run_id>`
+
+14.3 Example workflow
+1) Start NATS server on the learner host.
+2) Run learner to collect shards:
+   `./build/games/long_narde_nats_learner --nats nats://HOST:4222 --run_id run1 --out_dir results/nnue_stream/run1 --games_per_shard 1000`
+3) Run workers (local or remote):
+   `./build/games/long_narde_nats_worker --nats nats://HOST:4222 --run_id run1 --depth 2 --workers 16 --games 0`
+4) Train on the collected shards (example):
+   `./venv/bin/python -m open_spiel.python.algorithms.long_narde_nnue.closed_loop --iterations 1 --skip_selfplay --selfplay_dir results/nnue_stream/run1`
+5) Publish the new weights:
+   `./build/games/long_narde_nats_publish --nats nats://HOST:4222 --run_id run1 --file results/nnue_closed_loop/iter_00/nnue_iter_00.nnue`
+
 Project-critical constraints recap
 - NNUE queried only at pre-roll leaves (depth in full turns).
 - Chance nodes always exact (21 outcomes).

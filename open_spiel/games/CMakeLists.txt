@@ -12,6 +12,7 @@ set(GAME_SOURCES
   long_narde/long_narde_legal_actions.cc
   long_narde/long_narde_nnue.cc
   long_narde/long_narde_nnue.h
+  long_narde/long_narde_nnue_io.cc
   long_narde/long_narde_search.cc
   long_narde/long_narde_search.h
   long_narde/long_narde_selfplay.cc
@@ -358,6 +359,21 @@ add_executable(long_narde_lnue_probe long_narde/long_narde_lnue_probe.cc
 
 add_executable(long_narde_eval long_narde/long_narde_eval_main.cc
                ${OPEN_SPIEL_OBJECTS})
+
+add_library(long_narde_nats OBJECT long_narde/long_narde_nats.cc)
+
+add_executable(long_narde_nats_worker long_narde/long_narde_nats_worker_main.cc
+               $<TARGET_OBJECTS:long_narde_nats> ${OPEN_SPIEL_OBJECTS})
+add_executable(long_narde_nats_learner long_narde/long_narde_nats_learner_main.cc
+               $<TARGET_OBJECTS:long_narde_nats> ${OPEN_SPIEL_OBJECTS})
+add_executable(long_narde_nats_publish long_narde/long_narde_nats_publish_main.cc
+               $<TARGET_OBJECTS:long_narde_nats> ${OPEN_SPIEL_OBJECTS})
+
+if(WIN32)
+  target_link_libraries(long_narde_nats_worker ws2_32)
+  target_link_libraries(long_narde_nats_learner ws2_32)
+  target_link_libraries(long_narde_nats_publish ws2_32)
+endif()
 
 add_executable(bargaining_instance_generator bargaining/bargaining_instance_generator.cc
                ${OPEN_SPIEL_OBJECTS})
