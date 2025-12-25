@@ -15,12 +15,12 @@ Locked design decisions
   parallelism until later.
 
 Status
-- [ ] Confirm scope/constraints and map current long_narde C++ state to this plan
-- [ ] Design NNUE feature extractor + canonicalization + rule_flags/TT keys
-- [ ] Implement expectiminimax with exact 21-outcome chance nodes and compound actions
-- [ ] Build self-play data generator (pre-roll-only samples) and target mixing
-- [ ] Integrate training/export pipeline (PyTorch -> quantized weights) and C++ NNUE glue
-- [ ] Add audits/tests and performance benchmarks; document workflow
+- [x] Confirm scope/constraints and map current long_narde C++ state to this plan
+- [~] Design NNUE feature extractor + canonicalization + rule_flags/TT keys
+- [x] Implement expectiminimax with exact 21-outcome chance nodes and compound actions
+- [x] Build self-play data generator (pre-roll-only samples) and target mixing
+- [~] Integrate training/export pipeline (PyTorch -> quantized weights) and C++ NNUE glue
+- [~] Add audits/tests and performance benchmarks; document workflow
 
 1) Game and State Specification
 
@@ -235,6 +235,48 @@ Alpha schedule:
 - average legal compound actions per dice after dedup
 - NNUE evals/sec and accumulator update cost
 - cache hit rates for TT and move lists
+
+11) LNUE Shard Format (self-play output)
+
+11.1 File header (fixed-size, little-endian)
+- magic "LNUE"
+- format_version u32
+- endianness marker u32 (0x01020304)
+- feature_schema_id u32
+- total_feature_dim u32
+- flags bitset (has_run_features, dual_head, has_game_id, has_ply)
+- feature_index_bytes u32 (u16 expected for current dims)
+- reserved u32[9]
+
+11.2 Chunk header (fixed-size, per chunk)
+- magic "CHNK"
+- uncompressed_bytes u32
+- compressed_bytes u32 (0 if uncompressed)
+- num_samples u32
+- reserved u32[3]
+
+11.3 Chunk payload (columnar)
+- feat_offsets u32[num_samples + 1]
+- feat_indices u16[feat_offsets[-1]]
+- v_search f32[num_samples]
+- outcome i8[num_samples] in {-2,-1,+1,+2}
+- target f32[num_samples]
+- game_id u64[num_samples]
+- ply u16[num_samples]
+
+Note: compression is reserved; start uncompressed and add zstd later.
+
+12) Python Training Pipeline
+
+12.1 Reader
+- LNUE shard reader yields chunked columnar arrays.
+- Feature indices are used directly to avoid feature drift between C++ and Python.
+
+12.2 Trainer
+- EmbeddingBag for sparse accumulator, two-headed BCE loss (win/mars).
+- Auxiliary EV loss on sigmoid(win)+sigmoid(mars) vs target.
+- Quantization-aware clamp + optional quantization penalty.
+- Export headered NNUE binary (magic "LNNU") aligned with C++ loader.
 
 Project-critical constraints recap
 - NNUE queried only at pre-roll leaves (depth in full turns).
