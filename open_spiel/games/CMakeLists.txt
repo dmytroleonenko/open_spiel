@@ -338,6 +338,7 @@ add_executable(long_narde_test long_narde/long_narde_test_main.cc
                long_narde/long_narde_test_endgame.cc
                long_narde/long_narde_test_movement.cc
                long_narde/long_narde_test_pass.cc
+               long_narde/long_narde_test_search.cc
                ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:tests>)
 add_test(long_narde_test long_narde_test)
 

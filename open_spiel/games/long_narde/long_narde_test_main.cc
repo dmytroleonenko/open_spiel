@@ -32,6 +32,8 @@ int main(int argc, char** argv) {
   open_spiel::long_narde::TestEndgame();
   std::cout << "=== Testing Pass Move Behavior ===\n";
   open_spiel::long_narde::TestPassMoveBehavior();
+  std::cout << "=== Testing Search Invariants ===\n";
+  open_spiel::long_narde::TestSearchInvariants();
 
   std::cout << "✓ All tests passed\n";
   return 0;

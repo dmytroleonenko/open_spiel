@@ -105,6 +105,7 @@ void TestActionEncoding();
 void TestBridgeFormation();
 void TestEndgame();
 void TestPassMoveBehavior();
+void TestSearchInvariants();
 
 }  // namespace long_narde
 }  // namespace open_spiel

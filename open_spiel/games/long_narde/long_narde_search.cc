@@ -143,6 +143,7 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
 
 double ExpectiminimaxSearch::EvaluatePreRoll(
     const LongNardeState& state, Player maximizing_player) const {
+  SPIEL_CHECK_TRUE(state.awaiting_roll());
   if (evaluator_ == nullptr) {
     return 0.0;
   }
