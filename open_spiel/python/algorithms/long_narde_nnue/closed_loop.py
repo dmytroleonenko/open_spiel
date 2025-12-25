@@ -203,6 +203,7 @@ def _run_eval(
     games: int,
     depth: int,
     seed: int,
+    eval_workers: int,
 ) -> str:
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     cmd = [
@@ -215,6 +216,8 @@ def _run_eval(
         str(seed),
         "--progress",
         "0",
+        "--workers",
+        str(eval_workers),
     ]
     if nnue_a is not None:
         cmd.extend(["--nnue_a", str(nnue_a)])
@@ -229,7 +232,7 @@ def _run_eval(
 
 def main() -> None:
     """Runs closed-loop self-play training and evaluation."""
-    # pylint: disable=too-many-locals,too-many-statements
+    # pylint: disable=too-many-locals,too-many-statements,too-many-branches
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output_dir", default="results/nnue_closed_loop")
     parser.add_argument("--iterations", type=int, default=1)
@@ -242,8 +245,11 @@ def main() -> None:
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--selfplay_progress", type=int, default=1)
     parser.add_argument("--selfplay_report_every", type=int, default=100)
+    parser.add_argument("--skip_selfplay", action="store_true")
+    parser.add_argument("--selfplay_dir", default="")
     parser.add_argument("--eval_games", type=int, default=1000)
     parser.add_argument("--eval_depth", type=int, default=-1)
+    parser.add_argument("--eval_workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=2048)
@@ -284,52 +290,71 @@ def main() -> None:
     for iteration in range(args.iterations):
         iter_dir = output_dir / f"iter_{iteration:02d}"
         data_dir = iter_dir / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
+        if args.skip_selfplay:
+            if args.iterations > 1:
+                raise ValueError("skip_selfplay only supports iterations=1.")
+            if args.selfplay_dir:
+                data_dir = Path(args.selfplay_dir)
+            if not data_dir.exists():
+                raise FileNotFoundError(
+                    f"selfplay_dir not found: {data_dir}"
+                )
+        else:
+            data_dir.mkdir(parents=True, exist_ok=True)
 
-        total_games = max(1, args.games_per_iter)
-        games_per_shard = max(1, args.games_per_shard)
-        num_shards = int(math.ceil(total_games / games_per_shard))
-        print(
-            f"iter {iteration}: selfplay {total_games} games "
-            f"(depth={args.depth}, shards={num_shards})",
-            flush=True,
-        )
-
-        overall_progress = ProgressBar(total_games, "selfplay overall", unit="games")
-        games_done = 0
-        for shard_idx in range(num_shards):
-            remaining = total_games - shard_idx * games_per_shard
-            shard_games = min(games_per_shard, remaining)
-            shard_seed = args.seed + iteration * 100000 + shard_idx * 97
-            shard_path = data_dir / f"shard_{shard_idx:04d}.lnue"
+        if args.skip_selfplay:
             print(
-                f"selfplay shard {shard_idx + 1}/{num_shards} start "
-                f"({shard_games} games)",
+                f"iter {iteration}: using existing shards from {data_dir}",
                 flush=True,
             )
-            _run_selfplay(
-                selfplay_bin,
-                shard_path,
-                shard_games,
-                args.depth,
-                shard_seed,
-                shard_idx,
-                args.workers,
-                args.chunk,
-                args.temperature,
-                args.alpha,
-                prev_nnue,
-                args.selfplay_progress != 0,
-                args.selfplay_report_every,
-            )
-            games_done += shard_games
-            overall_progress.update(games_done)
+        else:
+            total_games = max(1, args.games_per_iter)
+            games_per_shard = max(1, args.games_per_shard)
+            num_shards = int(math.ceil(total_games / games_per_shard))
             print(
-                f"selfplay shard {shard_idx + 1}/{num_shards} complete "
-                f"({shard_games} games)",
+                f"iter {iteration}: selfplay {total_games} games "
+                f"(depth={args.depth}, shards={num_shards})",
                 flush=True,
             )
-        overall_progress.finish()
+
+            overall_progress = ProgressBar(
+                total_games, "selfplay overall", unit="games"
+            )
+            games_done = 0
+            for shard_idx in range(num_shards):
+                remaining = total_games - shard_idx * games_per_shard
+                shard_games = min(games_per_shard, remaining)
+                shard_seed = args.seed + iteration * 100000 + shard_idx * 97
+                shard_path = data_dir / f"shard_{shard_idx:04d}.lnue"
+                print(
+                    f"selfplay shard {shard_idx + 1}/{num_shards} start "
+                    f"({shard_games} games)",
+                    flush=True,
+                )
+                _run_selfplay(
+                    selfplay_bin,
+                    shard_path,
+                    shard_games,
+                    args.depth,
+                    shard_seed,
+                    shard_idx,
+                    args.workers,
+                    args.chunk,
+                    args.temperature,
+                    args.alpha,
+                    prev_nnue,
+                    args.selfplay_progress != 0,
+                    args.selfplay_report_every,
+                )
+                games_done += shard_games
+                overall_progress.update(games_done)
+                print()
+                print(
+                    f"selfplay shard {shard_idx + 1}/{num_shards} complete "
+                    f"({shard_games} games)",
+                    flush=True,
+                )
+            overall_progress.finish()
 
         shard_paths = sorted(data_dir.glob("*.lnue"))
         if not shard_paths:
@@ -373,6 +398,7 @@ def main() -> None:
             args.eval_games,
             eval_depth,
             eval_seed,
+            args.eval_workers,
         )
         summary_prev = _run_eval(
             eval_bin,
@@ -381,6 +407,7 @@ def main() -> None:
             args.eval_games,
             eval_depth,
             eval_seed + 1,
+            args.eval_workers,
         )
 
         with open(log_path, "a", encoding="utf-8") as handle:
