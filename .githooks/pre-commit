@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if [ -z "${VIRTUAL_ENV:-}" ] && [ -f "$repo_root/venv/bin/activate" ]; then
+  # Use repo-local venv for cpplint/pylint.
+  # shellcheck disable=SC1091
+  source "$repo_root/venv/bin/activate"
+fi
+
+staged_files=()
+while IFS= read -r -d '' file; do
+  staged_files+=("$file")
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+if [ "${#staged_files[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+cpp_files=()
+py_files=()
+for file in "${staged_files[@]}"; do
+  [ -f "$file" ] || continue
+  case "$file" in
+    *.cc|*.cpp|*.cxx|*.h|*.hh|*.hpp)
+      cpp_files+=("$file")
+      ;;
+    *.py)
+      py_files+=("$file")
+      ;;
+  esac
+done
+
+too_long=0
+for file in "${cpp_files[@]}"; do
+  lines="$(wc -l < "$file" | tr -d ' ')"
+  if [ "$lines" -gt 500 ]; then
+    echo "pre-commit: $file has $lines lines (>500). Split the file."
+    too_long=1
+  fi
+done
+
+if [ "$too_long" -ne 0 ]; then
+  exit 1
+fi
+
+if [ "${#cpp_files[@]}" -gt 0 ]; then
+  if command -v cpplint >/dev/null 2>&1; then
+    cpplint "${cpp_files[@]}"
+  elif python3 -m cpplint --version >/dev/null 2>&1; then
+    python3 -m cpplint "${cpp_files[@]}"
+  else
+    echo "pre-commit: cpplint not found."
+    exit 1
+  fi
+fi
+
+if [ "${#py_files[@]}" -gt 0 ]; then
+  if command -v pylint >/dev/null 2>&1; then
+    pylint "${py_files[@]}"
+  elif python3 -m pylint --version >/dev/null 2>&1; then
+    python3 -m pylint "${py_files[@]}"
+  else
+    echo "pre-commit: pylint not found."
+    exit 1
+  fi
+fi
