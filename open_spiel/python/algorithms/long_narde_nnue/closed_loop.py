@@ -204,6 +204,8 @@ def _run_eval(
     depth: int,
     seed: int,
     eval_workers: int,
+    progress: bool,
+    report_every: int,
 ) -> str:
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     cmd = [
@@ -215,7 +217,9 @@ def _run_eval(
         "--seed",
         str(seed),
         "--progress",
-        "0",
+        "1" if progress else "0",
+        "--report_every",
+        str(report_every),
         "--workers",
         str(eval_workers),
     ]
@@ -223,7 +227,12 @@ def _run_eval(
         cmd.extend(["--nnue_a", str(nnue_a)])
     if nnue_b is not None:
         cmd.extend(["--nnue_b", str(nnue_b)])
-    result = subprocess.run(cmd, check=True, text=True, capture_output=True)
+    result = subprocess.run(
+        cmd,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     if not lines:
         raise ValueError("Eval produced no output.")
@@ -250,6 +259,8 @@ def main() -> None:
     parser.add_argument("--eval_games", type=int, default=1000)
     parser.add_argument("--eval_depth", type=int, default=-1)
     parser.add_argument("--eval_workers", type=int, default=0)
+    parser.add_argument("--eval_progress", type=int, default=1)
+    parser.add_argument("--eval_report_every", type=int, default=100)
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=2048)
@@ -399,6 +410,8 @@ def main() -> None:
             eval_depth,
             eval_seed,
             args.eval_workers,
+            args.eval_progress != 0,
+            args.eval_report_every,
         )
         summary_prev = _run_eval(
             eval_bin,
@@ -408,6 +421,8 @@ def main() -> None:
             eval_depth,
             eval_seed + 1,
             args.eval_workers,
+            args.eval_progress != 0,
+            args.eval_report_every,
         )
 
         with open(log_path, "a", encoding="utf-8") as handle:
