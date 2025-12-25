@@ -5,6 +5,14 @@ set(GAME_SOURCES
   antichess/antichess.h
   backgammon/backgammon.cc
   backgammon/backgammon.h
+  long_narde/long_narde.h
+  long_narde/long_narde_internal.h
+  long_narde/long_narde_actions.cc
+  long_narde/long_narde_game.cc
+  long_narde/long_narde_legal_actions.cc
+  long_narde/long_narde_rules.cc
+  long_narde/long_narde_state.cc
+  long_narde/long_narde_tables.cc
   bargaining/bargaining.cc
   bargaining/bargaining.h
   bargaining/bargaining_instances1000.cc
@@ -319,6 +327,19 @@ add_test(antichess_test antichess_test)
 add_executable(backgammon_test backgammon/backgammon_test.cc ${OPEN_SPIEL_OBJECTS}
                $<TARGET_OBJECTS:tests>)
 add_test(backgammon_test backgammon_test)
+
+add_executable(long_narde_test long_narde/long_narde_test_main.cc
+               long_narde/long_narde_test_actions.cc
+               long_narde/long_narde_test_bridges.cc
+               long_narde/long_narde_test_endgame.cc
+               long_narde/long_narde_test_movement.cc
+               long_narde/long_narde_test_pass.cc
+               ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:tests>)
+add_test(long_narde_test long_narde_test)
+
+add_executable(random_sim_test long_narde/random_sim_test.cc
+               ${OPEN_SPIEL_OBJECTS})
+add_test(random_sim_test random_sim_test)
 
 add_executable(bargaining_instance_generator bargaining/bargaining_instance_generator.cc
                ${OPEN_SPIEL_OBJECTS})

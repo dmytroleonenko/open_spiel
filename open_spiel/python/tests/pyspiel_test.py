@@ -86,6 +86,7 @@ EXPECTED_MANDATORY_GAMES = frozenset([
     "liars_dice",
     "liars_dice_ir",
     "lines_of_action",
+    "long_narde",
     "maedn",
     "mancala",
     "markov_soccer",
@@ -333,7 +334,7 @@ class PyspielTest(parameterized.TestCase):
         pyspiel.GameType.Information.PERFECT_INFORMATION,
         pyspiel.GameType.Utility.ZERO_SUM,
         pyspiel.GameType.RewardModel.TERMINAL, 2, 2, True, True, False, False,
-        dict())
+        {})
     self.assertEqual(game_type.chance_mode,
                      pyspiel.GameType.ChanceMode.DETERMINISTIC)
 
