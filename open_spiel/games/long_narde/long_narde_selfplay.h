@@ -40,6 +40,8 @@ struct SelfPlaySample {
   double search_value = 0.0;
   double outcome_value = 0.0;
   double target_value = 0.0;
+  uint64_t game_id = 0;
+  uint16_t ply = 0;
   Player player = kInvalidPlayer;
 };
 

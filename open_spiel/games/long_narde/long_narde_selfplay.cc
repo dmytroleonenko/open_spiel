@@ -121,11 +121,16 @@ SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
     std::vector<PendingSample> pending;
     int moves = 0;
 
+    int ply = 0;
     while (!lnstate->IsTerminal() && moves < config.max_moves) {
       if (lnstate->IsChanceNode()) {
         if (!lnstate->initial_roll()) {
           PendingSample entry;
           entry.sample.player = lnstate->current_player_id();
+          entry.sample.game_id =
+              (static_cast<uint64_t>(seed) << 32) ^
+              static_cast<uint64_t>(g);
+          entry.sample.ply = static_cast<uint16_t>(ply);
           nnue::CollectActiveFeatureIndices(*lnstate,
                                             &entry.sample.active_features);
           entry.sample.search_value = search.Search(lnstate).value;
@@ -140,6 +145,7 @@ SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
         Action action = SampleSoftmax(scored, config.temperature, &rng);
         lnstate->ApplyAction(action);
         moves += 1;
+        ply += 1;
       }
     }
 
