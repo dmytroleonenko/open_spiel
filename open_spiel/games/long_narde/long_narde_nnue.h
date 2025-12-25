@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "open_spiel/games/long_narde/long_narde.h"
 
@@ -111,6 +112,9 @@ class NnueEvaluator {
  private:
   const NnueModel* model_;
 };
+
+void CollectActiveFeatureIndices(const LongNardeState& state,
+                                 std::vector<int>* out);
 
 }  // namespace nnue
 }  // namespace long_narde

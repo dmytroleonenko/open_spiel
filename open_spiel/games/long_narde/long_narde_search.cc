@@ -54,6 +54,54 @@ SearchResult ExpectiminimaxSearch::Search(LongNardeState* state) {
   return result;
 }
 
+std::vector<std::pair<Action, double>>
+ExpectiminimaxSearch::EvaluateDecisionActions(LongNardeState* state) {
+  std::vector<std::pair<Action, double>> results;
+  if (state == nullptr || state->IsTerminal() || state->IsChanceNode()) {
+    return results;
+  }
+  Player maximizing_player = state->current_player_id();
+  Player player = state->current_player_id();
+  std::vector<Action> actions = state->LegalActions();
+  results.reserve(actions.size());
+  for (Action action : actions) {
+    double child_value = 0.0;
+    if (config_.use_undo) {
+      state->ApplyAction(action);
+      int child_depth = config_.max_depth;
+      if (state->awaiting_roll() && config_.max_depth > 0) {
+        child_depth = config_.max_depth - 1;
+      }
+      child_value =
+          SearchState(state, child_depth, maximizing_player, nullptr);
+      state->UndoAction(player, action);
+    } else {
+      std::unique_ptr<State> child = state->Child(action);
+      auto* lnchild = static_cast<LongNardeState*>(child.get());
+      int child_depth = config_.max_depth;
+      if (lnchild->awaiting_roll() && config_.max_depth > 0) {
+        child_depth = config_.max_depth - 1;
+      }
+      child_value =
+          SearchState(lnchild, child_depth, maximizing_player, nullptr);
+    }
+    results.push_back({action, child_value});
+  }
+
+  std::stable_sort(results.begin(), results.end(),
+                   [player, maximizing_player](
+                       const std::pair<Action, double>& a,
+                       const std::pair<Action, double>& b) {
+                     if (a.second == b.second) {
+                       return a.first < b.first;
+                     }
+                     bool maximizing = player == maximizing_player;
+                     return maximizing ? (a.second > b.second)
+                                       : (a.second < b.second);
+                   });
+  return results;
+}
+
 double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
                                          Player maximizing_player,
                                          Action* best_action) {

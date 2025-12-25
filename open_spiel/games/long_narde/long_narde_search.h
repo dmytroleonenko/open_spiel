@@ -46,6 +46,8 @@ class ExpectiminimaxSearch {
                        const SearchConfig& config);
 
   SearchResult Search(LongNardeState* state);
+  std::vector<std::pair<Action, double>> EvaluateDecisionActions(
+      LongNardeState* state);
   void ClearCache() { table_.clear(); }
 
  private:

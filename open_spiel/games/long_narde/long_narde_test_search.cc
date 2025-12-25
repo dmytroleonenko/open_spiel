@@ -148,7 +148,7 @@ void DiceSymmetryLegalActions() {
       std::set<uint64_t> keys_ab = NextPreRollKeys(ln_ab);
       std::set<uint64_t> keys_ba = NextPreRollKeys(ln_ba);
       SPIEL_CHECK_EQ(keys_ab.size(), keys_ba.size());
-      SPIEL_CHECK_EQ(keys_ab, keys_ba);
+      SPIEL_CHECK_TRUE(keys_ab == keys_ba);
     }
   }
 }

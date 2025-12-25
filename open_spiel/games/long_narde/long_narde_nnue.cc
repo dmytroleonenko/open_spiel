@@ -22,6 +22,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
@@ -48,6 +49,9 @@ using AddRowFn = void (*)(const int16_t* weights, int16_t* acc);
 using ComputeLayerFn = void (*)(const int8_t* input, const int8_t* weights,
                                 const int8_t* bias, int in_dim, int out_dim,
                                 int8_t* output);
+
+int8_t ClampAcc(int16_t value);
+int8_t ClampLayer(int32_t value);
 
 void AddRowScalar(const int16_t* weights, int16_t* acc) {
   for (int i = 0; i < kNnueL1; ++i) {
@@ -429,6 +433,14 @@ NnueEval NnueEvaluator::EvaluateState(const LongNardeState& state) const {
   eval.p_mars = SigmoidApprox(logit_mars);
   eval.ev = eval.p_win + eval.p_mars;
   return eval;
+}
+
+void CollectActiveFeatureIndices(const LongNardeState& state,
+                                 std::vector<int>* out) {
+  SPIEL_CHECK_TRUE(out != nullptr);
+  ActiveFeatures active;
+  CollectActiveFeatures(state, &active);
+  out->assign(active.indices.begin(), active.indices.begin() + active.count);
 }
 
 }  // namespace nnue

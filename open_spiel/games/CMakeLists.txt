@@ -14,6 +14,8 @@ set(GAME_SOURCES
   long_narde/long_narde_nnue.h
   long_narde/long_narde_search.cc
   long_narde/long_narde_search.h
+  long_narde/long_narde_selfplay.cc
+  long_narde/long_narde_selfplay.h
   long_narde/long_narde_rules.cc
   long_narde/long_narde_state.cc
   long_narde/long_narde_tables.cc
