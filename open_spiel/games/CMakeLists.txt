@@ -14,6 +14,8 @@ set(GAME_SOURCES
   long_narde/long_narde_nnue_cache.h
   long_narde/long_narde_nnue.cc
   long_narde/long_narde_nnue.h
+  long_narde/long_narde_nnue_kernels.cc
+  long_narde/long_narde_nnue_kernels.h
   long_narde/long_narde_nnue_io.cc
   long_narde/long_narde_search.cc
   long_narde/long_narde_search.h

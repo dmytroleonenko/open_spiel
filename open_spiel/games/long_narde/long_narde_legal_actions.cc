@@ -62,30 +62,7 @@ bool HeadLimitOk(int head_used_total, int head_count, bool is_first,
   return head_used_total <= threshold;
 }
 
-OrderBitset MaskForOrder(const Board& board, int d1, int d2, int head_count,
-                         bool is_doubles, bool is_first_turn,
-                         const Dice& dice) {
-  OrderBitset out{};
-  out.fill(0u);
-
-  const auto& my0 = board[0];
-  const auto& opp0 = board[1];
-  const auto& canon_to_rot = CanonToRotBits();
-
-  int total0 = 0;
-  for (int v : my0) {
-    total0 += v;
-  }
-
-  uint32_t my_occ_rot = Rot12Bits(OccBits(my0));
-  auto opp_ctx = OppNoAheadBits(opp0);
-  bool opp_has = opp_ctx.first;
-  uint32_t no_opp_ahead_bits = opp_ctx.second;
-
-  bool all_home0 = (my_occ_rot & kNonHomeMaskRot) == 0u;
-  int home_min0 = HomeMinFromRotOccBits(my_occ_rot);
-
-  std::array<bool, 25> legal_1{};
+struct OrderPrep {
   std::array<bool, 25> valid_1{};
   std::array<uint32_t, 25> occ_m1_bits{};
   std::array<int, 25> target_1{};
@@ -94,6 +71,15 @@ OrderBitset MaskForOrder(const Board& board, int d1, int d2, int head_count,
   std::array<int, 25> total_1{};
   std::array<bool, 25> all_home_1{};
   std::array<int, 25> home_min_1{};
+};
+
+void FillFirstMoveData(const Board& board, int d1, int total0,
+                       uint32_t my_occ_rot, bool opp_has,
+                       uint32_t no_opp_ahead_bits, bool all_home0,
+                       int home_min0, OrderPrep* prep) {
+  const auto& my0 = board[0];
+  const auto& opp0 = board[1];
+  const auto& canon_to_rot = CanonToRotBits();
 
   for (int src1 = 0; src1 < 25; ++src1) {
     bool is_pass = (src1 == kActionPassSrc);
@@ -132,78 +118,161 @@ OrderBitset MaskForOrder(const Board& board, int d1, int d2, int head_count,
     bool block_ok = BridgeLegal(bits, opp_has, no_opp_ahead_bits);
     bool valid = legal && block_ok;
 
-    legal_1[src1] = legal;
-    valid_1[src1] = valid;
-    occ_m1_bits[src1] = bits;
-    target_1[src1] = target;
-    is_pass_1[src1] = is_pass;
-    is_bearing_1[src1] = is_bearing;
-    total_1[src1] =
+    prep->valid_1[src1] = valid;
+    prep->occ_m1_bits[src1] = bits;
+    prep->target_1[src1] = target;
+    prep->is_pass_1[src1] = is_pass;
+    prep->is_bearing_1[src1] = is_bearing;
+    prep->total_1[src1] =
         total0 - ((valid && !is_pass && is_bearing) ? 1 : 0);
-    all_home_1[src1] = (bits & kNonHomeMaskRot) == 0u;
-    home_min_1[src1] = HomeMinFromRotOccBits(bits);
+    prep->all_home_1[src1] = (bits & kNonHomeMaskRot) == 0u;
+    prep->home_min_1[src1] = HomeMinFromRotOccBits(bits);
+  }
+}
+
+void MaskForOrders(const Board& board, int d_min, int d_max, int head_count,
+                   bool is_doubles, bool is_first_turn, const Dice& dice,
+                   OrderBitset* order0, OrderBitset* order1) {
+  order0->fill(0u);
+  order1->fill(0u);
+
+  const auto& my0 = board[0];
+  const auto& opp0 = board[1];
+  const auto& canon_to_rot = CanonToRotBits();
+
+  int total0 = 0;
+  for (int v : my0) {
+    total0 += v;
+  }
+
+  uint32_t my_occ_rot = Rot12Bits(OccBits(my0));
+  auto opp_ctx = OppNoAheadBits(opp0);
+  bool opp_has = opp_ctx.first;
+  uint32_t no_opp_ahead_bits = opp_ctx.second;
+
+  bool all_home0 = (my_occ_rot & kNonHomeMaskRot) == 0u;
+  int home_min0 = HomeMinFromRotOccBits(my_occ_rot);
+
+  OrderPrep prep0;
+  OrderPrep prep1;
+  FillFirstMoveData(board, d_max, total0, my_occ_rot, opp_has,
+                    no_opp_ahead_bits, all_home0, home_min0, &prep0);
+  bool need_order1 = !is_doubles;
+  if (need_order1) {
+    FillFirstMoveData(board, d_min, total0, my_occ_rot, opp_has,
+                      no_opp_ahead_bits, all_home0, home_min0, &prep1);
   }
 
   for (int src2 = 0; src2 < 25; ++src2) {
     bool is_pass2 = (src2 == kActionPassSrc);
-    int target2 = src2 + d2;
     int src2_read = std::min(src2, 23);
-    int dst2_read = std::min(target2, 23);
     uint32_t src2_bit = canon_to_rot[src2_read];
-    uint32_t dst2_bit = canon_to_rot[dst2_read];
     int my0_src2 = my0[src2_read];
 
-    bool is_bearing2 = target2 >= 24;
-    bool dest_blocked2 =
-        (target2 < 24) ? (opp0[dst2_read] > 0) : false;
-    bool exact_bear2 = target2 == 24;
+    int target2[2] = {src2 + d_min, src2 + d_max};
+    int dst2_read[2] = {std::min(target2[0], 23), std::min(target2[1], 23)};
+    uint32_t dst2_bit[2] = {canon_to_rot[dst2_read[0]],
+                            canon_to_rot[dst2_read[1]]};
+    bool is_bearing2[2] = {target2[0] >= 24, target2[1] >= 24};
+    bool dest_blocked2[2] = {
+        (target2[0] < 24) ? (opp0[dst2_read[0]] > 0) : false,
+        (target2[1] < 24) ? (opp0[dst2_read[1]] > 0) : false};
+    bool exact_bear2[2] = {target2[0] == 24, target2[1] == 24};
 
     for (int src1 = 0; src1 < 25; ++src1) {
+      if (prep0.valid_1[src1]) {
+        bool moved_from_src2 =
+            !prep0.is_pass_1[src1] && (src1 == src2);
+        bool moved_to_src2 =
+            !prep0.is_pass_1[src1] && (prep0.target_1[src1] == src2) &&
+            (prep0.target_1[src1] < 24);
+        int count_at_src2 =
+            my0_src2 + (moved_to_src2 ? 1 : 0) - (moved_from_src2 ? 1 : 0);
+
+        bool has_checker2 = is_pass2 || (count_at_src2 > 0);
+        bool overkill_ok2 = (src2 == prep0.home_min_1[src1]);
+        bool can_bear2 =
+            (!is_pass2) && is_bearing2[0] && has_checker2 &&
+            prep0.all_home_1[src1] && (exact_bear2[0] || overkill_ok2);
+        bool home_shuffle_block2 =
+            prep0.all_home_1[src1] && (prep0.total_1[src1] == 1);
+        bool can_move_std2 =
+            (!is_pass2) && (!is_bearing2[0]) && has_checker2 &&
+            (!dest_blocked2[0]) && (!home_shuffle_block2);
+        bool legal_2 = is_pass2 || can_move_std2 || can_bear2;
+
+        if (legal_2) {
+          uint32_t bits2 = prep0.occ_m1_bits[src1];
+          if (!is_pass2) {
+            if (count_at_src2 == 1) {
+              bits2 &= ~src2_bit;
+            }
+            if (target2[0] < 24) {
+              bits2 |= dst2_bit[0];
+            }
+          }
+          bool valid_2 = BridgeLegal(bits2, opp_has, no_opp_ahead_bits);
+          if (valid_2) {
+            int head_used_total = (src1 == 0) + (src2 == 0);
+            if (HeadLimitOk(head_used_total, head_count, is_first_turn,
+                            is_doubles, dice)) {
+              int idx = src1 + 25 * src2;
+              int word = idx / 32;
+              int bit = idx % 32;
+              (*order0)[word] |= (uint32_t{1} << bit);
+            }
+          }
+        }
+      }
+
+      if (!need_order1 || !prep1.valid_1[src1]) {
+        continue;
+      }
+
       bool moved_from_src2 =
-          valid_1[src1] && !is_pass_1[src1] && (src1 == src2);
+          !prep1.is_pass_1[src1] && (src1 == src2);
       bool moved_to_src2 =
-          valid_1[src1] && !is_pass_1[src1] && (target_1[src1] == src2) &&
-          (target_1[src1] < 24);
+          !prep1.is_pass_1[src1] && (prep1.target_1[src1] == src2) &&
+          (prep1.target_1[src1] < 24);
       int count_at_src2 =
           my0_src2 + (moved_to_src2 ? 1 : 0) - (moved_from_src2 ? 1 : 0);
 
       bool has_checker2 = is_pass2 || (count_at_src2 > 0);
-      bool overkill_ok2 = (src2 == home_min_1[src1]);
-      bool can_bear2 = (!is_pass2) && is_bearing2 && has_checker2 &&
-                       all_home_1[src1] && (exact_bear2 || overkill_ok2);
-      bool home_shuffle_block2 = all_home_1[src1] && (total_1[src1] == 1);
-      bool can_move_std2 = (!is_pass2) && (!is_bearing2) && has_checker2 &&
-                           (!dest_blocked2) && (!home_shuffle_block2);
+      bool overkill_ok2 = (src2 == prep1.home_min_1[src1]);
+      bool can_bear2 =
+          (!is_pass2) && is_bearing2[1] && has_checker2 &&
+          prep1.all_home_1[src1] && (exact_bear2[1] || overkill_ok2);
+      bool home_shuffle_block2 =
+          prep1.all_home_1[src1] && (prep1.total_1[src1] == 1);
+      bool can_move_std2 =
+          (!is_pass2) && (!is_bearing2[1]) && has_checker2 &&
+          (!dest_blocked2[1]) && (!home_shuffle_block2);
       bool legal_2 = is_pass2 || can_move_std2 || can_bear2;
 
-      bool valid_2 = false;
       if (legal_2) {
-        uint32_t bits2 = occ_m1_bits[src1];
+        uint32_t bits2 = prep1.occ_m1_bits[src1];
         if (!is_pass2) {
           if (count_at_src2 == 1) {
             bits2 &= ~src2_bit;
           }
-          if (target2 < 24) {
-            bits2 |= dst2_bit;
+          if (target2[1] < 24) {
+            bits2 |= dst2_bit[1];
           }
         }
-        valid_2 = BridgeLegal(bits2, opp_has, no_opp_ahead_bits);
-      }
-
-      if (valid_1[src1] && valid_2) {
-        int head_used_total = (src1 == 0) + (src2 == 0);
-        if (HeadLimitOk(head_used_total, head_count, is_first_turn,
-                        is_doubles, dice)) {
-          int idx = src1 + 25 * src2;
-          int word = idx / 32;
-          int bit = idx % 32;
-          out[word] |= (uint32_t{1} << bit);
+        bool valid_2 = BridgeLegal(bits2, opp_has, no_opp_ahead_bits);
+        if (valid_2) {
+          int head_used_total = (src1 == 0) + (src2 == 0);
+          if (HeadLimitOk(head_used_total, head_count, is_first_turn,
+                          is_doubles, dice)) {
+            int idx = src1 + 25 * src2;
+            int word = idx / 32;
+            int bit = idx % 32;
+            (*order1)[word] |= (uint32_t{1} << bit);
+          }
         }
       }
     }
   }
-
-  return out;
 }
 
 }  // namespace
@@ -259,10 +328,10 @@ ActionBitset GenerateLegalActionBits(const Board& board, const Dice& dice,
   int d_min = std::min(dice[0], dice[1]);
   int d_max = std::max(dice[0], dice[1]);
 
-  OrderBitset order0 = MaskForOrder(board, d_max, d_min, head_count, is_doubles,
-                                    is_first_turn, dice);
-  OrderBitset order1 = MaskForOrder(board, d_min, d_max, head_count, is_doubles,
-                                    is_first_turn, dice);
+  OrderBitset order0{};
+  OrderBitset order1{};
+  MaskForOrders(board, d_min, d_max, head_count, is_doubles, is_first_turn,
+                dice, &order0, &order1);
 
   ActionBitset bits{};
   bits.fill(0u);
