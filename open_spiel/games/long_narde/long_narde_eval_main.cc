@@ -165,8 +165,8 @@ struct EvalResult {
 };
 
 EvalResult RunEvalWorker(std::shared_ptr<const Game> game,
-                         const NnueEvaluator* eval_a,
-                         const NnueEvaluator* eval_b,
+                         const nnue::NnueEvaluator* eval_a,
+                         const nnue::NnueEvaluator* eval_b,
                          const SearchConfig& search_config,
                          const EvalConfig& config, int total_games,
                          std::atomic<int>* next_game,
