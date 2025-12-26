@@ -29,12 +29,11 @@ namespace {
 
 constexpr int kRunWords = 2;
 constexpr int kMaxDeltaPoints = 4;
-
-constexpr int MaxRunUpdatesPerPoint() {
-  return (nnue::kNnueRunMax * (nnue::kNnueRunMax + 1)) / 2 - 1;
-}
-
-constexpr int kMaxRunUpdatesPerPoint = MaxRunUpdatesPerPoint();
+constexpr int kRunOffset2 = 0;
+constexpr int kRunOffset3 = kRunOffset2 + nnue::kNnueRunCount2;
+constexpr int kRunOffset4 = kRunOffset3 + nnue::kNnueRunCount3;
+constexpr int kRunOffset5 = kRunOffset4 + nnue::kNnueRunCount4;
+constexpr int kRunOffset6 = kRunOffset5 + nnue::kNnueRunCount5;
 
 int BucketForCount(int count) {
   if (count < 0) {
@@ -67,16 +66,6 @@ struct PointDeltaList {
   std::array<int, kMaxDeltaPoints> points{};
   std::array<int8_t, kMaxDeltaPoints> deltas{};
   int count = 0;
-};
-
-struct RunUpdateEntry {
-  uint16_t index = 0;
-  uint32_t mask = 0;
-};
-
-struct RunUpdateList {
-  std::array<RunUpdateEntry, kMaxRunUpdatesPerPoint> entries{};
-  uint8_t count = 0;
 };
 
 void AddPointDelta(PointDeltaList* list, int point, int8_t delta) {
@@ -114,50 +103,6 @@ void SetRunBitValue(std::array<uint64_t, kRunWords>* bits, int index,
   }
 }
 
-const std::array<int, nnue::kNnueRunMax + 2>& RunOffsets() {
-  static const std::array<int, nnue::kNnueRunMax + 2> offsets = []() {
-    std::array<int, nnue::kNnueRunMax + 2> out{};
-    int offset = 0;
-    for (int len = nnue::kNnueRunMin; len <= nnue::kNnueRunMax + 1; ++len) {
-      out[len] = offset;
-      if (len <= nnue::kNnueRunMax) {
-        offset += kNumPoints - len + 1;
-      }
-    }
-    return out;
-  }();
-  return offsets;
-}
-
-const std::array<RunUpdateList, kNumPoints>& RunUpdateLists() {
-  static const std::array<RunUpdateList, kNumPoints> lists = []() {
-    std::array<RunUpdateList, kNumPoints> out{};
-    const auto& offsets = RunOffsets();
-    for (int point = 0; point < kNumPoints; ++point) {
-      RunUpdateList list;
-      int count = 0;
-      for (int len = nnue::kNnueRunMin; len <= nnue::kNnueRunMax; ++len) {
-        int start_min = std::max(0, point - (len - 1));
-        int start_max = std::min(point, kNumPoints - len);
-        if (start_min > start_max) {
-          continue;
-        }
-        uint32_t mask_base = (uint32_t{1} << len) - 1u;
-        int offset = offsets[len];
-        for (int start = start_min; start <= start_max; ++start) {
-          SPIEL_CHECK_LT(count, kMaxRunUpdatesPerPoint);
-          list.entries[count++] = {static_cast<uint16_t>(offset + start),
-                                   mask_base << start};
-        }
-      }
-      list.count = static_cast<uint8_t>(count);
-      out[point] = list;
-    }
-    return out;
-  }();
-  return lists;
-}
-
 std::array<uint64_t, kRunWords> ComputeRunBits(uint32_t blocked) {
   std::array<uint64_t, kRunWords> out{};
   int offset = 0;
@@ -180,28 +125,42 @@ std::array<uint64_t, kRunWords> ComputeRunBits(uint32_t blocked) {
   return out;
 }
 
-void UpdateRunBitsIncremental(uint32_t old_blocked, uint32_t new_blocked,
-                              std::array<uint64_t, kRunWords>* run_bits) {
-  uint32_t changed = old_blocked ^ new_blocked;
-  if (changed == 0u) {
-    return;
-  }
-  std::array<uint8_t, nnue::kNnueRunFeaturesPerSide> touched{};
-  const auto& lists = RunUpdateLists();
-  while (changed != 0u) {
-    int point = __builtin_ctz(changed);
-    changed &= changed - 1;
-    const RunUpdateList& list = lists[point];
-    for (int i = 0; i < list.count; ++i) {
-      int index = list.entries[i].index;
-      if (touched[index]) {
-        continue;
-      }
-      touched[index] = 1;
-      uint32_t mask = list.entries[i].mask;
-      bool active = (new_blocked & mask) == mask;
-      SetRunBitValue(run_bits, index, active);
+struct RunStarts {
+  uint32_t run2 = 0;
+  uint32_t run3 = 0;
+  uint32_t run4 = 0;
+  uint32_t run5 = 0;
+  uint32_t run6 = 0;
+};
+
+RunStarts ComputeRunStarts(uint32_t blocked) {
+  RunStarts out;
+  out.run2 = blocked & (blocked >> 1);
+  out.run3 = out.run2 & (blocked >> 2);
+  out.run4 = out.run3 & (blocked >> 3);
+  out.run5 = out.run4 & (blocked >> 4);
+  out.run6 = out.run5 & (blocked >> 5);
+  return out;
+}
+
+void UpdateRunStarts(int run_offset, int index_offset, uint32_t old_run,
+                     uint32_t new_run, const int16_t* w0,
+                     std::array<int16_t, nnue::kNnueL1>* acc,
+                     std::array<uint64_t, kRunWords>* run_bits,
+                     nnue::AddRowFn add_row, nnue::SubRowFn sub_row) {
+  uint32_t diff = old_run ^ new_run;
+  while (diff != 0u) {
+    int bit = __builtin_ctz(diff);
+    int index = index_offset + bit;
+    const int16_t* row = &w0[(run_offset + index) * nnue::kNnueL1];
+    if (new_run & (uint32_t{1} << bit)) {
+      add_row(row, acc->data());
+      SetRunBitValue(run_bits, index, true);
+    } else {
+      sub_row(row, acc->data());
+      SetRunBitValue(run_bits, index, false);
     }
+    diff &= diff - 1;
   }
 }
 
@@ -330,37 +289,21 @@ void UpdateCacheNoFlipSide(int side,
   }
 
   cache->blocked_bits[side] = new_bits;
-  uint32_t changed = old_bits ^ new_bits;
-  if (changed == 0u) {
+  if (old_bits == new_bits) {
     return;
   }
-  std::array<uint8_t, nnue::kNnueRunFeaturesPerSide> touched{};
-  const auto& lists = RunUpdateLists();
-  while (changed != 0u) {
-    int point = __builtin_ctz(changed);
-    changed &= changed - 1;
-    const RunUpdateList& list = lists[point];
-    for (int i = 0; i < list.count; ++i) {
-      int index = list.entries[i].index;
-      if (touched[index]) {
-        continue;
-      }
-      touched[index] = 1;
-      uint32_t mask = list.entries[i].mask;
-      bool old_active = (old_bits & mask) == mask;
-      bool new_active = (new_bits & mask) == mask;
-      if (old_active == new_active) {
-        continue;
-      }
-      const int16_t* row = &w0[(run_offset + index) * nnue::kNnueL1];
-      if (new_active) {
-        add_row(row, cache->acc.data());
-      } else {
-        sub_row(row, cache->acc.data());
-      }
-      SetRunBitValue(&cache->run_bits[side], index, new_active);
-    }
-  }
+  RunStarts old_runs = ComputeRunStarts(old_bits);
+  RunStarts new_runs = ComputeRunStarts(new_bits);
+  UpdateRunStarts(run_offset, kRunOffset2, old_runs.run2, new_runs.run2, w0,
+                  &cache->acc, &cache->run_bits[side], add_row, sub_row);
+  UpdateRunStarts(run_offset, kRunOffset3, old_runs.run3, new_runs.run3, w0,
+                  &cache->acc, &cache->run_bits[side], add_row, sub_row);
+  UpdateRunStarts(run_offset, kRunOffset4, old_runs.run4, new_runs.run4, w0,
+                  &cache->acc, &cache->run_bits[side], add_row, sub_row);
+  UpdateRunStarts(run_offset, kRunOffset5, old_runs.run5, new_runs.run5, w0,
+                  &cache->acc, &cache->run_bits[side], add_row, sub_row);
+  UpdateRunStarts(run_offset, kRunOffset6, old_runs.run6, new_runs.run6, w0,
+                  &cache->acc, &cache->run_bits[side], add_row, sub_row);
 }
 
 void FlipCache(const nnue::NnueNetwork& net, const nnue::NnueCache& src,
