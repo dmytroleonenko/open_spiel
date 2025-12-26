@@ -157,7 +157,6 @@ struct EvalResult {
   int games = 0;
   int wins_a = 0;
   int wins_b = 0;
-  int draws = 0;
   int mars_a = 0;
   int mars_b = 0;
   double sum_return_a = 0.0;
@@ -224,27 +223,23 @@ EvalResult RunEvalWorker(std::shared_ptr<const Game> game,
       moves += 1;
     }
 
-    if (lnstate->IsTerminal()) {
-      std::vector<double> returns = lnstate->Returns();
-      double ret_a = returns[kXPlayerId];
-      double ret_b = returns[kOPlayerId];
-      result.sum_return_a += ret_a;
-      result.sum_return_b += ret_b;
-      if (ret_a > ret_b) {
-        result.wins_a += 1;
-        if (ret_a >= 2.0) {
-          result.mars_a += 1;
-        }
-      } else if (ret_b > ret_a) {
-        result.wins_b += 1;
-        if (ret_b >= 2.0) {
-          result.mars_b += 1;
-        }
-      } else {
-        result.draws += 1;
+    SPIEL_CHECK_TRUE(lnstate->IsTerminal());
+    std::vector<double> returns = lnstate->Returns();
+    double ret_a = returns[kXPlayerId];
+    double ret_b = returns[kOPlayerId];
+    SPIEL_CHECK_TRUE(ret_a != ret_b);
+    result.sum_return_a += ret_a;
+    result.sum_return_b += ret_b;
+    if (ret_a > ret_b) {
+      result.wins_a += 1;
+      if (ret_a >= 2.0) {
+        result.mars_a += 1;
       }
     } else {
-      result.draws += 1;
+      result.wins_b += 1;
+      if (ret_b >= 2.0) {
+        result.mars_b += 1;
+      }
     }
     result.games += 1;
 
@@ -378,7 +373,6 @@ int main(int argc, char** argv) {
     result.games += part.games;
     result.wins_a += part.wins_a;
     result.wins_b += part.wins_b;
-    result.draws += part.draws;
     result.mars_a += part.mars_a;
     result.mars_b += part.mars_b;
     result.sum_return_a += part.sum_return_a;
@@ -395,8 +389,8 @@ int main(int argc, char** argv) {
   line << "games=" << result.games << " depth=" << config.depth
        << " seed=" << config.seed << " agent_a=" << label_a
        << " agent_b=" << label_b << " wins_a=" << result.wins_a
-       << " wins_b=" << result.wins_b << " draws=" << result.draws
-       << " mars_a=" << result.mars_a << " mars_b=" << result.mars_b
+       << " wins_b=" << result.wins_b << " mars_a=" << result.mars_a
+       << " mars_b=" << result.mars_b
        << " avg_return_a=" << std::fixed << std::setprecision(4) << avg_a
        << " avg_return_b=" << std::fixed << std::setprecision(4) << avg_b;
 
