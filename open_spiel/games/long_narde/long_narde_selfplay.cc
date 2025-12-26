@@ -212,7 +212,7 @@ SelfPlayBatch RunSelfPlay(std::shared_ptr<const Game> game,
   int workers = selfplay_config.num_workers;
   if (workers <= 0) {
     unsigned int hc = std::thread::hardware_concurrency();
-    workers = hc == 0 ? 1 : static_cast<int>(hc);
+    workers = hc == 0 ? 1 : static_cast<int>(hc) + 1;
   }
   int total_games = std::max(selfplay_config.num_games, 0);
   workers = std::min(workers, std::max(total_games, 1));

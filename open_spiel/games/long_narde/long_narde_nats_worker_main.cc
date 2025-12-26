@@ -394,7 +394,7 @@ int main(int argc, char** argv) {
   int workers = config.workers;
   if (workers <= 0) {
     unsigned int hc = std::thread::hardware_concurrency();
-    workers = hc == 0 ? 1 : static_cast<int>(hc);
+    workers = hc == 0 ? 1 : static_cast<int>(hc) + 1;
   }
 
   WeightsStore store;
