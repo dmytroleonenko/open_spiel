@@ -300,6 +300,7 @@ def main() -> None:
 
     for iteration in range(args.iterations):
         iter_dir = output_dir / f"iter_{iteration:02d}"
+        iter_dir.mkdir(parents=True, exist_ok=True)
         data_dir = iter_dir / "data"
         if args.skip_selfplay:
             if args.iterations > 1:
