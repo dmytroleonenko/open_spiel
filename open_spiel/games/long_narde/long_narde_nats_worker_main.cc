@@ -58,7 +58,7 @@ struct PendingSample {
 };
 
 struct WeightsStore {
-  std::mutex mu;
+  mutable std::mutex mu;
   std::string data;
   int version = 0;
 
@@ -68,7 +68,7 @@ struct WeightsStore {
     version += 1;
   }
 
-  bool GetIfNew(int* version_out, std::string* payload_out) {
+  bool GetIfNew(int* version_out, std::string* payload_out) const {
     if (version_out == nullptr || payload_out == nullptr) {
       return false;
     }
