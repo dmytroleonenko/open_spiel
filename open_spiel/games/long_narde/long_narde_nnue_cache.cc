@@ -61,6 +61,40 @@ void AddFeature(int idx, nnue::NnueActiveFeatures* feats) {
   feats->indices[feats->count++] = idx;
 }
 
+const std::array<uint32_t, nnue::kNnueRunFeaturesPerSide>& RunMasks();
+
+void BuildActiveFromCache(const nnue::NnueCache& cache,
+                          nnue::NnueActiveFeatures* active) {
+  active->count = 0;
+  for (int side = 0; side < kNumPlayers; ++side) {
+    for (int point = 0; point < kNumPoints; ++point) {
+      AddFeature(BaseFeatureIndex(side, point, cache.counts[side][point]),
+                 active);
+    }
+    AddFeature(OffFeatureIndex(side, cache.off[side]), active);
+  }
+
+  const auto& masks = RunMasks();
+  for (int side = 0; side < kNumPlayers; ++side) {
+    uint32_t blocked = cache.blocked_bits[side];
+    int run_offset = nnue::kNnueBaseFeatures +
+                     side * nnue::kNnueRunFeaturesPerSide;
+    for (int i = 0; i < nnue::kNnueRunFeaturesPerSide; ++i) {
+      if ((blocked & masks[i]) == masks[i]) {
+        AddFeature(run_offset + i, active);
+      }
+    }
+  }
+}
+
+void RebuildAccumulatorFromCache(const nnue::NnueNetwork& net,
+                                 const nnue::NnueCache& cache,
+                                 std::array<int16_t, nnue::kNnueL1>* acc_out) {
+  nnue::NnueActiveFeatures active;
+  BuildActiveFromCache(cache, &active);
+  nnue::BuildAccumulator(net, active, acc_out);
+}
+
 const std::array<uint32_t, nnue::kNnueRunFeaturesPerSide>& RunMasks() {
   static const std::array<uint32_t, nnue::kNnueRunFeaturesPerSide> masks =
       []() {
@@ -247,15 +281,11 @@ void UpdateCacheNoFlip(const std::array<int8_t, kNumPoints>& delta,
   cache->blocked_bits[0] = new_bits;
 }
 
-void UpdateCacheFlip(const std::array<int8_t, kNumPoints>& delta, int off_delta,
-                     nnue::NnueCache* cache, nnue::NnueActiveFeatures* remove,
-                     nnue::NnueActiveFeatures* add) {
-  auto old_counts = cache->counts;
-  auto old_off = cache->off;
-  auto old_bits = cache->blocked_bits;
-
-  auto counts_after = old_counts;
-  auto off_after = old_off;
+void UpdateCacheFlipRebuild(const std::array<int8_t, kNumPoints>& delta,
+                            int off_delta, const nnue::NnueNetwork& net,
+                            nnue::NnueCache* cache) {
+  auto counts_after = cache->counts;
+  auto off_after = cache->off;
   for (int point = 0; point < kNumPoints; ++point) {
     int delta_count = delta[point];
     if (delta_count == 0) {
@@ -278,36 +308,12 @@ void UpdateCacheFlip(const std::array<int8_t, kNumPoints>& delta, int off_delta,
       static_cast<uint8_t>(off_after[1]),
       static_cast<uint8_t>(off_after[0]),
   };
-  std::array<uint32_t, 2> new_bits{
-      BlockedBits(new_counts[0]),
-      BlockedBits(new_counts[1]),
-  };
-
-  for (int side = 0; side < kNumPlayers; ++side) {
-    for (int point = 0; point < kNumPoints; ++point) {
-      int old_count = old_counts[side][point];
-      int new_count = new_counts[side][point];
-      int old_feat = BaseFeatureIndex(side, point, old_count);
-      int new_feat = BaseFeatureIndex(side, point, new_count);
-      if (old_feat != new_feat) {
-        AddFeature(old_feat, remove);
-        AddFeature(new_feat, add);
-      }
-    }
-    int old_feat = OffFeatureIndex(side, old_off[side]);
-    int new_feat = OffFeatureIndex(side, new_off[side]);
-    if (old_feat != new_feat) {
-      AddFeature(old_feat, remove);
-      AddFeature(new_feat, add);
-    }
-  }
-
-  UpdateRunFeaturesForSide(0, old_bits[0], new_bits[0], remove, add);
-  UpdateRunFeaturesForSide(1, old_bits[1], new_bits[1], remove, add);
 
   cache->counts = new_counts;
   cache->off = new_off;
-  cache->blocked_bits = new_bits;
+  cache->blocked_bits[0] = BlockedBits(new_counts[0]);
+  cache->blocked_bits[1] = BlockedBits(new_counts[1]);
+  RebuildAccumulatorFromCache(net, *cache, &cache->acc);
 }
 
 }  // namespace
@@ -375,12 +381,11 @@ void NnueCacheStack::PushAction(const LongNardeState& state, Action action,
 
   bool flipped = state.current_player_id() != prev_player;
   if (flipped) {
-    UpdateCacheFlip(delta, off_delta, &child, &remove, &add);
+    UpdateCacheFlipRebuild(delta, off_delta, *network_, &child);
   } else {
     UpdateCacheNoFlip(delta, off_delta, &child, &remove, &add);
+    nnue::ApplyAccumulatorDelta(*network_, remove, add, &child.acc);
   }
-
-  nnue::ApplyAccumulatorDelta(*network_, remove, add, &child.acc);
   stack_.push_back(std::move(child));
 }
 
