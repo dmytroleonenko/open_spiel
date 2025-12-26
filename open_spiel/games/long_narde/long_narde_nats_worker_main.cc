@@ -55,6 +55,7 @@ struct WorkerConfig {
   double alpha = 0.5;
   int64_t games = 0;
   uint64_t seed = 7;
+  int tt_entries = 200000;
   bool wait_for_weights = false;
   bool request_weights = false;
   int request_interval_ms = 1000;
@@ -305,6 +306,7 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
 
   SearchConfig search_config;
   search_config.max_depth = config.depth;
+  search_config.max_tt_entries = config.tt_entries;
   ExpectiminimaxSearch search(&evaluator, search_config);
 
   LnueShardConfig shard_config;
@@ -356,7 +358,7 @@ void PrintUsage(const char* bin) {
             << " [--wait_for_weights 0|1]\n"
             << "             [--request_weights 0|1]"
             << " [--request_interval_ms N]\n"
-            << "             [--report_every_seconds N]\n";
+            << "             [--report_every_seconds N] [--tt_entries N]\n";
 }
 
 }  // namespace
@@ -410,6 +412,7 @@ int main(int argc, char** argv) {
       GetIntArg(args, "request_interval_ms", config.request_interval_ms);
   config.report_every_seconds =
       GetIntArg(args, "report_every_seconds", config.report_every_seconds);
+  config.tt_entries = GetIntArg(args, "tt_entries", config.tt_entries);
 
   std::shared_ptr<const open_spiel::Game> game =
       open_spiel::LoadGame("long_narde");

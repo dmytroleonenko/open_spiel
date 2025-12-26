@@ -203,6 +203,7 @@ int main(int argc, char** argv) {
   config.report_every = GetIntArg(args, "report_every", config.report_every);
   config.seed = GetUint64Arg(args, "seed", config.seed);
   config.workers = GetIntArg(args, "workers", config.workers);
+  config.tt_entries = GetIntArg(args, "tt_entries", config.tt_entries);
   config.nnue_a = GetStringArg(args, "nnue_a", "");
   config.nnue_b = GetStringArg(args, "nnue_b", "");
   config.out_path = GetStringArg(args, "out", "");
@@ -229,6 +230,7 @@ int main(int argc, char** argv) {
 
   SearchConfig search_config;
   search_config.max_depth = config.depth;
+  search_config.max_tt_entries = config.tt_entries;
 
   EvalResult result;
   int total_games = std::max(config.games, 0);

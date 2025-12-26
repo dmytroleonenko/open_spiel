@@ -33,6 +33,7 @@ struct EvalConfig {
   int report_every = 100;
   uint64_t seed = 7;
   int workers = 0;
+  int tt_entries = 200000;
   std::string nnue_a;
   std::string nnue_b;
   std::string out_path;

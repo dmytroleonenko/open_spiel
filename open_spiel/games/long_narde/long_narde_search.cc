@@ -44,12 +44,20 @@ ExpectiminimaxSearch::ExpectiminimaxSearch(
   evaluator_ = evaluator;
   config_ = config;
   cache_stack_ = std::make_unique<NnueCacheStack>();
+  if (config_.max_tt_entries > 0) {
+    table_.reserve(config_.max_tt_entries);
+  }
 }
 
 ExpectiminimaxSearch::~ExpectiminimaxSearch() = default;
 
 void ExpectiminimaxSearch::ClearCache() {
   table_.clear();
+  if (config_.max_tt_entries > 0) {
+    table_.reserve(config_.max_tt_entries);
+  } else {
+    table_.rehash(0);
+  }
   if (cache_stack_ != nullptr) {
     cache_stack_->Clear();
   }
@@ -251,6 +259,11 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
 
   if (config_.use_tt) {
     uint64_t key = HashState(*state);
+    if (config_.max_tt_entries > 0 &&
+        table_.size() >= static_cast<size_t>(config_.max_tt_entries)) {
+      table_.clear();
+      table_.reserve(config_.max_tt_entries);
+    }
     table_[key] = TTEntry{depth, best_value, best};
   }
   if (best_action != nullptr) {

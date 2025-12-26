@@ -34,6 +34,7 @@ struct SearchConfig {
   double delta = 0.25;
   bool enable_pruning = true;
   bool use_tt = true;
+  int max_tt_entries = 200000;
   bool use_undo = true;
   bool use_nnue_cache = true;
 };

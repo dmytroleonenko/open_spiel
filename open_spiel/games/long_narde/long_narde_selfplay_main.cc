@@ -94,7 +94,8 @@ void PrintUsage(const char* bin) {
             << "             [--shard_id N]\n"
             << "             [--depth N] [--temperature T] [--alpha A]\n"
             << "             [--workers N] [--chunk N] [--nnue path]\n"
-            << "             [--progress 0|1] [--report_every N]\n";
+            << "             [--progress 0|1] [--report_every N]"
+            << " [--tt_entries N]\n";
 }
 
 }  // namespace
@@ -126,6 +127,8 @@ int main(int argc, char** argv) {
   int depth = open_spiel::long_narde::GetIntArg(args, "depth", 2);
   int workers = open_spiel::long_narde::GetIntArg(args, "workers", 0);
   int chunk = open_spiel::long_narde::GetIntArg(args, "chunk", 4096);
+  int tt_entries =
+      open_spiel::long_narde::GetIntArg(args, "tt_entries", 200000);
   double temperature =
       open_spiel::long_narde::GetDoubleArg(args, "temperature", 1.0);
   double alpha = open_spiel::long_narde::GetDoubleArg(args, "alpha", 0.5);
@@ -149,6 +152,7 @@ int main(int argc, char** argv) {
 
   SearchConfig search_config;
   search_config.max_depth = depth;
+  search_config.max_tt_entries = tt_entries;
 
   SelfPlayConfig selfplay_config;
   selfplay_config.num_games = games;
