@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -100,6 +101,52 @@ def _count_samples(paths: Iterable[Path]) -> int:
         for chunk in reader.iter_chunks():
             total += int(chunk.outcome.shape[0])
     return total
+
+
+def _collect_nats_shards(
+    stream_dir: Path,
+    iter_data_dir: Path,
+    target_shards: int,
+    poll_seconds: float,
+    progress: bool,
+) -> List[Path]:
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    iter_data_dir.mkdir(parents=True, exist_ok=True)
+    stream_dir.mkdir(parents=True, exist_ok=True)
+    collected = len(list(iter_data_dir.glob("*.lnue")))
+    if target_shards <= 0:
+        raise ValueError("target_shards must be positive.")
+    if progress:
+        progress_bar = ProgressBar(target_shards, "nats collect", unit="shards")
+        progress_bar.update(collected)
+    last_report = -1
+    while collected < target_shards:
+        candidates = sorted(stream_dir.glob("*.lnue"))
+        moved_any = False
+        for path in candidates:
+            dest = iter_data_dir / path.name
+            if dest.exists():
+                dest = iter_data_dir / f"{path.stem}_dup{collected:04d}.lnue"
+            shutil.move(str(path), str(dest))
+            collected += 1
+            moved_any = True
+            if progress:
+                progress_bar.update(collected)
+            if collected >= target_shards:
+                break
+        if collected >= target_shards:
+            break
+        if not moved_any:
+            if not progress and collected != last_report:
+                print(
+                    f"waiting for shards: {collected}/{target_shards}",
+                    flush=True,
+                )
+                last_report = collected
+            time.sleep(max(poll_seconds, 0.1))
+    if progress:
+        progress_bar.finish()
+    return sorted(iter_data_dir.glob("*.lnue"))
 
 
 def _train_epoch(
@@ -253,6 +300,27 @@ def _run_eval(
     return lines[-1].strip()
 
 
+def _publish_nnue(
+    publish_bin: Path,
+    nats_url: str,
+    run_id: str,
+    nnue_path: Path,
+    version: int,
+) -> None:
+    cmd = [
+        str(publish_bin),
+        "--nats",
+        nats_url,
+        "--run_id",
+        run_id,
+        "--version",
+        str(version),
+        "--nnue",
+        str(nnue_path),
+    ]
+    subprocess.run(cmd, check=True)
+
+
 def main() -> None:
     """Runs closed-loop self-play training and evaluation."""
     # pylint: disable=too-many-locals,too-many-statements,too-many-branches
@@ -287,6 +355,13 @@ def main() -> None:
     parser.add_argument("--init_nnue", default="")
     parser.add_argument("--selfplay_bin", default="")
     parser.add_argument("--eval_bin", default="")
+    parser.add_argument("--nats", default="")
+    parser.add_argument("--nats_run_id", default="")
+    parser.add_argument("--nats_shards_per_iter", type=int, default=0)
+    parser.add_argument("--nats_poll_secs", type=float, default=2.0)
+    parser.add_argument("--nats_publish", type=int, default=1)
+    parser.add_argument("--nats_publish_bin", default="")
+    parser.add_argument("--nats_version_start", type=int, default=0)
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -294,17 +369,39 @@ def main() -> None:
     log_path = output_dir / "eval.log"
 
     repo_root = _repo_root()
-    selfplay_bin = _resolve_bin(
-        args.selfplay_bin, repo_root, "long_narde_selfplay"
-    )
     eval_bin = _resolve_bin(args.eval_bin, repo_root, "long_narde_eval")
+    publish_bin = None
+    nats_url = args.nats.strip()
+    nats_run_id = args.nats_run_id
+    selfplay_bin = None
 
-    if not selfplay_bin.exists():
-        raise FileNotFoundError(f"selfplay binary not found: {selfplay_bin}")
     if not eval_bin.exists():
         raise FileNotFoundError(f"eval binary not found: {eval_bin}")
-    print(f"using selfplay_bin: {selfplay_bin}", flush=True)
     print(f"using eval_bin: {eval_bin}", flush=True)
+    if not nats_url and not args.skip_selfplay:
+        selfplay_bin = _resolve_bin(
+            args.selfplay_bin, repo_root, "long_narde_selfplay"
+        )
+        if not selfplay_bin.exists():
+            raise FileNotFoundError(
+                f"selfplay binary not found: {selfplay_bin}"
+            )
+        print(f"using selfplay_bin: {selfplay_bin}", flush=True)
+    if nats_url:
+        publish_bin = _resolve_bin(
+            args.nats_publish_bin, repo_root, "long_narde_nats_publish"
+        )
+        if not publish_bin.exists():
+            raise FileNotFoundError(
+                f"nats publish binary not found: {publish_bin}"
+            )
+        if not nats_run_id:
+            if args.selfplay_dir:
+                nats_run_id = Path(args.selfplay_dir).name
+            else:
+                nats_run_id = "default"
+        print(f"using nats_publish_bin: {publish_bin}", flush=True)
+        print(f"using nats_run_id: {nats_run_id}", flush=True)
 
     prev_nnue = Path(args.init_nnue) if args.init_nnue else None
 
@@ -312,7 +409,34 @@ def main() -> None:
         iter_dir = output_dir / f"iter_{iteration:02d}"
         iter_dir.mkdir(parents=True, exist_ok=True)
         data_dir = iter_dir / "data"
-        if args.skip_selfplay:
+        use_nats = bool(nats_url)
+        if use_nats:
+            stream_dir = (
+                Path(args.selfplay_dir)
+                if args.selfplay_dir
+                else Path("results/nnue_stream") / nats_run_id
+            )
+            total_games = max(1, args.games_per_iter)
+            games_per_shard = max(1, args.games_per_shard)
+            if args.nats_shards_per_iter > 0:
+                target_shards = args.nats_shards_per_iter
+            else:
+                target_shards = int(
+                    math.ceil(total_games / games_per_shard)
+                )
+            print(
+                f"iter {iteration}: collecting {target_shards} shard(s) "
+                f"from {stream_dir}",
+                flush=True,
+            )
+            shard_paths = _collect_nats_shards(
+                stream_dir,
+                data_dir,
+                target_shards,
+                args.nats_poll_secs,
+                args.selfplay_progress != 0,
+            )
+        elif args.skip_selfplay:
             if args.iterations > 1:
                 raise ValueError("skip_selfplay only supports iterations=1.")
             if args.selfplay_dir:
@@ -321,15 +445,13 @@ def main() -> None:
                 raise FileNotFoundError(
                     f"selfplay_dir not found: {data_dir}"
                 )
-        else:
-            data_dir.mkdir(parents=True, exist_ok=True)
-
-        if args.skip_selfplay:
             print(
                 f"iter {iteration}: using existing shards from {data_dir}",
                 flush=True,
             )
+            shard_paths = sorted(data_dir.glob("*.lnue"))
         else:
+            data_dir.mkdir(parents=True, exist_ok=True)
             total_games = max(1, args.games_per_iter)
             games_per_shard = max(1, args.games_per_shard)
             num_shards = int(math.ceil(total_games / games_per_shard))
@@ -377,8 +499,7 @@ def main() -> None:
                     flush=True,
                 )
             overall_progress.finish()
-
-        shard_paths = sorted(data_dir.glob("*.lnue"))
+            shard_paths = sorted(data_dir.glob("*.lnue"))
         if not shard_paths:
             raise ValueError("No LNUE shards generated.")
 
@@ -410,6 +531,15 @@ def main() -> None:
             run_features_enabled=1,
             run_block_threshold=header.run_block_threshold,
         )
+        if nats_url and args.nats_publish != 0:
+            version = args.nats_version_start + iteration
+            _publish_nnue(
+                publish_bin,
+                nats_url,
+                nats_run_id,
+                nnue_path,
+                version,
+            )
 
         eval_seed = args.seed + iteration * 1000000 + 777
         eval_depth = args.eval_depth if args.eval_depth > 0 else args.depth

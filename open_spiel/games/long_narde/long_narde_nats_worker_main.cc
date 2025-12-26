@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -43,6 +44,7 @@ struct WorkerConfig {
   std::string run_id = "default";
   std::string traj_subject = "lnue.traj";
   std::string weights_subject = "nnue.weights";
+  std::string request_subject = "nnue.request";
   std::string nnue_path;
   int depth = 1;
   int max_moves = 1000;
@@ -51,6 +53,9 @@ struct WorkerConfig {
   double alpha = 0.5;
   int64_t games = 0;
   uint64_t seed = 7;
+  bool wait_for_weights = false;
+  bool request_weights = false;
+  int request_interval_ms = 1000;
 };
 
 struct PendingSample {
@@ -66,6 +71,11 @@ struct WeightsStore {
     std::lock_guard<std::mutex> lock(mu);
     data = payload;
     version += 1;
+  }
+
+  bool HasData() const {
+    std::lock_guard<std::mutex> lock(mu);
+    return !data.empty();
   }
 
   bool GetIfNew(int* version_out, std::string* payload_out) const {
@@ -138,6 +148,32 @@ double GetDoubleArg(const std::unordered_map<std::string, std::string>& args,
     return default_value;
   }
   return std::stod(it->second);
+}
+
+std::string BuildSubject(const std::string& base, const std::string& run_id);
+
+void RequestLatestWeights(const WorkerConfig& config, const WeightsStore* store,
+                          const std::string& inbox_subject) {
+  if (store == nullptr || inbox_subject.empty()) {
+    return;
+  }
+  if (!config.request_weights) {
+    return;
+  }
+  std::string subject = BuildSubject(config.request_subject, config.run_id);
+  NatsConnection conn;
+  if (!conn.Connect(config.nats_url)) {
+    return;
+  }
+  int interval_ms = config.request_interval_ms;
+  if (interval_ms < 50) {
+    interval_ms = 50;
+  }
+  while (!store->HasData()) {
+    conn.Publish(subject, inbox_subject);
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(interval_ms));
+  }
 }
 
 std::string GetStringArg(
@@ -277,10 +313,29 @@ void WeightSubscriber(const WorkerConfig& config, WeightsStore* store) {
     std::cerr << "Failed to connect to NATS at " << config.nats_url << "\n";
     return;
   }
-  std::string subject = BuildSubject(config.weights_subject, config.run_id);
-  if (!conn.Subscribe(subject, 1)) {
-    std::cerr << "Failed to subscribe to " << subject << "\n";
+  std::string weights_subject =
+      BuildSubject(config.weights_subject, config.run_id);
+  if (!conn.Subscribe(weights_subject, 1)) {
+    std::cerr << "Failed to subscribe to " << weights_subject << "\n";
     return;
+  }
+  std::string inbox_subject;
+  if (config.request_weights) {
+    inbox_subject = BuildSubject(
+        "nnue.inbox." + std::to_string(config.seed) + "." +
+            std::to_string(
+                static_cast<int64_t>(
+                    std::chrono::steady_clock::now()
+                        .time_since_epoch()
+                        .count())),
+        config.run_id);
+    if (!conn.Subscribe(inbox_subject, 2)) {
+      std::cerr << "Failed to subscribe to " << inbox_subject << "\n";
+      return;
+    }
+    std::thread request_thread(RequestLatestWeights, config, store,
+                               inbox_subject);
+    request_thread.detach();
   }
 
   NatsMessage msg;
@@ -302,6 +357,13 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
   nnue::NnueModel model;
   if (!config.nnue_path.empty()) {
     model.Load(config.nnue_path);
+  } else if (config.wait_for_weights && store != nullptr) {
+    int local_version = 0;
+    std::string payload;
+    while (!store->GetIfNew(&local_version, &payload)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    model.LoadFromBytes(payload);
   }
   nnue::NnueEvaluator evaluator(&model);
 
@@ -345,10 +407,13 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
 void PrintUsage(const char* bin) {
   std::cout << "Usage: " << bin
             << " [--nats url] [--run_id id] [--traj_subject name]"
-            << " [--weights_subject name]\n"
+            << " [--weights_subject name] [--request_subject name]\n"
             << "             [--nnue path] [--depth N] [--workers N]"
             << " [--games N]\n"
-            << "             [--temperature T] [--alpha A] [--seed N]\n";
+            << "             [--temperature T] [--alpha A] [--seed N]"
+            << " [--wait_for_weights 0|1]\n"
+            << "             [--request_weights 0|1]"
+            << " [--request_interval_ms N]\n";
 }
 
 }  // namespace
@@ -380,6 +445,8 @@ int main(int argc, char** argv) {
   config.traj_subject = GetStringArg(args, "traj_subject", config.traj_subject);
   config.weights_subject =
       GetStringArg(args, "weights_subject", config.weights_subject);
+  config.request_subject =
+      GetStringArg(args, "request_subject", config.request_subject);
   config.nnue_path = GetStringArg(args, "nnue", config.nnue_path);
   config.depth = GetIntArg(args, "depth", config.depth);
   config.workers = GetIntArg(args, "workers", config.workers);
@@ -387,6 +454,14 @@ int main(int argc, char** argv) {
   config.alpha = GetDoubleArg(args, "alpha", config.alpha);
   config.games = GetInt64Arg(args, "games", config.games);
   config.seed = GetUint64Arg(args, "seed", config.seed);
+  config.wait_for_weights =
+      GetIntArg(args, "wait_for_weights",
+                config.nnue_path.empty() ? 1 : 0) != 0;
+  config.request_weights =
+      GetIntArg(args, "request_weights",
+                config.nnue_path.empty() ? 1 : 0) != 0;
+  config.request_interval_ms =
+      GetIntArg(args, "request_interval_ms", config.request_interval_ms);
 
   std::shared_ptr<const open_spiel::Game> game =
       open_spiel::LoadGame("long_narde");

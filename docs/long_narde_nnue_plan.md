@@ -305,21 +305,48 @@ Note: compression is reserved; start uncompressed and add zstd later.
 - `long_narde_nats_worker`: generates one game per message and publishes to NATS.
 - `long_narde_nats_learner`: subscribes to trajectories, writes LNUE shards.
 - `long_narde_nats_publish`: publishes new NNUE weights to workers.
+- `long_narde_nats_publish --serve 1`: responds to weight requests and mirrors
+  the latest published weights.
 
 14.2 Subject layout
 - Trajectories: `lnue.traj.<run_id>`
 - Weights: `nnue.weights.<run_id>`
+- Weight requests: `nnue.request.<run_id>` (payload = reply subject)
+- Weight replies: `nnue.inbox.<token>.<run_id>` (reply subject chosen by worker)
 
 14.3 Example workflow
 1) Start NATS server on the learner host.
 2) Run learner to collect shards:
    `./build/games/long_narde_nats_learner --nats nats://HOST:4222 --run_id run1 --out_dir results/nnue_stream/run1 --games_per_shard 1000`
-3) Run workers (local or remote):
-   `./build/games/long_narde_nats_worker --nats nats://HOST:4222 --run_id run1 --depth 2 --workers 16 --games 0`
-4) Train on the collected shards (example):
+3) (Optional, recommended) Start a weight responder so late workers can
+   request the latest net:
+   `./build/games/long_narde_nats_publish --serve 1 --nats nats://HOST:4222 --run_id run1 --nnue results/nnue_closed_loop/iter_00/nnue_iter_00.nnue`
+4) Run workers (local or remote):
+   `./build/games/long_narde_nats_worker --nats nats://HOST:4222 --run_id run1 --depth 2 --workers 16 --games 0 --nnue results/nnue_closed_loop/iter_00/nnue_iter_00.nnue`
+   Remote workers can omit `--nnue` and will block until a weights publish:
+   `./build/games/long_narde_nats_worker --nats nats://HOST:4222 --run_id run1 --depth 2 --workers 16 --games 0 --wait_for_weights 1 --request_weights 1`
+5) Train on the collected shards (example):
    `./venv/bin/python -m open_spiel.python.algorithms.long_narde_nnue.closed_loop --iterations 1 --skip_selfplay --selfplay_dir results/nnue_stream/run1`
-5) Publish the new weights:
-   `./build/games/long_narde_nats_publish --nats nats://HOST:4222 --run_id run1 --file results/nnue_closed_loop/iter_00/nnue_iter_00.nnue`
+6) Publish the new weights:
+   `./build/games/long_narde_nats_publish --nats nats://HOST:4222 --run_id run1 --nnue results/nnue_closed_loop/iter_00/nnue_iter_00.nnue`
+
+14.4 Autonomous loop (continuous workers)
+- Keep learner and workers running continuously, and let `closed_loop` consume
+  shards, train, evaluate, and publish new weights each iteration.
+- `closed_loop` moves completed `.lnue` files from the stream directory into the
+  per-iteration `iter_XX/data` folder, so the learner can keep writing new
+  shards without collisions.
+- To let late-joining workers request the latest weights, keep a responder
+  running (`long_narde_nats_publish --serve 1`). It listens for weight requests
+  and returns the latest payload seen on `nnue.weights.<run_id>`.
+
+Example:
+1) Start learner forever:
+   `./build/games/long_narde_nats_learner --nats nats://HOST:4222 --run_id run1 --out_dir results/nnue_stream/run1 --games_per_shard 50 --max_games 0`
+2) Start workers forever:
+   `./build/games/long_narde_nats_worker --nats nats://HOST:4222 --run_id run1 --depth 2 --workers 16 --games 0 --nnue results/nnue_closed_loop/iter_00/nnue_iter_00.nnue`
+3) Run the learner/trainer loop:
+   `./venv/bin/python -m open_spiel.python.algorithms.long_narde_nnue.closed_loop --iterations 200 --games_per_iter 200 --games_per_shard 50 --selfplay_dir results/nnue_stream/run1 --nats nats://HOST:4222 --nats_run_id run1 --eval_games 300 --eval_progress 1 --eval_report_every 25`
 
 Project-critical constraints recap
 - NNUE queried only at pre-roll leaves (depth in full turns).
