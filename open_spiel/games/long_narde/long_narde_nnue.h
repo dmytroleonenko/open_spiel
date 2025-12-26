@@ -78,6 +78,7 @@ struct NnueCache {
   std::array<std::array<uint8_t, kNumPoints>, 2> counts{};
   std::array<uint8_t, 2> off{};
   std::array<uint32_t, 2> blocked_bits{};
+  std::array<std::array<uint64_t, 2>, 2> run_bits{};
   std::array<int16_t, kNnueL1> acc{};
 };
 

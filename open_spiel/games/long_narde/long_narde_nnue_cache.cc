@@ -18,7 +18,6 @@
 #include <array>
 #include <cstdint>
 #include <utility>
-#include <vector>
 
 #include "open_spiel/games/long_narde/long_narde_internal.h"
 #include "open_spiel/spiel_utils.h"
@@ -27,12 +26,7 @@ namespace open_spiel {
 namespace long_narde {
 namespace {
 
-constexpr int kMaxRunsPerPoint = 20;
-
-struct RunIndexList {
-  std::array<std::array<uint8_t, kMaxRunsPerPoint>, kNumPoints> runs{};
-  std::array<uint8_t, kNumPoints> counts{};
-};
+constexpr int kRunWords = 2;
 
 int BucketForCount(int count) {
   if (count < 0) {
@@ -61,7 +55,33 @@ void AddFeature(int idx, nnue::NnueActiveFeatures* feats) {
   feats->indices[feats->count++] = idx;
 }
 
-const std::array<uint32_t, nnue::kNnueRunFeaturesPerSide>& RunMasks();
+void SetRunBit(std::array<uint64_t, kRunWords>* bits, int index) {
+  int word = index / 64;
+  int bit = index % 64;
+  (*bits)[word] |= (uint64_t{1} << bit);
+}
+
+std::array<uint64_t, kRunWords> ComputeRunBits(uint32_t blocked) {
+  std::array<uint64_t, kRunWords> out{};
+  int offset = 0;
+  for (int len = nnue::kNnueRunMin; len <= nnue::kNnueRunMax; ++len) {
+    uint32_t run = blocked;
+    for (int shift = 1; shift < len; ++shift) {
+      run &= (blocked >> shift);
+    }
+    int max_start = kNumPoints - len;
+    while (run != 0u) {
+      int bit = __builtin_ctz(run);
+      if (bit > max_start) {
+        break;
+      }
+      SetRunBit(&out, offset + bit);
+      run &= run - 1;
+    }
+    offset += (max_start + 1);
+  }
+  return out;
+}
 
 void BuildActiveFromCache(const nnue::NnueCache& cache,
                           nnue::NnueActiveFeatures* active) {
@@ -74,14 +94,20 @@ void BuildActiveFromCache(const nnue::NnueCache& cache,
     AddFeature(OffFeatureIndex(side, cache.off[side]), active);
   }
 
-  const auto& masks = RunMasks();
   for (int side = 0; side < kNumPlayers; ++side) {
-    uint32_t blocked = cache.blocked_bits[side];
+    const auto& runs = cache.run_bits[side];
     int run_offset = nnue::kNnueBaseFeatures +
                      side * nnue::kNnueRunFeaturesPerSide;
-    for (int i = 0; i < nnue::kNnueRunFeaturesPerSide; ++i) {
-      if ((blocked & masks[i]) == masks[i]) {
-        AddFeature(run_offset + i, active);
+    for (int word = 0; word < kRunWords; ++word) {
+      uint64_t bits = runs[word];
+      while (bits != 0u) {
+        int bit = __builtin_ctzll(bits);
+        int index = word * 64 + bit;
+        if (index >= nnue::kNnueRunFeaturesPerSide) {
+          break;
+        }
+        AddFeature(run_offset + index, active);
+        bits &= bits - 1;
       }
     }
   }
@@ -93,46 +119,6 @@ void RebuildAccumulatorFromCache(const nnue::NnueNetwork& net,
   nnue::NnueActiveFeatures active;
   BuildActiveFromCache(cache, &active);
   nnue::BuildAccumulator(net, active, acc_out);
-}
-
-const std::array<uint32_t, nnue::kNnueRunFeaturesPerSide>& RunMasks() {
-  static const std::array<uint32_t, nnue::kNnueRunFeaturesPerSide> masks =
-      []() {
-        std::array<uint32_t, nnue::kNnueRunFeaturesPerSide> out{};
-        int idx = 0;
-        for (int len = nnue::kNnueRunMin; len <= nnue::kNnueRunMax; ++len) {
-          int limit = kNumPoints - len;
-          for (int start = 0; start <= limit; ++start) {
-            uint32_t mask = 0;
-            for (int i = 0; i < len; ++i) {
-              mask |= (1u << (start + i));
-            }
-            out[idx++] = mask;
-          }
-        }
-        return out;
-      }();
-  return masks;
-}
-
-const RunIndexList& RunsByPoint() {
-  static const RunIndexList list = []() {
-    RunIndexList out{};
-    int idx = 0;
-    for (int len = nnue::kNnueRunMin; len <= nnue::kNnueRunMax; ++len) {
-      int limit = kNumPoints - len;
-      for (int start = 0; start <= limit; ++start) {
-        for (int i = 0; i < len; ++i) {
-          int point = start + i;
-          uint8_t pos = out.counts[point]++;
-          out.runs[point][pos] = static_cast<uint8_t>(idx);
-        }
-        ++idx;
-      }
-    }
-    return out;
-  }();
-  return list;
 }
 
 uint32_t BlockedBits(const std::array<uint8_t, kNumPoints>& row) {
@@ -163,67 +149,29 @@ void InitCacheFromState(const LongNardeState& state,
     cache->off[side] =
         static_cast<uint8_t>(kNumCheckersPerPlayer - total);
     cache->blocked_bits[side] = BlockedBits(cache->counts[side]);
+    cache->run_bits[side] = ComputeRunBits(cache->blocked_bits[side]);
   }
 }
 
-void UpdateRunFeaturesForSide(int side, uint32_t old_bits, uint32_t new_bits,
-                              nnue::NnueActiveFeatures* remove,
-                              nnue::NnueActiveFeatures* add) {
-  const auto& masks = RunMasks();
-  int run_offset = nnue::kNnueBaseFeatures +
-                   side * nnue::kNnueRunFeaturesPerSide;
-  for (int i = 0; i < nnue::kNnueRunFeaturesPerSide; ++i) {
-    uint32_t mask = masks[i];
-    bool old_active = (old_bits & mask) == mask;
-    bool new_active = (new_bits & mask) == mask;
-    if (old_active == new_active) {
-      continue;
-    }
-    int feature = run_offset + i;
-    if (old_active) {
-      AddFeature(feature, remove);
-    } else {
-      AddFeature(feature, add);
-    }
-  }
-}
-
-void UpdateRunFeaturesForPoints(uint32_t old_bits, uint32_t new_bits,
-                                int run_offset,
-                                const std::array<int, kNumPoints>& points,
-                                int point_count,
-                                nnue::NnueActiveFeatures* remove,
-                                nnue::NnueActiveFeatures* add) {
-  const auto& masks = RunMasks();
-  const auto& runs_by_point = RunsByPoint();
-  std::array<uint8_t, nnue::kNnueRunFeaturesPerSide> touched{};
-  std::array<int, kNumPoints * kMaxRunsPerPoint> runs{};
-  int runs_count = 0;
-  for (int i = 0; i < point_count; ++i) {
-    int point = points[i];
-    int count = runs_by_point.counts[point];
-    for (int i = 0; i < count; ++i) {
-      int run_idx = runs_by_point.runs[point][i];
-      if (touched[run_idx] != 0) {
-        continue;
+void UpdateRunFeaturesDelta(
+    int run_offset, const std::array<uint64_t, kRunWords>& old_bits,
+    const std::array<uint64_t, kRunWords>& new_bits,
+    nnue::NnueActiveFeatures* remove, nnue::NnueActiveFeatures* add) {
+  for (int word = 0; word < kRunWords; ++word) {
+    uint64_t diff = old_bits[word] ^ new_bits[word];
+    while (diff != 0u) {
+      int bit = __builtin_ctzll(diff);
+      int index = word * 64 + bit;
+      if (index >= nnue::kNnueRunFeaturesPerSide) {
+        break;
       }
-      touched[run_idx] = 1;
-      runs[runs_count++] = run_idx;
-    }
-  }
-  for (int i = 0; i < runs_count; ++i) {
-    int run_idx = runs[i];
-    uint32_t mask = masks[run_idx];
-    bool old_active = (old_bits & mask) == mask;
-    bool new_active = (new_bits & mask) == mask;
-    if (old_active == new_active) {
-      continue;
-    }
-    int feature = run_offset + run_idx;
-    if (old_active) {
-      AddFeature(feature, remove);
-    } else {
-      AddFeature(feature, add);
+      int feature = run_offset + index;
+      if (new_bits[word] & (uint64_t{1} << bit)) {
+        AddFeature(feature, add);
+      } else {
+        AddFeature(feature, remove);
+      }
+      diff &= diff - 1;
     }
   }
 }
@@ -235,8 +183,7 @@ void UpdateCacheNoFlipSide(int side,
                            nnue::NnueActiveFeatures* add) {
   uint32_t old_bits = cache->blocked_bits[side];
   uint32_t new_bits = old_bits;
-  std::array<int, kNumPoints> changed{};
-  int changed_count = 0;
+  auto old_run_bits = cache->run_bits[side];
   for (int point = 0; point < kNumPoints; ++point) {
     int delta_count = delta[point];
     if (delta_count == 0) {
@@ -259,7 +206,6 @@ void UpdateCacheNoFlipSide(int side,
       } else {
         new_bits &= ~(1u << point);
       }
-      changed[changed_count++] = point;
     }
   }
 
@@ -275,15 +221,14 @@ void UpdateCacheNoFlipSide(int side,
     }
   }
 
-  if (changed_count > 0) {
+  cache->blocked_bits[side] = new_bits;
+  cache->run_bits[side] = ComputeRunBits(new_bits);
+  if (cache->run_bits[side] != old_run_bits) {
     int run_offset =
         nnue::kNnueBaseFeatures + side * nnue::kNnueRunFeaturesPerSide;
-    UpdateRunFeaturesForPoints(old_bits, new_bits, run_offset, changed,
-                               changed_count,
-                               remove, add);
+    UpdateRunFeaturesDelta(run_offset, old_run_bits, cache->run_bits[side],
+                           remove, add);
   }
-
-  cache->blocked_bits[side] = new_bits;
 }
 
 void FlipCache(const nnue::NnueNetwork& net, const nnue::NnueCache& src,
@@ -297,6 +242,8 @@ void FlipCache(const nnue::NnueNetwork& net, const nnue::NnueCache& src,
   dst->off[1] = src.off[0];
   dst->blocked_bits[0] = BlockedBits(dst->counts[0]);
   dst->blocked_bits[1] = BlockedBits(dst->counts[1]);
+  dst->run_bits[0] = ComputeRunBits(dst->blocked_bits[0]);
+  dst->run_bits[1] = ComputeRunBits(dst->blocked_bits[1]);
   RebuildAccumulatorFromCache(net, *dst, &dst->acc);
 }
 
