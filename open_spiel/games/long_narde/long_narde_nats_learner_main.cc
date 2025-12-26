@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
@@ -204,6 +205,10 @@ int main(int argc, char** argv) {
   int games_in_shard = 0;
   int total_games = 0;
   int total_samples = 0;
+  int last_report_games = 0;
+  int last_report_samples = 0;
+  auto start_time = std::chrono::steady_clock::now();
+  auto last_report_time = start_time;
 
   if (!OpenShard(config, shard_id, &writer)) {
     std::cerr << "Failed to open shard " << shard_id << "\n";
@@ -227,10 +232,39 @@ int main(int argc, char** argv) {
 
     if (config.progress && config.report_every > 0 &&
         total_games % config.report_every == 0) {
+      auto now = std::chrono::steady_clock::now();
+      double total_elapsed =
+          std::chrono::duration_cast<std::chrono::duration<double>>(
+              now - start_time)
+              .count();
+      double window_elapsed =
+          std::chrono::duration_cast<std::chrono::duration<double>>(
+              now - last_report_time)
+              .count();
+      int window_games = total_games - last_report_games;
+      int window_samples = total_samples - last_report_samples;
+      double overall_games_s =
+          total_elapsed > 0.0 ? total_games / total_elapsed : 0.0;
+      double overall_samples_s =
+          total_elapsed > 0.0 ? total_samples / total_elapsed : 0.0;
+      double window_games_s =
+          window_elapsed > 0.0 ? window_games / window_elapsed : 0.0;
+      double window_samples_s =
+          window_elapsed > 0.0 ? window_samples / window_elapsed : 0.0;
+      double avg_samples =
+          total_games > 0 ? static_cast<double>(total_samples) / total_games
+                          : 0.0;
       std::cerr << "[learner] games=" << total_games
                 << " samples=" << total_samples
                 << " shard=" << shard_id << " (" << games_in_shard
-                << "/" << config.games_per_shard << ")\n";
+                << "/" << config.games_per_shard << ") overall="
+                << overall_games_s << " g/s " << overall_samples_s
+                << " s/s window=" << window_games_s << " g/s "
+                << window_samples_s << " s/s avg=" << avg_samples
+                << " s/g\n";
+      last_report_time = now;
+      last_report_games = total_games;
+      last_report_samples = total_samples;
     }
 
     if (config.max_games > 0 && total_games >= config.max_games) {
