@@ -29,7 +29,9 @@
 
 #include "open_spiel/games/long_narde/long_narde.h"
 #include "open_spiel/games/long_narde/long_narde_nats.h"
+#include "open_spiel/games/long_narde/long_narde_nats_worker_args.h"
 #include "open_spiel/games/long_narde/long_narde_nnue.h"
+#include "open_spiel/games/long_narde/long_narde_nats_worker_stats.h"
 #include "open_spiel/games/long_narde/long_narde_search.h"
 #include "open_spiel/games/long_narde/long_narde_selfplay_io.h"
 #include "open_spiel/spiel.h"
@@ -56,6 +58,7 @@ struct WorkerConfig {
   bool wait_for_weights = false;
   bool request_weights = false;
   int request_interval_ms = 1000;
+  int report_every_seconds = 60;
 };
 
 struct PendingSample {
@@ -92,64 +95,6 @@ struct WeightsStore {
   }
 };
 
-std::unordered_map<std::string, std::string> ParseArgs(int argc, char** argv) {
-  std::unordered_map<std::string, std::string> out;
-  for (int i = 1; i < argc; ++i) {
-    std::string arg = argv[i];
-    if (arg.rfind("--", 0) != 0) {
-      continue;
-    }
-    arg = arg.substr(2);
-    auto eq = arg.find('=');
-    if (eq != std::string::npos) {
-      out[arg.substr(0, eq)] = arg.substr(eq + 1);
-    } else {
-      std::string value;
-      if (i + 1 < argc && std::string(argv[i + 1]).rfind("--", 0) != 0) {
-        value = argv[++i];
-      }
-      out[arg] = value;
-    }
-  }
-  return out;
-}
-
-int GetIntArg(const std::unordered_map<std::string, std::string>& args,
-              const std::string& key, int default_value) {
-  auto it = args.find(key);
-  if (it == args.end() || it->second.empty()) {
-    return default_value;
-  }
-  return std::stoi(it->second);
-}
-
-int64_t GetInt64Arg(const std::unordered_map<std::string, std::string>& args,
-                    const std::string& key, int64_t default_value) {
-  auto it = args.find(key);
-  if (it == args.end() || it->second.empty()) {
-    return default_value;
-  }
-  return std::stoll(it->second);
-}
-
-uint64_t GetUint64Arg(const std::unordered_map<std::string, std::string>& args,
-                      const std::string& key, uint64_t default_value) {
-  auto it = args.find(key);
-  if (it == args.end() || it->second.empty()) {
-    return default_value;
-  }
-  return static_cast<uint64_t>(std::stoull(it->second));
-}
-
-double GetDoubleArg(const std::unordered_map<std::string, std::string>& args,
-                    const std::string& key, double default_value) {
-  auto it = args.find(key);
-  if (it == args.end() || it->second.empty()) {
-    return default_value;
-  }
-  return std::stod(it->second);
-}
-
 std::string BuildSubject(const std::string& base, const std::string& run_id);
 
 void RequestLatestWeights(const WorkerConfig& config, const WeightsStore* store,
@@ -174,16 +119,6 @@ void RequestLatestWeights(const WorkerConfig& config, const WeightsStore* store,
     std::this_thread::sleep_for(
         std::chrono::milliseconds(interval_ms));
   }
-}
-
-std::string GetStringArg(
-    const std::unordered_map<std::string, std::string>& args,
-    const std::string& key, const std::string& default_value) {
-  auto it = args.find(key);
-  if (it == args.end() || it->second.empty()) {
-    return default_value;
-  }
-  return it->second;
 }
 
 std::string BuildSubject(const std::string& base, const std::string& run_id) {
@@ -346,7 +281,8 @@ void WeightSubscriber(const WorkerConfig& config, WeightsStore* store) {
 
 void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
                 std::atomic<int64_t>* next_game,
-                const WeightsStore* store, int worker_id) {
+                const WeightsStore* store, WorkerStats* stats,
+                int worker_id) {
   NatsConnection conn;
   if (!conn.Connect(config.nats_url)) {
     std::cerr << "Worker " << worker_id << " failed to connect to NATS.\n";
@@ -386,6 +322,10 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
       std::string payload;
       if (store->GetIfNew(&local_version, &payload)) {
         model.LoadFromBytes(payload);
+        if (stats != nullptr) {
+          stats->weights_version.store(local_version,
+                                       std::memory_order_relaxed);
+        }
       }
     }
 
@@ -400,7 +340,9 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
     if (!SerializeLnueTrajectory(samples, shard_config, &payload)) {
       continue;
     }
-    conn.Publish(subject, payload);
+    if (conn.Publish(subject, payload) && stats != nullptr) {
+      stats->AddGame(static_cast<int64_t>(samples.size()));
+    }
   }
 }
 
@@ -413,7 +355,8 @@ void PrintUsage(const char* bin) {
             << "             [--temperature T] [--alpha A] [--seed N]"
             << " [--wait_for_weights 0|1]\n"
             << "             [--request_weights 0|1]"
-            << " [--request_interval_ms N]\n";
+            << " [--request_interval_ms N]\n"
+            << "             [--report_every_seconds N]\n";
 }
 
 }  // namespace
@@ -429,8 +372,10 @@ int main(int argc, char** argv) {
   using open_spiel::long_narde::GetStringArg;
   using open_spiel::long_narde::GetUint64Arg;
   using open_spiel::long_narde::PrintUsage;
+  using open_spiel::long_narde::RunStatsReporter;
   using open_spiel::long_narde::WeightSubscriber;
   using open_spiel::long_narde::WorkerLoop;
+  using open_spiel::long_narde::WorkerStats;
   using open_spiel::long_narde::WeightsStore;
 
   auto args = ParseArgs(argc, argv);
@@ -462,6 +407,8 @@ int main(int argc, char** argv) {
                 config.nnue_path.empty() ? 1 : 0) != 0;
   config.request_interval_ms =
       GetIntArg(args, "request_interval_ms", config.request_interval_ms);
+  config.report_every_seconds =
+      GetIntArg(args, "report_every_seconds", config.report_every_seconds);
 
   std::shared_ptr<const open_spiel::Game> game =
       open_spiel::LoadGame("long_narde");
@@ -471,19 +418,34 @@ int main(int argc, char** argv) {
     unsigned int hc = std::thread::hardware_concurrency();
     workers = hc == 0 ? 1 : static_cast<int>(hc) + 1;
   }
+  config.workers = workers;
 
   WeightsStore store;
   std::thread sub_thread(WeightSubscriber, config, &store);
   sub_thread.detach();
 
+  WorkerStats stats;
+  std::atomic<bool> reporter_done{false};
+  std::thread reporter_thread;
+  if (config.report_every_seconds > 0) {
+    reporter_thread = std::thread(RunStatsReporter,
+                                  config.report_every_seconds, &stats,
+                                  &reporter_done);
+  }
+
   std::atomic<int64_t> next_game{0};
   std::vector<std::thread> threads;
   threads.reserve(workers);
   for (int i = 0; i < workers; ++i) {
-    threads.emplace_back(WorkerLoop, game, config, &next_game, &store, i);
+    threads.emplace_back(WorkerLoop, game, config, &next_game, &store, &stats,
+                         i);
   }
   for (auto& thread : threads) {
     thread.join();
+  }
+  reporter_done.store(true);
+  if (reporter_thread.joinable()) {
+    reporter_thread.join();
   }
 
   return 0;
