@@ -445,8 +445,8 @@ def main() -> None:
                 f"iter={iteration} match=vs_prev({prev_label}) {summary_prev}\n"
             )
 
-        print(f"iter {iteration} vs_random: {summary_random}")
-        print(f"iter {iteration} vs_prev({prev_label}): {summary_prev}")
+        print(summary_random)
+        print(summary_prev)
 
         prev_nnue = nnue_path
 

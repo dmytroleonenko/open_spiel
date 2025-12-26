@@ -119,18 +119,40 @@ std::string LabelForPath(const std::string& path, const std::string& fallback) {
   if (path.empty()) {
     return fallback;
   }
-  std::size_t iter_pos = path.rfind("iter_");
-  if (iter_pos != std::string::npos) {
-    iter_pos += 5;
-    std::size_t end = iter_pos;
-    while (end < path.size() &&
-           std::isdigit(static_cast<unsigned char>(path[end]))) {
-      end += 1;
+  int best_iter = -1;
+  std::size_t best_len = 0;
+  std::size_t start = 0;
+  while (start <= path.size()) {
+    std::size_t end = path.find_first_of("/\\", start);
+    if (end == std::string::npos) {
+      end = path.size();
     }
-    if (end > iter_pos) {
-      int iter = std::stoi(path.substr(iter_pos, end - iter_pos));
-      return "nnue-" + std::to_string(iter);
+    if (end > start) {
+      std::string segment = path.substr(start, end - start);
+      if (segment.rfind("iter_", 0) == 0 && segment.size() > 5) {
+        bool all_digits = true;
+        for (std::size_t i = 5; i < segment.size(); ++i) {
+          if (!std::isdigit(static_cast<unsigned char>(segment[i]))) {
+            all_digits = false;
+            break;
+          }
+        }
+        if (all_digits) {
+          std::size_t len = segment.size() - 5;
+          if (len > best_len) {
+            best_len = len;
+            best_iter = std::stoi(segment.substr(5));
+          }
+        }
+      }
     }
+    if (end == path.size()) {
+      break;
+    }
+    start = end + 1;
+  }
+  if (best_iter >= 0) {
+    return "nnue-" + std::to_string(best_iter);
   }
   std::size_t pos = path.find_last_of("/\\");
   if (pos == std::string::npos || pos + 1 >= path.size()) {
