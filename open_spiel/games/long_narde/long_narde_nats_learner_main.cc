@@ -186,11 +186,13 @@ int main(int argc, char** argv) {
   using open_spiel::long_narde::GetUint64Arg;
   using open_spiel::long_narde::LearnerConfig;
   using open_spiel::long_narde::LnueStreamWriter;
+  using open_spiel::long_narde::LoadNextShardId;
   using open_spiel::long_narde::NatsConnection;
   using open_spiel::long_narde::NatsMessage;
   using open_spiel::long_narde::OpenShard;
   using open_spiel::long_narde::ParseArgs;
   using open_spiel::long_narde::PrintUsage;
+  using open_spiel::long_narde::SaveNextShardId;
   using open_spiel::long_narde::SelfPlaySample;
 
   auto args = ParseArgs(argc, argv);
