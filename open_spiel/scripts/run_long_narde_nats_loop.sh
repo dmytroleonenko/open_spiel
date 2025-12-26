@@ -19,15 +19,37 @@ INIT_NNUE="${INIT_NNUE:-results/nnue_closed_loop/iter_00/nnue_iter_00.nnue}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-results/nnue_closed_loop}"
 SELFPLAY_ROOT="${SELFPLAY_ROOT:-results/nnue_stream}"
 
-LEARNER_BIN="${LEARNER_BIN:-$REPO_ROOT/build/games/long_narde_nats_learner}"
-WORKER_BIN="${WORKER_BIN:-$REPO_ROOT/build/games/long_narde_nats_worker}"
+LEARNER_BIN="${LEARNER_BIN:-}"
+WORKER_BIN="${WORKER_BIN:-}"
 
-if [[ ! -x "$LEARNER_BIN" ]]; then
-  echo "missing learner binary: $LEARNER_BIN" >&2
+resolve_bin() {
+  local name="$1"
+  local override="$2"
+  if [[ -n "$override" && -x "$override" ]]; then
+    echo "$override"
+    return 0
+  fi
+  local candidates=(
+    "$REPO_ROOT/build/games/$name"
+    "$REPO_ROOT/build-release/games/$name"
+    "$REPO_ROOT/build-relwithdebinfo/games/$name"
+  )
+  local path
+  for path in "${candidates[@]}"; do
+    if [[ -x "$path" ]]; then
+      echo "$path"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! LEARNER_BIN="$(resolve_bin long_narde_nats_learner "$LEARNER_BIN")"; then
+  echo "missing learner binary. Set LEARNER_BIN or build targets." >&2
   exit 1
 fi
-if [[ ! -x "$WORKER_BIN" ]]; then
-  echo "missing worker binary: $WORKER_BIN" >&2
+if ! WORKER_BIN="$(resolve_bin long_narde_nats_worker "$WORKER_BIN")"; then
+  echo "missing worker binary. Set WORKER_BIN or build targets." >&2
   exit 1
 fi
 if [[ ! -f "$INIT_NNUE" ]]; then
