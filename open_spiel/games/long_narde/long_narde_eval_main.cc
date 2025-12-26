@@ -181,6 +181,7 @@ int main(int argc, char** argv) {
   using open_spiel::long_narde::LabelForPath;
   using open_spiel::long_narde::ParseArgs;
   using open_spiel::long_narde::PrintUsage;
+  using open_spiel::long_narde::RunEvalWorker;
   using open_spiel::long_narde::SampleChanceOutcome;
   using open_spiel::long_narde::SampleRandomAction;
   using open_spiel::long_narde::SearchConfig;
@@ -335,7 +336,6 @@ int main(int argc, char** argv) {
          << " wins_net2=" << result.wins_b << " mars_net1=" << result.mars_a
          << " mars_net2=" << result.mars_b << " starts_net1="
          << result.a_starts.games << " starts_net2=" << result.b_starts.games
-         << " starts_net2=" << result.b_starts.games
          << " wins_net1_first=" << result.a_starts.wins_a
          << " wins_net1_second=" << result.b_starts.wins_a
          << " wins_net2_first=" << result.b_starts.wins_b
