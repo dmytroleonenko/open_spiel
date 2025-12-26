@@ -148,6 +148,10 @@ void UpdateAccumulator(const NnueNetwork& net,
                        const NnueActiveFeatures& old_active,
                        const NnueActiveFeatures& new_active,
                        std::array<int16_t, kNnueL1>* acc_out);
+void ApplyAccumulatorDelta(const NnueNetwork& net,
+                           const NnueActiveFeatures& remove,
+                           const NnueActiveFeatures& add,
+                           std::array<int16_t, kNnueL1>* acc_out);
 NnueEval EvaluateFromAccumulator(const NnueNetwork& net,
                                  const std::array<int16_t, kNnueL1>& acc);
 void CollectActiveFeatureIndices(const LongNardeState& state,

@@ -61,14 +61,6 @@ void AddFeature(int idx, nnue::NnueActiveFeatures* feats) {
   feats->indices[feats->count++] = idx;
 }
 
-void SortUnique(nnue::NnueActiveFeatures* feats) {
-  auto begin = feats->indices.begin();
-  auto end = begin + feats->count;
-  std::sort(begin, end);
-  end = std::unique(begin, end);
-  feats->count = static_cast<int>(end - begin);
-}
-
 const std::array<uint32_t, nnue::kNnueRunFeaturesPerSide>& RunMasks() {
   static const std::array<uint32_t, nnue::kNnueRunFeaturesPerSide> masks =
       []() {
@@ -163,14 +155,17 @@ void UpdateRunFeaturesForSide(int side, uint32_t old_bits, uint32_t new_bits,
 }
 
 void UpdateRunFeaturesForPoints(uint32_t old_bits, uint32_t new_bits,
-                                const std::vector<int>& points,
+                                const std::array<int, kNumPoints>& points,
+                                int point_count,
                                 nnue::NnueActiveFeatures* remove,
                                 nnue::NnueActiveFeatures* add) {
   const auto& masks = RunMasks();
   const auto& runs_by_point = RunsByPoint();
   std::array<uint8_t, nnue::kNnueRunFeaturesPerSide> touched{};
-  std::vector<int> runs;
-  for (int point : points) {
+  std::array<int, kNumPoints * kMaxRunsPerPoint> runs{};
+  int runs_count = 0;
+  for (int i = 0; i < point_count; ++i) {
+    int point = points[i];
     int count = runs_by_point.counts[point];
     for (int i = 0; i < count; ++i) {
       int run_idx = runs_by_point.runs[point][i];
@@ -178,10 +173,11 @@ void UpdateRunFeaturesForPoints(uint32_t old_bits, uint32_t new_bits,
         continue;
       }
       touched[run_idx] = 1;
-      runs.push_back(run_idx);
+      runs[runs_count++] = run_idx;
     }
   }
-  for (int run_idx : runs) {
+  for (int i = 0; i < runs_count; ++i) {
+    int run_idx = runs[i];
     uint32_t mask = masks[run_idx];
     bool old_active = (old_bits & mask) == mask;
     bool new_active = (new_bits & mask) == mask;
@@ -203,7 +199,8 @@ void UpdateCacheNoFlip(const std::array<int8_t, kNumPoints>& delta,
                        nnue::NnueActiveFeatures* add) {
   uint32_t old_bits = cache->blocked_bits[0];
   uint32_t new_bits = old_bits;
-  std::vector<int> changed_points;
+  std::array<int, kNumPoints> changed{};
+  int changed_count = 0;
   for (int point = 0; point < kNumPoints; ++point) {
     int delta_count = delta[point];
     if (delta_count == 0) {
@@ -226,7 +223,7 @@ void UpdateCacheNoFlip(const std::array<int8_t, kNumPoints>& delta,
       } else {
         new_bits &= ~(1u << point);
       }
-      changed_points.push_back(point);
+      changed[changed_count++] = point;
     }
   }
 
@@ -242,8 +239,9 @@ void UpdateCacheNoFlip(const std::array<int8_t, kNumPoints>& delta,
     }
   }
 
-  if (!changed_points.empty()) {
-    UpdateRunFeaturesForPoints(old_bits, new_bits, changed_points, remove, add);
+  if (changed_count > 0) {
+    UpdateRunFeaturesForPoints(old_bits, new_bits, changed, changed_count,
+                               remove, add);
   }
 
   cache->blocked_bits[0] = new_bits;
@@ -382,9 +380,7 @@ void NnueCacheStack::PushAction(const LongNardeState& state, Action action,
     UpdateCacheNoFlip(delta, off_delta, &child, &remove, &add);
   }
 
-  SortUnique(&remove);
-  SortUnique(&add);
-  nnue::UpdateAccumulator(*network_, remove, add, &child.acc);
+  nnue::ApplyAccumulatorDelta(*network_, remove, add, &child.acc);
   stack_.push_back(std::move(child));
 }
 

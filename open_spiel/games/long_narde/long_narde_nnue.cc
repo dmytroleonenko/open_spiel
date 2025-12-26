@@ -14,23 +14,18 @@
 
 // Portions of the NNUE inference layout are adapted from the Cerebrum project
 // (MIT License, Copyright 2020-2025 David Carteau).
-
 #include "open_spiel/games/long_narde/long_narde_nnue.h"
-
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <vector>
-
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
 #endif
-
 namespace open_spiel {
 namespace long_narde {
 namespace nnue {
 namespace {
-
 constexpr int kNnueFactor = 64;
 constexpr int kSigmoidTableSize = 4096;
 constexpr float kSigmoidMin = -8.0f;
@@ -300,7 +295,6 @@ void CollectActiveFeaturesInternal(const LongNardeState& state,
     int idx = base_offset + kNumPoints * kNnueBucketCount + off_bucket;
     active->indices[active->count++] = idx;
   }
-
   const auto& masks = RunMasks();
   for (int side = 0; side < kNumPlayers; ++side) {
     uint32_t blocked = BlockedBits(board[side]);
@@ -323,7 +317,6 @@ void BuildAccumulatorInternal(const NnueNetwork& net,
     add_row(row, acc_out->data());
   }
 }
-
 void UpdateAccumulatorInternal(const NnueNetwork& net,
                                const NnueActiveFeatures& old_active,
                                const NnueActiveFeatures& new_active,
@@ -391,6 +384,24 @@ void UpdateAccumulator(const NnueNetwork& net,
   UpdateAccumulatorInternal(net, old_active, new_active, acc_out);
 }
 
+void ApplyAccumulatorDelta(const NnueNetwork& net,
+                           const NnueActiveFeatures& remove,
+                           const NnueActiveFeatures& add,
+                           std::array<int16_t, kNnueL1>* acc_out) {
+  AddRowFn add_row = GetAddRowKernel();
+  SubRowFn sub_row = GetSubRowKernel();
+  for (int i = 0; i < remove.count; ++i) {
+    int idx = remove.indices[i];
+    const int16_t* row = &net.w0[idx * kNnueL1];
+    sub_row(row, acc_out->data());
+  }
+  for (int i = 0; i < add.count; ++i) {
+    int idx = add.indices[i];
+    const int16_t* row = &net.w0[idx * kNnueL1];
+    add_row(row, acc_out->data());
+  }
+}
+
 const char* NnueKernelName() {
   static const char* name = nullptr;
   if (name != nullptr) {
@@ -413,22 +424,17 @@ const char* NnueKernelName() {
 #endif
   return name;
 }
-
 NnueEval NnueEvaluator::EvaluateState(const LongNardeState& state) const {
   NnueEval eval;
   if (model_ == nullptr || !model_->IsLoaded()) {
     return eval;
   }
-
   NnueActiveFeatures active;
   CollectActiveFeatures(state, &active);
-
   std::array<int16_t, kNnueL1> acc;
   BuildAccumulator(model_->network(), active, &acc);
-
   return EvaluateFromAccumulator(model_->network(), acc);
 }
-
 void CollectActiveFeatureIndices(const LongNardeState& state,
                                  std::vector<int>* out) {
   SPIEL_CHECK_TRUE(out != nullptr);
@@ -436,7 +442,6 @@ void CollectActiveFeatureIndices(const LongNardeState& state,
   CollectActiveFeatures(state, &active);
   out->assign(active.indices.begin(), active.indices.begin() + active.count);
 }
-
 NnueEval EvaluateFromAccumulator(const NnueNetwork& network,
                                  const std::array<int16_t, kNnueL1>& acc) {
   NnueEval eval;
@@ -449,7 +454,6 @@ NnueEval EvaluateFromAccumulator(const NnueNetwork& network,
   ComputeLayerFn compute_layer = GetComputeLayerKernel();
   compute_layer(l1.data(), network.w1.data(), network.b1.data(), kNnueL1,
                 kNnueL2, l2.data());
-
   int32_t out_win =
       ComputeOutput(l2.data(), network.w2.data(), &network.b2[0], kNnueL2);
   int32_t out_mars = ComputeOutput(l2.data(), network.w2.data() + kNnueL2,
@@ -462,7 +466,6 @@ NnueEval EvaluateFromAccumulator(const NnueNetwork& network,
   eval.ev = eval.p_win + eval.p_mars;
   return eval;
 }
-
 NnueRawOutput EvaluateRawFromFeatures(
     const NnueNetwork& network, const std::vector<int>& active_features) {
   NnueRawOutput output;
@@ -474,15 +477,12 @@ NnueRawOutput EvaluateRawFromFeatures(
     SPIEL_CHECK_LT(active.count, kNnueMaxActiveFeatures);
     active.indices[active.count++] = idx;
   }
-
   std::array<int16_t, kNnueL1> acc;
   BuildAccumulator(network, active, &acc);
-
   std::array<int8_t, kNnueL1> l1;
   for (int i = 0; i < kNnueL1; ++i) {
     l1[i] = ClampAcc(acc[i]);
   }
-
   std::array<int8_t, kNnueL2> l2;
   ComputeLayerFn compute_layer = GetComputeLayerKernel();
   compute_layer(l1.data(), network.w1.data(), network.b1.data(), kNnueL1,
