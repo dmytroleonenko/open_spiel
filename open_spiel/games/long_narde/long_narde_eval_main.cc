@@ -313,10 +313,10 @@ int main(int argc, char** argv) {
   };
   double a_win_pct = pct(result.wins_a, result.games);
   double b_win_pct = pct(result.wins_b, result.games);
-  double a_first_pct = pct(result.a_starts.wins_a, result.a_starts.games);
-  double a_second_pct = pct(result.b_starts.wins_a, result.b_starts.games);
-  double b_first_pct = pct(result.b_starts.wins_b, result.b_starts.games);
-  double b_second_pct = pct(result.a_starts.wins_b, result.a_starts.games);
+  double a_first_share = pct(result.a_starts.wins_a, result.wins_a);
+  double a_second_share = pct(result.b_starts.wins_a, result.wins_a);
+  double b_first_share = pct(result.b_starts.wins_b, result.wins_b);
+  double b_second_share = pct(result.a_starts.wins_b, result.wins_b);
 
   std::string path_a = config.nnue_a.empty() ? "random" : config.nnue_a;
   std::string path_b = config.nnue_b.empty() ? "random" : config.nnue_b;
@@ -326,10 +326,10 @@ int main(int argc, char** argv) {
   std::ostringstream summary;
   summary << "Comparing " << label_a << " vs " << label_b << ". " << label_a
           << " wins " << std::fixed << std::setprecision(1) << a_win_pct
-          << "% (" << a_first_pct << "% first mover, " << a_second_pct
-          << "% second mover), " << label_b << " wins " << b_win_pct << "% ("
-          << b_first_pct << "% first mover, " << b_second_pct
-          << "% second mover)";
+          << "% (of which " << a_first_share << "% first mover, "
+          << a_second_share << "% second mover), " << label_b << " wins "
+          << b_win_pct << "% (of which " << b_first_share << "% first mover, "
+          << b_second_share << "% second mover)";
 
   std::ostringstream detail;
   detail << "games=" << result.games << " depth=" << config.depth
