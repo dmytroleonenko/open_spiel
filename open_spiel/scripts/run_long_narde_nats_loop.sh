@@ -90,13 +90,19 @@ for ((iter=START_ITER; iter<ITERATIONS; iter++)); do
   mkdir -p "$OUT_DIR"
   mkdir -p "$TRAIN_OUT"
 
+  use_existing=0
   if [[ "$SKIP_SELFPLAY" -eq 1 ]]; then
-    if [[ ! -d "$OUT_DIR" ]]; then
-      echo "missing shard dir for resume: $OUT_DIR" >&2
-      exit 1
+    if [[ -d "$OUT_DIR" ]] && compgen -G "$OUT_DIR/*.lnue" > /dev/null; then
+      use_existing=1
     fi
+  fi
+
+  if [[ "$use_existing" -eq 1 ]]; then
     echo "iter $iter: using existing shards in $OUT_DIR" >&2
   else
+    if [[ "$SKIP_SELFPLAY" -eq 1 ]]; then
+      echo "iter $iter: no shards in $OUT_DIR, running NATS selfplay" >&2
+    fi
     echo "iter $iter: selfplay via NATS (run_id=$RUN_ID)" >&2
 
     "$LEARNER_BIN" \
