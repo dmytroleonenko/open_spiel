@@ -15,6 +15,7 @@
 #include "open_spiel/games/long_narde/long_narde_nats.h"
 
 #include <cstring>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -130,6 +131,13 @@ bool NatsConnection::Connect(const std::string& url) {
   if (socket_ < 0) {
     return false;
   }
+#if defined(SO_NOSIGPIPE)
+  int on = 1;
+  if (::setsockopt(socket_, SOL_SOCKET, SO_NOSIGPIPE, &on,
+                   sizeof(on)) != 0) {
+    std::cerr << "Warning: failed to set SO_NOSIGPIPE\n";
+  }
+#endif
 
   const std::string connect =
       "CONNECT {\"verbose\":false,\"pedantic\":false,"
@@ -237,7 +245,12 @@ bool NatsConnection::SendAll(const void* data, std::size_t size) {
 #if defined(_WIN32)
     int sent = ::send(socket_, ptr, static_cast<int>(remaining), 0);
 #else
-    ssize_t sent = ::send(socket_, ptr, remaining, 0);
+    ssize_t sent =
+#if defined(MSG_NOSIGNAL)
+        ::send(socket_, ptr, remaining, MSG_NOSIGNAL);
+#else
+        ::send(socket_, ptr, remaining, 0);
+#endif
 #endif
     if (sent <= 0) {
       return false;
