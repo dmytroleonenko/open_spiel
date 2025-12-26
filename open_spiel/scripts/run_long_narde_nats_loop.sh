@@ -24,6 +24,7 @@ SKIP_SELFPLAY="${SKIP_SELFPLAY:-0}"
 
 LEARNER_BIN="${LEARNER_BIN:-}"
 WORKER_BIN="${WORKER_BIN:-}"
+EVAL_BIN="${EVAL_BIN:-}"
 
 resolve_bin() {
   local name="$1"
@@ -53,6 +54,10 @@ if ! LEARNER_BIN="$(resolve_bin long_narde_nats_learner "$LEARNER_BIN")"; then
 fi
 if ! WORKER_BIN="$(resolve_bin long_narde_nats_worker "$WORKER_BIN")"; then
   echo "missing worker binary. Set WORKER_BIN or build targets." >&2
+  exit 1
+fi
+if ! EVAL_BIN="$(resolve_bin long_narde_eval "$EVAL_BIN")"; then
+  echo "missing eval binary. Set EVAL_BIN or build targets." >&2
   exit 1
 fi
 if [[ -z "$CUR_NNUE" ]]; then
@@ -123,6 +128,7 @@ for ((iter=START_ITER; iter<ITERATIONS; iter++)); do
     --selfplay_dir "$OUT_DIR" \
     --output_dir "$TRAIN_OUT" \
     --eval_games "$EVAL_GAMES" \
+    --eval_bin "$EVAL_BIN" \
     --eval_progress "$EVAL_PROGRESS" \
     --eval_report_every "$EVAL_REPORT_EVERY" \
     --eval_workers "$EVAL_WORKERS" \
