@@ -60,6 +60,10 @@ if ! EVAL_BIN="$(resolve_bin long_narde_eval "$EVAL_BIN")"; then
   echo "missing eval binary. Set EVAL_BIN or build targets." >&2
   exit 1
 fi
+
+echo "using learner_bin: $LEARNER_BIN" >&2
+echo "using worker_bin: $WORKER_BIN" >&2
+echo "using eval_bin: $EVAL_BIN" >&2
 if [[ -z "$CUR_NNUE" ]]; then
   CUR_NNUE="$INIT_NNUE"
 fi

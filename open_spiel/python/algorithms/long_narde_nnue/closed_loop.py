@@ -303,6 +303,8 @@ def main() -> None:
         raise FileNotFoundError(f"selfplay binary not found: {selfplay_bin}")
     if not eval_bin.exists():
         raise FileNotFoundError(f"eval binary not found: {eval_bin}")
+    print(f"using selfplay_bin: {selfplay_bin}", flush=True)
+    print(f"using eval_bin: {eval_bin}", flush=True)
 
     prev_nnue = Path(args.init_nnue) if args.init_nnue else None
 
