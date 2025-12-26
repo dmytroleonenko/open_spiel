@@ -19,6 +19,9 @@
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
 #endif
+#if defined(__aarch64__) || defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 namespace open_spiel {
 namespace long_narde {
@@ -101,6 +104,58 @@ void SubRowAvx512(const int16_t* weights, int16_t* acc) {
 }
 #endif  // __x86_64__ || _M_X64
 
+#if defined(__aarch64__) || defined(__ARM_NEON)
+void AddRowNeon(const int16_t* weights, int16_t* acc) {
+  for (int i = 0; i < kNnueL1; i += 8) {
+    int16x8_t acc_v = vld1q_s16(acc + i);
+    int16x8_t wei_v = vld1q_s16(weights + i);
+    acc_v = vaddq_s16(acc_v, wei_v);
+    vst1q_s16(acc + i, acc_v);
+  }
+}
+
+void SubRowNeon(const int16_t* weights, int16_t* acc) {
+  for (int i = 0; i < kNnueL1; i += 8) {
+    int16x8_t acc_v = vld1q_s16(acc + i);
+    int16x8_t wei_v = vld1q_s16(weights + i);
+    acc_v = vsubq_s16(acc_v, wei_v);
+    vst1q_s16(acc + i, acc_v);
+  }
+}
+
+int32_t DotProductNeon(const int8_t* input, const int8_t* weights,
+                       int in_dim) {
+#if defined(__ARM_FEATURE_DOTPROD)
+  int32x4_t sum = vdupq_n_s32(0);
+  for (int i = 0; i < in_dim; i += 16) {
+    int8x16_t inp = vld1q_s8(input + i);
+    int8x16_t wei = vld1q_s8(weights + i);
+    sum = vdotq_s32(sum, inp, wei);
+  }
+  return vaddvq_s32(sum);
+#elif defined(__aarch64__)
+  int32_t sum = 0;
+  for (int i = 0; i < in_dim; i += 16) {
+    int8x16_t inp = vld1q_s8(input + i);
+    int8x16_t wei = vld1q_s8(weights + i);
+    int16x8_t prod0 =
+        vmull_s8(vget_low_s8(inp), vget_low_s8(wei));
+    int16x8_t prod1 =
+        vmull_s8(vget_high_s8(inp), vget_high_s8(wei));
+    sum += vaddvq_s16(prod0);
+    sum += vaddvq_s16(prod1);
+  }
+  return sum;
+#else
+  int32_t sum = 0;
+  for (int i = 0; i < in_dim; ++i) {
+    sum += static_cast<int32_t>(input[i]) * weights[i];
+  }
+  return sum;
+#endif
+}
+#endif  // __aarch64__ || __ARM_NEON
+
 void ComputeLayerScalar(const int8_t* input, const int8_t* weights,
                         const int8_t* bias, int in_dim, int out_dim,
                         int8_t* output) {
@@ -180,6 +235,19 @@ void ComputeLayerAvxVnni(const int8_t* input, const int8_t* weights,
 }
 #endif  // __x86_64__ || _M_X64
 
+#if defined(__aarch64__) || defined(__ARM_NEON)
+void ComputeLayerNeon(const int8_t* input, const int8_t* weights,
+                      const int8_t* bias, int in_dim, int out_dim,
+                      int8_t* output) {
+  for (int o = 0; o < out_dim; ++o) {
+    const int8_t* row = weights + o * in_dim;
+    int32_t total = DotProductNeon(input, row, in_dim);
+    total += bias[o] * kNnueFactor;
+    output[o] = ClampLayer(total);
+  }
+}
+#endif
+
 }  // namespace
 
 AddRowFn GetAddRowKernel() {
@@ -188,6 +256,9 @@ AddRowFn GetAddRowKernel() {
   if (initialized) {
     return fn;
   }
+#if defined(__aarch64__) || defined(__ARM_NEON)
+  fn = &AddRowNeon;
+#endif
 #if defined(__x86_64__) || defined(_M_X64)
 #if defined(__GNUC__) || defined(__clang__)
   if (__builtin_cpu_supports("avx512f")) {
@@ -207,6 +278,9 @@ SubRowFn GetSubRowKernel() {
   if (initialized) {
     return fn;
   }
+#if defined(__aarch64__) || defined(__ARM_NEON)
+  fn = &SubRowNeon;
+#endif
 #if defined(__x86_64__) || defined(_M_X64)
 #if defined(__GNUC__) || defined(__clang__)
   if (__builtin_cpu_supports("avx512f")) {
@@ -226,6 +300,9 @@ ComputeLayerFn GetComputeLayerKernel() {
   if (initialized) {
     return fn;
   }
+#if defined(__aarch64__) || defined(__ARM_NEON)
+  fn = &ComputeLayerNeon;
+#endif
 #if defined(__x86_64__) || defined(_M_X64)
 #if defined(__GNUC__) || defined(__clang__)
   if (__builtin_cpu_supports("avxvnni")) {
@@ -244,7 +321,13 @@ const char* NnueKernelName() {
   if (name != nullptr) {
     return name;
   }
-#if defined(__x86_64__) || defined(_M_X64)
+#if defined(__aarch64__) || defined(__ARM_NEON)
+#if defined(__ARM_FEATURE_DOTPROD)
+  name = "neon-dot";
+#else
+  name = "neon";
+#endif
+#elif defined(__x86_64__) || defined(_M_X64)
 #if defined(__GNUC__) || defined(__clang__)
   if (__builtin_cpu_supports("avxvnni")) {
     name = "avxvnni";
