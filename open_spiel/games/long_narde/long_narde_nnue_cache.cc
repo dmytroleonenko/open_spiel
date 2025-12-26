@@ -61,6 +61,33 @@ void SetRunBit(std::array<uint64_t, kRunWords>* bits, int index) {
   (*bits)[word] |= (uint64_t{1} << bit);
 }
 
+void SetRunBitValue(std::array<uint64_t, kRunWords>* bits, int index,
+                    bool value) {
+  int word = index / 64;
+  int bit = index % 64;
+  uint64_t mask = (uint64_t{1} << bit);
+  if (value) {
+    (*bits)[word] |= mask;
+  } else {
+    (*bits)[word] &= ~mask;
+  }
+}
+
+const std::array<int, nnue::kNnueRunMax + 2>& RunOffsets() {
+  static const std::array<int, nnue::kNnueRunMax + 2> offsets = []() {
+    std::array<int, nnue::kNnueRunMax + 2> out{};
+    int offset = 0;
+    for (int len = nnue::kNnueRunMin; len <= nnue::kNnueRunMax + 1; ++len) {
+      out[len] = offset;
+      if (len <= nnue::kNnueRunMax) {
+        offset += kNumPoints - len + 1;
+      }
+    }
+    return out;
+  }();
+  return offsets;
+}
+
 std::array<uint64_t, kRunWords> ComputeRunBits(uint32_t blocked) {
   std::array<uint64_t, kRunWords> out{};
   int offset = 0;
@@ -81,6 +108,39 @@ std::array<uint64_t, kRunWords> ComputeRunBits(uint32_t blocked) {
     offset += (max_start + 1);
   }
   return out;
+}
+
+void UpdateRunBitsIncremental(uint32_t old_blocked, uint32_t new_blocked,
+                              std::array<uint64_t, kRunWords>* run_bits) {
+  uint32_t changed = old_blocked ^ new_blocked;
+  if (changed == 0u) {
+    return;
+  }
+  std::array<uint8_t, nnue::kNnueRunFeaturesPerSide> touched{};
+  const auto& offsets = RunOffsets();
+  while (changed != 0u) {
+    int point = __builtin_ctz(changed);
+    changed &= changed - 1;
+    for (int len = nnue::kNnueRunMin; len <= nnue::kNnueRunMax; ++len) {
+      int start_min = std::max(0, point - (len - 1));
+      int start_max = std::min(point, kNumPoints - len);
+      if (start_min > start_max) {
+        continue;
+      }
+      uint32_t mask_base = (uint32_t{1} << len) - 1u;
+      int offset = offsets[len];
+      for (int start = start_min; start <= start_max; ++start) {
+        int index = offset + start;
+        if (touched[index]) {
+          continue;
+        }
+        touched[index] = 1;
+        uint32_t mask = mask_base << start;
+        bool active = (new_blocked & mask) == mask;
+        SetRunBitValue(run_bits, index, active);
+      }
+    }
+  }
 }
 
 void BuildActiveFromCache(const nnue::NnueCache& cache,
@@ -222,7 +282,7 @@ void UpdateCacheNoFlipSide(int side,
   }
 
   cache->blocked_bits[side] = new_bits;
-  cache->run_bits[side] = ComputeRunBits(new_bits);
+  UpdateRunBitsIncremental(old_bits, new_bits, &cache->run_bits[side]);
   if (cache->run_bits[side] != old_run_bits) {
     int run_offset =
         nnue::kNnueBaseFeatures + side * nnue::kNnueRunFeaturesPerSide;
