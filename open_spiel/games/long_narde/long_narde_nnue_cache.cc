@@ -27,6 +27,7 @@ namespace long_narde {
 namespace {
 
 constexpr int kRunWords = 2;
+constexpr int kMaxDeltaPoints = 4;
 
 int BucketForCount(int count) {
   if (count < 0) {
@@ -53,6 +54,29 @@ int OffFeatureIndex(int side, int off_count) {
 void AddFeature(int idx, nnue::NnueActiveFeatures* feats) {
   SPIEL_CHECK_LT(feats->count, nnue::kNnueMaxActiveFeatures);
   feats->indices[feats->count++] = idx;
+}
+
+struct PointDeltaList {
+  std::array<int, kMaxDeltaPoints> points{};
+  std::array<int8_t, kMaxDeltaPoints> deltas{};
+  int count = 0;
+};
+
+void AddPointDelta(PointDeltaList* list, int point, int8_t delta) {
+  if (delta == 0) {
+    return;
+  }
+  for (int i = 0; i < list->count; ++i) {
+    if (list->points[i] == point) {
+      list->deltas[i] =
+          static_cast<int8_t>(list->deltas[i] + delta);
+      return;
+    }
+  }
+  SPIEL_CHECK_LT(list->count, kMaxDeltaPoints);
+  list->points[list->count] = point;
+  list->deltas[list->count] = delta;
+  ++list->count;
 }
 
 void SetRunBit(std::array<uint64_t, kRunWords>* bits, int index) {
@@ -237,18 +261,16 @@ void UpdateRunFeaturesDelta(
 }
 
 void UpdateCacheNoFlipSide(int side,
-                           const std::array<int8_t, kNumPoints>& delta,
+                           const PointDeltaList& delta,
                            int off_delta, nnue::NnueCache* cache,
                            nnue::NnueActiveFeatures* remove,
                            nnue::NnueActiveFeatures* add) {
   uint32_t old_bits = cache->blocked_bits[side];
   uint32_t new_bits = old_bits;
   auto old_run_bits = cache->run_bits[side];
-  for (int point = 0; point < kNumPoints; ++point) {
-    int delta_count = delta[point];
-    if (delta_count == 0) {
-      continue;
-    }
+  for (int i = 0; i < delta.count; ++i) {
+    int point = delta.points[i];
+    int delta_count = delta.deltas[i];
     int old_count = cache->counts[side][point];
     int new_count = old_count + delta_count;
     cache->counts[side][point] = static_cast<uint8_t>(new_count);
@@ -352,17 +374,23 @@ void NnueCacheStack::PushAction(const LongNardeState& state, Action action,
   int d1 = (decoded.order == 0) ? d_max : d_min;
   int d2 = (decoded.order == 0) ? d_min : d_max;
 
-  std::array<int8_t, kNumPoints> delta{};
+  PointDeltaList delta;
+  PointDeltaList delta_opp;
   int off_delta = 0;
+  auto add_delta = [&](int point, int8_t delta_count) {
+    AddPointDelta(&delta, point, delta_count);
+    int rot = (point + 12) % kNumPoints;
+    AddPointDelta(&delta_opp, rot, delta_count);
+  };
   auto apply = [&](int src, int die) {
     if (src == kActionPassSrc) {
       return;
     }
     int src_read = std::min(src, kNumPoints - 1);
-    delta[src_read] -= 1;
+    add_delta(src_read, -1);
     int target = src + die;
     if (target < kNumPoints) {
-      delta[target] += 1;
+      add_delta(target, 1);
     } else {
       off_delta += 1;
     }
@@ -372,15 +400,6 @@ void NnueCacheStack::PushAction(const LongNardeState& state, Action action,
   apply(decoded.src2, d2);
 
   bool flipped = state.current_player_id() != prev_player;
-  std::array<int8_t, kNumPoints> delta_opp{};
-  for (int point = 0; point < kNumPoints; ++point) {
-    int delta_count = delta[point];
-    if (delta_count == 0) {
-      continue;
-    }
-    int rot = (point + 12) % kNumPoints;
-    delta_opp[rot] += delta_count;
-  }
 
   UpdateCacheNoFlipSide(0, delta, off_delta, &child.cur, &remove, &add);
   nnue::ApplyAccumulatorDelta(*network_, remove, add, &child.cur.acc);
