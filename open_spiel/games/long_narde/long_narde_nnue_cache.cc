@@ -275,32 +275,6 @@ void InitCacheFromState(const LongNardeState& state,
   }
 }
 
-void UpdateRunAccDelta(
-    int run_offset, const std::array<uint64_t, kRunWords>& old_bits,
-    const std::array<uint64_t, kRunWords>& new_bits,
-    const nnue::NnueNetwork& net, std::array<int16_t, nnue::kNnueL1>* acc,
-    nnue::AddRowFn add_row, nnue::SubRowFn sub_row) {
-  const int16_t* w0 = net.w0.data();
-  for (int word = 0; word < kRunWords; ++word) {
-    uint64_t diff = old_bits[word] ^ new_bits[word];
-    while (diff != 0u) {
-      int bit = __builtin_ctzll(diff);
-      int index = word * 64 + bit;
-      if (index >= nnue::kNnueRunFeaturesPerSide) {
-        break;
-      }
-      if (new_bits[word] & (uint64_t{1} << bit)) {
-        const int16_t* row = &w0[(run_offset + index) * nnue::kNnueL1];
-        add_row(row, acc->data());
-      } else {
-        const int16_t* row = &w0[(run_offset + index) * nnue::kNnueL1];
-        sub_row(row, acc->data());
-      }
-      diff &= diff - 1;
-    }
-  }
-}
-
 void UpdateCacheNoFlipSide(int side,
                            const PointDeltaList& delta,
                            int off_delta, const nnue::NnueNetwork& net,
@@ -309,20 +283,19 @@ void UpdateCacheNoFlipSide(int side,
   const int16_t* w0 = net.w0.data();
   uint32_t old_bits = cache->blocked_bits[side];
   uint32_t new_bits = old_bits;
-  auto old_run_bits = cache->run_bits[side];
   int base_offset = side * nnue::kNnueBaseFeaturesPerSide;
+  int run_offset =
+      nnue::kNnueBaseFeatures + side * nnue::kNnueRunFeaturesPerSide;
   for (int i = 0; i < delta.count; ++i) {
     int point = delta.points[i];
     int delta_count = delta.deltas[i];
-    int old_count = cache->counts[side][point];
+    uint8_t old_count = cache->counts[side][point];
     int new_count = old_count + delta_count;
     cache->counts[side][point] = static_cast<uint8_t>(new_count);
     int old_feat =
-        base_offset + point * nnue::kNnueBucketCount +
-        BucketForCount(old_count);
+        base_offset + point * nnue::kNnueBucketCount + old_count;
     int new_feat =
-        base_offset + point * nnue::kNnueBucketCount +
-        BucketForCount(new_count);
+        base_offset + point * nnue::kNnueBucketCount + new_count;
     if (old_feat != new_feat) {
       const int16_t* row_old = &w0[old_feat * nnue::kNnueL1];
       const int16_t* row_new = &w0[new_feat * nnue::kNnueL1];
@@ -341,13 +314,13 @@ void UpdateCacheNoFlipSide(int side,
   }
 
   if (off_delta != 0) {
-    int old_off = cache->off[side];
+    uint8_t old_off = cache->off[side];
     int new_off = old_off + off_delta;
     cache->off[side] = static_cast<uint8_t>(new_off);
-    int old_feat = base_offset + kNumPoints * nnue::kNnueBucketCount +
-                   BucketForCount(old_off);
-    int new_feat = base_offset + kNumPoints * nnue::kNnueBucketCount +
-                   BucketForCount(new_off);
+    int old_feat =
+        base_offset + kNumPoints * nnue::kNnueBucketCount + old_off;
+    int new_feat =
+        base_offset + kNumPoints * nnue::kNnueBucketCount + new_off;
     if (old_feat != new_feat) {
       const int16_t* row_old = &w0[old_feat * nnue::kNnueL1];
       const int16_t* row_new = &w0[new_feat * nnue::kNnueL1];
@@ -357,12 +330,36 @@ void UpdateCacheNoFlipSide(int side,
   }
 
   cache->blocked_bits[side] = new_bits;
-  UpdateRunBitsIncremental(old_bits, new_bits, &cache->run_bits[side]);
-  if (cache->run_bits[side] != old_run_bits) {
-    int run_offset =
-        nnue::kNnueBaseFeatures + side * nnue::kNnueRunFeaturesPerSide;
-    UpdateRunAccDelta(run_offset, old_run_bits, cache->run_bits[side], net,
-                      &cache->acc, add_row, sub_row);
+  uint32_t changed = old_bits ^ new_bits;
+  if (changed == 0u) {
+    return;
+  }
+  std::array<uint8_t, nnue::kNnueRunFeaturesPerSide> touched{};
+  const auto& lists = RunUpdateLists();
+  while (changed != 0u) {
+    int point = __builtin_ctz(changed);
+    changed &= changed - 1;
+    const RunUpdateList& list = lists[point];
+    for (int i = 0; i < list.count; ++i) {
+      int index = list.entries[i].index;
+      if (touched[index]) {
+        continue;
+      }
+      touched[index] = 1;
+      uint32_t mask = list.entries[i].mask;
+      bool old_active = (old_bits & mask) == mask;
+      bool new_active = (new_bits & mask) == mask;
+      if (old_active == new_active) {
+        continue;
+      }
+      const int16_t* row = &w0[(run_offset + index) * nnue::kNnueL1];
+      if (new_active) {
+        add_row(row, cache->acc.data());
+      } else {
+        sub_row(row, cache->acc.data());
+      }
+      SetRunBitValue(&cache->run_bits[side], index, new_active);
+    }
   }
 }
 
