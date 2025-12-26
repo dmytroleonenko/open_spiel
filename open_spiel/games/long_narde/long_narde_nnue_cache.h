@@ -37,8 +37,13 @@ class NnueCacheStack {
   const nnue::NnueCache* Current() const;
 
  private:
+  struct CachePair {
+    nnue::NnueCache cur;
+    nnue::NnueCache opp;
+  };
+
   const nnue::NnueNetwork* network_ = nullptr;
-  std::vector<nnue::NnueCache> stack_;
+  std::vector<CachePair> stack_;
 };
 
 }  // namespace long_narde

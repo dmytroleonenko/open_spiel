@@ -189,6 +189,7 @@ void UpdateRunFeaturesForSide(int side, uint32_t old_bits, uint32_t new_bits,
 }
 
 void UpdateRunFeaturesForPoints(uint32_t old_bits, uint32_t new_bits,
+                                int run_offset,
                                 const std::array<int, kNumPoints>& points,
                                 int point_count,
                                 nnue::NnueActiveFeatures* remove,
@@ -218,7 +219,7 @@ void UpdateRunFeaturesForPoints(uint32_t old_bits, uint32_t new_bits,
     if (old_active == new_active) {
       continue;
     }
-    int feature = nnue::kNnueBaseFeatures + run_idx;
+    int feature = run_offset + run_idx;
     if (old_active) {
       AddFeature(feature, remove);
     } else {
@@ -227,11 +228,12 @@ void UpdateRunFeaturesForPoints(uint32_t old_bits, uint32_t new_bits,
   }
 }
 
-void UpdateCacheNoFlip(const std::array<int8_t, kNumPoints>& delta,
-                       int off_delta, nnue::NnueCache* cache,
-                       nnue::NnueActiveFeatures* remove,
-                       nnue::NnueActiveFeatures* add) {
-  uint32_t old_bits = cache->blocked_bits[0];
+void UpdateCacheNoFlipSide(int side,
+                           const std::array<int8_t, kNumPoints>& delta,
+                           int off_delta, nnue::NnueCache* cache,
+                           nnue::NnueActiveFeatures* remove,
+                           nnue::NnueActiveFeatures* add) {
+  uint32_t old_bits = cache->blocked_bits[side];
   uint32_t new_bits = old_bits;
   std::array<int, kNumPoints> changed{};
   int changed_count = 0;
@@ -240,11 +242,11 @@ void UpdateCacheNoFlip(const std::array<int8_t, kNumPoints>& delta,
     if (delta_count == 0) {
       continue;
     }
-    int old_count = cache->counts[0][point];
+    int old_count = cache->counts[side][point];
     int new_count = old_count + delta_count;
-    cache->counts[0][point] = static_cast<uint8_t>(new_count);
-    int old_feat = BaseFeatureIndex(0, point, old_count);
-    int new_feat = BaseFeatureIndex(0, point, new_count);
+    cache->counts[side][point] = static_cast<uint8_t>(new_count);
+    int old_feat = BaseFeatureIndex(side, point, old_count);
+    int new_feat = BaseFeatureIndex(side, point, new_count);
     if (old_feat != new_feat) {
       AddFeature(old_feat, remove);
       AddFeature(new_feat, add);
@@ -262,11 +264,11 @@ void UpdateCacheNoFlip(const std::array<int8_t, kNumPoints>& delta,
   }
 
   if (off_delta != 0) {
-    int old_off = cache->off[0];
+    int old_off = cache->off[side];
     int new_off = old_off + off_delta;
-    cache->off[0] = static_cast<uint8_t>(new_off);
-    int old_feat = OffFeatureIndex(0, old_off);
-    int new_feat = OffFeatureIndex(0, new_off);
+    cache->off[side] = static_cast<uint8_t>(new_off);
+    int old_feat = OffFeatureIndex(side, old_off);
+    int new_feat = OffFeatureIndex(side, new_off);
     if (old_feat != new_feat) {
       AddFeature(old_feat, remove);
       AddFeature(new_feat, add);
@@ -274,46 +276,28 @@ void UpdateCacheNoFlip(const std::array<int8_t, kNumPoints>& delta,
   }
 
   if (changed_count > 0) {
-    UpdateRunFeaturesForPoints(old_bits, new_bits, changed, changed_count,
+    int run_offset =
+        nnue::kNnueBaseFeatures + side * nnue::kNnueRunFeaturesPerSide;
+    UpdateRunFeaturesForPoints(old_bits, new_bits, run_offset, changed,
+                               changed_count,
                                remove, add);
   }
 
-  cache->blocked_bits[0] = new_bits;
+  cache->blocked_bits[side] = new_bits;
 }
 
-void UpdateCacheFlipRebuild(const std::array<int8_t, kNumPoints>& delta,
-                            int off_delta, const nnue::NnueNetwork& net,
-                            nnue::NnueCache* cache) {
-  auto counts_after = cache->counts;
-  auto off_after = cache->off;
+void FlipCache(const nnue::NnueNetwork& net, const nnue::NnueCache& src,
+               nnue::NnueCache* dst) {
   for (int point = 0; point < kNumPoints; ++point) {
-    int delta_count = delta[point];
-    if (delta_count == 0) {
-      continue;
-    }
-    int new_count = counts_after[0][point] + delta_count;
-    counts_after[0][point] = static_cast<uint8_t>(new_count);
+    int rot = (point + 12) % kNumPoints;
+    dst->counts[0][point] = src.counts[1][rot];
+    dst->counts[1][point] = src.counts[0][rot];
   }
-  if (off_delta != 0) {
-    off_after[0] = static_cast<uint8_t>(off_after[0] + off_delta);
-  }
-
-  std::array<std::array<uint8_t, kNumPoints>, 2> new_counts{};
-  for (int point = 0; point < kNumPoints; ++point) {
-    int src = (point + 12) % kNumPoints;
-    new_counts[0][point] = counts_after[1][src];
-    new_counts[1][point] = counts_after[0][src];
-  }
-  std::array<uint8_t, 2> new_off{
-      static_cast<uint8_t>(off_after[1]),
-      static_cast<uint8_t>(off_after[0]),
-  };
-
-  cache->counts = new_counts;
-  cache->off = new_off;
-  cache->blocked_bits[0] = BlockedBits(new_counts[0]);
-  cache->blocked_bits[1] = BlockedBits(new_counts[1]);
-  RebuildAccumulatorFromCache(net, *cache, &cache->acc);
+  dst->off[0] = src.off[1];
+  dst->off[1] = src.off[0];
+  dst->blocked_bits[0] = BlockedBits(dst->counts[0]);
+  dst->blocked_bits[1] = BlockedBits(dst->counts[1]);
+  RebuildAccumulatorFromCache(net, *dst, &dst->acc);
 }
 
 }  // namespace
@@ -325,8 +309,9 @@ void NnueCacheStack::Reset(const LongNardeState& state,
   if (network_ == nullptr) {
     return;
   }
-  nnue::NnueCache root;
-  InitCacheFromState(state, *network_, &root);
+  CachePair root;
+  InitCacheFromState(state, *network_, &root.cur);
+  FlipCache(*network_, root.cur, &root.opp);
   stack_.push_back(root);
 }
 
@@ -348,7 +333,7 @@ void NnueCacheStack::PushAction(const LongNardeState& state, Action action,
   if (network_ == nullptr || stack_.empty()) {
     return;
   }
-  nnue::NnueCache child = stack_.back();
+  CachePair child = stack_.back();
   nnue::NnueActiveFeatures remove;
   nnue::NnueActiveFeatures add;
   remove.count = 0;
@@ -380,11 +365,26 @@ void NnueCacheStack::PushAction(const LongNardeState& state, Action action,
   apply(decoded.src2, d2);
 
   bool flipped = state.current_player_id() != prev_player;
+  std::array<int8_t, kNumPoints> delta_opp{};
+  for (int point = 0; point < kNumPoints; ++point) {
+    int delta_count = delta[point];
+    if (delta_count == 0) {
+      continue;
+    }
+    int rot = (point + 12) % kNumPoints;
+    delta_opp[rot] += delta_count;
+  }
+
+  UpdateCacheNoFlipSide(0, delta, off_delta, &child.cur, &remove, &add);
+  nnue::ApplyAccumulatorDelta(*network_, remove, add, &child.cur.acc);
+
+  remove.count = 0;
+  add.count = 0;
+  UpdateCacheNoFlipSide(1, delta_opp, off_delta, &child.opp, &remove, &add);
+  nnue::ApplyAccumulatorDelta(*network_, remove, add, &child.opp.acc);
+
   if (flipped) {
-    UpdateCacheFlipRebuild(delta, off_delta, *network_, &child);
-  } else {
-    UpdateCacheNoFlip(delta, off_delta, &child, &remove, &add);
-    nnue::ApplyAccumulatorDelta(*network_, remove, add, &child.acc);
+    std::swap(child.cur, child.opp);
   }
   stack_.push_back(std::move(child));
 }
@@ -400,7 +400,7 @@ const nnue::NnueCache* NnueCacheStack::Current() const {
   if (network_ == nullptr || stack_.empty()) {
     return nullptr;
   }
-  return &stack_.back();
+  return &stack_.back().cur;
 }
 
 }  // namespace long_narde
