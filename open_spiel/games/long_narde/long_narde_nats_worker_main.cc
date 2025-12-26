@@ -377,6 +377,7 @@ int main(int argc, char** argv) {
   using open_spiel::long_narde::WorkerLoop;
   using open_spiel::long_narde::WorkerStats;
   using open_spiel::long_narde::WeightsStore;
+  using open_spiel::long_narde::nnue::NnueKernelName;
 
   auto args = ParseArgs(argc, argv);
   if (args.find("help") != args.end()) {
@@ -419,6 +420,8 @@ int main(int argc, char** argv) {
     workers = hc == 0 ? 1 : static_cast<int>(hc) + 1;
   }
   config.workers = workers;
+  std::cerr << "[worker] nnue_kernel=" << NnueKernelName()
+            << " workers=" << config.workers << "\n";
 
   WeightsStore store;
   std::thread sub_thread(WeightSubscriber, config, &store);

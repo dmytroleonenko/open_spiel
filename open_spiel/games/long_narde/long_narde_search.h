@@ -16,6 +16,7 @@
 #define OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_SEARCH_H_
 
 #include <cstdint>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -33,6 +34,7 @@ struct SearchConfig {
   bool enable_pruning = true;
   bool use_tt = true;
   bool use_undo = true;
+  bool use_nnue_cache = true;
 };
 
 struct SearchResult {
@@ -40,15 +42,18 @@ struct SearchResult {
   Action best_action = kInvalidAction;
 };
 
+struct NnueCacheStack;
+
 class ExpectiminimaxSearch {
  public:
   ExpectiminimaxSearch(const nnue::NnueEvaluator* evaluator,
                        const SearchConfig& config);
+  ~ExpectiminimaxSearch();
 
   SearchResult Search(LongNardeState* state);
   std::vector<std::pair<Action, double>> EvaluateDecisionActions(
       LongNardeState* state);
-  void ClearCache() { table_.clear(); }
+  void ClearCache();
 
  private:
   struct TTEntry {
@@ -68,6 +73,7 @@ class ExpectiminimaxSearch {
   const nnue::NnueEvaluator* evaluator_;
   SearchConfig config_;
   std::unordered_map<uint64_t, TTEntry> table_;
+  std::unique_ptr<NnueCacheStack> cache_stack_;
 };
 
 }  // namespace long_narde

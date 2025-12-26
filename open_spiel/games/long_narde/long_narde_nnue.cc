@@ -32,18 +32,12 @@ namespace nnue {
 namespace {
 
 constexpr int kNnueFactor = 64;
-constexpr int kMaxActiveFeatures =
-(kNnuePointsWithOff * 2) + (kNnueRunFeaturesPerSide * 2);
 constexpr int kSigmoidTableSize = 4096;
 constexpr float kSigmoidMin = -8.0f;
 constexpr float kSigmoidMax = 8.0f;
 
-struct ActiveFeatures {
-  std::array<int, kMaxActiveFeatures> indices{};
-  int count = 0;
-};
-
 using AddRowFn = void (*)(const int16_t* weights, int16_t* acc);
+using SubRowFn = void (*)(const int16_t* weights, int16_t* acc);
 using ComputeLayerFn = void (*)(const int8_t* input, const int8_t* weights,
                                 const int8_t* bias, int in_dim, int out_dim,
                                 int8_t* output);
@@ -56,7 +50,11 @@ void AddRowScalar(const int16_t* weights, int16_t* acc) {
     acc[i] += weights[i];
   }
 }
-
+void SubRowScalar(const int16_t* weights, int16_t* acc) {
+  for (int i = 0; i < kNnueL1; ++i) {
+    acc[i] -= weights[i];
+  }
+}
 #if defined(__x86_64__) || defined(_M_X64)
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("avx2")))
@@ -71,7 +69,6 @@ void AddRowAvx2(const int16_t* weights, int16_t* acc) {
     _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + i), acc_v);
   }
 }
-
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("avx512f,avx512bw,avx512vl")))
 #endif
@@ -86,6 +83,35 @@ void AddRowAvx512(const int16_t* weights, int16_t* acc) {
   }
 #else
   AddRowAvx2(weights, acc);
+#endif
+}
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2")))
+#endif
+void SubRowAvx2(const int16_t* weights, int16_t* acc) {
+  for (int i = 0; i < kNnueL1; i += 16) {
+    __m256i acc_v =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + i));
+    __m256i wei_v =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(weights + i));
+    acc_v = _mm256_sub_epi16(acc_v, wei_v);
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + i), acc_v);
+  }
+}
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx512f,avx512bw,avx512vl")))
+#endif
+void SubRowAvx512(const int16_t* weights, int16_t* acc) {
+#if defined(__AVX512F__)
+  for (int i = 0; i < kNnueL1; i += 32) {
+    __m512i acc_v = _mm512_loadu_si512(reinterpret_cast<const void*>(acc + i));
+    __m512i wei_v =
+        _mm512_loadu_si512(reinterpret_cast<const void*>(weights + i));
+    acc_v = _mm512_sub_epi16(acc_v, wei_v);
+    _mm512_storeu_si512(reinterpret_cast<void*>(acc + i), acc_v);
+  }
+#else
+  SubRowAvx2(weights, acc);
 #endif
 }
 #endif  // __x86_64__ || _M_X64
@@ -108,7 +134,24 @@ AddRowFn GetAddRowKernel() {
   initialized = true;
   return fn;
 }
-
+SubRowFn GetSubRowKernel() {
+  static SubRowFn fn = &SubRowScalar;
+  static bool initialized = false;
+  if (initialized) {
+    return fn;
+  }
+#if defined(__x86_64__) || defined(_M_X64)
+#if defined(__GNUC__) || defined(__clang__)
+  if (__builtin_cpu_supports("avx512f")) {
+    fn = &SubRowAvx512;
+  } else if (__builtin_cpu_supports("avx2")) {
+    fn = &SubRowAvx2;
+  }
+#endif
+#endif
+  initialized = true;
+  return fn;
+}
 void ComputeLayerScalar(const int8_t* input, const int8_t* weights,
                         const int8_t* bias, int in_dim, int out_dim,
                         int8_t* output) {
@@ -121,7 +164,6 @@ void ComputeLayerScalar(const int8_t* input, const int8_t* weights,
     output[o] = ClampLayer(sum);
   }
 }
-
 #if defined(__x86_64__) || defined(_M_X64)
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("avx2")))
@@ -154,7 +196,6 @@ void ComputeLayerAvx2(const int8_t* input, const int8_t* weights,
   }
 }
 #endif
-
 ComputeLayerFn GetComputeLayerKernel() {
   static ComputeLayerFn fn = &ComputeLayerScalar;
   static bool initialized = false;
@@ -171,7 +212,6 @@ ComputeLayerFn GetComputeLayerKernel() {
   initialized = true;
   return fn;
 }
-
 int8_t ClampAcc(int16_t value) {
   if (value < 0) {
     return 0;
@@ -181,7 +221,6 @@ int8_t ClampAcc(int16_t value) {
   }
   return static_cast<int8_t>(value);
 }
-
 int8_t ClampLayer(int32_t value) {
   int32_t scaled = value / kNnueFactor;
   if (scaled < 0) {
@@ -192,7 +231,6 @@ int8_t ClampLayer(int32_t value) {
   }
   return static_cast<int8_t>(scaled);
 }
-
 float SigmoidApprox(float x) {
   static const std::array<float, kSigmoidTableSize> table = []() {
     std::array<float, kSigmoidTableSize> vals{};
@@ -204,7 +242,6 @@ float SigmoidApprox(float x) {
     }
     return vals;
   }();
-
   if (x <= kSigmoidMin) {
     return table.front();
   }
@@ -217,7 +254,6 @@ float SigmoidApprox(float x) {
   float frac = idx - static_cast<float>(i);
   return table[i] + frac * (table[i + 1] - table[i]);
 }
-
 uint32_t BlockedBits(const std::array<int, kNumPoints>& row) {
   uint32_t bits = 0;
   for (int i = 0; i < kNumPoints; ++i) {
@@ -227,7 +263,6 @@ uint32_t BlockedBits(const std::array<int, kNumPoints>& row) {
   }
   return bits;
 }
-
 const std::array<uint32_t, kNnueRunFeaturesPerSide>& RunMasks() {
   static const std::array<uint32_t, kNnueRunFeaturesPerSide> masks = []() {
     std::array<uint32_t, kNnueRunFeaturesPerSide> out{};
@@ -246,9 +281,8 @@ const std::array<uint32_t, kNnueRunFeaturesPerSide>& RunMasks() {
   }();
   return masks;
 }
-
-void CollectActiveFeatures(const LongNardeState& state,
-                           ActiveFeatures* active) {
+void CollectActiveFeaturesInternal(const LongNardeState& state,
+                                   NnueActiveFeatures* active) {
   active->count = 0;
   const auto& board = state.board();
   for (int side = 0; side < kNumPlayers; ++side) {
@@ -278,14 +312,52 @@ void CollectActiveFeatures(const LongNardeState& state,
     }
   }
 }
-
-void BuildAccumulator(const NnueNetwork& net, const ActiveFeatures& active,
-                      std::array<int16_t, kNnueL1>* acc_out) {
+void BuildAccumulatorInternal(const NnueNetwork& net,
+                              const NnueActiveFeatures& active,
+                              std::array<int16_t, kNnueL1>* acc_out) {
   std::memcpy(acc_out->data(), net.b0.data(), kNnueL1 * sizeof(int16_t));
   AddRowFn add_row = GetAddRowKernel();
   for (int i = 0; i < active.count; ++i) {
     int feature = active.indices[i];
     const int16_t* row = &net.w0[feature * kNnueL1];
+    add_row(row, acc_out->data());
+  }
+}
+
+void UpdateAccumulatorInternal(const NnueNetwork& net,
+                               const NnueActiveFeatures& old_active,
+                               const NnueActiveFeatures& new_active,
+                               std::array<int16_t, kNnueL1>* acc_out) {
+  AddRowFn add_row = GetAddRowKernel();
+  SubRowFn sub_row = GetSubRowKernel();
+  int i = 0;
+  int j = 0;
+  while (i < old_active.count && j < new_active.count) {
+    int old_idx = old_active.indices[i];
+    int new_idx = new_active.indices[j];
+    if (old_idx == new_idx) {
+      ++i;
+      ++j;
+      continue;
+    }
+    if (old_idx < new_idx) {
+      const int16_t* row = &net.w0[old_idx * kNnueL1];
+      sub_row(row, acc_out->data());
+      ++i;
+    } else {
+      const int16_t* row = &net.w0[new_idx * kNnueL1];
+      add_row(row, acc_out->data());
+      ++j;
+    }
+  }
+  for (; i < old_active.count; ++i) {
+    int idx = old_active.indices[i];
+    const int16_t* row = &net.w0[idx * kNnueL1];
+    sub_row(row, acc_out->data());
+  }
+  for (; j < new_active.count; ++j) {
+    int idx = new_active.indices[j];
+    const int16_t* row = &net.w0[idx * kNnueL1];
     add_row(row, acc_out->data());
   }
 }
@@ -301,18 +373,73 @@ int32_t ComputeOutput(const int8_t* input, const int8_t* weights,
 
 }  // namespace
 
+void CollectActiveFeatures(const LongNardeState& state,
+                           NnueActiveFeatures* active) {
+  CollectActiveFeaturesInternal(state, active);
+}
+
+void BuildAccumulator(const NnueNetwork& net,
+                      const NnueActiveFeatures& active,
+                      std::array<int16_t, kNnueL1>* acc_out) {
+  BuildAccumulatorInternal(net, active, acc_out);
+}
+
+void UpdateAccumulator(const NnueNetwork& net,
+                       const NnueActiveFeatures& old_active,
+                       const NnueActiveFeatures& new_active,
+                       std::array<int16_t, kNnueL1>* acc_out) {
+  UpdateAccumulatorInternal(net, old_active, new_active, acc_out);
+}
+
+const char* NnueKernelName() {
+  static const char* name = nullptr;
+  if (name != nullptr) {
+    return name;
+  }
+#if defined(__x86_64__) || defined(_M_X64)
+#if defined(__GNUC__) || defined(__clang__)
+  if (__builtin_cpu_supports("avx512f")) {
+    name = "avx512";
+  } else if (__builtin_cpu_supports("avx2")) {
+    name = "avx2";
+  } else {
+    name = "scalar";
+  }
+#else
+  name = "scalar";
+#endif
+#else
+  name = "scalar";
+#endif
+  return name;
+}
+
 NnueEval NnueEvaluator::EvaluateState(const LongNardeState& state) const {
   NnueEval eval;
   if (model_ == nullptr || !model_->IsLoaded()) {
     return eval;
   }
 
-  ActiveFeatures active;
+  NnueActiveFeatures active;
   CollectActiveFeatures(state, &active);
 
   std::array<int16_t, kNnueL1> acc;
   BuildAccumulator(model_->network(), active, &acc);
 
+  return EvaluateFromAccumulator(model_->network(), acc);
+}
+
+void CollectActiveFeatureIndices(const LongNardeState& state,
+                                 std::vector<int>* out) {
+  SPIEL_CHECK_TRUE(out != nullptr);
+  NnueActiveFeatures active;
+  CollectActiveFeatures(state, &active);
+  out->assign(active.indices.begin(), active.indices.begin() + active.count);
+}
+
+NnueEval EvaluateFromAccumulator(const NnueNetwork& network,
+                                 const std::array<int16_t, kNnueL1>& acc) {
+  NnueEval eval;
   std::array<int8_t, kNnueL1> l1;
   for (int i = 0; i < kNnueL1; ++i) {
     l1[i] = ClampAcc(acc[i]);
@@ -320,14 +447,13 @@ NnueEval NnueEvaluator::EvaluateState(const LongNardeState& state) const {
 
   std::array<int8_t, kNnueL2> l2;
   ComputeLayerFn compute_layer = GetComputeLayerKernel();
-  compute_layer(l1.data(), model_->network().w1.data(),
-                model_->network().b1.data(), kNnueL1, kNnueL2, l2.data());
+  compute_layer(l1.data(), network.w1.data(), network.b1.data(), kNnueL1,
+                kNnueL2, l2.data());
 
-  int32_t out_win = ComputeOutput(l2.data(), model_->network().w2.data(),
-                                  &model_->network().b2[0], kNnueL2);
-  int32_t out_mars =
-      ComputeOutput(l2.data(), model_->network().w2.data() + kNnueL2,
-                    &model_->network().b2[1], kNnueL2);
+  int32_t out_win =
+      ComputeOutput(l2.data(), network.w2.data(), &network.b2[0], kNnueL2);
+  int32_t out_mars = ComputeOutput(l2.data(), network.w2.data() + kNnueL2,
+                                   &network.b2[1], kNnueL2);
 
   float logit_win = static_cast<float>(out_win);
   float logit_mars = static_cast<float>(out_mars);
@@ -337,23 +463,15 @@ NnueEval NnueEvaluator::EvaluateState(const LongNardeState& state) const {
   return eval;
 }
 
-void CollectActiveFeatureIndices(const LongNardeState& state,
-                                 std::vector<int>* out) {
-  SPIEL_CHECK_TRUE(out != nullptr);
-  ActiveFeatures active;
-  CollectActiveFeatures(state, &active);
-  out->assign(active.indices.begin(), active.indices.begin() + active.count);
-}
-
 NnueRawOutput EvaluateRawFromFeatures(
     const NnueNetwork& network, const std::vector<int>& active_features) {
   NnueRawOutput output;
-  ActiveFeatures active;
+  NnueActiveFeatures active;
   active.count = 0;
   for (int idx : active_features) {
     SPIEL_CHECK_GE(idx, 0);
     SPIEL_CHECK_LT(idx, kNnueFeatureDim);
-    SPIEL_CHECK_LT(active.count, kMaxActiveFeatures);
+    SPIEL_CHECK_LT(active.count, kNnueMaxActiveFeatures);
     active.indices[active.count++] = idx;
   }
 

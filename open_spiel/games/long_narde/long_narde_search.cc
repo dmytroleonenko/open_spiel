@@ -25,6 +25,57 @@
 
 namespace open_spiel {
 namespace long_narde {
+
+struct NnueCacheStack {
+  const nnue::NnueNetwork* network = nullptr;
+  std::vector<nnue::NnueCache> stack;
+
+  bool Enabled() const { return network != nullptr; }
+
+  void Reset(const LongNardeState& state, const nnue::NnueNetwork* net) {
+    stack.clear();
+    network = net;
+    if (!Enabled()) {
+      return;
+    }
+    nnue::NnueCache root;
+    nnue::CollectActiveFeatures(state, &root.active);
+    nnue::BuildAccumulator(*network, root.active, &root.acc);
+    stack.push_back(root);
+  }
+
+  void Clear() {
+    stack.clear();
+    network = nullptr;
+  }
+
+  void Push(const LongNardeState& state) {
+    if (!Enabled()) {
+      return;
+    }
+    nnue::NnueCache child = stack.back();
+    nnue::NnueActiveFeatures next;
+    nnue::CollectActiveFeatures(state, &next);
+    nnue::UpdateAccumulator(*network, child.active, next, &child.acc);
+    child.active = next;
+    stack.push_back(child);
+  }
+
+  void Pop() {
+    if (!Enabled()) {
+      return;
+    }
+    stack.pop_back();
+  }
+
+  const nnue::NnueCache* Current() const {
+    if (!Enabled() || stack.empty()) {
+      return nullptr;
+    }
+    return &stack.back();
+  }
+};
+
 namespace {
 
 struct MoveScore {
@@ -40,17 +91,39 @@ uint64_t HashMix(uint64_t h, uint64_t v) {
 }  // namespace
 
 ExpectiminimaxSearch::ExpectiminimaxSearch(
-    const nnue::NnueEvaluator* evaluator, const SearchConfig& config)
-    : evaluator_(evaluator), config_(config) {}
+    const nnue::NnueEvaluator* evaluator, const SearchConfig& config) {
+  evaluator_ = evaluator;
+  config_ = config;
+  cache_stack_ = std::make_unique<NnueCacheStack>();
+}
+
+ExpectiminimaxSearch::~ExpectiminimaxSearch() = default;
+
+void ExpectiminimaxSearch::ClearCache() {
+  table_.clear();
+  if (cache_stack_ != nullptr) {
+    cache_stack_->Clear();
+  }
+}
 
 SearchResult ExpectiminimaxSearch::Search(LongNardeState* state) {
   SearchResult result;
   if (state == nullptr) {
     return result;
   }
+  if (cache_stack_ != nullptr) {
+    const nnue::NnueNetwork* network =
+        (config_.use_nnue_cache && evaluator_ != nullptr)
+            ? evaluator_->network()
+            : nullptr;
+    cache_stack_->Reset(*state, network);
+  }
   Player maximizing_player = state->current_player_id();
   result.value = SearchState(state, config_.max_depth, maximizing_player,
                              &result.best_action);
+  if (cache_stack_ != nullptr) {
+    cache_stack_->Clear();
+  }
   return result;
 }
 
@@ -60,6 +133,13 @@ ExpectiminimaxSearch::EvaluateDecisionActions(LongNardeState* state) {
   if (state == nullptr || state->IsTerminal() || state->IsChanceNode()) {
     return results;
   }
+  if (cache_stack_ != nullptr) {
+    const nnue::NnueNetwork* network =
+        (config_.use_nnue_cache && evaluator_ != nullptr)
+            ? evaluator_->network()
+            : nullptr;
+    cache_stack_->Reset(*state, network);
+  }
   Player maximizing_player = state->current_player_id();
   Player player = state->current_player_id();
   std::vector<Action> actions = state->LegalActions();
@@ -68,12 +148,18 @@ ExpectiminimaxSearch::EvaluateDecisionActions(LongNardeState* state) {
     double child_value = 0.0;
     if (config_.use_undo) {
       state->ApplyAction(action);
+      if (cache_stack_ != nullptr) {
+        cache_stack_->Push(*state);
+      }
       int child_depth = config_.max_depth;
       if (state->awaiting_roll() && config_.max_depth > 0) {
         child_depth = config_.max_depth - 1;
       }
       child_value =
           SearchState(state, child_depth, maximizing_player, nullptr);
+      if (cache_stack_ != nullptr) {
+        cache_stack_->Pop();
+      }
       state->UndoAction(player, action);
     } else {
       std::unique_ptr<State> child = state->Child(action);
@@ -82,8 +168,14 @@ ExpectiminimaxSearch::EvaluateDecisionActions(LongNardeState* state) {
       if (lnchild->awaiting_roll() && config_.max_depth > 0) {
         child_depth = config_.max_depth - 1;
       }
+      if (cache_stack_ != nullptr) {
+        cache_stack_->Push(*lnchild);
+      }
       child_value =
           SearchState(lnchild, child_depth, maximizing_player, nullptr);
+      if (cache_stack_ != nullptr) {
+        cache_stack_->Pop();
+      }
     }
     results.push_back({action, child_value});
   }
@@ -99,6 +191,9 @@ ExpectiminimaxSearch::EvaluateDecisionActions(LongNardeState* state) {
                      return maximizing ? (a.second > b.second)
                                        : (a.second < b.second);
                    });
+  if (cache_stack_ != nullptr) {
+    cache_stack_->Clear();
+  }
   return results;
 }
 
@@ -129,14 +224,26 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
     for (const auto& outcome : state->ChanceOutcomes()) {
       if (config_.use_undo) {
         state->ApplyAction(outcome.first);
+        if (cache_stack_ != nullptr) {
+          cache_stack_->Push(*state);
+        }
         value += outcome.second *
                  SearchState(state, depth, maximizing_player, nullptr);
+        if (cache_stack_ != nullptr) {
+          cache_stack_->Pop();
+        }
         state->UndoAction(kChancePlayerId, outcome.first);
       } else {
         std::unique_ptr<State> child = state->Child(outcome.first);
-        value += outcome.second * SearchState(
-                                     static_cast<LongNardeState*>(child.get()),
-                                     depth, maximizing_player, nullptr);
+        auto* lnchild = static_cast<LongNardeState*>(child.get());
+        if (cache_stack_ != nullptr) {
+          cache_stack_->Push(*lnchild);
+        }
+        value += outcome.second *
+                 SearchState(lnchild, depth, maximizing_player, nullptr);
+        if (cache_stack_ != nullptr) {
+          cache_stack_->Pop();
+        }
       }
     }
     return value;
@@ -154,11 +261,17 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
     double child_value = 0.0;
     if (config_.use_undo) {
       state->ApplyAction(action);
+      if (cache_stack_ != nullptr) {
+        cache_stack_->Push(*state);
+      }
       int child_depth = depth;
       if (state->awaiting_roll() && depth > 0) {
         child_depth = depth - 1;
       }
       child_value = SearchState(state, child_depth, maximizing_player, nullptr);
+      if (cache_stack_ != nullptr) {
+        cache_stack_->Pop();
+      }
       state->UndoAction(player, action);
     } else {
       std::unique_ptr<State> child = state->Child(action);
@@ -168,8 +281,14 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
       if (child_state->awaiting_roll() && depth > 0) {
         child_depth = depth - 1;
       }
+      if (cache_stack_ != nullptr) {
+        cache_stack_->Push(*child_state);
+      }
       child_value =
           SearchState(child_state, child_depth, maximizing_player, nullptr);
+      if (cache_stack_ != nullptr) {
+        cache_stack_->Pop();
+      }
     }
 
     if ((maximizing && child_value > best_value) ||
@@ -195,7 +314,17 @@ double ExpectiminimaxSearch::EvaluatePreRoll(
   if (evaluator_ == nullptr) {
     return 0.0;
   }
-  nnue::NnueEval eval = evaluator_->EvaluateState(state);
+  nnue::NnueEval eval;
+  const nnue::NnueCache* cache =
+      cache_stack_ != nullptr ? cache_stack_->Current() : nullptr;
+  const nnue::NnueNetwork* network =
+      (cache != nullptr && evaluator_ != nullptr) ? evaluator_->network()
+                                                  : nullptr;
+  if (cache != nullptr && network != nullptr) {
+    eval = nnue::EvaluateFromAccumulator(*network, cache->acc);
+  } else {
+    eval = evaluator_->EvaluateState(state);
+  }
   double value = eval.ev;
   return (state.current_player_id() == maximizing_player) ? value : -value;
 }
@@ -216,12 +345,24 @@ std::vector<Action> ExpectiminimaxSearch::OrderedActions(
     double score = 0.0;
     if (config_.use_undo) {
       state->ApplyAction(action);
+      if (cache_stack_ != nullptr) {
+        cache_stack_->Push(*state);
+      }
       score = SearchState(state, 0, maximizing_player, nullptr);
+      if (cache_stack_ != nullptr) {
+        cache_stack_->Pop();
+      }
       state->UndoAction(player, action);
     } else {
       std::unique_ptr<State> child = state->Child(action);
-      score = SearchState(static_cast<LongNardeState*>(child.get()), 0,
-                          maximizing_player, nullptr);
+      auto* lnchild = static_cast<LongNardeState*>(child.get());
+      if (cache_stack_ != nullptr) {
+        cache_stack_->Push(*lnchild);
+      }
+      score = SearchState(lnchild, 0, maximizing_player, nullptr);
+      if (cache_stack_ != nullptr) {
+        cache_stack_->Pop();
+      }
     }
     scores.push_back(MoveScore{action, score});
   }

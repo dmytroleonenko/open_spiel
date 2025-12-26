@@ -45,6 +45,8 @@ constexpr int kNnueRunFeaturesPerSide = kNnueRunCount2 + kNnueRunCount3 +
 kNnueRunCount4 + kNnueRunCount5 + kNnueRunCount6;
 constexpr int kNnueRunFeatures = kNnueRunFeaturesPerSide * 2;
 constexpr int kNnueFeatureDim = kNnueBaseFeatures + kNnueRunFeatures;
+constexpr int kNnueMaxActiveFeatures =
+(kNnuePointsWithOff * 2) + (kNnueRunFeaturesPerSide * 2);
 constexpr int kNnueL1 = 256;
 constexpr int kNnueL2 = 32;
 constexpr int kNnueL3 = 2;
@@ -65,6 +67,16 @@ struct NnueEval {
 struct NnueRawOutput {
   int32_t logit_win = 0;
   int32_t logit_mars = 0;
+};
+
+struct NnueActiveFeatures {
+  std::array<int, kNnueMaxActiveFeatures> indices{};
+  int count = 0;
+};
+
+struct NnueCache {
+  NnueActiveFeatures active;
+  std::array<int16_t, kNnueL1> acc{};
 };
 
 struct NnueFileHeader {
@@ -115,11 +127,27 @@ class NnueEvaluator {
  public:
   explicit NnueEvaluator(const NnueModel* model) : model_(model) {}
   NnueEval EvaluateState(const LongNardeState& state) const;
+  const NnueNetwork* network() const {
+    return (model_ != nullptr && model_->IsLoaded()) ? &model_->network()
+                                                     : nullptr;
+  }
 
  private:
   const NnueModel* model_;
 };
 
+const char* NnueKernelName();
+void CollectActiveFeatures(const LongNardeState& state,
+                           NnueActiveFeatures* active);
+void BuildAccumulator(const NnueNetwork& net,
+                      const NnueActiveFeatures& active,
+                      std::array<int16_t, kNnueL1>* acc_out);
+void UpdateAccumulator(const NnueNetwork& net,
+                       const NnueActiveFeatures& old_active,
+                       const NnueActiveFeatures& new_active,
+                       std::array<int16_t, kNnueL1>* acc_out);
+NnueEval EvaluateFromAccumulator(const NnueNetwork& net,
+                                 const std::array<int16_t, kNnueL1>& acc);
 void CollectActiveFeatureIndices(const LongNardeState& state,
                                  std::vector<int>* out);
 NnueRawOutput EvaluateRawFromFeatures(const NnueNetwork& network,

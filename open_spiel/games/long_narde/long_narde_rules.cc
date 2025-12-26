@@ -82,12 +82,12 @@ const std::array<uint32_t, kNumPoints>& CanonToRotBits() {
 
 void FlipBoard(Board* board) {
   Board next{};
-  for (int p = 0; p < kNumPlayers; ++p) {
-    int src = 1 - p;
-    for (int i = 0; i < kNumPoints; ++i) {
-      next[p][i] = (*board)[src][(i + 12) % 24];
-    }
-  }
+  const auto& row0 = (*board)[0];
+  const auto& row1 = (*board)[1];
+  std::copy_n(row1.begin() + 12, 12, next[0].begin());
+  std::copy_n(row1.begin(), 12, next[0].begin() + 12);
+  std::copy_n(row0.begin() + 12, 12, next[1].begin());
+  std::copy_n(row0.begin(), 12, next[1].begin() + 12);
   *board = next;
 }
 
