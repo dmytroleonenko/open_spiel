@@ -34,9 +34,9 @@ resolve_bin() {
     return 0
   fi
   local candidates=(
-    "$REPO_ROOT/build/games/$name"
     "$REPO_ROOT/build-release/games/$name"
     "$REPO_ROOT/build-relwithdebinfo/games/$name"
+    "$REPO_ROOT/build/games/$name"
   )
   local path
   for path in "${candidates[@]}"; do

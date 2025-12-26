@@ -78,6 +78,20 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
+def _resolve_bin(explicit: str, repo_root: Path, name: str) -> Path:
+    if explicit:
+        return Path(explicit)
+    candidates = [
+        repo_root / "build-release" / "games" / name,
+        repo_root / "build-relwithdebinfo" / "games" / name,
+        repo_root / "build" / "games" / name,
+    ]
+    existing = [path for path in candidates if path.exists()]
+    if not existing:
+        return candidates[-1]
+    return max(existing, key=lambda path: path.stat().st_mtime)
+
+
 def _count_samples(paths: Iterable[Path]) -> int:
     """Counts samples across LNUE shards."""
     total = 0
@@ -280,16 +294,10 @@ def main() -> None:
     log_path = output_dir / "eval.log"
 
     repo_root = _repo_root()
-    selfplay_bin = (
-        Path(args.selfplay_bin)
-        if args.selfplay_bin
-        else repo_root / "build" / "games" / "long_narde_selfplay"
+    selfplay_bin = _resolve_bin(
+        args.selfplay_bin, repo_root, "long_narde_selfplay"
     )
-    eval_bin = (
-        Path(args.eval_bin)
-        if args.eval_bin
-        else repo_root / "build" / "games" / "long_narde_eval"
-    )
+    eval_bin = _resolve_bin(args.eval_bin, repo_root, "long_narde_eval")
 
     if not selfplay_bin.exists():
         raise FileNotFoundError(f"selfplay binary not found: {selfplay_bin}")
