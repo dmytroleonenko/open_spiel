@@ -154,6 +154,16 @@ std::string LabelForPath(const std::string& path, const std::string& fallback) {
 }
 
 struct EvalResult {
+  struct RoleStats {
+    int games = 0;
+    int wins_a = 0;
+    int wins_b = 0;
+    int mars_a = 0;
+    int mars_b = 0;
+    double sum_return_a = 0.0;
+    double sum_return_b = 0.0;
+  };
+
   int games = 0;
   int wins_a = 0;
   int wins_b = 0;
@@ -161,6 +171,8 @@ struct EvalResult {
   int mars_b = 0;
   double sum_return_a = 0.0;
   double sum_return_b = 0.0;
+  RoleStats a_starts;
+  RoleStats b_starts;
 };
 
 EvalResult RunEvalWorker(std::shared_ptr<const Game> game,
@@ -195,6 +207,7 @@ EvalResult RunEvalWorker(std::shared_ptr<const Game> game,
     auto* lnstate = static_cast<LongNardeState*>(state.get());
 
     int moves = 0;
+    Player first_player = kInvalidPlayer;
     while (!lnstate->IsTerminal() && moves < config.max_moves) {
       if (lnstate->IsChanceNode()) {
         Action chance_action =
@@ -204,6 +217,9 @@ EvalResult RunEvalWorker(std::shared_ptr<const Game> game,
       }
 
       Player player = lnstate->current_player_id();
+      if (first_player == kInvalidPlayer) {
+        first_player = player;
+      }
       bool use_nnue = (player == kXPlayerId) ? (eval_a != nullptr)
                                              : (eval_b != nullptr);
       Action action = kInvalidAction;
@@ -224,21 +240,32 @@ EvalResult RunEvalWorker(std::shared_ptr<const Game> game,
     }
 
     SPIEL_CHECK_TRUE(lnstate->IsTerminal());
+    SPIEL_CHECK_TRUE(first_player == kXPlayerId || first_player == kOPlayerId);
     std::vector<double> returns = lnstate->Returns();
     double ret_a = returns[kXPlayerId];
     double ret_b = returns[kOPlayerId];
     SPIEL_CHECK_TRUE(ret_a != ret_b);
+
+    EvalResult::RoleStats* role_stats =
+        (first_player == kXPlayerId) ? &result.a_starts : &result.b_starts;
+    role_stats->games += 1;
+    role_stats->sum_return_a += ret_a;
+    role_stats->sum_return_b += ret_b;
     result.sum_return_a += ret_a;
     result.sum_return_b += ret_b;
     if (ret_a > ret_b) {
       result.wins_a += 1;
+      role_stats->wins_a += 1;
       if (ret_a >= 2.0) {
         result.mars_a += 1;
+        role_stats->mars_a += 1;
       }
     } else {
       result.wins_b += 1;
+      role_stats->wins_b += 1;
       if (ret_b >= 2.0) {
         result.mars_b += 1;
+        role_stats->mars_b += 1;
       }
     }
     result.games += 1;
@@ -377,10 +404,40 @@ int main(int argc, char** argv) {
     result.mars_b += part.mars_b;
     result.sum_return_a += part.sum_return_a;
     result.sum_return_b += part.sum_return_b;
+    result.a_starts.games += part.a_starts.games;
+    result.a_starts.wins_a += part.a_starts.wins_a;
+    result.a_starts.wins_b += part.a_starts.wins_b;
+    result.a_starts.mars_a += part.a_starts.mars_a;
+    result.a_starts.mars_b += part.a_starts.mars_b;
+    result.a_starts.sum_return_a += part.a_starts.sum_return_a;
+    result.a_starts.sum_return_b += part.a_starts.sum_return_b;
+    result.b_starts.games += part.b_starts.games;
+    result.b_starts.wins_a += part.b_starts.wins_a;
+    result.b_starts.wins_b += part.b_starts.wins_b;
+    result.b_starts.mars_a += part.b_starts.mars_a;
+    result.b_starts.mars_b += part.b_starts.mars_b;
+    result.b_starts.sum_return_a += part.b_starts.sum_return_a;
+    result.b_starts.sum_return_b += part.b_starts.sum_return_b;
   }
 
   double avg_a = result.games > 0 ? result.sum_return_a / result.games : 0.0;
   double avg_b = result.games > 0 ? result.sum_return_b / result.games : 0.0;
+  double avg_a_first =
+      result.a_starts.games > 0
+          ? result.a_starts.sum_return_a / result.a_starts.games
+          : 0.0;
+  double avg_a_second =
+      result.b_starts.games > 0
+          ? result.b_starts.sum_return_a / result.b_starts.games
+          : 0.0;
+  double avg_b_first =
+      result.b_starts.games > 0
+          ? result.b_starts.sum_return_b / result.b_starts.games
+          : 0.0;
+  double avg_b_second =
+      result.a_starts.games > 0
+          ? result.a_starts.sum_return_b / result.a_starts.games
+          : 0.0;
 
   std::string label_a = LabelForPath(config.nnue_a, "random");
   std::string label_b = LabelForPath(config.nnue_b, "random");
@@ -390,9 +447,24 @@ int main(int argc, char** argv) {
        << " seed=" << config.seed << " agent_a=" << label_a
        << " agent_b=" << label_b << " wins_a=" << result.wins_a
        << " wins_b=" << result.wins_b << " mars_a=" << result.mars_a
-       << " mars_b=" << result.mars_b
+       << " mars_b=" << result.mars_b << " starts_a=" << result.a_starts.games
+       << " starts_b=" << result.b_starts.games
+       << " wins_a_first=" << result.a_starts.wins_a
+       << " wins_a_second=" << result.b_starts.wins_a
+       << " wins_b_first=" << result.b_starts.wins_b
+       << " wins_b_second=" << result.a_starts.wins_b
+       << " mars_a_first=" << result.a_starts.mars_a
+       << " mars_a_second=" << result.b_starts.mars_a
+       << " mars_b_first=" << result.b_starts.mars_b
+       << " mars_b_second=" << result.a_starts.mars_b
        << " avg_return_a=" << std::fixed << std::setprecision(4) << avg_a
-       << " avg_return_b=" << std::fixed << std::setprecision(4) << avg_b;
+       << " avg_return_b=" << std::fixed << std::setprecision(4) << avg_b
+       << " avg_return_a_first=" << std::fixed << std::setprecision(4)
+       << avg_a_first << " avg_return_a_second=" << std::fixed
+       << std::setprecision(4) << avg_a_second
+       << " avg_return_b_first=" << std::fixed << std::setprecision(4)
+       << avg_b_first << " avg_return_b_second=" << std::fixed
+       << std::setprecision(4) << avg_b_second;
 
   std::cout << line.str() << "\n";
 
