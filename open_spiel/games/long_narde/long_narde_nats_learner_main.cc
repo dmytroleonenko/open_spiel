@@ -32,6 +32,36 @@ namespace open_spiel {
 namespace long_narde {
 namespace {
 
+std::string NextShardStatePath(const std::string& out_dir) {
+  return out_dir + "/next_shard.txt";
+}
+
+int LoadNextShardId(const std::string& out_dir, bool* has_state) {
+  if (has_state != nullptr) {
+    *has_state = false;
+  }
+  const std::string path = NextShardStatePath(out_dir);
+  if (!open_spiel::file::Exists(path)) {
+    return 0;
+  }
+  if (has_state != nullptr) {
+    *has_state = true;
+  }
+  std::string contents = open_spiel::file::ReadContentsFromFile(path, "r");
+  std::istringstream iss(contents);
+  int next_id = 0;
+  if (!(iss >> next_id) || next_id < 0) {
+    return 0;
+  }
+  return next_id;
+}
+
+void SaveNextShardId(const std::string& out_dir, int next_id) {
+  const std::string path = NextShardStatePath(out_dir);
+  open_spiel::file::WriteContentsToFile(path, "w",
+                                        std::to_string(next_id) + "\n");
+}
+
 struct LearnerConfig {
   std::string nats_url = "nats://127.0.0.1:4222";
   std::string run_id = "default";
@@ -188,6 +218,12 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  bool has_state = false;
+  int shard_id = LoadNextShardId(config.out_dir, &has_state);
+  if (has_state) {
+    std::cerr << "[learner] resuming at shard " << shard_id << "\n";
+  }
+
   NatsConnection conn;
   if (!conn.Connect(config.nats_url)) {
     std::cerr << "Failed to connect to NATS at " << config.nats_url << "\n";
@@ -201,7 +237,6 @@ int main(int argc, char** argv) {
   }
 
   LnueStreamWriter writer;
-  int shard_id = 0;
   int games_in_shard = 0;
   int total_games = 0;
   int total_samples = 0;
@@ -214,6 +249,7 @@ int main(int argc, char** argv) {
     std::cerr << "Failed to open shard " << shard_id << "\n";
     return 1;
   }
+  SaveNextShardId(config.out_dir, shard_id + 1);
 
   NatsMessage msg;
   while (conn.NextMessage(&msg)) {
@@ -279,6 +315,7 @@ int main(int argc, char** argv) {
         std::cerr << "Failed to open shard " << shard_id << "\n";
         return 1;
       }
+      SaveNextShardId(config.out_dir, shard_id + 1);
     }
   }
 
