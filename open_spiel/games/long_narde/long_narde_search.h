@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "open_spiel/games/long_narde/long_narde.h"
+#include "open_spiel/games/long_narde/long_narde_nnue_cache.h"
 #include "open_spiel/games/long_narde/long_narde_nnue.h"
 
 namespace open_spiel {
@@ -41,8 +42,6 @@ struct SearchResult {
   double value = 0.0;
   Action best_action = kInvalidAction;
 };
-
-struct NnueCacheStack;
 
 class ExpectiminimaxSearch {
  public:

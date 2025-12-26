@@ -25,57 +25,6 @@
 
 namespace open_spiel {
 namespace long_narde {
-
-struct NnueCacheStack {
-  const nnue::NnueNetwork* network = nullptr;
-  std::vector<nnue::NnueCache> stack;
-
-  bool Enabled() const { return network != nullptr; }
-
-  void Reset(const LongNardeState& state, const nnue::NnueNetwork* net) {
-    stack.clear();
-    network = net;
-    if (!Enabled()) {
-      return;
-    }
-    nnue::NnueCache root;
-    nnue::CollectActiveFeatures(state, &root.active);
-    nnue::BuildAccumulator(*network, root.active, &root.acc);
-    stack.push_back(root);
-  }
-
-  void Clear() {
-    stack.clear();
-    network = nullptr;
-  }
-
-  void Push(const LongNardeState& state) {
-    if (!Enabled()) {
-      return;
-    }
-    nnue::NnueCache child = stack.back();
-    nnue::NnueActiveFeatures next;
-    nnue::CollectActiveFeatures(state, &next);
-    nnue::UpdateAccumulator(*network, child.active, next, &child.acc);
-    child.active = next;
-    stack.push_back(child);
-  }
-
-  void Pop() {
-    if (!Enabled()) {
-      return;
-    }
-    stack.pop_back();
-  }
-
-  const nnue::NnueCache* Current() const {
-    if (!Enabled() || stack.empty()) {
-      return nullptr;
-    }
-    return &stack.back();
-  }
-};
-
 namespace {
 
 struct MoveScore {
@@ -142,6 +91,7 @@ ExpectiminimaxSearch::EvaluateDecisionActions(LongNardeState* state) {
   }
   Player maximizing_player = state->current_player_id();
   Player player = state->current_player_id();
+  const std::array<int, 2> dice = state->dice();
   std::vector<Action> actions = state->LegalActions();
   results.reserve(actions.size());
   for (Action action : actions) {
@@ -149,7 +99,7 @@ ExpectiminimaxSearch::EvaluateDecisionActions(LongNardeState* state) {
     if (config_.use_undo) {
       state->ApplyAction(action);
       if (cache_stack_ != nullptr) {
-        cache_stack_->Push(*state);
+        cache_stack_->PushAction(*state, action, dice, player);
       }
       int child_depth = config_.max_depth;
       if (state->awaiting_roll() && config_.max_depth > 0) {
@@ -169,7 +119,7 @@ ExpectiminimaxSearch::EvaluateDecisionActions(LongNardeState* state) {
         child_depth = config_.max_depth - 1;
       }
       if (cache_stack_ != nullptr) {
-        cache_stack_->Push(*lnchild);
+        cache_stack_->PushAction(*lnchild, action, dice, player);
       }
       child_value =
           SearchState(lnchild, child_depth, maximizing_player, nullptr);
@@ -225,7 +175,7 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
       if (config_.use_undo) {
         state->ApplyAction(outcome.first);
         if (cache_stack_ != nullptr) {
-          cache_stack_->Push(*state);
+          cache_stack_->PushChance();
         }
         value += outcome.second *
                  SearchState(state, depth, maximizing_player, nullptr);
@@ -237,7 +187,7 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
         std::unique_ptr<State> child = state->Child(outcome.first);
         auto* lnchild = static_cast<LongNardeState*>(child.get());
         if (cache_stack_ != nullptr) {
-          cache_stack_->Push(*lnchild);
+          cache_stack_->PushChance();
         }
         value += outcome.second *
                  SearchState(lnchild, depth, maximizing_player, nullptr);
@@ -250,6 +200,7 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
   }
 
   Player player = state->current_player_id();
+  const std::array<int, 2> dice = state->dice();
   bool maximizing = player == maximizing_player;
   double best_value = maximizing ? -std::numeric_limits<double>::infinity()
                                  : std::numeric_limits<double>::infinity();
@@ -262,7 +213,7 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
     if (config_.use_undo) {
       state->ApplyAction(action);
       if (cache_stack_ != nullptr) {
-        cache_stack_->Push(*state);
+        cache_stack_->PushAction(*state, action, dice, player);
       }
       int child_depth = depth;
       if (state->awaiting_roll() && depth > 0) {
@@ -282,7 +233,7 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
         child_depth = depth - 1;
       }
       if (cache_stack_ != nullptr) {
-        cache_stack_->Push(*child_state);
+        cache_stack_->PushAction(*child_state, action, dice, player);
       }
       child_value =
           SearchState(child_state, child_depth, maximizing_player, nullptr);
@@ -341,12 +292,13 @@ std::vector<Action> ExpectiminimaxSearch::OrderedActions(
   std::vector<MoveScore> scores;
   scores.reserve(actions.size());
   Player player = state->current_player_id();
+  const std::array<int, 2> dice = state->dice();
   for (Action action : actions) {
     double score = 0.0;
     if (config_.use_undo) {
       state->ApplyAction(action);
       if (cache_stack_ != nullptr) {
-        cache_stack_->Push(*state);
+        cache_stack_->PushAction(*state, action, dice, player);
       }
       score = SearchState(state, 0, maximizing_player, nullptr);
       if (cache_stack_ != nullptr) {
@@ -357,7 +309,7 @@ std::vector<Action> ExpectiminimaxSearch::OrderedActions(
       std::unique_ptr<State> child = state->Child(action);
       auto* lnchild = static_cast<LongNardeState*>(child.get());
       if (cache_stack_ != nullptr) {
-        cache_stack_->Push(*lnchild);
+        cache_stack_->PushAction(*lnchild, action, dice, player);
       }
       score = SearchState(lnchild, 0, maximizing_player, nullptr);
       if (cache_stack_ != nullptr) {

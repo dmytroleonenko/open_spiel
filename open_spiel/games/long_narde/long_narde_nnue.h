@@ -75,7 +75,9 @@ struct NnueActiveFeatures {
 };
 
 struct NnueCache {
-  NnueActiveFeatures active;
+  std::array<std::array<uint8_t, kNumPoints>, 2> counts{};
+  std::array<uint8_t, 2> off{};
+  std::array<uint32_t, 2> blocked_bits{};
   std::array<int16_t, kNnueL1> acc{};
 };
 

@@ -10,6 +10,8 @@ set(GAME_SOURCES
   long_narde/long_narde_actions.cc
   long_narde/long_narde_game.cc
   long_narde/long_narde_legal_actions.cc
+  long_narde/long_narde_nnue_cache.cc
+  long_narde/long_narde_nnue_cache.h
   long_narde/long_narde_nnue.cc
   long_narde/long_narde_nnue.h
   long_narde/long_narde_nnue_io.cc
