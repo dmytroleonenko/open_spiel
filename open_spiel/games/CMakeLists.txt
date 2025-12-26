@@ -358,6 +358,7 @@ add_executable(long_narde_lnue_probe long_narde/long_narde_lnue_probe.cc
                ${OPEN_SPIEL_OBJECTS})
 
 add_executable(long_narde_eval long_narde/long_narde_eval_main.cc
+               long_narde/long_narde_eval_utils.cc
                ${OPEN_SPIEL_OBJECTS})
 
 add_library(long_narde_nats OBJECT long_narde/long_narde_nats.cc)

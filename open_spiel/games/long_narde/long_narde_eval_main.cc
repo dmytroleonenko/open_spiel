@@ -25,10 +25,10 @@
 #include <sstream>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
 #include "open_spiel/games/long_narde/long_narde.h"
+#include "open_spiel/games/long_narde/long_narde_eval_utils.h"
 #include "open_spiel/games/long_narde/long_narde_nnue.h"
 #include "open_spiel/games/long_narde/long_narde_search.h"
 #include "open_spiel/spiel.h"
@@ -37,143 +37,6 @@
 namespace open_spiel {
 namespace long_narde {
 namespace {
-
-struct EvalConfig {
-  int games = 1000;
-  int depth = 2;
-  int max_moves = 1000;
-  int report_every = 100;
-  uint64_t seed = 7;
-  int workers = 0;
-  std::string nnue_a;
-  std::string nnue_b;
-  std::string out_path;
-  bool progress = true;
-};
-
-std::unordered_map<std::string, std::string> ParseArgs(int argc, char** argv) {
-  std::unordered_map<std::string, std::string> out;
-  for (int i = 1; i < argc; ++i) {
-    std::string arg = argv[i];
-    if (arg.rfind("--", 0) != 0) {
-      continue;
-    }
-    arg = arg.substr(2);
-    auto eq = arg.find('=');
-    if (eq != std::string::npos) {
-      out[arg.substr(0, eq)] = arg.substr(eq + 1);
-    } else {
-      std::string value;
-      if (i + 1 < argc && std::string(argv[i + 1]).rfind("--", 0) != 0) {
-        value = argv[++i];
-      }
-      out[arg] = value;
-    }
-  }
-  return out;
-}
-
-int GetIntArg(const std::unordered_map<std::string, std::string>& args,
-              const std::string& key, int default_value) {
-  auto it = args.find(key);
-  if (it == args.end() || it->second.empty()) {
-    return default_value;
-  }
-  return std::stoi(it->second);
-}
-
-uint64_t GetUint64Arg(
-    const std::unordered_map<std::string, std::string>& args,
-    const std::string& key, uint64_t default_value) {
-  auto it = args.find(key);
-  if (it == args.end() || it->second.empty()) {
-    return default_value;
-  }
-  return static_cast<uint64_t>(std::stoull(it->second));
-}
-
-std::string GetStringArg(
-    const std::unordered_map<std::string, std::string>& args,
-    const std::string& key, const std::string& default_value) {
-  auto it = args.find(key);
-  if (it == args.end() || it->second.empty()) {
-    return default_value;
-  }
-  return it->second;
-}
-
-bool GetBoolArg(const std::unordered_map<std::string, std::string>& args,
-                const std::string& key, bool default_value) {
-  auto it = args.find(key);
-  if (it == args.end() || it->second.empty()) {
-    return default_value;
-  }
-  std::string value = it->second;
-  return value == "1" || value == "true" || value == "yes";
-}
-
-void PrintUsage(const char* bin) {
-  std::cout << "Usage: " << bin
-            << " [--games N] [--depth N] [--seed N] [--max_moves N]\n"
-            << "             [--nnue_a path] [--nnue_b path]\n"
-            << "             [--out path] [--progress 0|1] [--workers N]"
-            << " [--report_every N]\n";
-}
-
-Action SampleChanceOutcome(
-    const std::vector<std::pair<Action, double>>& outcomes,
-    std::mt19937* rng) {
-  std::uniform_real_distribution<double> dist(0.0, 1.0);
-  double r = dist(*rng);
-  double acc = 0.0;
-  for (const auto& outcome : outcomes) {
-    acc += outcome.second;
-    if (r <= acc) {
-      return outcome.first;
-    }
-  }
-  return outcomes.back().first;
-}
-
-Action SampleRandomAction(const std::vector<Action>& actions,
-                          std::mt19937* rng) {
-  SPIEL_CHECK_FALSE(actions.empty());
-  std::uniform_int_distribution<> dist(0, actions.size() - 1);
-  return actions[dist(*rng)];
-}
-
-std::string LabelForPath(const std::string& path, const std::string& fallback) {
-  if (path.empty()) {
-    return fallback;
-  }
-  std::size_t pos = path.find_last_of("/\\");
-  if (pos == std::string::npos || pos + 1 >= path.size()) {
-    return path;
-  }
-  return path.substr(pos + 1);
-}
-
-struct EvalResult {
-  struct RoleStats {
-    int games = 0;
-    int wins_a = 0;
-    int wins_b = 0;
-    int mars_a = 0;
-    int mars_b = 0;
-    double sum_return_a = 0.0;
-    double sum_return_b = 0.0;
-  };
-
-  int games = 0;
-  int wins_a = 0;
-  int wins_b = 0;
-  int mars_a = 0;
-  int mars_b = 0;
-  double sum_return_a = 0.0;
-  double sum_return_b = 0.0;
-  RoleStats a_starts;
-  RoleStats b_starts;
-};
 
 EvalResult RunEvalWorker(std::shared_ptr<const Game> game,
                          const nnue::NnueEvaluator* eval_a,
@@ -442,31 +305,56 @@ int main(int argc, char** argv) {
   std::string label_a = LabelForPath(config.nnue_a, "random");
   std::string label_b = LabelForPath(config.nnue_b, "random");
 
-  std::ostringstream line;
-  line << "games=" << result.games << " depth=" << config.depth
-       << " seed=" << config.seed << " agent_a=" << label_a
-       << " agent_b=" << label_b << " wins_a=" << result.wins_a
-       << " wins_b=" << result.wins_b << " mars_a=" << result.mars_a
-       << " mars_b=" << result.mars_b << " starts_a=" << result.a_starts.games
-       << " starts_b=" << result.b_starts.games
-       << " wins_a_first=" << result.a_starts.wins_a
-       << " wins_a_second=" << result.b_starts.wins_a
-       << " wins_b_first=" << result.b_starts.wins_b
-       << " wins_b_second=" << result.a_starts.wins_b
-       << " mars_a_first=" << result.a_starts.mars_a
-       << " mars_a_second=" << result.b_starts.mars_a
-       << " mars_b_first=" << result.b_starts.mars_b
-       << " mars_b_second=" << result.a_starts.mars_b
-       << " avg_return_a=" << std::fixed << std::setprecision(4) << avg_a
-       << " avg_return_b=" << std::fixed << std::setprecision(4) << avg_b
-       << " avg_return_a_first=" << std::fixed << std::setprecision(4)
-       << avg_a_first << " avg_return_a_second=" << std::fixed
-       << std::setprecision(4) << avg_a_second
-       << " avg_return_b_first=" << std::fixed << std::setprecision(4)
-       << avg_b_first << " avg_return_b_second=" << std::fixed
-       << std::setprecision(4) << avg_b_second;
+  auto pct = [](int num, int den) -> double {
+    return den > 0 ? 100.0 * static_cast<double>(num) / den : 0.0;
+  };
+  double a_win_pct = pct(result.wins_a, result.games);
+  double b_win_pct = pct(result.wins_b, result.games);
+  double a_first_pct = pct(result.a_starts.wins_a, result.a_starts.games);
+  double a_second_pct = pct(result.b_starts.wins_a, result.b_starts.games);
+  double b_first_pct = pct(result.b_starts.wins_b, result.b_starts.games);
+  double b_second_pct = pct(result.a_starts.wins_b, result.a_starts.games);
 
-  std::cout << line.str() << "\n";
+  std::string path_a = config.nnue_a.empty() ? "random" : config.nnue_a;
+  std::string path_b = config.nnue_b.empty() ? "random" : config.nnue_b;
+  std::cerr << "eval paths: " << label_a << "=" << path_a << " " << label_b
+            << "=" << path_b << "\n";
+
+  std::ostringstream summary;
+  summary << "Comparing " << label_a << " vs " << label_b << ". " << label_a
+          << " wins " << std::fixed << std::setprecision(1) << a_win_pct
+          << "% (" << a_first_pct << "% first mover, " << a_second_pct
+          << "% second mover), " << label_b << " wins " << b_win_pct << "% ("
+          << b_first_pct << "% first mover, " << b_second_pct
+          << "% second mover)";
+
+  std::ostringstream detail;
+  detail << "games=" << result.games << " depth=" << config.depth
+         << " seed=" << config.seed << " net1=" << label_a
+         << " net2=" << label_b << " wins_net1=" << result.wins_a
+         << " wins_net2=" << result.wins_b << " mars_net1=" << result.mars_a
+         << " mars_net2=" << result.mars_b << " starts_net1="
+         << result.a_starts.games << " starts_net2=" << result.b_starts.games
+         << " starts_net2=" << result.b_starts.games
+         << " wins_net1_first=" << result.a_starts.wins_a
+         << " wins_net1_second=" << result.b_starts.wins_a
+         << " wins_net2_first=" << result.b_starts.wins_b
+         << " wins_net2_second=" << result.a_starts.wins_b
+         << " mars_net1_first=" << result.a_starts.mars_a
+         << " mars_net1_second=" << result.b_starts.mars_a
+         << " mars_net2_first=" << result.b_starts.mars_b
+         << " mars_net2_second=" << result.a_starts.mars_b
+         << " avg_return_net1=" << std::fixed << std::setprecision(4) << avg_a
+         << " avg_return_net2=" << std::fixed << std::setprecision(4) << avg_b
+         << " avg_return_net1_first=" << std::fixed << std::setprecision(4)
+         << avg_a_first << " avg_return_net1_second=" << std::fixed
+         << std::setprecision(4) << avg_a_second
+         << " avg_return_net2_first=" << std::fixed << std::setprecision(4)
+         << avg_b_first << " avg_return_net2_second=" << std::fixed
+         << std::setprecision(4) << avg_b_second;
+
+  std::cout << summary.str() << "\n";
+  std::cerr << detail.str() << "\n";
 
   if (!config.out_path.empty()) {
     std::ofstream out(config.out_path, std::ios::out | std::ios::app);
@@ -474,7 +362,7 @@ int main(int argc, char** argv) {
       std::cerr << "Failed to open log file " << config.out_path << "\n";
       return 1;
     }
-    out << line.str() << "\n";
+    out << summary.str() << "\n";
   }
 
   return 0;
