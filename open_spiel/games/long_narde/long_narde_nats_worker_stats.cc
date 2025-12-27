@@ -40,6 +40,7 @@ void RunStatsReporter(int report_every_seconds, const WorkerStats* stats,
     std::this_thread::sleep_for(std::chrono::seconds(interval));
     int64_t total_games = stats->games.load(std::memory_order_relaxed);
     int64_t total_samples = stats->samples.load(std::memory_order_relaxed);
+    int64_t pending = stats->pending.load(std::memory_order_relaxed);
     int version = stats->weights_version.load(std::memory_order_relaxed);
     auto now = std::chrono::steady_clock::now();
     double total_elapsed =
@@ -65,6 +66,7 @@ void RunStatsReporter(int report_every_seconds, const WorkerStats* stats,
                         : 0.0;
     std::cerr << "[worker] games=" << total_games
               << " samples=" << total_samples << " weights=" << version
+              << " pending=" << pending
               << " overall=" << overall_games_s << " g/s " << overall_samples_s
               << " s/s window=" << window_games_s << " g/s "
               << window_samples_s << " s/s avg=" << avg_samples << " s/g\n";

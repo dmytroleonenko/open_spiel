@@ -369,6 +369,7 @@ add_library(long_narde_nats OBJECT long_narde/long_narde_nats.cc)
 
 add_executable(long_narde_nats_worker long_narde/long_narde_nats_worker_main.cc
                long_narde/long_narde_nats_worker_args.cc
+               long_narde/long_narde_nats_worker_play.cc
                long_narde/long_narde_nats_worker_stats.cc
                $<TARGET_OBJECTS:long_narde_nats> ${OPEN_SPIEL_OBJECTS})
 add_executable(long_narde_nats_learner long_narde/long_narde_nats_learner_main.cc

@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -27,9 +28,10 @@
 #include <utility>
 #include <vector>
 
-#include "open_spiel/games/long_narde/long_narde.h"
 #include "open_spiel/games/long_narde/long_narde_nats.h"
 #include "open_spiel/games/long_narde/long_narde_nats_worker_args.h"
+#include "open_spiel/games/long_narde/long_narde_nats_worker_config.h"
+#include "open_spiel/games/long_narde/long_narde_nats_worker_play.h"
 #include "open_spiel/games/long_narde/long_narde_nnue.h"
 #include "open_spiel/games/long_narde/long_narde_nats_worker_stats.h"
 #include "open_spiel/games/long_narde/long_narde_search.h"
@@ -41,29 +43,9 @@ namespace open_spiel {
 namespace long_narde {
 namespace {
 
-struct WorkerConfig {
-  std::string nats_url = "nats://127.0.0.1:4222";
-  std::string run_id = "default";
-  std::string traj_subject = "lnue.traj";
-  std::string weights_subject = "nnue.weights";
-  std::string request_subject = "nnue.request";
-  std::string nnue_path;
-  int depth = 1;
-  int max_moves = 1000;
-  int workers = 0;
-  double temperature = 1.0;
-  double alpha = 0.5;
-  int64_t games = 0;
-  uint64_t seed = 7;
-  int tt_entries = 200000;
-  bool wait_for_weights = false;
-  bool request_weights = false;
-  int request_interval_ms = 1000;
-  int report_every_seconds = 60;
-};
-
-struct PendingSample {
-  SelfPlaySample sample;
+struct PendingPayload {
+  std::string payload;
+  int samples = 0;
 };
 
 struct WeightsStore {
@@ -129,116 +111,6 @@ std::string BuildSubject(const std::string& base, const std::string& run_id) {
   return base + "." + run_id;
 }
 
-Action SampleChanceOutcome(
-    const std::vector<std::pair<Action, double>>& outcomes,
-    std::mt19937* rng) {
-  std::uniform_real_distribution<double> dist(0.0, 1.0);
-  double r = dist(*rng);
-  double acc = 0.0;
-  for (const auto& outcome : outcomes) {
-    acc += outcome.second;
-    if (r <= acc) {
-      return outcome.first;
-    }
-  }
-  return outcomes.back().first;
-}
-
-Action SampleSoftmax(const std::vector<std::pair<Action, double>>& actions,
-                     double temperature, std::mt19937* rng) {
-  if (actions.empty()) {
-    return kInvalidAction;
-  }
-  if (temperature <= 1e-6 || actions.size() == 1) {
-    return actions.front().first;
-  }
-  double max_value = actions.front().second;
-  for (const auto& entry : actions) {
-    max_value = std::max(max_value, entry.second);
-  }
-
-  std::vector<double> weights(actions.size());
-  double sum = 0.0;
-  for (size_t i = 0; i < actions.size(); ++i) {
-    double w = std::exp((actions[i].second - max_value) / temperature);
-    weights[i] = w;
-    sum += w;
-  }
-  if (sum <= 0.0) {
-    return actions.front().first;
-  }
-  std::uniform_real_distribution<double> dist(0.0, sum);
-  double r = dist(*rng);
-  double acc = 0.0;
-  for (size_t i = 0; i < actions.size(); ++i) {
-    acc += weights[i];
-    if (r <= acc) {
-      return actions[i].first;
-    }
-  }
-  return actions.back().first;
-}
-
-void FinalizeSamples(const std::vector<double>& returns,
-                     const WorkerConfig& config,
-                     std::vector<PendingSample>* pending,
-                     std::vector<SelfPlaySample>* out) {
-  for (auto& entry : *pending) {
-    Player p = entry.sample.player;
-    double outcome = returns[p];
-    entry.sample.outcome_value = outcome;
-    entry.sample.target_value =
-        config.alpha * entry.sample.search_value +
-        (1.0 - config.alpha) * entry.sample.outcome_value;
-    out->push_back(std::move(entry.sample));
-  }
-  pending->clear();
-}
-
-std::vector<SelfPlaySample> PlayOneGame(
-    std::shared_ptr<const Game> game, ExpectiminimaxSearch* search,
-    const WorkerConfig& config, uint64_t game_id, std::mt19937* rng) {
-  std::vector<SelfPlaySample> samples;
-  std::unique_ptr<State> state = game->NewInitialState();
-  auto* lnstate = static_cast<LongNardeState*>(state.get());
-
-  std::vector<PendingSample> pending;
-  int moves = 0;
-  int ply = 0;
-
-  search->ClearCache();
-  while (!lnstate->IsTerminal() && moves < config.max_moves) {
-    if (lnstate->IsChanceNode()) {
-      if (!lnstate->initial_roll()) {
-        PendingSample entry;
-        entry.sample.player = lnstate->current_player_id();
-        entry.sample.game_id =
-            (static_cast<uint64_t>(config.seed) << 32) ^ game_id;
-        entry.sample.ply = static_cast<uint16_t>(ply);
-        nnue::CollectActiveFeatureIndices(*lnstate,
-                                          &entry.sample.active_features);
-        entry.sample.search_value = search->Search(lnstate).value;
-        pending.push_back(std::move(entry));
-      }
-        Action chance_action =
-            SampleChanceOutcome(lnstate->ChanceOutcomes(), rng);
-      lnstate->ApplyAction(chance_action);
-    } else {
-      std::vector<std::pair<Action, double>> scored =
-          search->EvaluateDecisionActions(lnstate);
-      Action action = SampleSoftmax(scored, config.temperature, rng);
-      lnstate->ApplyAction(action);
-      moves += 1;
-      ply += 1;
-    }
-  }
-
-  if (lnstate->IsTerminal()) {
-    std::vector<double> returns = lnstate->Returns();
-    FinalizeSamples(returns, config, &pending, &samples);
-  }
-  return samples;
-}
 
 void WeightSubscriber(const WorkerConfig& config, WeightsStore* store) {
   if (store == nullptr) {
@@ -285,9 +157,9 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
                 const WeightsStore* store, WorkerStats* stats,
                 int worker_id) {
   NatsConnection conn;
-  if (!conn.Connect(config.nats_url)) {
+  bool connected = conn.Connect(config.nats_url);
+  if (!connected) {
     std::cerr << "Worker " << worker_id << " failed to connect to NATS.\n";
-    return;
   }
   std::string subject = BuildSubject(config.traj_subject, config.run_id);
 
@@ -314,6 +186,50 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
   shard_config.run_block_threshold = nnue::kNnueRunBlockThreshold;
 
   int local_version = 0;
+  std::deque<PendingPayload> pending;
+  int retry_ms = 200;
+  auto next_retry = std::chrono::steady_clock::now();
+  auto mark_pending = [&](int count) {
+    if (stats != nullptr && count != 0) {
+      stats->pending.fetch_add(count, std::memory_order_relaxed);
+    }
+  };
+  auto ensure_connected = [&]() -> bool {
+    if (connected) {
+      return true;
+    }
+    auto now = std::chrono::steady_clock::now();
+    if (now < next_retry) {
+      return false;
+    }
+    if (conn.Connect(config.nats_url)) {
+      connected = true;
+      retry_ms = 200;
+      return true;
+    }
+    retry_ms = std::min(retry_ms * 2, 5000);
+    next_retry = now + std::chrono::milliseconds(retry_ms);
+    return false;
+  };
+  auto flush_pending = [&]() {
+    if (!connected) {
+      return;
+    }
+    while (!pending.empty()) {
+      if (!conn.Publish(subject, pending.front().payload)) {
+        conn.Close();
+        connected = false;
+        next_retry = std::chrono::steady_clock::now() +
+                     std::chrono::milliseconds(retry_ms);
+        break;
+      }
+      if (stats != nullptr) {
+        stats->AddGame(pending.front().samples);
+      }
+      pending.pop_front();
+      mark_pending(-1);
+    }
+  };
   while (true) {
     int64_t game_id = next_game->fetch_add(1);
     if (config.games > 0 && game_id >= config.games) {
@@ -331,6 +247,11 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
       }
     }
 
+    if (!pending.empty()) {
+      ensure_connected();
+      flush_pending();
+    }
+
     uint64_t game_seed = config.seed + static_cast<uint64_t>(game_id) * 9973u;
     std::mt19937 rng(static_cast<uint32_t>(game_seed));
 
@@ -342,8 +263,25 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
     if (!SerializeLnueTrajectory(samples, shard_config, &payload)) {
       continue;
     }
-    if (conn.Publish(subject, payload) && stats != nullptr) {
-      stats->AddGame(static_cast<int64_t>(samples.size()));
+    PendingPayload current;
+    current.payload = std::move(payload);
+    current.samples = static_cast<int>(samples.size());
+    if (!connected && !ensure_connected()) {
+      pending.push_back(std::move(current));
+      mark_pending(1);
+      continue;
+    }
+    if (!conn.Publish(subject, current.payload)) {
+      conn.Close();
+      connected = false;
+      next_retry = std::chrono::steady_clock::now() +
+                   std::chrono::milliseconds(retry_ms);
+      pending.push_back(std::move(current));
+      mark_pending(1);
+      continue;
+    }
+    if (stats != nullptr) {
+      stats->AddGame(current.samples);
     }
   }
 }

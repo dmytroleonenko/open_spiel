@@ -24,6 +24,7 @@ namespace long_narde {
 struct WorkerStats {
   std::atomic<int64_t> games{0};
   std::atomic<int64_t> samples{0};
+  std::atomic<int64_t> pending{0};
   std::atomic<int> weights_version{0};
 
   void AddGame(int64_t samples_in_game);
