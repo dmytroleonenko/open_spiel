@@ -30,6 +30,7 @@
 #include <netdb.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <unistd.h>
 #endif
 
@@ -41,6 +42,20 @@ struct HostPort {
   std::string host;
   std::string port;
 };
+
+bool SetSendTimeout(int socket, int timeout_ms) {
+#if defined(_WIN32)
+  DWORD value = static_cast<DWORD>(timeout_ms);
+  return ::setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO,
+                      reinterpret_cast<const char*>(&value),
+                      sizeof(value)) == 0;
+#else
+  timeval tv{};
+  tv.tv_sec = timeout_ms / 1000;
+  tv.tv_usec = (timeout_ms % 1000) * 1000;
+  return ::setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
+#endif
+}
 
 bool ParseUrl(const std::string& url, HostPort* out) {
   if (out == nullptr) {
@@ -138,6 +153,9 @@ bool NatsConnection::Connect(const std::string& url) {
     std::cerr << "Warning: failed to set SO_NOSIGPIPE\n";
   }
 #endif
+  if (!SetSendTimeout(socket_, 2000)) {
+    std::cerr << "Warning: failed to set SO_SNDTIMEO\n";
+  }
 
   const std::string connect =
       "CONNECT {\"verbose\":false,\"pedantic\":false,"
