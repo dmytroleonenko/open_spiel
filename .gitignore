@@ -5,6 +5,7 @@ __pycache__/
 
  # C extensions
 *.so
+*.dylib
 
  # Jupyter Notebook
 .ipynb_checkpoints
@@ -17,13 +18,22 @@ ENV/
  # OSX specific
 .DS_Store
 
- # Build products
+# Build products
 build/
 build*/
 cmake-build-*/
 dist/
 pyspiel.egg-info/
 open_spiel.egg-info/
+open_spiel/bin/
+open_spiel/bin
+open_spiel/lib/
+open_spiel/lib
+open_spiel/lib64/
+open_spiel/lib64
+open_spiel/json/
+open_spiel/pybind11_json/
+open_spiel/pyvenv.cfg
 
 
 # Swift build directory
@@ -53,6 +63,9 @@ Manifest.toml
 .idea/
 .vscode/
 *~
+.coverage
+*.log
+node_modules/
 
 
 open_spiel/cmake-build-debug/
