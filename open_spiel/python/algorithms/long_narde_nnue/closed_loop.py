@@ -20,6 +20,7 @@ from open_spiel.python.algorithms.long_narde_nnue.train import (
     NnueNet,
     _build_base_cmd,
     _iter_batches,
+    _resolve_device,
     _save_nnue,
     _train_batch,
     add_training_args,
@@ -320,6 +321,7 @@ def main() -> None:
     parser.add_argument("--nats_publish_bin", default="")
     parser.add_argument("--nats_version_start", type=int, default=0)
     args = parser.parse_args()
+    device = _resolve_device(args.device)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -464,14 +466,14 @@ def main() -> None:
             raise ValueError("No LNUE shards generated.")
 
         header = LnueShardReader(str(shard_paths[0])).header
-        model = NnueNet(feature_dim=header.feature_dim).to(args.device)
+        model = NnueNet(feature_dim=header.feature_dim).to(device)
         torch.manual_seed(args.seed + iteration)
 
         for epoch in range(args.epochs):
             _train_epoch(
                 shard_paths,
                 model,
-                args.device,
+                device,
                 args.batch_size,
                 args.lr,
                 args.weight_decay,

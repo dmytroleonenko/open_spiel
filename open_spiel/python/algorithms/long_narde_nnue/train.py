@@ -72,6 +72,33 @@ class NnueNet(torch.nn.Module):
                     param.clamp_(-_Q, _Q)
 
 
+def _mps_embedding_bag_supported() -> bool:
+    if not (
+        torch.backends.mps.is_available() and torch.backends.mps.is_built()
+    ):
+        return False
+    try:
+        weight = torch.zeros((2, 2), device="mps")
+        indices = torch.tensor([0], dtype=torch.int64, device="mps")
+        offsets = torch.tensor([0], dtype=torch.int64, device="mps")
+        torch.nn.functional.embedding_bag(indices, weight, offsets)
+        return True
+    except (NotImplementedError, RuntimeError):
+        return False
+
+
+def _resolve_device(device: str) -> str:
+    if device != "auto":
+        return device
+    if torch.cuda.is_available():
+        return "cuda"
+    if _mps_embedding_bag_supported():
+        return "mps"
+    if torch.backends.mps.is_available():
+        print("MPS embedding_bag unsupported; falling back to CPU.", flush=True)
+    return "cpu"
+
+
 def _iter_batches(
     chunk, batch_size: int, rng: np.random.Generator
 ) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
@@ -366,14 +393,7 @@ def train(args) -> None:
     torch.manual_seed(args.seed)
     np_rng = np.random.default_rng(args.seed)
 
-    device = args.device
-    if device == "auto":
-        if torch.cuda.is_available():
-            device = "cuda"
-        elif torch.backends.mps.is_available():
-            device = "mps"
-        else:
-            device = "cpu"
+    device = _resolve_device(args.device)
 
     shard_paths = sorted(glob.glob(os.path.join(args.data_dir, "*.lnue")))
     if not shard_paths:
