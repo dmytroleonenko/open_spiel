@@ -57,6 +57,20 @@ bool SetSendTimeout(int socket, int timeout_ms) {
 #endif
 }
 
+bool SetRecvTimeout(int socket, int timeout_ms) {
+#if defined(_WIN32)
+  DWORD value = static_cast<DWORD>(timeout_ms);
+  return ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO,
+                      reinterpret_cast<const char*>(&value),
+                      sizeof(value)) == 0;
+#else
+  timeval tv{};
+  tv.tv_sec = timeout_ms / 1000;
+  tv.tv_usec = (timeout_ms % 1000) * 1000;
+  return ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
+#endif
+}
+
 bool ParseUrl(const std::string& url, HostPort* out) {
   if (out == nullptr) {
     return false;
@@ -165,6 +179,13 @@ bool NatsConnection::Connect(const std::string& url) {
     return false;
   }
   return true;
+}
+
+bool NatsConnection::SetReceiveTimeout(int timeout_ms) {
+  if (socket_ < 0) {
+    return false;
+  }
+  return SetRecvTimeout(socket_, timeout_ms);
 }
 
 bool NatsConnection::Publish(const std::string& subject,

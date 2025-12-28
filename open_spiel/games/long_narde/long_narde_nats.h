@@ -36,6 +36,7 @@ class NatsConnection {
   NatsConnection& operator=(const NatsConnection&) = delete;
 
   bool Connect(const std::string& url);
+  bool SetReceiveTimeout(int timeout_ms);
   bool Publish(const std::string& subject, const std::string& payload);
   bool Subscribe(const std::string& subject, int sid);
   bool NextMessage(NatsMessage* out);

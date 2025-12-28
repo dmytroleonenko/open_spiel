@@ -239,12 +239,18 @@ NnueEval EvaluateFromAccumulator(const NnueNetwork& network,
       ComputeOutput(l2.data(), network.w2.data(), &network.b2[0], kNnueL2);
   int32_t out_mars = ComputeOutput(l2.data(), network.w2.data() + kNnueL2,
                                    &network.b2[1], kNnueL2);
+  int32_t out_opp_mars =
+      ComputeOutput(l2.data(), network.w2.data() + 2 * kNnueL2,
+                    &network.b2[2], kNnueL2);
 
   float logit_win = static_cast<float>(out_win);
   float logit_mars = static_cast<float>(out_mars);
+  float logit_opp_mars = static_cast<float>(out_opp_mars);
   eval.p_win = SigmoidApprox(logit_win);
   eval.p_mars = SigmoidApprox(logit_mars);
-  eval.ev = eval.p_win + eval.p_mars;
+  eval.p_opp_mars = SigmoidApprox(logit_opp_mars);
+  eval.ev =
+      eval.p_win + eval.p_mars - (1.0f - eval.p_win) - eval.p_opp_mars;
   return eval;
 }
 NnueRawOutput EvaluateRawFromFeatures(
@@ -273,6 +279,9 @@ NnueRawOutput EvaluateRawFromFeatures(
       ComputeOutput(l2.data(), network.w2.data(), &network.b2[0], kNnueL2);
   output.logit_mars = ComputeOutput(l2.data(), network.w2.data() + kNnueL2,
                                     &network.b2[1], kNnueL2);
+  output.logit_opp_mars =
+      ComputeOutput(l2.data(), network.w2.data() + 2 * kNnueL2,
+                    &network.b2[2], kNnueL2);
   return output;
 }
 

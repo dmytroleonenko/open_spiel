@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <unordered_map>
 #include <vector>
 
@@ -28,10 +29,16 @@ namespace open_spiel {
 namespace long_narde {
 
 struct SearchConfig {
-  int max_depth = 2;
+  int max_depth = 3;
   int top_k = 16;
   int min_k = 4;
   double delta = 0.25;
+  bool enable_root_iterative = true;
+  bool enable_panic_widen = true;
+  double panic_margin = 0.75;
+  int panic_min_k = 8;
+  int panic_top_k = 32;
+  double panic_delta = 0.5;
   bool enable_pruning = true;
   bool use_tt = true;
   int max_tt_entries = 200000;
@@ -54,6 +61,9 @@ class ExpectiminimaxSearch {
   std::vector<std::pair<Action, double>> EvaluateDecisionActions(
       LongNardeState* state);
   void ClearCache();
+  const std::vector<double>& last_root_times_ms() const {
+    return last_root_times_ms_;
+  }
 
  private:
   struct TTEntry {
@@ -66,14 +76,24 @@ class ExpectiminimaxSearch {
                      Player maximizing_player, Action* best_action);
   double EvaluatePreRoll(const LongNardeState& state,
                          Player maximizing_player) const;
-  std::vector<Action> OrderedActions(LongNardeState* state, int depth,
-                                     Player maximizing_player);
+  std::vector<Action> OrderedActions(
+      LongNardeState* state, int depth, Player maximizing_player,
+      std::vector<std::pair<Action, double>>* scores_out);
+  std::vector<std::pair<Action, double>> ScoreActions(
+      LongNardeState* state, Player maximizing_player);
+  std::vector<Action> PruneActions(
+      const std::vector<std::pair<Action, double>>& scores, int min_k,
+      int top_k, double delta) const;
+  double EvaluateActionList(LongNardeState* state,
+                            const std::vector<Action>& actions, int depth,
+                            Player maximizing_player, Action* best_action);
   uint64_t HashState(const LongNardeState& state) const;
 
   const nnue::NnueEvaluator* evaluator_;
   SearchConfig config_;
   std::unordered_map<uint64_t, TTEntry> table_;
   std::unique_ptr<NnueCacheStack> cache_stack_;
+  std::vector<double> last_root_times_ms_;
 };
 
 }  // namespace long_narde

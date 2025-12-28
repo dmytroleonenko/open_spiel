@@ -31,6 +31,7 @@
 #include "open_spiel/games/long_narde/long_narde_nats.h"
 #include "open_spiel/games/long_narde/long_narde_nats_worker_args.h"
 #include "open_spiel/games/long_narde/long_narde_nats_worker_config.h"
+#include "open_spiel/games/long_narde/long_narde_nats_worker_config_utils.h"
 #include "open_spiel/games/long_narde/long_narde_nats_worker_play.h"
 #include "open_spiel/games/long_narde/long_narde_nnue.h"
 #include "open_spiel/games/long_narde/long_narde_nats_worker_stats.h"
@@ -78,8 +79,6 @@ struct WeightsStore {
   }
 };
 
-std::string BuildSubject(const std::string& base, const std::string& run_id);
-
 void RequestLatestWeights(const WorkerConfig& config, const WeightsStore* store,
                           const std::string& inbox_subject) {
   if (store == nullptr || inbox_subject.empty()) {
@@ -102,13 +101,6 @@ void RequestLatestWeights(const WorkerConfig& config, const WeightsStore* store,
     std::this_thread::sleep_for(
         std::chrono::milliseconds(interval_ms));
   }
-}
-
-std::string BuildSubject(const std::string& base, const std::string& run_id) {
-  if (run_id.empty()) {
-    return base;
-  }
-  return base + "." + run_id;
 }
 
 
@@ -257,7 +249,7 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
 
     std::vector<SelfPlaySample> samples =
         PlayOneGame(game, &search, config,
-                    static_cast<uint64_t>(game_id), &rng);
+                    static_cast<uint64_t>(game_id), &rng, stats);
 
     std::string payload;
     if (!SerializeLnueTrajectory(samples, shard_config, &payload)) {
@@ -290,12 +282,15 @@ void PrintUsage(const char* bin) {
   std::cout << "Usage: " << bin
             << " [--nats url] [--run_id id] [--traj_subject name]"
             << " [--weights_subject name] [--request_subject name]\n"
+            << "             [--config_subject name]"
+            << " [--config_request_subject name]\n"
             << "             [--nnue path] [--depth N] [--workers N]"
             << " [--games N]\n"
             << "             [--temperature T] [--alpha A] [--seed N]"
             << " [--wait_for_weights 0|1]\n"
             << "             [--request_weights 0|1]"
-            << " [--request_interval_ms N]\n"
+            << " [--request_interval_ms N]"
+            << " [--request_config 0|1] [--config_timeout_ms N]\n"
             << "             [--report_every_seconds N] [--tt_entries N]\n";
 }
 
@@ -305,7 +300,11 @@ void PrintUsage(const char* bin) {
 
 int main(int argc, char** argv) {
   using open_spiel::long_narde::WorkerConfig;
+  using open_spiel::long_narde::ApplyConfigArgs;
+  using open_spiel::long_narde::FetchRemoteConfig;
+  using open_spiel::long_narde::HasArg;
   using open_spiel::long_narde::ParseArgs;
+  using open_spiel::long_narde::ParseConfigPayload;
   using open_spiel::long_narde::GetDoubleArg;
   using open_spiel::long_narde::GetIntArg;
   using open_spiel::long_narde::GetInt64Arg;
@@ -326,31 +325,32 @@ int main(int argc, char** argv) {
   }
 
   WorkerConfig config;
-  config.nats_url = GetStringArg(args, "nats", config.nats_url);
-  config.run_id = GetStringArg(args, "run_id", config.run_id);
-  config.traj_subject = GetStringArg(args, "traj_subject", config.traj_subject);
-  config.weights_subject =
-      GetStringArg(args, "weights_subject", config.weights_subject);
-  config.request_subject =
-      GetStringArg(args, "request_subject", config.request_subject);
-  config.nnue_path = GetStringArg(args, "nnue", config.nnue_path);
-  config.depth = GetIntArg(args, "depth", config.depth);
-  config.workers = GetIntArg(args, "workers", config.workers);
-  config.temperature = GetDoubleArg(args, "temperature", config.temperature);
-  config.alpha = GetDoubleArg(args, "alpha", config.alpha);
-  config.games = GetInt64Arg(args, "games", config.games);
-  config.seed = GetUint64Arg(args, "seed", config.seed);
-  config.wait_for_weights =
-      GetIntArg(args, "wait_for_weights",
-                config.nnue_path.empty() ? 1 : 0) != 0;
-  config.request_weights =
-      GetIntArg(args, "request_weights",
-                config.nnue_path.empty() ? 1 : 0) != 0;
-  config.request_interval_ms =
-      GetIntArg(args, "request_interval_ms", config.request_interval_ms);
-  config.report_every_seconds =
-      GetIntArg(args, "report_every_seconds", config.report_every_seconds);
-  config.tt_entries = GetIntArg(args, "tt_entries", config.tt_entries);
+  ApplyConfigArgs(args, &config);
+
+  std::unordered_map<std::string, std::string> remote_args;
+  std::string remote_payload;
+  if (config.request_config &&
+      FetchRemoteConfig(config, &remote_payload)) {
+    remote_args = ParseConfigPayload(remote_payload);
+    ApplyConfigArgs(remote_args, &config);
+    std::cerr << "[worker] loaded config from NATS subject "
+              << open_spiel::long_narde::BuildSubject(
+                     config.config_subject, config.run_id)
+              << "\n";
+  }
+  ApplyConfigArgs(args, &config);
+  bool wait_set =
+      HasArg(args, "wait_for_weights") ||
+      HasArg(remote_args, "wait_for_weights");
+  if (!wait_set) {
+    config.wait_for_weights = config.nnue_path.empty();
+  }
+  bool request_set =
+      HasArg(args, "request_weights") ||
+      HasArg(remote_args, "request_weights");
+  if (!request_set) {
+    config.request_weights = config.nnue_path.empty();
+  }
 
   std::shared_ptr<const open_spiel::Game> game =
       open_spiel::LoadGame("long_narde");

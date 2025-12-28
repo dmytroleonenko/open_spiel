@@ -28,7 +28,7 @@ namespace long_narde {
 
 struct EvalConfig {
   int games = 1000;
-  int depth = 2;
+  int depth = 3;
   int max_moves = 1000;
   int report_every = 100;
   uint64_t seed = 7;

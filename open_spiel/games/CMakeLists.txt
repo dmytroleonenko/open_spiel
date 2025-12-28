@@ -248,6 +248,34 @@ endif()
 
 add_library (games OBJECT ${GAME_SOURCES})
 
+include(CheckCXXCompilerFlag)
+option(OPEN_SPIEL_ENABLE_ARM_DOTPROD
+       "Enable ARM dotprod for Long Narde NNUE"
+       ON)
+if (OPEN_SPIEL_ENABLE_ARM_DOTPROD AND
+    (CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64"))
+  set(_LN_DOTPROD_FLAG "")
+  check_cxx_compiler_flag("-mcpu=apple-m3" _LN_HAS_APPLE_M3)
+  if (_LN_HAS_APPLE_M3)
+    set(_LN_DOTPROD_FLAG "-mcpu=apple-m3")
+  else()
+    check_cxx_compiler_flag("-march=armv8.2-a+dotprod" _LN_HAS_DOTPROD)
+    if (_LN_HAS_DOTPROD)
+      set(_LN_DOTPROD_FLAG "-march=armv8.2-a+dotprod")
+    endif()
+  endif()
+  if (_LN_DOTPROD_FLAG)
+    message(STATUS "Enabled ARM dotprod for long_narde_nnue_kernels: "
+                    "${_LN_DOTPROD_FLAG}")
+    set_source_files_properties(
+      long_narde/long_narde_nnue_kernels.cc
+      PROPERTIES COMPILE_OPTIONS "${_LN_DOTPROD_FLAG}")
+  else()
+    message(WARNING "OPEN_SPIEL_ENABLE_ARM_DOTPROD is ON but no dotprod "
+                    "compile flag was accepted by the compiler.")
+  endif()
+endif()
+
 target_include_directories (games PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories (games PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}../pybind11_abseil)
 target_include_directories (games PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}../pybind11_json)
@@ -365,10 +393,25 @@ add_executable(long_narde_eval long_narde/long_narde_eval_main.cc
                long_narde/long_narde_eval_utils.cc
                ${OPEN_SPIEL_OBJECTS})
 
+add_executable(tic_tac_toe_nnue_selfplay
+               tic_tac_toe/tic_tac_toe_nnue_selfplay_main.cc
+               tic_tac_toe/tic_tac_toe_selfplay.cc
+               tic_tac_toe/tic_tac_toe_selfplay_io.cc
+               tic_tac_toe/tic_tac_toe_nnue.cc
+               tic_tac_toe/tic_tac_toe_nnue_io.cc
+               ${OPEN_SPIEL_OBJECTS})
+
+add_executable(tic_tac_toe_nnue_eval
+               tic_tac_toe/tic_tac_toe_nnue_eval_main.cc
+               tic_tac_toe/tic_tac_toe_nnue.cc
+               tic_tac_toe/tic_tac_toe_nnue_io.cc
+               ${OPEN_SPIEL_OBJECTS})
+
 add_library(long_narde_nats OBJECT long_narde/long_narde_nats.cc)
 
 add_executable(long_narde_nats_worker long_narde/long_narde_nats_worker_main.cc
                long_narde/long_narde_nats_worker_args.cc
+               long_narde/long_narde_nats_worker_config_utils.cc
                long_narde/long_narde_nats_worker_play.cc
                long_narde/long_narde_nats_worker_stats.cc
                $<TARGET_OBJECTS:long_narde_nats> ${OPEN_SPIEL_OBJECTS})
@@ -376,11 +419,14 @@ add_executable(long_narde_nats_learner long_narde/long_narde_nats_learner_main.c
                $<TARGET_OBJECTS:long_narde_nats> ${OPEN_SPIEL_OBJECTS})
 add_executable(long_narde_nats_publish long_narde/long_narde_nats_publish_main.cc
                $<TARGET_OBJECTS:long_narde_nats> ${OPEN_SPIEL_OBJECTS})
+add_executable(long_narde_nats_config long_narde/long_narde_nats_config_main.cc
+               $<TARGET_OBJECTS:long_narde_nats> ${OPEN_SPIEL_OBJECTS})
 
 if(WIN32)
   target_link_libraries(long_narde_nats_worker ws2_32)
   target_link_libraries(long_narde_nats_learner ws2_32)
   target_link_libraries(long_narde_nats_publish ws2_32)
+  target_link_libraries(long_narde_nats_config ws2_32)
 endif()
 
 add_executable(bargaining_instance_generator bargaining/bargaining_instance_generator.cc

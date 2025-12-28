@@ -206,7 +206,7 @@ int RunLnueProbe(int argc, char** argv) {
   }
 
   std::vector<int32_t> logits;
-  logits.reserve(static_cast<size_t>(max_samples > 0 ? max_samples : 1024) * 2);
+  logits.reserve(static_cast<size_t>(max_samples > 0 ? max_samples : 1024) * 3);
 
   int processed = 0;
   while (max_samples <= 0 || processed < max_samples) {
@@ -278,6 +278,7 @@ int RunLnueProbe(int argc, char** argv) {
       auto raw = EvaluateRawFromFeatures(model.network(), features);
       logits.push_back(raw.logit_win);
       logits.push_back(raw.logit_mars);
+      logits.push_back(raw.logit_opp_mars);
       ++processed;
     }
   }

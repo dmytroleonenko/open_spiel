@@ -15,6 +15,7 @@
 #include "open_spiel/games/long_narde/long_narde_search.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -22,21 +23,13 @@
 #include <vector>
 
 #include "open_spiel/spiel_utils.h"
-
 namespace open_spiel {
 namespace long_narde {
 namespace {
-
-struct MoveScore {
-  Action action;
-  double score;
-};
-
 uint64_t HashMix(uint64_t h, uint64_t v) {
   h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
   return h;
 }
-
 }  // namespace
 
 ExpectiminimaxSearch::ExpectiminimaxSearch(
@@ -50,7 +43,6 @@ ExpectiminimaxSearch::ExpectiminimaxSearch(
 }
 
 ExpectiminimaxSearch::~ExpectiminimaxSearch() = default;
-
 void ExpectiminimaxSearch::ClearCache() {
   table_.clear();
   if (config_.max_tt_entries > 0) {
@@ -62,12 +54,12 @@ void ExpectiminimaxSearch::ClearCache() {
     cache_stack_->Clear();
   }
 }
-
 SearchResult ExpectiminimaxSearch::Search(LongNardeState* state) {
   SearchResult result;
   if (state == nullptr) {
     return result;
   }
+  last_root_times_ms_.clear();
   if (cache_stack_ != nullptr) {
     const nnue::NnueNetwork* network =
         (config_.use_nnue_cache && evaluator_ != nullptr)
@@ -76,8 +68,45 @@ SearchResult ExpectiminimaxSearch::Search(LongNardeState* state) {
     cache_stack_->Reset(*state, network);
   }
   Player maximizing_player = state->current_player_id();
-  result.value = SearchState(state, config_.max_depth, maximizing_player,
-                             &result.best_action);
+  if (config_.enable_root_iterative && !state->IsChanceNode() &&
+      !state->IsTerminal() && config_.max_depth > 0) {
+    std::vector<std::pair<Action, double>> root_scores =
+        ScoreActions(state, maximizing_player);
+    if (root_scores.empty()) {
+      result.value = SearchState(state, config_.max_depth, maximizing_player,
+                                 &result.best_action);
+    } else {
+      int max_depth = config_.max_depth;
+      int max_top_k = std::max(config_.top_k, config_.panic_top_k);
+      int max_min_k = std::max(config_.min_k, config_.panic_min_k);
+      double max_delta = std::max(config_.delta, config_.panic_delta);
+      int denom = std::max(1, max_depth - 1);
+      auto start_time = std::chrono::steady_clock::now();
+      for (int depth = 1; depth <= max_depth; ++depth) {
+        int step = depth - 1;
+        int top_k = config_.top_k +
+                    (max_top_k - config_.top_k) * step / denom;
+        int min_k = config_.min_k +
+                    (max_min_k - config_.min_k) * step / denom;
+        double delta =
+            config_.delta + (max_delta - config_.delta) * step / denom;
+        top_k = std::max(top_k, min_k);
+        std::vector<Action> actions =
+            PruneActions(root_scores, min_k, top_k, delta);
+        result.value = EvaluateActionList(
+            state, actions, depth, maximizing_player, &result.best_action);
+        auto now = std::chrono::steady_clock::now();
+        using MilliDuration = std::chrono::duration<double, std::milli>;
+        auto elapsed = std::chrono::duration_cast<MilliDuration>(
+            now - start_time);
+        double elapsed_ms = elapsed.count();
+        last_root_times_ms_.push_back(elapsed_ms);
+      }
+    }
+  } else {
+    result.value = SearchState(state, config_.max_depth, maximizing_player,
+                               &result.best_action);
+  }
   if (cache_stack_ != nullptr) {
     cache_stack_->Clear();
   }
@@ -208,14 +237,79 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
   }
 
   Player player = state->current_player_id();
+  bool maximizing = player == maximizing_player;
+  Action best = kInvalidAction;
+
+  std::vector<std::pair<Action, double>> shallow_scores;
+  bool collect_scores =
+      config_.enable_panic_widen && config_.enable_pruning &&
+      depth == config_.max_depth;
+  std::vector<Action> actions = OrderedActions(
+      state, depth, maximizing_player,
+      collect_scores ? &shallow_scores : nullptr);
+
+  double best_value =
+      EvaluateActionList(state, actions, depth, maximizing_player, &best);
+
+  if (!shallow_scores.empty()) {
+    double best_shallow = shallow_scores.front().second;
+    double drop = maximizing ? (best_shallow - best_value)
+                             : (best_value - best_shallow);
+    if (drop > config_.panic_margin) {
+      int panic_top_k = config_.panic_top_k;
+      if (panic_top_k <= 0) {
+        panic_top_k = static_cast<int>(shallow_scores.size());
+      }
+      int panic_min_k = config_.panic_min_k;
+      if (panic_min_k <= 0) {
+        panic_min_k = config_.min_k;
+      }
+      double panic_delta = config_.panic_delta;
+      if (panic_delta <= 0.0) {
+        panic_delta = config_.delta;
+      }
+      panic_top_k = std::max(panic_top_k, config_.top_k);
+      panic_min_k = std::max(panic_min_k, config_.min_k);
+      panic_delta = std::max(panic_delta, config_.delta);
+      std::vector<Action> widened =
+          PruneActions(shallow_scores, panic_min_k, panic_top_k, panic_delta);
+      if (widened.size() > actions.size()) {
+        best_value = EvaluateActionList(state, widened, depth,
+                                        maximizing_player, &best);
+      }
+    }
+  }
+
+  if (config_.use_tt) {
+    uint64_t key = HashState(*state);
+    if (config_.max_tt_entries > 0 &&
+        table_.size() >= static_cast<size_t>(config_.max_tt_entries)) {
+      table_.clear();
+      table_.reserve(config_.max_tt_entries);
+    }
+    table_[key] = TTEntry{depth, best_value, best};
+  }
+  if (best_action != nullptr) {
+    *best_action = best;
+  }
+  return best_value;
+}
+
+double ExpectiminimaxSearch::EvaluateActionList(
+    LongNardeState* state, const std::vector<Action>& actions, int depth,
+    Player maximizing_player, Action* best_action) {
+  if (actions.empty()) {
+    if (best_action != nullptr) {
+      *best_action = kInvalidAction;
+    }
+    return 0.0;
+  }
+  Player player = state->current_player_id();
   const std::array<int, 2> dice = state->dice();
   bool maximizing = player == maximizing_player;
   double best_value = maximizing ? -std::numeric_limits<double>::infinity()
                                  : std::numeric_limits<double>::infinity();
   Action best = kInvalidAction;
-
-  std::vector<Action> actions =
-      OrderedActions(state, depth, maximizing_player);
   for (Action action : actions) {
     double child_value = 0.0;
     if (config_.use_undo) {
@@ -227,15 +321,15 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
       if (state->awaiting_roll() && depth > 0) {
         child_depth = depth - 1;
       }
-      child_value = SearchState(state, child_depth, maximizing_player, nullptr);
+      child_value =
+          SearchState(state, child_depth, maximizing_player, nullptr);
       if (cache_stack_ != nullptr) {
         cache_stack_->Pop();
       }
       state->UndoAction(player, action);
     } else {
       std::unique_ptr<State> child = state->Child(action);
-      LongNardeState* child_state =
-          static_cast<LongNardeState*>(child.get());
+      LongNardeState* child_state = static_cast<LongNardeState*>(child.get());
       int child_depth = depth;
       if (child_state->awaiting_roll() && depth > 0) {
         child_depth = depth - 1;
@@ -249,22 +343,12 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
         cache_stack_->Pop();
       }
     }
-
     if ((maximizing && child_value > best_value) ||
-        (!maximizing && child_value < best_value) || best == kInvalidAction) {
+        (!maximizing && child_value < best_value) ||
+        best == kInvalidAction) {
       best_value = child_value;
       best = action;
     }
-  }
-
-  if (config_.use_tt) {
-    uint64_t key = HashState(*state);
-    if (config_.max_tt_entries > 0 &&
-        table_.size() >= static_cast<size_t>(config_.max_tt_entries)) {
-      table_.clear();
-      table_.reserve(config_.max_tt_entries);
-    }
-    table_[key] = TTEntry{depth, best_value, best};
   }
   if (best_action != nullptr) {
     *best_action = best;
@@ -293,16 +377,10 @@ double ExpectiminimaxSearch::EvaluatePreRoll(
   return (state.current_player_id() == maximizing_player) ? value : -value;
 }
 
-std::vector<Action> ExpectiminimaxSearch::OrderedActions(
-    LongNardeState* state, int depth, Player maximizing_player) {
+std::vector<std::pair<Action, double>> ExpectiminimaxSearch::ScoreActions(
+    LongNardeState* state, Player maximizing_player) {
   std::vector<Action> actions = state->LegalActions();
-  if (!config_.enable_pruning || config_.top_k <= 0 ||
-      static_cast<int>(actions.size()) <= config_.top_k) {
-    std::sort(actions.begin(), actions.end());
-    return actions;
-  }
-
-  std::vector<MoveScore> scores;
+  std::vector<std::pair<Action, double>> scores;
   scores.reserve(actions.size());
   Player player = state->current_player_id();
   const std::array<int, 2> dice = state->dice();
@@ -329,31 +407,64 @@ std::vector<Action> ExpectiminimaxSearch::OrderedActions(
         cache_stack_->Pop();
       }
     }
-    scores.push_back(MoveScore{action, score});
+    scores.push_back({action, score});
   }
 
   bool maximizing = player == maximizing_player;
   std::stable_sort(scores.begin(), scores.end(),
-                   [maximizing](const MoveScore& a, const MoveScore& b) {
-                     if (a.score == b.score) {
-                       return a.action < b.action;
+                   [maximizing](const std::pair<Action, double>& a,
+                                const std::pair<Action, double>& b) {
+                     if (a.second == b.second) {
+                       return a.first < b.first;
                      }
-                     return maximizing ? (a.score > b.score)
-                                       : (a.score < b.score);
+                     return maximizing ? (a.second > b.second)
+                                       : (a.second < b.second);
                    });
+  return scores;
+}
 
-  double best_score = scores.front().score;
+std::vector<Action> ExpectiminimaxSearch::PruneActions(
+    const std::vector<std::pair<Action, double>>& scores, int min_k,
+    int top_k, double delta) const {
   std::vector<Action> pruned;
+  if (scores.empty()) {
+    return pruned;
+  }
+  int effective_top_k = top_k <= 0 ? static_cast<int>(scores.size()) : top_k;
+  double best_score = scores.front().second;
   pruned.reserve(scores.size());
   for (const auto& entry : scores) {
-    if (static_cast<int>(pruned.size()) < config_.min_k ||
-        static_cast<int>(pruned.size()) < config_.top_k ||
-        std::fabs(entry.score - best_score) <= config_.delta) {
-      pruned.push_back(entry.action);
+    if (static_cast<int>(pruned.size()) < min_k ||
+        static_cast<int>(pruned.size()) < effective_top_k ||
+        std::fabs(entry.second - best_score) <= delta) {
+      pruned.push_back(entry.first);
     }
   }
-  if (pruned.empty() && !scores.empty()) {
-    pruned.push_back(scores.front().action);
+  if (pruned.empty()) {
+    pruned.push_back(scores.front().first);
+  }
+  return pruned;
+}
+
+std::vector<Action> ExpectiminimaxSearch::OrderedActions(
+    LongNardeState* state, int depth, Player maximizing_player,
+    std::vector<std::pair<Action, double>>* scores_out) {
+  std::vector<Action> actions = state->LegalActions();
+  if (!config_.enable_pruning || config_.top_k <= 0 ||
+      static_cast<int>(actions.size()) <= config_.top_k) {
+    std::sort(actions.begin(), actions.end());
+    if (scores_out != nullptr) {
+      scores_out->clear();
+    }
+    return actions;
+  }
+
+  std::vector<std::pair<Action, double>> scores =
+      ScoreActions(state, maximizing_player);
+  std::vector<Action> pruned =
+      PruneActions(scores, config_.min_k, config_.top_k, config_.delta);
+  if (scores_out != nullptr) {
+    *scores_out = std::move(scores);
   }
   return pruned;
 }

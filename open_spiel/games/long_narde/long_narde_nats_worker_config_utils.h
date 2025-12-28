@@ -12,32 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_NATS_WORKER_PLAY_H_
-#define OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_NATS_WORKER_PLAY_H_
+#ifndef OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_NATS_WORKER_CONFIG_UTILS_H_
+#define OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_NATS_WORKER_CONFIG_UTILS_H_
 
-#include <cstdint>
-#include <memory>
-#include <random>
-#include <vector>
+#include <string>
+#include <unordered_map>
 
 #include "open_spiel/games/long_narde/long_narde_nats_worker_config.h"
 
 namespace open_spiel {
-class Game;
-
 namespace long_narde {
 
-class ExpectiminimaxSearch;
-struct SelfPlaySample;
-struct WorkerStats;
+bool HasArg(const std::unordered_map<std::string, std::string>& args,
+            const std::string& key);
 
-std::vector<SelfPlaySample> PlayOneGame(std::shared_ptr<const Game> game,
-                                        ExpectiminimaxSearch* search,
-                                        const WorkerConfig& config,
-                                        uint64_t game_id, std::mt19937* rng,
-                                        WorkerStats* stats);
+std::unordered_map<std::string, std::string> ParseConfigPayload(
+    const std::string& payload);
+
+void ApplyConfigArgs(const std::unordered_map<std::string, std::string>& args,
+                     WorkerConfig* config);
+
+bool FetchRemoteConfig(const WorkerConfig& config, std::string* payload_out);
+
+std::string BuildSubject(const std::string& base, const std::string& run_id);
 
 }  // namespace long_narde
 }  // namespace open_spiel
 
-#endif  // OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_NATS_WORKER_PLAY_H_
+#endif  // OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_NATS_WORKER_CONFIG_UTILS_H_

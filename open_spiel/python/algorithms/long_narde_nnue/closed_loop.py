@@ -18,9 +18,12 @@ from open_spiel.python.algorithms.long_narde_nnue.lnue_reader import (
 )
 from open_spiel.python.algorithms.long_narde_nnue.train import (
     NnueNet,
+    _build_base_cmd,
     _iter_batches,
     _save_nnue,
-    _targets_from_outcome,
+    _train_batch,
+    add_training_args,
+    run_selfplay,
 )
 
 
@@ -186,75 +189,24 @@ def _train_epoch(
             for indices, offsets, outcome, target in _iter_batches(
                 chunk, batch_size, np_rng
             ):
-                indices_t = torch.from_numpy(indices).to(device)
-                offsets_t = torch.from_numpy(offsets).to(device)
-                outcome_t = torch.from_numpy(outcome).to(device)
-                target_t = torch.from_numpy(target).to(device)
-
-                optimizer.zero_grad()
-                logits = model(indices_t, offsets_t)
-                win_t, mars_t = _targets_from_outcome(outcome_t)
-                loss = criterion(logits[:, 0], win_t) + criterion(
-                    logits[:, 1], mars_t
+                _train_batch(
+                    model,
+                    optimizer,
+                    criterion,
+                    indices,
+                    offsets,
+                    outcome,
+                    target,
+                    device,
+                    ev_weight,
+                    quant_loss,
+                    quant_loss_weight,
                 )
-                ev = torch.sigmoid(logits[:, 0]) + torch.sigmoid(logits[:, 1])
-                loss = loss + ev_weight * torch.mean((ev - target_t) ** 2)
-                if quant_loss:
-                    loss = loss + quant_loss_weight * model.quantization_error()
-                loss.backward()
-                optimizer.step()
-                model.clip_parameters()
 
                 processed += int(outcome.shape[0])
                 progress.update(processed)
 
     progress.finish()
-
-
-def _run_selfplay(
-    bin_path: Path,
-    out_path: Path,
-    games: int,
-    depth: int,
-    seed: int,
-    shard_id: int,
-    workers: int,
-    chunk: int,
-    temperature: float,
-    alpha: float,
-    nnue_path: Path | None,
-    progress: bool,
-    report_every: int,
-) -> None:
-    # pylint: disable=too-many-arguments,too-many-positional-arguments
-    cmd = [
-        str(bin_path),
-        "--out",
-        str(out_path),
-        "--games",
-        str(games),
-        "--depth",
-        str(depth),
-        "--seed",
-        str(seed),
-        "--shard_id",
-        str(shard_id),
-        "--workers",
-        str(workers),
-        "--chunk",
-        str(chunk),
-        "--temperature",
-        str(temperature),
-        "--alpha",
-        str(alpha),
-        "--progress",
-        "1" if progress else "0",
-        "--report_every",
-        str(report_every),
-    ]
-    if nnue_path is not None:
-        cmd.extend(["--nnue", str(nnue_path)])
-    subprocess.run(cmd, check=True)
 
 
 def _run_eval(
@@ -269,21 +221,17 @@ def _run_eval(
     report_every: int,
 ) -> str:
     # pylint: disable=too-many-arguments,too-many-positional-arguments
-    cmd = [
-        str(bin_path),
-        "--games",
-        str(games),
-        "--depth",
-        str(depth),
-        "--seed",
-        str(seed),
-        "--progress",
-        "1" if progress else "0",
-        "--report_every",
-        str(report_every),
-        "--workers",
-        str(eval_workers),
-    ]
+    cmd = _build_base_cmd(bin_path, games, depth, seed)
+    cmd.extend(
+        [
+            "--progress",
+            "1" if progress else "0",
+            "--report_every",
+            str(report_every),
+            "--workers",
+            str(eval_workers),
+        ]
+    )
     if nnue_a is not None:
         cmd.extend(["--nnue_a", str(nnue_a)])
     if nnue_b is not None:
@@ -346,11 +294,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=2048)
-    parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--weight_decay", type=float, default=1e-5)
-    parser.add_argument("--ev_weight", type=float, default=0.5)
-    parser.add_argument("--quant_loss", action="store_true")
-    parser.add_argument("--quant_loss_weight", type=float, default=0.0001)
+    add_training_args(parser)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--init_nnue", default="")
     parser.add_argument("--selfplay_bin", default="")
@@ -475,20 +419,20 @@ def main() -> None:
                     f"({shard_games} games)",
                     flush=True,
                 )
-                _run_selfplay(
-                    selfplay_bin,
-                    shard_path,
-                    shard_games,
-                    args.depth,
-                    shard_seed,
-                    shard_idx,
-                    args.workers,
-                    args.chunk,
-                    args.temperature,
-                    args.alpha,
-                    prev_nnue,
-                    args.selfplay_progress != 0,
-                    args.selfplay_report_every,
+                run_selfplay(
+                    bin_path=selfplay_bin,
+                    out_path=shard_path,
+                    games=shard_games,
+                    depth=args.depth,
+                    seed=shard_seed,
+                    chunk=args.chunk,
+                    temperature=args.temperature,
+                    alpha=args.alpha,
+                    workers=args.workers,
+                    shard_id=shard_idx,
+                    progress=args.selfplay_progress != 0,
+                    report_every=args.selfplay_report_every,
+                    nnue_path=prev_nnue,
                 )
                 games_done += shard_games
                 overall_progress.update(games_done)

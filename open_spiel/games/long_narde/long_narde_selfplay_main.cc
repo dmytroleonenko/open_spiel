@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
   uint64_t seed = open_spiel::long_narde::GetUint64Arg(args, "seed", 7);
   uint32_t shard_id = static_cast<uint32_t>(
       open_spiel::long_narde::GetIntArg(args, "shard_id", 0));
-  int depth = open_spiel::long_narde::GetIntArg(args, "depth", 2);
+  int depth = open_spiel::long_narde::GetIntArg(args, "depth", 3);
   int workers = open_spiel::long_narde::GetIntArg(args, "workers", 0);
   int chunk = open_spiel::long_narde::GetIntArg(args, "chunk", 4096);
   int tt_entries =

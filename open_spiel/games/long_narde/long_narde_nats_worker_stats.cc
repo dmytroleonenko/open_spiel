@@ -14,9 +14,12 @@
 
 #include "open_spiel/games/long_narde/long_narde_nats_worker_stats.h"
 
+#include <algorithm>
 #include <chrono>
 #include <iostream>
+#include <string>
 #include <thread>
+#include <vector>
 
 namespace open_spiel {
 namespace long_narde {
@@ -24,6 +27,15 @@ namespace long_narde {
 void WorkerStats::AddGame(int64_t samples_in_game) {
   games.fetch_add(1, std::memory_order_relaxed);
   samples.fetch_add(samples_in_game, std::memory_order_relaxed);
+}
+
+void WorkerStats::AddSearchTimings(const std::vector<double>& times_ms) {
+  int limit = std::min(static_cast<int>(times_ms.size()), kMaxDepthStats);
+  for (int i = 0; i < limit; ++i) {
+    int64_t us = static_cast<int64_t>(times_ms[i] * 1000.0);
+    depth_time_us[i].fetch_add(us, std::memory_order_relaxed);
+    depth_calls[i].fetch_add(1, std::memory_order_relaxed);
+  }
 }
 
 void RunStatsReporter(int report_every_seconds, const WorkerStats* stats,
@@ -42,6 +54,19 @@ void RunStatsReporter(int report_every_seconds, const WorkerStats* stats,
     int64_t total_samples = stats->samples.load(std::memory_order_relaxed);
     int64_t pending = stats->pending.load(std::memory_order_relaxed);
     int version = stats->weights_version.load(std::memory_order_relaxed);
+    std::string depth_summary;
+    for (int i = 0; i < WorkerStats::kMaxDepthStats; ++i) {
+      int64_t calls = stats->depth_calls[i].load(std::memory_order_relaxed);
+      if (calls <= 0) {
+        continue;
+      }
+      int64_t total_us =
+          stats->depth_time_us[i].load(std::memory_order_relaxed);
+      double avg_s =
+          static_cast<double>(total_us) / 1e6 / static_cast<double>(calls);
+      depth_summary += " d" + std::to_string(i + 1) + "=" +
+                       std::to_string(avg_s);
+    }
     auto now = std::chrono::steady_clock::now();
     double total_elapsed =
         std::chrono::duration_cast<std::chrono::duration<double>>(now -
@@ -69,7 +94,11 @@ void RunStatsReporter(int report_every_seconds, const WorkerStats* stats,
               << " pending=" << pending
               << " overall=" << overall_games_s << " g/s " << overall_samples_s
               << " s/s window=" << window_games_s << " g/s "
-              << window_samples_s << " s/s avg=" << avg_samples << " s/g\n";
+              << window_samples_s << " s/s avg=" << avg_samples << " s/g";
+    if (!depth_summary.empty()) {
+      std::cerr << " depth_s=" << depth_summary;
+    }
+    std::cerr << "\n";
     last_time = now;
     last_games = total_games;
     last_samples = total_samples;

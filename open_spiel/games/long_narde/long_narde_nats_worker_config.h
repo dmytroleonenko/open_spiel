@@ -27,8 +27,12 @@ struct WorkerConfig {
   std::string traj_subject = "lnue.traj";
   std::string weights_subject = "nnue.weights";
   std::string request_subject = "nnue.request";
+  std::string config_subject = "nnue.config";
+  std::string config_request_subject = "nnue.config.request";
+  bool request_config = true;
+  int config_timeout_ms = 2000;
   std::string nnue_path;
-  int depth = 1;
+  int depth = 3;
   int max_moves = 1000;
   int workers = 0;
   double temperature = 1.0;

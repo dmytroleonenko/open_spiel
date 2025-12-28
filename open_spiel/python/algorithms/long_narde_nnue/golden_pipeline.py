@@ -18,8 +18,9 @@ from open_spiel.python.algorithms.long_narde_nnue.lnue_reader import (
 )
 from open_spiel.python.algorithms.long_narde_nnue.train import (
     NnueNet,
+    _loss_from_logits,
     _save_nnue,
-    _targets_from_outcome,
+    run_selfplay,
 )
 
 _LNNU_HEADER_FMT = "<4s16I"
@@ -48,42 +49,6 @@ def _hash_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _run_selfplay(
-    bin_path: Path,
-    out_path: Path,
-    games: int,
-    depth: int,
-    seed: int,
-    chunk: int,
-    temperature: float,
-    alpha: float,
-    nnue_path: Path | None,
-) -> None:
-    # pylint: disable=too-many-arguments,too-many-positional-arguments
-    cmd = [
-        str(bin_path),
-        "--out",
-        str(out_path),
-        "--games",
-        str(games),
-        "--seed",
-        str(seed),
-        "--depth",
-        str(depth),
-        "--workers",
-        "0",
-        "--chunk",
-        str(chunk),
-        "--temperature",
-        str(temperature),
-        "--alpha",
-        str(alpha),
-    ]
-    if nnue_path is not None:
-        cmd.extend(["--nnue", str(nnue_path)])
-    subprocess.run(cmd, check=True)
 
 
 def _validate_lnue(reader: LnueShardReader) -> None:
@@ -156,10 +121,7 @@ def _train_one_step(reader: LnueShardReader, batch_size: int) -> NnueNet:
     target_t = torch.from_numpy(target)
 
     logits = model(indices_t, offsets_t)
-    win_t, mars_t = _targets_from_outcome(outcome_t)
-    loss = criterion(logits[:, 0], win_t) + criterion(logits[:, 1], mars_t)
-    ev = torch.sigmoid(logits[:, 0]) + torch.sigmoid(logits[:, 1])
-    loss = loss + 0.5 * torch.mean((ev - target_t) ** 2)
+    loss = _loss_from_logits(logits, outcome_t, target_t, criterion, 0.5)
     loss.backward()
     optimizer.step()
     model.clip_parameters()
@@ -235,7 +197,7 @@ def _trunc_div(value: int, denom: int) -> int:
     return -((-value) // denom)
 
 
-def _infer_raw_logits(nnue: dict, features: Iterable[int]) -> Tuple[int, int]:
+def _infer_raw_logits(nnue: dict, features: Iterable[int]) -> Tuple[int, int, int]:
     # pylint: disable=too-many-locals
     w0 = nnue["w0"]
     b0 = nnue["b0"]
@@ -260,7 +222,9 @@ def _infer_raw_logits(nnue: dict, features: Iterable[int]) -> Tuple[int, int]:
     out_win = _trunc_div(int(b2[0]) * 64 + dot_win, 64)
     dot_mars = int(np.dot(l2.astype(np.int32), w2[1].astype(np.int32)))
     out_mars = _trunc_div(int(b2[1]) * 64 + dot_mars, 64)
-    return out_win, out_mars
+    dot_opp_mars = int(np.dot(l2.astype(np.int32), w2[2].astype(np.int32)))
+    out_opp_mars = _trunc_div(int(b2[2]) * 64 + dot_opp_mars, 64)
+    return out_win, out_mars, out_opp_mars
 
 
 def _iter_feature_slices(
@@ -287,9 +251,9 @@ def _read_probe_output(path: Path) -> np.ndarray:
             raise ValueError("Probe output missing count.")
         count = struct.unpack("<I", raw)[0]
         data = np.frombuffer(handle.read(), dtype=np.int32)
-    if data.size != count * 2:
+    if data.size != count * 3:
         raise ValueError("Probe output size mismatch.")
-    return data.reshape((count, 2))
+    return data.reshape((count, 3))
 
 
 def main() -> None:
@@ -330,27 +294,29 @@ def main() -> None:
         shard_a = tmp_path / "selfplay_a.lnue"
         shard_b = tmp_path / "selfplay_b.lnue"
 
-        _run_selfplay(
-            selfplay_bin,
-            shard_a,
-            args.games,
-            args.depth,
-            args.seed,
-            args.chunk,
-            args.temperature,
-            args.alpha,
-            None,
+        run_selfplay(
+            bin_path=selfplay_bin,
+            out_path=shard_a,
+            games=args.games,
+            depth=args.depth,
+            seed=args.seed,
+            chunk=args.chunk,
+            temperature=args.temperature,
+            alpha=args.alpha,
+            workers=0,
+            nnue_path=None,
         )
-        _run_selfplay(
-            selfplay_bin,
-            shard_b,
-            args.games,
-            args.depth,
-            args.seed,
-            args.chunk,
-            args.temperature,
-            args.alpha,
-            None,
+        run_selfplay(
+            bin_path=selfplay_bin,
+            out_path=shard_b,
+            games=args.games,
+            depth=args.depth,
+            seed=args.seed,
+            chunk=args.chunk,
+            temperature=args.temperature,
+            alpha=args.alpha,
+            workers=0,
+            nnue_path=None,
         )
 
         if _hash_file(shard_a) != _hash_file(shard_b):

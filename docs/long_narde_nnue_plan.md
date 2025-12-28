@@ -7,9 +7,10 @@ exactly (21 outcomes). Improve via an iterative self-play loop with stable
 targets, strict legality, and reproducible search.
 
 Locked design decisions
-- NNUE outputs: dual heads (win + mars). Scalar EV is derived as EV = P(win) + P(mars).
+- NNUE outputs: three heads (p_win, p_mars, p_opp_mars) and signed EV:
+  EV = p_win + p_mars - (1 - p_win) - p_opp_mars (range [-2, 2]).
 - Features: base 800 one-hot features plus run/prime connectivity features.
-- Value scale: train heads as probabilities; no standalone scalar head needed.
+- Value scale: train heads as probabilities; EV is a derived scalar.
 - SIMD: AVX2 baseline with AVX512 runtime dispatch; ISA abstraction allows NEON later.
 - Parallelism: focus on coarse-grained self-play workers first; avoid root search
   parallelism until later.
@@ -20,6 +21,8 @@ Status
 - [x] Implement expectiminimax with exact 21-outcome chance nodes and compound actions
 - [x] Build self-play data generator (pre-roll-only samples) and target mixing
 - [~] Integrate training/export pipeline (PyTorch -> quantized weights) and C++ NNUE glue
+- [x] Update NNUE outputs to 3 heads + signed EV (format v2)
+- [x] Add root iterative deepening + panic widen; default depth 3
 - [~] Add audits/tests and performance benchmarks; document workflow
 
 1) Game and State Specification
@@ -95,14 +98,15 @@ Append a tiny dense vector post-accumulator:
 - Sparse accumulator -> hidden (e.g., 256-512) -> small MLP -> outputs
 - Incremental update per move only touches changed point-count buckets and runs.
 
-4.2 Dual-head outputs (recommended)
+4.2 Three-head outputs (implemented)
 Predict:
 - p_win in [0,1]
 - p_mars in [0,1] (probability of winning with mars)
+- p_opp_mars in [0,1] (probability of losing with mars)
 
 Compose expected signed score:
-- For STM: EV = 1 * p_win + 1 * p_mars
-- Signed to [-2,2] via perspective; opponent perspective flips sign.
+- For STM: EV = p_win + p_mars - (1 - p_win) - p_opp_mars
+- Range is [-2, 2]; opponent perspective flips sign via STM canonicalization.
 
 Loss:
 - BCE for heads, optionally class-balanced for mars rarity.
@@ -129,7 +133,9 @@ To control branching:
    - any move within delta of best score
    - a minimum floor Kmin
 
-Use iterative deepening; carry PV move first.
+Use iterative deepening; carry PV move first. At the root, use a widening
+schedule (top_k/min_k/delta) and a panic re-search if the PV flips or the
+root width is too narrow.
 
 5.4 Determinism and tie-breaking
 To prevent "same state, different label" noise:
@@ -235,21 +241,51 @@ Alpha schedule:
 - average legal compound actions per dice after dedup
 - NNUE evals/sec and accumulator update cost
 - cache hit rates for TT and move lists
+- time-to-depth per root iteration (cumulative ms to reach depth 1/2/3/...)
 
 11) LNUE Shard Format (self-play output)
 
 11.1 File header (fixed-size, little-endian)
 - magic "LNUE"
-- format_version u32
+- format_version u32 (v2 = 3 heads)
 - endianness marker u32 (0x01020304)
 - feature_schema_id u32
 - total_feature_dim u32
-- flags bitset (has_run_features, dual_head, has_game_id, has_ply)
+- flags bitset (has_run_features, multi_head, has_game_id, has_ply)
 - feature_index_bytes u32 (u16 expected for current dims)
 - seed u64
 - shard_id u32
 - run_block_threshold u32
 - reserved u32[5]
+
+12) NATS Worker Configuration (operational)
+
+12.1 Config payload format
+- Plain text lines of key=value, with optional leading "--".
+- "#" starts a comment; blank lines ignored.
+- Keys reuse the worker flags (depth, temperature, alpha, tt_entries, etc.).
+
+12.2 Publish + request
+- Workers can request config over NATS and still override via CLI.
+- Use a config publisher to serve a shared payload:
+  - subject: nnue.config.<run_id>
+  - request subject: nnue.config.request.<run_id>
+
+12.3 Example
+config file:
+```ini
+depth=3
+temperature=0.5
+alpha=0.7
+```
+publish:
+```sh
+long_narde_nats_config --run_id run2 --file worker.conf --serve 1
+```
+worker:
+```sh
+long_narde_nats_worker --run_id run2 --request_config 1 --depth 4
+```
 
 11.2 Chunk header (fixed-size, per chunk)
 - magic "CHNK"

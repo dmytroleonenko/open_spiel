@@ -6,6 +6,8 @@ import argparse
 import glob
 import os
 import struct
+import subprocess
+from pathlib import Path
 from typing import Iterator, Tuple
 
 import numpy as np
@@ -19,7 +21,7 @@ _Q = 127.0 / 64.0
 _SCALE = 64.0
 _NNUE_MAGIC = b"LNNU"
 _NNUE_ENDIAN = 0x01020304
-_NNUE_VERSION = 1
+_NNUE_VERSION = 2
 _NNUE_TYPE_INT8 = 1
 _NNUE_TYPE_INT16 = 2
 
@@ -37,7 +39,7 @@ class NnueNet(torch.nn.Module):
         )
         self.b0 = torch.nn.Parameter(torch.zeros(l1))
         self.fc1 = torch.nn.Linear(l1, l2)
-        self.fc2 = torch.nn.Linear(l2, 2)
+        self.fc2 = torch.nn.Linear(l2, 3)
 
     def forward(self, indices: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
         """Runs a forward pass on sparse feature indices."""
@@ -103,11 +105,165 @@ def _iter_batches(
         )
 
 
-def _targets_from_outcome(outcome: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Derives win and mars targets from signed outcomes."""
+def _targets_from_outcome(
+    outcome: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Derives win/mars/opponent-mars targets from signed outcomes."""
     win = (outcome > 0.0).to(torch.float32)
     mars = (outcome == 2.0).to(torch.float32)
-    return win, mars
+    opp_mars = (outcome == -2.0).to(torch.float32)
+    return win, mars, opp_mars
+
+
+def _ev_from_logits(logits: torch.Tensor) -> torch.Tensor:
+    """Computes signed EV from NNUE logits."""
+    p_win = torch.sigmoid(logits[:, 0])
+    p_mars = torch.sigmoid(logits[:, 1])
+    p_opp_mars = torch.sigmoid(logits[:, 2])
+    return p_win + p_mars - (1.0 - p_win) - p_opp_mars
+
+
+def _loss_from_logits(
+    logits: torch.Tensor,
+    outcome_t: torch.Tensor,
+    target_t: torch.Tensor,
+    criterion: torch.nn.Module,
+    ev_weight: float,
+) -> torch.Tensor:
+    """Computes the combined BCE + EV regression loss."""
+    win_t, mars_t, opp_mars_t = _targets_from_outcome(outcome_t)
+    loss = (
+        criterion(logits[:, 0], win_t)
+        + criterion(logits[:, 1], mars_t)
+        + criterion(logits[:, 2], opp_mars_t)
+    )
+    if ev_weight:
+        ev = _ev_from_logits(logits)
+        loss = loss + ev_weight * torch.mean((ev - target_t) ** 2)
+    return loss
+
+
+def _train_batch(
+    model: NnueNet,
+    optimizer: torch.optim.Optimizer,
+    criterion: torch.nn.Module,
+    indices: np.ndarray,
+    offsets: np.ndarray,
+    outcome: np.ndarray,
+    target: np.ndarray,
+    device: str,
+    ev_weight: float,
+    quant_loss: bool,
+    quant_loss_weight: float,
+) -> None:
+    """Runs a single optimization step on one batch."""
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    # pylint: disable=too-many-locals
+    indices_t = torch.from_numpy(indices).to(device)
+    offsets_t = torch.from_numpy(offsets).to(device)
+    outcome_t = torch.from_numpy(outcome).to(device)
+    target_t = torch.from_numpy(target).to(device)
+
+    optimizer.zero_grad()
+    logits = model(indices_t, offsets_t)
+    loss = _loss_from_logits(logits, outcome_t, target_t, criterion, ev_weight)
+    if quant_loss:
+        loss = loss + quant_loss_weight * model.quantization_error()
+    loss.backward()
+    optimizer.step()
+    model.clip_parameters()
+
+
+def _build_selfplay_cmd(
+    bin_path: Path,
+    out_path: Path,
+    games: int,
+    depth: int,
+    seed: int,
+    chunk: int,
+    temperature: float,
+    alpha: float,
+    workers: int | None = None,
+    shard_id: int | None = None,
+    progress: bool | None = None,
+    report_every: int | None = None,
+    nnue_path: Path | None = None,
+) -> list[str]:
+    """Builds a long_narde_selfplay command with optional flags."""
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    cmd = _build_base_cmd(bin_path, games, depth, seed)
+    cmd.extend(["--out", str(out_path)])
+    cmd.extend(
+        [
+            "--chunk",
+            str(chunk),
+            "--temperature",
+            str(temperature),
+            "--alpha",
+            str(alpha),
+        ]
+    )
+    if workers is not None:
+        cmd.extend(["--workers", str(workers)])
+    if shard_id is not None:
+        cmd.extend(["--shard_id", str(shard_id)])
+    if progress is not None:
+        cmd.extend(["--progress", "1" if progress else "0"])
+    if report_every is not None:
+        cmd.extend(["--report_every", str(report_every)])
+    if nnue_path is not None:
+        cmd.extend(["--nnue", str(nnue_path)])
+    return cmd
+
+
+def _build_base_cmd(
+    bin_path: Path, games: int, depth: int, seed: int
+) -> list[str]:
+    """Builds the shared portion of selfplay/eval command lines."""
+    return [
+        str(bin_path),
+        "--games",
+        str(games),
+        "--depth",
+        str(depth),
+        "--seed",
+        str(seed),
+    ]
+
+
+def run_selfplay(
+    bin_path: Path,
+    out_path: Path,
+    games: int,
+    depth: int,
+    seed: int,
+    chunk: int,
+    temperature: float,
+    alpha: float,
+    workers: int | None = None,
+    shard_id: int | None = None,
+    progress: bool | None = None,
+    report_every: int | None = None,
+    nnue_path: Path | None = None,
+) -> None:
+    """Runs long_narde_selfplay with optional flags."""
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    cmd = _build_selfplay_cmd(
+        bin_path=bin_path,
+        out_path=out_path,
+        games=games,
+        depth=depth,
+        seed=seed,
+        chunk=chunk,
+        temperature=temperature,
+        alpha=alpha,
+        workers=workers,
+        shard_id=shard_id,
+        progress=progress,
+        report_every=report_every,
+        nnue_path=nnue_path,
+    )
+    subprocess.run(cmd, check=True)
 
 
 def _save_nnue(
@@ -151,6 +307,7 @@ def _save_nnue(
         + b2_q.nbytes
     )
 
+    l3 = int(model.fc2.out_features)
     header = struct.pack(
         "<4s16I",
         _NNUE_MAGIC,
@@ -159,7 +316,7 @@ def _save_nnue(
         model.feature_dim,
         model.l1,
         model.l2,
-        2,
+        l3,
         run_features_enabled,
         run_block_threshold,
         _NNUE_TYPE_INT16,
@@ -218,26 +375,20 @@ def train(args) -> None:
                 for indices, offsets, outcome, target in _iter_batches(
                     chunk, args.batch_size, np_rng
                 ):
-                    indices_t = torch.from_numpy(indices).to(device)
-                    offsets_t = torch.from_numpy(offsets).to(device)
-                    outcome_t = torch.from_numpy(outcome).to(device)
-                    target_t = torch.from_numpy(target).to(device)
-
-                    optimizer.zero_grad()
-                    logits = model(indices_t, offsets_t)
-                    win_t, mars_t = _targets_from_outcome(outcome_t)
-                    loss = criterion(logits[:, 0], win_t) + criterion(
-                        logits[:, 1], mars_t
-                    )
-                    ev = torch.sigmoid(logits[:, 0]) + torch.sigmoid(logits[:, 1])
-                    loss = loss + args.ev_weight * torch.mean(
-                        (ev - target_t) ** 2
-                    )
-                    if args.quant_loss:
-                        loss = loss + args.quant_loss_weight * model.quantization_error()
-                    loss.backward()
-                    optimizer.step()
-                    model.clip_parameters()
+                    batch_kwargs = {
+                        "model": model,
+                        "optimizer": optimizer,
+                        "criterion": criterion,
+                        "indices": indices,
+                        "offsets": offsets,
+                        "outcome": outcome,
+                        "target": target,
+                        "device": device,
+                        "ev_weight": args.ev_weight,
+                        "quant_loss": args.quant_loss,
+                        "quant_loss_weight": args.quant_loss_weight,
+                    }
+                    _train_batch(**batch_kwargs)
 
         if args.output_path:
             out_path = args.output_path
@@ -245,6 +396,14 @@ def train(args) -> None:
                 base, ext = os.path.splitext(out_path)
                 out_path = f"{base}_epoch{epoch + 1}{ext}"
             _save_nnue(out_path, model, args.name, args.author)
+
+def add_training_args(parser: argparse.ArgumentParser) -> None:
+    """Adds common optimizer/training flags to an argument parser."""
+    parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument("--weight_decay", type=float, default=1e-5)
+    parser.add_argument("--ev_weight", type=float, default=0.5)
+    parser.add_argument("--quant_loss", action="store_true")
+    parser.add_argument("--quant_loss_weight", type=float, default=0.0001)
 
 
 def parse_args() -> argparse.Namespace:
@@ -254,11 +413,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_path", default="", help="Output NNUE path.")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=1024)
-    parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--weight_decay", type=float, default=1e-5)
-    parser.add_argument("--ev_weight", type=float, default=0.5)
-    parser.add_argument("--quant_loss", action="store_true")
-    parser.add_argument("--quant_loss_weight", type=float, default=0.0001)
+    add_training_args(parser)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--name", default="LongNarde NNUE")

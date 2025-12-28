@@ -23,6 +23,7 @@
 
 #include "open_spiel/games/long_narde/long_narde.h"
 #include "open_spiel/games/long_narde/long_narde_nnue.h"
+#include "open_spiel/games/long_narde/long_narde_nats_worker_stats.h"
 #include "open_spiel/games/long_narde/long_narde_search.h"
 #include "open_spiel/games/long_narde/long_narde_selfplay_io.h"
 #include "open_spiel/spiel.h"
@@ -112,8 +113,8 @@ void FinalizeSamples(const std::vector<double>& returns,
 std::vector<SelfPlaySample> PlayOneGame(std::shared_ptr<const Game> game,
                                         ExpectiminimaxSearch* search,
                                         const WorkerConfig& config,
-                                        uint64_t game_id,
-                                        std::mt19937* rng) {
+                                        uint64_t game_id, std::mt19937* rng,
+                                        WorkerStats* stats) {
   std::vector<SelfPlaySample> samples;
   std::unique_ptr<State> state = game->NewInitialState();
   auto* lnstate = static_cast<LongNardeState*>(state.get());
@@ -133,7 +134,11 @@ std::vector<SelfPlaySample> PlayOneGame(std::shared_ptr<const Game> game,
         entry.sample.ply = static_cast<uint16_t>(ply);
         nnue::CollectActiveFeatureIndices(*lnstate,
                                           &entry.sample.active_features);
-        entry.sample.search_value = search->Search(lnstate).value;
+        SearchResult result = search->Search(lnstate);
+        entry.sample.search_value = result.value;
+        if (stats != nullptr) {
+          stats->AddSearchTimings(search->last_root_times_ms());
+        }
         pending.push_back(std::move(entry));
       }
       Action chance_action =
