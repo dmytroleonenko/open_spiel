@@ -54,7 +54,10 @@ class ProgressBar:
         now = time.perf_counter()
         percent = int(100 * current / self.total)
         percent = min(100, max(0, percent))
-        if percent == self.last_percent and (now - self.last_time) < self.min_interval:
+        if (
+            percent == self.last_percent
+            and (now - self.last_time) < self.min_interval
+        ):
             return
         self.last_percent = percent
         self.last_time = now
@@ -219,6 +222,9 @@ def _run_eval(
     eval_workers: int,
     progress: bool,
     report_every: int,
+    chance_samples: int,
+    chance_sample_depth: int,
+    chance_seed: int,
 ) -> str:
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     cmd = _build_base_cmd(bin_path, games, depth, seed)
@@ -232,6 +238,10 @@ def _run_eval(
             str(eval_workers),
         ]
     )
+    if chance_samples > 0:
+        cmd.extend(["--chance_samples", str(chance_samples)])
+        cmd.extend(["--chance_sample_depth", str(chance_sample_depth)])
+        cmd.extend(["--chance_seed", str(chance_seed)])
     if nnue_a is not None:
         cmd.extend(["--nnue_a", str(nnue_a)])
     if nnue_b is not None:
@@ -292,6 +302,9 @@ def main() -> None:
     parser.add_argument("--eval_progress", type=int, default=1)
     parser.add_argument("--eval_report_every", type=int, default=100)
     parser.add_argument("--seed", type=int, default=12345)
+    parser.add_argument("--chance_samples", type=int, default=0)
+    parser.add_argument("--chance_sample_depth", type=int, default=1)
+    parser.add_argument("--chance_seed", type=int, default=0)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=2048)
     add_training_args(parser)
@@ -433,6 +446,9 @@ def main() -> None:
                     progress=args.selfplay_progress != 0,
                     report_every=args.selfplay_report_every,
                     nnue_path=prev_nnue,
+                    chance_samples=args.chance_samples,
+                    chance_sample_depth=args.chance_sample_depth,
+                    chance_seed=args.chance_seed,
                 )
                 games_done += shard_games
                 overall_progress.update(games_done)
@@ -497,6 +513,9 @@ def main() -> None:
             args.eval_workers,
             args.eval_progress != 0,
             args.eval_report_every,
+            args.chance_samples,
+            args.chance_sample_depth,
+            args.chance_seed,
         )
         summary_prev = _run_eval(
             eval_bin,
@@ -508,6 +527,9 @@ def main() -> None:
             args.eval_workers,
             args.eval_progress != 0,
             args.eval_report_every,
+            args.chance_samples,
+            args.chance_sample_depth,
+            args.chance_seed,
         )
 
         with open(log_path, "a", encoding="utf-8") as handle:

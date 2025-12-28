@@ -41,7 +41,9 @@ class NnueNet(torch.nn.Module):
         self.fc1 = torch.nn.Linear(l1, l2)
         self.fc2 = torch.nn.Linear(l2, 3)
 
-    def forward(self, indices: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, indices: torch.Tensor, offsets: torch.Tensor
+    ) -> torch.Tensor:
         """Runs a forward pass on sparse feature indices."""
         x = self.embed(indices, offsets) + self.b0
         x = torch.clamp(x, min=0.0, max=_Q)
@@ -188,9 +190,13 @@ def _build_selfplay_cmd(
     progress: bool | None = None,
     report_every: int | None = None,
     nnue_path: Path | None = None,
+    chance_samples: int | None = None,
+    chance_sample_depth: int | None = None,
+    chance_seed: int | None = None,
 ) -> list[str]:
     """Builds a long_narde_selfplay command with optional flags."""
     # pylint: disable=too-many-arguments,too-many-positional-arguments
+    # pylint: disable=too-many-locals
     cmd = _build_base_cmd(bin_path, games, depth, seed)
     cmd.extend(["--out", str(out_path)])
     cmd.extend(
@@ -213,6 +219,12 @@ def _build_selfplay_cmd(
         cmd.extend(["--report_every", str(report_every)])
     if nnue_path is not None:
         cmd.extend(["--nnue", str(nnue_path)])
+    if chance_samples is not None and chance_samples > 0:
+        cmd.extend(["--chance_samples", str(chance_samples)])
+        if chance_sample_depth is not None:
+            cmd.extend(["--chance_sample_depth", str(chance_sample_depth)])
+        if chance_seed is not None:
+            cmd.extend(["--chance_seed", str(chance_seed)])
     return cmd
 
 
@@ -245,9 +257,13 @@ def run_selfplay(
     progress: bool | None = None,
     report_every: int | None = None,
     nnue_path: Path | None = None,
+    chance_samples: int | None = None,
+    chance_sample_depth: int | None = None,
+    chance_seed: int | None = None,
 ) -> None:
     """Runs long_narde_selfplay with optional flags."""
     # pylint: disable=too-many-arguments,too-many-positional-arguments
+    # pylint: disable=too-many-locals
     cmd = _build_selfplay_cmd(
         bin_path=bin_path,
         out_path=out_path,
@@ -262,6 +278,9 @@ def run_selfplay(
         progress=progress,
         report_every=report_every,
         nnue_path=nnue_path,
+        chance_samples=chance_samples,
+        chance_sample_depth=chance_sample_depth,
+        chance_seed=chance_seed,
     )
     subprocess.run(cmd, check=True)
 
@@ -409,7 +428,9 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
 def parse_args() -> argparse.Namespace:
     """Parses CLI arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data_dir", required=True, help="Directory with LNUE shards.")
+    parser.add_argument(
+        "--data_dir", required=True, help="Directory with LNUE shards."
+    )
     parser.add_argument("--output_path", default="", help="Output NNUE path.")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=1024)
