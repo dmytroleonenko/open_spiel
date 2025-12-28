@@ -171,6 +171,9 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
   SearchConfig search_config;
   search_config.max_depth = config.depth;
   search_config.max_tt_entries = config.tt_entries;
+  search_config.chance_samples = config.chance_samples;
+  search_config.chance_sample_depth = config.chance_sample_depth;
+  search_config.chance_seed = config.chance_seed;
   ExpectiminimaxSearch search(&evaluator, search_config);
 
   LnueShardConfig shard_config;
@@ -291,7 +294,9 @@ void PrintUsage(const char* bin) {
             << "             [--request_weights 0|1]"
             << " [--request_interval_ms N]"
             << " [--request_config 0|1] [--config_timeout_ms N]\n"
-            << "             [--report_every_seconds N] [--tt_entries N]\n";
+            << "             [--report_every_seconds N] [--tt_entries N]\n"
+            << "             [--chance_samples N] [--chance_sample_depth N]"
+            << " [--chance_seed N]\n";
 }
 
 }  // namespace

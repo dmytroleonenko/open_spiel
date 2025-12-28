@@ -90,7 +90,9 @@ void PrintUsage(const char* bin) {
             << " [--games N] [--depth N] [--seed N] [--max_moves N]\n"
             << "             [--nnue_a path] [--nnue_b path]\n"
             << "             [--out path] [--progress 0|1] [--workers N]"
-            << " [--report_every N] [--tt_entries N]\n";
+            << " [--report_every N] [--tt_entries N]\n"
+            << "             [--chance_samples N] [--chance_sample_depth N]"
+            << " [--chance_seed N]\n";
 }
 
 Action SampleChanceOutcome(

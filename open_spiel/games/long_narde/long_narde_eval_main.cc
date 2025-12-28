@@ -204,6 +204,11 @@ int main(int argc, char** argv) {
   config.seed = GetUint64Arg(args, "seed", config.seed);
   config.workers = GetIntArg(args, "workers", config.workers);
   config.tt_entries = GetIntArg(args, "tt_entries", config.tt_entries);
+  config.chance_samples =
+      GetIntArg(args, "chance_samples", config.chance_samples);
+  config.chance_sample_depth =
+      GetIntArg(args, "chance_sample_depth", config.chance_sample_depth);
+  config.chance_seed = GetUint64Arg(args, "chance_seed", config.chance_seed);
   config.nnue_a = GetStringArg(args, "nnue_a", "");
   config.nnue_b = GetStringArg(args, "nnue_b", "");
   config.out_path = GetStringArg(args, "out", "");
@@ -231,6 +236,9 @@ int main(int argc, char** argv) {
   SearchConfig search_config;
   search_config.max_depth = config.depth;
   search_config.max_tt_entries = config.tt_entries;
+  search_config.chance_samples = config.chance_samples;
+  search_config.chance_sample_depth = config.chance_sample_depth;
+  search_config.chance_seed = config.chance_seed;
 
   EvalResult result;
   int total_games = std::max(config.games, 0);

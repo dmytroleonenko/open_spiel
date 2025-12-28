@@ -40,6 +40,9 @@ struct WorkerConfig {
   int64_t games = 0;
   uint64_t seed = 7;
   int tt_entries = 200000;
+  int chance_samples = 0;
+  int chance_sample_depth = 1;
+  uint64_t chance_seed = 0;
   bool wait_for_weights = false;
   bool request_weights = false;
   int request_interval_ms = 1000;

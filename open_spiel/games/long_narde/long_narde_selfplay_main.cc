@@ -95,7 +95,9 @@ void PrintUsage(const char* bin) {
             << "             [--depth N] [--temperature T] [--alpha A]\n"
             << "             [--workers N] [--chunk N] [--nnue path]\n"
             << "             [--progress 0|1] [--report_every N]"
-            << " [--tt_entries N]\n";
+            << " [--tt_entries N]\n"
+            << "             [--chance_samples N] [--chance_sample_depth N]"
+            << " [--chance_seed N]\n";
 }
 
 }  // namespace
@@ -129,6 +131,12 @@ int main(int argc, char** argv) {
   int chunk = open_spiel::long_narde::GetIntArg(args, "chunk", 4096);
   int tt_entries =
       open_spiel::long_narde::GetIntArg(args, "tt_entries", 200000);
+  int chance_samples =
+      open_spiel::long_narde::GetIntArg(args, "chance_samples", 0);
+  int chance_sample_depth =
+      open_spiel::long_narde::GetIntArg(args, "chance_sample_depth", 1);
+  uint64_t chance_seed =
+      open_spiel::long_narde::GetUint64Arg(args, "chance_seed", 0);
   double temperature =
       open_spiel::long_narde::GetDoubleArg(args, "temperature", 1.0);
   double alpha = open_spiel::long_narde::GetDoubleArg(args, "alpha", 0.5);
@@ -153,6 +161,9 @@ int main(int argc, char** argv) {
   SearchConfig search_config;
   search_config.max_depth = depth;
   search_config.max_tt_entries = tt_entries;
+  search_config.chance_samples = chance_samples;
+  search_config.chance_sample_depth = chance_sample_depth;
+  search_config.chance_seed = chance_seed;
 
   SelfPlayConfig selfplay_config;
   selfplay_config.num_games = games;

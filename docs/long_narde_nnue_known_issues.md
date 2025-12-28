@@ -236,7 +236,7 @@ schedule implemented in:
 - `open_spiel/games/long_narde/long_narde_search.h`
 - `open_spiel/games/long_narde/long_narde_search.cc`
 
-### C) Chance node pruning — not implemented
+### C) Chance node pruning — implemented (optional)
 
 Current implementation:
 - All 21 dice outcomes are enumerated in chance nodes.
@@ -247,6 +247,11 @@ Recommendation:
 - If you add dice pruning, treat it as an *approximation* and validate with
   error audits. Naive “skip rare rolls” changes the expected value operator.
 - Alternative: Monte Carlo dice sampling at deeper plies (unbiased estimator).
+
+Status: chance sampling is available via:
+- `SearchConfig` (`chance_samples`, `chance_sample_depth`, `chance_seed`)
+- Default stays exact (set `chance_samples > 0` to enable sampling).
+- Sampling applies when `depth <= chance_sample_depth` (<= 0 means all depths).
 
 ### D) Feature hints: pip count and mobility — not implemented
 

@@ -13,25 +13,17 @@
 // limitations under the License.
 
 #include "open_spiel/games/long_narde/long_narde_search.h"
-
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <random>
 #include <utility>
 #include <vector>
-
 #include "open_spiel/spiel_utils.h"
 namespace open_spiel {
 namespace long_narde {
-namespace {
-uint64_t HashMix(uint64_t h, uint64_t v) {
-  h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-  return h;
-}
-}  // namespace
-
 ExpectiminimaxSearch::ExpectiminimaxSearch(
     const nnue::NnueEvaluator* evaluator, const SearchConfig& config) {
   evaluator_ = evaluator;
@@ -207,31 +199,65 @@ double ExpectiminimaxSearch::SearchState(LongNardeState* state, int depth,
     if (depth == 0) {
       return EvaluatePreRoll(*state, maximizing_player);
     }
-    double value = 0.0;
-    for (const auto& outcome : state->ChanceOutcomes()) {
+    const auto& outcomes = state->ChanceOutcomes();
+    auto eval_outcome = [&](Action outcome) {
+      double child_value = 0.0;
       if (config_.use_undo) {
-        state->ApplyAction(outcome.first);
+        state->ApplyAction(outcome);
         if (cache_stack_ != nullptr) {
           cache_stack_->PushChance();
         }
-        value += outcome.second *
-                 SearchState(state, depth, maximizing_player, nullptr);
+        child_value = SearchState(state, depth, maximizing_player, nullptr);
         if (cache_stack_ != nullptr) {
           cache_stack_->Pop();
         }
-        state->UndoAction(kChancePlayerId, outcome.first);
+        state->UndoAction(kChancePlayerId, outcome);
       } else {
-        std::unique_ptr<State> child = state->Child(outcome.first);
+        std::unique_ptr<State> child = state->Child(outcome);
         auto* lnchild = static_cast<LongNardeState*>(child.get());
         if (cache_stack_ != nullptr) {
           cache_stack_->PushChance();
         }
-        value += outcome.second *
-                 SearchState(lnchild, depth, maximizing_player, nullptr);
+        child_value = SearchState(lnchild, depth, maximizing_player, nullptr);
         if (cache_stack_ != nullptr) {
           cache_stack_->Pop();
         }
       }
+      return child_value;
+    };
+    int sample_count = config_.chance_samples;
+    bool sample =
+        sample_count > 0 &&
+        sample_count < static_cast<int>(outcomes.size()) &&
+        (config_.chance_sample_depth <= 0 ||
+         depth <= config_.chance_sample_depth);
+    if (sample) {
+      std::vector<double> cumulative;
+      cumulative.reserve(outcomes.size());
+      double total_prob = 0.0;
+      for (const auto& outcome : outcomes) {
+        total_prob += outcome.second;
+        cumulative.push_back(total_prob);
+      }
+      std::mt19937_64 rng(config_.chance_seed ^ HashState(*state) ^
+                          static_cast<uint64_t>(depth));
+      std::uniform_real_distribution<double> dist(0.0, total_prob);
+      double value = 0.0;
+      for (int i = 0; i < sample_count; ++i) {
+        double r = dist(rng);
+        auto it = std::lower_bound(cumulative.begin(), cumulative.end(), r);
+        std::size_t idx = static_cast<std::size_t>(
+            std::distance(cumulative.begin(), it));
+        if (idx >= outcomes.size()) {
+          idx = outcomes.size() - 1;
+        }
+        value += eval_outcome(outcomes[idx].first);
+      }
+      return total_prob * (value / static_cast<double>(sample_count));
+    }
+    double value = 0.0;
+    for (const auto& outcome : outcomes) {
+      value += outcome.second * eval_outcome(outcome.first);
     }
     return value;
   }
@@ -467,33 +493,6 @@ std::vector<Action> ExpectiminimaxSearch::OrderedActions(
     *scores_out = std::move(scores);
   }
   return pruned;
-}
-
-uint64_t ExpectiminimaxSearch::HashState(const LongNardeState& state) const {
-  uint64_t h = 0xcbf29ce484222325ULL;
-  const auto& board = state.board();
-  for (int side = 0; side < kNumPlayers; ++side) {
-    for (int point = 0; point < kNumPoints; ++point) {
-      h = HashMix(h, static_cast<uint64_t>(board[side][point]));
-    }
-  }
-  h = HashMix(h, static_cast<uint64_t>(state.current_player_id()));
-  h = HashMix(h, static_cast<uint64_t>(state.head_moved_count()));
-  h = HashMix(h, static_cast<uint64_t>(state.phase()));
-  h = HashMix(h, static_cast<uint64_t>(state.is_first_turn()));
-  h = HashMix(h, static_cast<uint64_t>(state.initial_roll()));
-  h = HashMix(h, static_cast<uint64_t>(state.is_doubles()));
-  h = HashMix(h, static_cast<uint64_t>(state.awaiting_roll()));
-  if (!state.awaiting_roll()) {
-    int d0 = state.dice(0);
-    int d1 = state.dice(1);
-    if (d0 > d1) {
-      std::swap(d0, d1);
-    }
-    h = HashMix(h, static_cast<uint64_t>(d0));
-    h = HashMix(h, static_cast<uint64_t>(d1));
-  }
-  return h;
 }
 
 }  // namespace long_narde

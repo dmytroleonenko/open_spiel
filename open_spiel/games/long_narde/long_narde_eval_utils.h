@@ -34,6 +34,9 @@ struct EvalConfig {
   uint64_t seed = 7;
   int workers = 0;
   int tt_entries = 200000;
+  int chance_samples = 0;
+  int chance_sample_depth = 1;
+  uint64_t chance_seed = 0;
   std::string nnue_a;
   std::string nnue_b;
   std::string out_path;

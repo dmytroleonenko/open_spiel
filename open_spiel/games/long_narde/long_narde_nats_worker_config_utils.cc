@@ -117,6 +117,12 @@ void ApplyConfigArgs(const std::unordered_map<std::string, std::string>& args,
   config->report_every_seconds =
       GetIntArg(args, "report_every_seconds", config->report_every_seconds);
   config->tt_entries = GetIntArg(args, "tt_entries", config->tt_entries);
+  config->chance_samples =
+      GetIntArg(args, "chance_samples", config->chance_samples);
+  config->chance_sample_depth =
+      GetIntArg(args, "chance_sample_depth", config->chance_sample_depth);
+  config->chance_seed =
+      GetUint64Arg(args, "chance_seed", config->chance_seed);
 }
 
 std::string BuildSubject(const std::string& base, const std::string& run_id) {
