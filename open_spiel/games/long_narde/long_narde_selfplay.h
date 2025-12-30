@@ -16,6 +16,7 @@
 #define OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_SELFPLAY_H_
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -26,11 +27,15 @@
 namespace open_spiel {
 namespace long_narde {
 
+class LnueStreamWriter;
+
 struct SelfPlayConfig {
   int num_games = 1;
   int max_moves = 1000;
   int num_workers = 0;
   double temperature = 1.0;
+  double temperature_end = -1.0;
+  int temperature_decay_plies = 0;
   double alpha = 0.5;
   uint64_t seed = 0;
   bool progress = false;
@@ -57,10 +62,23 @@ struct SelfPlayBatch {
   SelfPlayStats stats;
 };
 
+struct SelfPlayStreamConfig {
+  int64_t start_game = 0;
+  int64_t start_samples = 0;
+  int flush_every_games = 1;
+  std::function<void(int64_t, int64_t)> on_flush;
+};
+
 SelfPlayBatch RunSelfPlay(std::shared_ptr<const Game> game,
                           const nnue::NnueEvaluator& evaluator,
                           const SearchConfig& search_config,
                           const SelfPlayConfig& selfplay_config);
+SelfPlayStats RunSelfPlayStreaming(std::shared_ptr<const Game> game,
+                                   const nnue::NnueEvaluator& evaluator,
+                                   const SearchConfig& search_config,
+                                   const SelfPlayConfig& selfplay_config,
+                                   LnueStreamWriter* writer,
+                                   const SelfPlayStreamConfig& stream_config);
 
 }  // namespace long_narde
 }  // namespace open_spiel

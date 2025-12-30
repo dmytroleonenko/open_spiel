@@ -171,6 +171,8 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
   SearchConfig search_config;
   search_config.max_depth = config.depth;
   search_config.max_tt_entries = config.tt_entries;
+  search_config.root_full_depth_top_k = config.root_full_depth_top_k;
+  search_config.root_reduced_depth = config.root_reduced_depth;
   search_config.chance_samples = config.chance_samples;
   search_config.chance_sample_depth = config.chance_sample_depth;
   search_config.chance_seed = config.chance_seed;
@@ -289,12 +291,15 @@ void PrintUsage(const char* bin) {
             << " [--config_request_subject name]\n"
             << "             [--nnue path] [--depth N] [--workers N]"
             << " [--games N]\n"
-            << "             [--temperature T] [--alpha A] [--seed N]"
-            << " [--wait_for_weights 0|1]\n"
+            << "             [--temperature T] [--temperature_end T]"
+            << " [--temperature_decay_plies N]\n"
+            << "             [--alpha A] [--seed N] [--wait_for_weights 0|1]\n"
             << "             [--request_weights 0|1]"
             << " [--request_interval_ms N]"
             << " [--request_config 0|1] [--config_timeout_ms N]\n"
             << "             [--report_every_seconds N] [--tt_entries N]\n"
+            << "             [--root_full_depth_top_k N]"
+            << " [--root_reduced_depth N]\n"
             << "             [--chance_samples N] [--chance_sample_depth N]"
             << " [--chance_seed N]\n";
 }

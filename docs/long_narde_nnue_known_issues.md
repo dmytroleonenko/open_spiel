@@ -253,7 +253,7 @@ Status: chance sampling is available via:
 - Default stays exact (set `chance_samples > 0` to enable sampling).
 - Sampling applies when `depth <= chance_sample_depth` (<= 0 means all depths).
 
-### D) Feature hints: pip count and mobility — not implemented
+### D) Feature hints: pip count and mobility — implemented (NNUE/LNUE v3)
 
 Reviewer’s rationale:
 - The NNUE feature set is purely board‑local; it has to *learn* pip counts and
@@ -265,11 +265,18 @@ Suggested additions:
   over all 21 dice outcomes (pre‑roll), computed for both players (or as a
   delta) and bucketed to a small range.
 
-Where to integrate:
-- Feature computation in `open_spiel/games/long_narde/long_narde_nnue.cc` and
-  NNUE input layout; would require IO format bump and retraining.
+Status: implemented via two sparse hint features:
+- **Pip delta** bucket (my_pips - opp_pips).
+- **Mobility** buckets for expected legal actions (pre‑roll) for current and
+  opponent perspectives.
 
-### E) Training policy noise (temperature scheduling) — not implemented
+Changes include:
+- Feature layout and IO bump (NNUE v3, LNUE v3).
+- Feature computation in `open_spiel/games/long_narde/long_narde_nnue.cc`,
+  cache update in `open_spiel/games/long_narde/long_narde_nnue_cache.cc`,
+  and new helpers in `open_spiel/games/long_narde/long_narde_nnue_features.cc`.
+
+### E) Training policy noise (temperature scheduling) — implemented
 
 Current behavior:
 - Softmax sampling with fixed temperature in self‑play.
@@ -279,7 +286,11 @@ Recommendation:
 - Decay temperature quickly (or use a lower fixed value) to reduce noisy
   “teacher” moves, especially at low search depth.
 
-### F) TD‑lambda / n‑step targets — not implemented
+Status: implemented with per‑ply temperature scheduling:
+- `--temperature_end` sets the final temperature.
+- `--temperature_decay_plies` controls the linear decay length.
+
+### F) TD‑lambda / n‑step targets — implemented
 
 Current behavior:
 - Targets are mixed as `alpha*search_value + (1‑alpha)*outcome_value`.
@@ -290,5 +301,56 @@ Recommendation:
   reduce outcome variance in long games.
 
 Note:
-- This is a training algorithm change, not a search change. It would require
-  changes to the sample structure or to the training code.
+- This is a training algorithm change; it is implemented in Python training.
+
+Status: implemented via training-time n-step bootstrapping:
+- `--bootstrap_steps N` recomputes EV targets using the search value from
+  ply `N` ahead (fallbacks to current value if not found).
+- `--bootstrap_alpha A` controls the blend with the final outcome
+  (defaults to `--alpha` in closed-loop, 0.5 in standalone training).
+
+### G) Replay buffer / mix-in — implemented
+
+Rationale:
+- Training on only the latest shards makes the target distribution drift
+  rapidly and can cause catastrophic forgetting.
+
+Status: closed-loop can mix recent shards during training:
+- `--replay_iters N` (how many previous iterations to draw from).
+- `--replay_frac F` (fraction of replay shards relative to current shards).
+- `--replay_max_shards M` (cap on replay pool size).
+
+### H) Root-only depth-3 (top-K full depth) — implemented
+
+Rationale:
+- Depth-3 everywhere is expensive; most root moves do not need the full depth.
+
+Status: split-depth root search for move scoring:
+- Evaluate all root moves at a reduced depth (defaults to `max_depth - 1`).
+- Re-evaluate the top-K root moves at full depth.
+- Controlled via `SearchConfig` / CLI flags:
+  `root_full_depth_top_k` and `root_reduced_depth`.
+
+### I) Mobility auxiliary head — proposed
+
+Rationale:
+- Mobility is a dense, low-noise signal that shortens feedback for blockade
+  quality beyond sparse win/loss targets.
+
+Recommendation:
+- Add an auxiliary head that predicts expected opponent legal moves (or a
+  mobility delta), trained with a small loss weight (e.g., 0.05–0.2 of EV).
+
+Status: not implemented.
+
+### J) Head-debt shaping — proposed
+
+Rationale:
+- Head moves are constrained (one per turn), so deferring legal head moves builds
+  a backlog that the EV signal captures too late.
+
+Recommendation:
+- Add a tiny shaping term to targets or policy scoring: reward reductions in
+  own head count; apply a small penalty when a head move is legal but skipped.
+
+Status: not implemented.

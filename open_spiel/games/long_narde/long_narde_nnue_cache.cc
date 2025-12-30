@@ -20,6 +20,7 @@
 #include <utility>
 
 #include "open_spiel/games/long_narde/long_narde_internal.h"
+#include "open_spiel/games/long_narde/long_narde_nnue_features.h"
 #include "open_spiel/games/long_narde/long_narde_nnue_kernels.h"
 #include "open_spiel/spiel_utils.h"
 
@@ -164,6 +165,52 @@ void UpdateRunStarts(int run_offset, int index_offset, uint32_t old_run,
   }
 }
 
+internal::Board BoardFromCounts(
+    const std::array<std::array<uint8_t, kNumPoints>, 2>& counts) {
+  internal::Board board{};
+  for (int side = 0; side < kNumPlayers; ++side) {
+    for (int point = 0; point < kNumPoints; ++point) {
+      board[side][point] = counts[side][point];
+    }
+  }
+  return board;
+}
+
+void SetExtraBuckets(nnue::NnueCache* cache) {
+  internal::Board board = BoardFromCounts(cache->counts);
+  cache->pip_delta_bucket = nnue::PipDeltaBucketFromBoard(board);
+  cache->mobility_bucket = nnue::MobilityBucketFromBoard(board);
+  internal::Board opp_board = board;
+  internal::FlipBoard(&opp_board);
+  cache->opp_mobility_bucket = nnue::MobilityBucketFromBoard(opp_board);
+}
+
+void UpdateExtraFeatures(const nnue::NnueNetwork& net, nnue::NnueCache* cache,
+                         nnue::AddRowFn add_row, nnue::SubRowFn sub_row) {
+  internal::Board board = BoardFromCounts(cache->counts);
+  int pip_bucket = nnue::PipDeltaBucketFromBoard(board);
+  int mobility_bucket = nnue::MobilityBucketFromBoard(board);
+  internal::Board opp_board = board;
+  internal::FlipBoard(&opp_board);
+  int opp_mobility_bucket = nnue::MobilityBucketFromBoard(opp_board);
+  auto update_bucket = [&](int* cached, int offset, int next) {
+    if (*cached == next) {
+      return;
+    }
+    const int16_t* row_old = &net.w0[(offset + *cached) * nnue::kNnueL1];
+    const int16_t* row_new = &net.w0[(offset + next) * nnue::kNnueL1];
+    sub_row(row_old, cache->acc.data());
+    add_row(row_new, cache->acc.data());
+    *cached = next;
+  };
+  update_bucket(&cache->pip_delta_bucket, nnue::kNnuePipDeltaOffset,
+                pip_bucket);
+  update_bucket(&cache->mobility_bucket, nnue::kNnueMobilityOffset,
+                mobility_bucket);
+  update_bucket(&cache->opp_mobility_bucket, nnue::kNnueOppMobilityOffset,
+                opp_mobility_bucket);
+}
+
 void BuildActiveFromCache(const nnue::NnueCache& cache,
                           nnue::NnueActiveFeatures* active) {
   active->count = 0;
@@ -192,6 +239,9 @@ void BuildActiveFromCache(const nnue::NnueCache& cache,
       }
     }
   }
+  AddFeature(nnue::kNnuePipDeltaOffset + cache.pip_delta_bucket, active);
+  AddFeature(nnue::kNnueMobilityOffset + cache.mobility_bucket, active);
+  AddFeature(nnue::kNnueOppMobilityOffset + cache.opp_mobility_bucket, active);
 }
 
 void RebuildAccumulatorFromCache(const nnue::NnueNetwork& net,
@@ -232,6 +282,7 @@ void InitCacheFromState(const LongNardeState& state,
     cache->blocked_bits[side] = BlockedBits(cache->counts[side]);
     cache->run_bits[side] = ComputeRunBits(cache->blocked_bits[side]);
   }
+  SetExtraBuckets(cache);
 }
 
 void UpdateCacheNoFlipSide(int side,
@@ -319,6 +370,7 @@ void FlipCache(const nnue::NnueNetwork& net, const nnue::NnueCache& src,
   dst->blocked_bits[1] = BlockedBits(dst->counts[1]);
   dst->run_bits[0] = ComputeRunBits(dst->blocked_bits[0]);
   dst->run_bits[1] = ComputeRunBits(dst->blocked_bits[1]);
+  SetExtraBuckets(dst);
   RebuildAccumulatorFromCache(net, *dst, &dst->acc);
 }
 
@@ -396,6 +448,8 @@ void NnueCacheStack::PushAction(const LongNardeState& state, Action action,
                         sub_row);
   UpdateCacheNoFlipSide(1, delta_opp, off_delta, *network_, &child.opp, add_row,
                         sub_row);
+  UpdateExtraFeatures(*network_, &child.cur, add_row, sub_row);
+  UpdateExtraFeatures(*network_, &child.opp, add_row, sub_row);
 
   if (flipped) {
     std::swap(child.cur, child.opp);

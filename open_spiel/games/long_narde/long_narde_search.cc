@@ -120,56 +120,42 @@ ExpectiminimaxSearch::EvaluateDecisionActions(LongNardeState* state) {
   }
   Player maximizing_player = state->current_player_id();
   Player player = state->current_player_id();
-  const std::array<int, 2> dice = state->dice();
   std::vector<Action> actions = state->LegalActions();
   results.reserve(actions.size());
-  for (Action action : actions) {
-    double child_value = 0.0;
-    if (config_.use_undo) {
-      state->ApplyAction(action);
-      if (cache_stack_ != nullptr) {
-        cache_stack_->PushAction(*state, action, dice, player);
-      }
-      int child_depth = config_.max_depth;
-      if (state->awaiting_roll() && config_.max_depth > 0) {
-        child_depth = config_.max_depth - 1;
-      }
-      child_value =
-          SearchState(state, child_depth, maximizing_player, nullptr);
-      if (cache_stack_ != nullptr) {
-        cache_stack_->Pop();
-      }
-      state->UndoAction(player, action);
-    } else {
-      std::unique_ptr<State> child = state->Child(action);
-      auto* lnchild = static_cast<LongNardeState*>(child.get());
-      int child_depth = config_.max_depth;
-      if (lnchild->awaiting_roll() && config_.max_depth > 0) {
-        child_depth = config_.max_depth - 1;
-      }
-      if (cache_stack_ != nullptr) {
-        cache_stack_->PushAction(*lnchild, action, dice, player);
-      }
-      child_value =
-          SearchState(lnchild, child_depth, maximizing_player, nullptr);
-      if (cache_stack_ != nullptr) {
-        cache_stack_->Pop();
-      }
-    }
-    results.push_back({action, child_value});
+  int full_depth = config_.max_depth;
+  int reduced_depth = config_.root_reduced_depth;
+  if (reduced_depth < 0) {
+    reduced_depth = std::max(full_depth - 1, 0);
   }
-
-  std::stable_sort(results.begin(), results.end(),
-                   [player, maximizing_player](
-                       const std::pair<Action, double>& a,
-                       const std::pair<Action, double>& b) {
-                     if (a.second == b.second) {
-                       return a.first < b.first;
-                     }
-                     bool maximizing = player == maximizing_player;
-                     return maximizing ? (a.second > b.second)
-                                       : (a.second < b.second);
-                   });
+  reduced_depth = std::min(reduced_depth, full_depth);
+  int top_k = config_.root_full_depth_top_k;
+  bool use_root_split = top_k > 0 && full_depth > 0 &&
+                        reduced_depth < full_depth &&
+                        static_cast<int>(actions.size()) > top_k;
+  if (!use_root_split) {
+    results = ScoreActionsAtDepth(state, actions, full_depth,
+                                  maximizing_player);
+  } else {
+    results = ScoreActionsAtDepth(state, actions, reduced_depth,
+                                  maximizing_player);
+    top_k = std::min(top_k, static_cast<int>(results.size()));
+    for (int i = 0; i < top_k; ++i) {
+      results[i].second =
+          EvaluateAction(state, results[i].first, full_depth,
+                         maximizing_player);
+    }
+    std::stable_sort(results.begin(), results.end(),
+                     [player, maximizing_player](
+                         const std::pair<Action, double>& a,
+                         const std::pair<Action, double>& b) {
+                       if (a.second == b.second) {
+                         return a.first < b.first;
+                       }
+                       bool maximizing = player == maximizing_player;
+                       return maximizing ? (a.second > b.second)
+                                         : (a.second < b.second);
+                     });
+  }
   if (cache_stack_ != nullptr) {
     cache_stack_->Clear();
   }
@@ -331,44 +317,13 @@ double ExpectiminimaxSearch::EvaluateActionList(
     return 0.0;
   }
   Player player = state->current_player_id();
-  const std::array<int, 2> dice = state->dice();
   bool maximizing = player == maximizing_player;
   double best_value = maximizing ? -std::numeric_limits<double>::infinity()
                                  : std::numeric_limits<double>::infinity();
   Action best = kInvalidAction;
   for (Action action : actions) {
-    double child_value = 0.0;
-    if (config_.use_undo) {
-      state->ApplyAction(action);
-      if (cache_stack_ != nullptr) {
-        cache_stack_->PushAction(*state, action, dice, player);
-      }
-      int child_depth = depth;
-      if (state->awaiting_roll() && depth > 0) {
-        child_depth = depth - 1;
-      }
-      child_value =
-          SearchState(state, child_depth, maximizing_player, nullptr);
-      if (cache_stack_ != nullptr) {
-        cache_stack_->Pop();
-      }
-      state->UndoAction(player, action);
-    } else {
-      std::unique_ptr<State> child = state->Child(action);
-      LongNardeState* child_state = static_cast<LongNardeState*>(child.get());
-      int child_depth = depth;
-      if (child_state->awaiting_roll() && depth > 0) {
-        child_depth = depth - 1;
-      }
-      if (cache_stack_ != nullptr) {
-        cache_stack_->PushAction(*child_state, action, dice, player);
-      }
-      child_value =
-          SearchState(child_state, child_depth, maximizing_player, nullptr);
-      if (cache_stack_ != nullptr) {
-        cache_stack_->Pop();
-      }
-    }
+    double child_value = EvaluateAction(state, action, depth,
+                                        maximizing_player);
     if ((maximizing && child_value > best_value) ||
         (!maximizing && child_value < best_value) ||
         best == kInvalidAction) {
@@ -406,34 +361,19 @@ double ExpectiminimaxSearch::EvaluatePreRoll(
 std::vector<std::pair<Action, double>> ExpectiminimaxSearch::ScoreActions(
     LongNardeState* state, Player maximizing_player) {
   std::vector<Action> actions = state->LegalActions();
+  return ScoreActionsAtDepth(state, actions, 0, maximizing_player);
+}
+
+std::vector<std::pair<Action, double>>
+ExpectiminimaxSearch::ScoreActionsAtDepth(
+    LongNardeState* state, const std::vector<Action>& actions, int depth,
+    Player maximizing_player) {
   std::vector<std::pair<Action, double>> scores;
   scores.reserve(actions.size());
   Player player = state->current_player_id();
-  const std::array<int, 2> dice = state->dice();
   for (Action action : actions) {
-    double score = 0.0;
-    if (config_.use_undo) {
-      state->ApplyAction(action);
-      if (cache_stack_ != nullptr) {
-        cache_stack_->PushAction(*state, action, dice, player);
-      }
-      score = SearchState(state, 0, maximizing_player, nullptr);
-      if (cache_stack_ != nullptr) {
-        cache_stack_->Pop();
-      }
-      state->UndoAction(player, action);
-    } else {
-      std::unique_ptr<State> child = state->Child(action);
-      auto* lnchild = static_cast<LongNardeState*>(child.get());
-      if (cache_stack_ != nullptr) {
-        cache_stack_->PushAction(*lnchild, action, dice, player);
-      }
-      score = SearchState(lnchild, 0, maximizing_player, nullptr);
-      if (cache_stack_ != nullptr) {
-        cache_stack_->Pop();
-      }
-    }
-    scores.push_back({action, score});
+    scores.push_back(
+        {action, EvaluateAction(state, action, depth, maximizing_player)});
   }
 
   bool maximizing = player == maximizing_player;
@@ -493,6 +433,45 @@ std::vector<Action> ExpectiminimaxSearch::OrderedActions(
     *scores_out = std::move(scores);
   }
   return pruned;
+}
+
+double ExpectiminimaxSearch::EvaluateAction(
+    LongNardeState* state, Action action, int depth,
+    Player maximizing_player) {
+  double child_value = 0.0;
+  Player player = state->current_player_id();
+  const std::array<int, 2> dice = state->dice();
+  if (config_.use_undo) {
+    state->ApplyAction(action);
+    if (cache_stack_ != nullptr) {
+      cache_stack_->PushAction(*state, action, dice, player);
+    }
+    int child_depth = depth;
+    if (state->awaiting_roll() && depth > 0) {
+      child_depth = depth - 1;
+    }
+    child_value = SearchState(state, child_depth, maximizing_player, nullptr);
+    if (cache_stack_ != nullptr) {
+      cache_stack_->Pop();
+    }
+    state->UndoAction(player, action);
+  } else {
+    std::unique_ptr<State> child = state->Child(action);
+    LongNardeState* child_state = static_cast<LongNardeState*>(child.get());
+    int child_depth = depth;
+    if (child_state->awaiting_roll() && depth > 0) {
+      child_depth = depth - 1;
+    }
+    if (cache_stack_ != nullptr) {
+      cache_stack_->PushAction(*child_state, action, dice, player);
+    }
+    child_value =
+        SearchState(child_state, child_depth, maximizing_player, nullptr);
+    if (cache_stack_ != nullptr) {
+      cache_stack_->Pop();
+    }
+  }
+  return child_value;
 }
 
 }  // namespace long_narde

@@ -16,6 +16,7 @@
 // (MIT License, Copyright 2020-2025 David Carteau).
 #include "open_spiel/games/long_narde/long_narde_nnue.h"
 
+#include "open_spiel/games/long_narde/long_narde_nnue_features.h"
 #include "open_spiel/games/long_narde/long_narde_nnue_kernels.h"
 #include <algorithm>
 #include <cmath>
@@ -79,6 +80,7 @@ const std::array<uint32_t, kNnueRunFeaturesPerSide>& RunMasks() {
   }();
   return masks;
 }
+
 void CollectActiveFeaturesInternal(const LongNardeState& state,
                                    NnueActiveFeatures* active) {
   active->count = 0;
@@ -108,6 +110,15 @@ void CollectActiveFeaturesInternal(const LongNardeState& state,
       }
     }
   }
+  int pip_bucket = PipDeltaBucketFromBoard(board);
+  active->indices[active->count++] = kNnuePipDeltaOffset + pip_bucket;
+  int mobility_bucket = MobilityBucketFromBoard(board);
+  internal::Board opp_board = board;
+  internal::FlipBoard(&opp_board);
+  int opp_mobility_bucket = MobilityBucketFromBoard(opp_board);
+  active->indices[active->count++] = kNnueMobilityOffset + mobility_bucket;
+  active->indices[active->count++] =
+      kNnueOppMobilityOffset + opp_mobility_bucket;
 }
 void BuildAccumulatorInternal(const NnueNetwork& net,
                               const NnueActiveFeatures& active,

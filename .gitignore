@@ -78,3 +78,17 @@ open_spiel/.vs
 
 # Long Narde NNUE artifacts
 results/
+
+# Local experiments and scratch
+.cache/
+Testing/
+EfficientZeroV2/
+external/
+help/
+jax-resnet/
+mctx/
+AGENTS.md
+open_spiel/python/algorithms/muzero_jax/
+open_spiel/games/long_narde/long_narde_export_tests.cc
+open_spiel/games/long_narde/long_narde_export_tests.cc.bak
+open_spiel/integration_tests/playthroughs/long_narde.txt

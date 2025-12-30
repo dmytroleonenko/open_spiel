@@ -53,6 +53,10 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--chunk", type=int, default=4096)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--temperature_end", type=float, default=-1.0)
+    parser.add_argument("--temperature_decay_plies", type=int, default=0)
+    parser.add_argument("--root_full_depth_top_k", type=int, default=0)
+    parser.add_argument("--root_reduced_depth", type=int, default=-1)
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--nnue", default="")
@@ -103,6 +107,14 @@ def main() -> None:
                 str(args.chunk),
                 "--temperature",
                 str(args.temperature),
+                "--temperature_end",
+                str(args.temperature_end),
+                "--temperature_decay_plies",
+                str(args.temperature_decay_plies),
+                "--root_full_depth_top_k",
+                str(args.root_full_depth_top_k),
+                "--root_reduced_depth",
+                str(args.root_reduced_depth),
                 "--alpha",
                 str(args.alpha),
                 "--progress",

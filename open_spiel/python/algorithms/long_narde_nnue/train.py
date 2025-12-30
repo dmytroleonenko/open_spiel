@@ -1,4 +1,5 @@
 """Train a Long Narde NNUE from LNUE shards."""
+# pylint: disable=duplicate-code
 
 from __future__ import annotations
 
@@ -21,9 +22,10 @@ _Q = 127.0 / 64.0
 _SCALE = 64.0
 _NNUE_MAGIC = b"LNNU"
 _NNUE_ENDIAN = 0x01020304
-_NNUE_VERSION = 2
+_NNUE_VERSION = 3
 _NNUE_TYPE_INT8 = 1
 _NNUE_TYPE_INT16 = 2
+_NNUE_FEATURE_FLAGS = (1 << 0) | (1 << 1) | (1 << 2)
 
 
 class NnueNet(torch.nn.Module):
@@ -100,7 +102,10 @@ def _resolve_device(device: str) -> str:
 
 
 def _iter_batches(
-    chunk, batch_size: int, rng: np.random.Generator
+    chunk,
+    batch_size: int,
+    rng: np.random.Generator,
+    target: np.ndarray | None = None,
 ) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     """Yields index bags and targets for mini-batches within a chunk."""
     # pylint: disable=too-many-locals
@@ -110,6 +115,7 @@ def _iter_batches(
 
     offsets = chunk.offsets
     indices = chunk.indices
+    target_arr = target if target is not None else chunk.target
 
     for start in range(0, num_samples, batch_size):
         batch_ids = order[start : start + batch_size]
@@ -130,8 +136,28 @@ def _iter_batches(
             batch_indices,
             new_offsets,
             chunk.outcome[batch_ids].astype(np.float32),
-            chunk.target[batch_ids].astype(np.float32),
+            target_arr[batch_ids].astype(np.float32),
         )
+
+
+def _bootstrap_targets(chunk, steps: int, alpha: float) -> np.ndarray:
+    if steps <= 0:
+        return chunk.target
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    outcome = chunk.outcome.astype(np.float32)
+    target = np.empty_like(chunk.target, dtype=np.float32)
+    game_map: dict[int, dict[int, int]] = {}
+    for idx, (game_id, ply) in enumerate(zip(chunk.game_id, chunk.ply)):
+        game_map.setdefault(int(game_id), {})[int(ply)] = idx
+    for idx, (game_id, ply) in enumerate(zip(chunk.game_id, chunk.ply)):
+        lookup = game_map[int(game_id)]
+        next_idx = lookup.get(int(ply) + steps)
+        if next_idx is None:
+            bootstrap = float(chunk.v_search[idx])
+        else:
+            bootstrap = float(chunk.v_search[next_idx])
+        target[idx] = alpha * bootstrap + (1.0 - alpha) * outcome[idx]
+    return target
 
 
 def _targets_from_outcome(
@@ -187,7 +213,7 @@ def _train_batch(
 ) -> None:
     """Runs a single optimization step on one batch."""
     # pylint: disable=too-many-arguments,too-many-positional-arguments
-    # pylint: disable=too-many-locals
+    # pylint: disable=too-many-locals,too-many-branches
     indices_t = torch.from_numpy(indices).to(device)
     offsets_t = torch.from_numpy(offsets).to(device)
     outcome_t = torch.from_numpy(outcome).to(device)
@@ -211,31 +237,38 @@ def _build_selfplay_cmd(
     seed: int,
     chunk: int,
     temperature: float,
+    temperature_end: float | None,
+    temperature_decay_plies: int | None,
     alpha: float,
     workers: int | None = None,
     shard_id: int | None = None,
     progress: bool | None = None,
     report_every: int | None = None,
     nnue_path: Path | None = None,
+    root_full_depth_top_k: int | None = None,
+    root_reduced_depth: int | None = None,
+    stream: bool | None = None,
+    resume: bool | None = None,
+    flush_every_games: int | None = None,
+    lock_path: Path | None = None,
+    force_lock: bool | None = None,
     chance_samples: int | None = None,
     chance_sample_depth: int | None = None,
     chance_seed: int | None = None,
 ) -> list[str]:
     """Builds a long_narde_selfplay command with optional flags."""
     # pylint: disable=too-many-arguments,too-many-positional-arguments
-    # pylint: disable=too-many-locals
+    # pylint: disable=too-many-locals,too-many-branches
     cmd = _build_base_cmd(bin_path, games, depth, seed)
     cmd.extend(["--out", str(out_path)])
-    cmd.extend(
-        [
-            "--chunk",
-            str(chunk),
-            "--temperature",
-            str(temperature),
-            "--alpha",
-            str(alpha),
-        ]
-    )
+    cmd.extend(["--chunk", str(chunk), "--temperature", str(temperature)])
+    if temperature_end is not None:
+        cmd.extend(["--temperature_end", str(temperature_end)])
+    if temperature_decay_plies is not None:
+        cmd.extend(
+            ["--temperature_decay_plies", str(temperature_decay_plies)]
+        )
+    cmd.extend(["--alpha", str(alpha)])
     if workers is not None:
         cmd.extend(["--workers", str(workers)])
     if shard_id is not None:
@@ -246,6 +279,20 @@ def _build_selfplay_cmd(
         cmd.extend(["--report_every", str(report_every)])
     if nnue_path is not None:
         cmd.extend(["--nnue", str(nnue_path)])
+    if root_full_depth_top_k is not None:
+        cmd.extend(["--root_full_depth_top_k", str(root_full_depth_top_k)])
+    if root_reduced_depth is not None:
+        cmd.extend(["--root_reduced_depth", str(root_reduced_depth)])
+    if stream is not None:
+        cmd.extend(["--stream", "1" if stream else "0"])
+    if resume is not None:
+        cmd.extend(["--resume", "1" if resume else "0"])
+    if flush_every_games is not None:
+        cmd.extend(["--flush_every_games", str(flush_every_games)])
+    if lock_path is not None:
+        cmd.extend(["--lock", str(lock_path)])
+    if force_lock is not None:
+        cmd.extend(["--force_lock", "1" if force_lock else "0"])
     if chance_samples is not None and chance_samples > 0:
         cmd.extend(["--chance_samples", str(chance_samples)])
         if chance_sample_depth is not None:
@@ -279,11 +326,20 @@ def run_selfplay(
     chunk: int,
     temperature: float,
     alpha: float,
+    temperature_end: float | None = None,
+    temperature_decay_plies: int | None = None,
     workers: int | None = None,
     shard_id: int | None = None,
     progress: bool | None = None,
     report_every: int | None = None,
     nnue_path: Path | None = None,
+    root_full_depth_top_k: int | None = None,
+    root_reduced_depth: int | None = None,
+    stream: bool | None = None,
+    resume: bool | None = None,
+    flush_every_games: int | None = None,
+    lock_path: Path | None = None,
+    force_lock: bool | None = None,
     chance_samples: int | None = None,
     chance_sample_depth: int | None = None,
     chance_seed: int | None = None,
@@ -299,12 +355,21 @@ def run_selfplay(
         seed=seed,
         chunk=chunk,
         temperature=temperature,
+        temperature_end=temperature_end,
+        temperature_decay_plies=temperature_decay_plies,
         alpha=alpha,
         workers=workers,
         shard_id=shard_id,
         progress=progress,
         report_every=report_every,
         nnue_path=nnue_path,
+        root_full_depth_top_k=root_full_depth_top_k,
+        root_reduced_depth=root_reduced_depth,
+        stream=stream,
+        resume=resume,
+        flush_every_games=flush_every_games,
+        lock_path=lock_path,
+        force_lock=force_lock,
         chance_samples=chance_samples,
         chance_sample_depth=chance_sample_depth,
         chance_seed=chance_seed,
@@ -317,7 +382,7 @@ def _save_nnue(
     model: NnueNet,
     name: str,
     author: str,
-    run_features_enabled: int = 1,
+    run_features_enabled: int = _NNUE_FEATURE_FLAGS,
     run_block_threshold: int = 1,
 ) -> None:
     """Exports a quantized NNUE file for C++ inference."""
@@ -394,6 +459,10 @@ def train(args) -> None:
     np_rng = np.random.default_rng(args.seed)
 
     device = _resolve_device(args.device)
+    bootstrap_steps = max(0, int(args.bootstrap_steps))
+    bootstrap_alpha = args.bootstrap_alpha
+    if bootstrap_alpha < 0.0:
+        bootstrap_alpha = 0.5
 
     shard_paths = sorted(glob.glob(os.path.join(args.data_dir, "*.lnue")))
     if not shard_paths:
@@ -411,8 +480,13 @@ def train(args) -> None:
         for shard_path in shard_paths:
             reader = LnueShardReader(shard_path)
             for chunk in reader.iter_chunks():
+                target_override = None
+                if bootstrap_steps > 0:
+                    target_override = _bootstrap_targets(
+                        chunk, bootstrap_steps, bootstrap_alpha
+                    )
                 for indices, offsets, outcome, target in _iter_batches(
-                    chunk, args.batch_size, np_rng
+                    chunk, args.batch_size, np_rng, target_override
                 ):
                     batch_kwargs = {
                         "model": model,
@@ -443,6 +517,8 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ev_weight", type=float, default=0.5)
     parser.add_argument("--quant_loss", action="store_true")
     parser.add_argument("--quant_loss_weight", type=float, default=0.0001)
+    parser.add_argument("--bootstrap_steps", type=int, default=0)
+    parser.add_argument("--bootstrap_alpha", type=float, default=-1.0)
 
 
 def parse_args() -> argparse.Namespace:

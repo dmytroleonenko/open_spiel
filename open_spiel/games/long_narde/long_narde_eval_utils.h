@@ -34,6 +34,8 @@ struct EvalConfig {
   uint64_t seed = 7;
   int workers = 0;
   int tt_entries = 200000;
+  int root_full_depth_top_k = 0;
+  int root_reduced_depth = -1;
   int chance_samples = 0;
   int chance_sample_depth = 1;
   uint64_t chance_seed = 0;

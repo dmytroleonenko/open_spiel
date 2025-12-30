@@ -39,6 +39,8 @@ struct SearchConfig {
   int panic_min_k = 8;
   int panic_top_k = 32;
   double panic_delta = 0.5;
+  int root_full_depth_top_k = 0;
+  int root_reduced_depth = -1;
   bool enable_pruning = true;
   bool use_tt = true;
   int max_tt_entries = 200000;
@@ -84,9 +86,14 @@ class ExpectiminimaxSearch {
       std::vector<std::pair<Action, double>>* scores_out);
   std::vector<std::pair<Action, double>> ScoreActions(
       LongNardeState* state, Player maximizing_player);
+  std::vector<std::pair<Action, double>> ScoreActionsAtDepth(
+      LongNardeState* state, const std::vector<Action>& actions, int depth,
+      Player maximizing_player);
   std::vector<Action> PruneActions(
       const std::vector<std::pair<Action, double>>& scores, int min_k,
       int top_k, double delta) const;
+  double EvaluateAction(LongNardeState* state, Action action, int depth,
+                        Player maximizing_player);
   double EvaluateActionList(LongNardeState* state,
                             const std::vector<Action>& actions, int depth,
                             Player maximizing_player, Action* best_action);

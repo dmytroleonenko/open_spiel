@@ -41,19 +41,42 @@ constexpr int kNnueRunCount3 = kNumPoints - 3 + 1;
 constexpr int kNnueRunCount4 = kNumPoints - 4 + 1;
 constexpr int kNnueRunCount5 = kNumPoints - 5 + 1;
 constexpr int kNnueRunCount6 = kNumPoints - 6 + 1;
-constexpr int kNnueRunFeaturesPerSide = kNnueRunCount2 + kNnueRunCount3 +
-kNnueRunCount4 + kNnueRunCount5 + kNnueRunCount6;
+constexpr int kNnueRunFeaturesPerSide =
+kNnueRunCount2 + kNnueRunCount3 + kNnueRunCount4 + kNnueRunCount5 +
+kNnueRunCount6;
 constexpr int kNnueRunFeatures = kNnueRunFeaturesPerSide * 2;
-constexpr int kNnueFeatureDim = kNnueBaseFeatures + kNnueRunFeatures;
+constexpr int kNnuePipDeltaBucketWidth = 8;
+constexpr int kNnuePipDeltaMax = 200;
+constexpr int kNnuePipDeltaBuckets =
+(kNnuePipDeltaMax * 2) / kNnuePipDeltaBucketWidth + 1;
+constexpr int kNnueMobilityBucketWidth = 2;
+constexpr int kNnueMobilityMax = 80;
+constexpr int kNnueMobilityBuckets =
+kNnueMobilityMax / kNnueMobilityBucketWidth + 1;
+constexpr int kNnuePipDeltaOffset = kNnueBaseFeatures + kNnueRunFeatures;
+constexpr int kNnueMobilityOffset =
+kNnuePipDeltaOffset + kNnuePipDeltaBuckets;
+constexpr int kNnueOppMobilityOffset =
+kNnueMobilityOffset + kNnueMobilityBuckets;
+constexpr int kNnueFeatureDim =
+kNnueOppMobilityOffset + kNnueMobilityBuckets;
+constexpr int kNnueExtraActiveFeatures = 3;
 constexpr int kNnueMaxActiveFeatures =
-(kNnuePointsWithOff * 2) + (kNnueRunFeaturesPerSide * 2);
+(kNnuePointsWithOff * 2) + (kNnueRunFeaturesPerSide * 2) +
+kNnueExtraActiveFeatures;
 constexpr int kNnueL1 = 256;
 constexpr int kNnueL2 = 32;
 constexpr int kNnueL3 = 3;
 static_assert(kNnueL1 % 16 == 0, "kNnueL1 must be multiple of 16.");
 static_assert(kNnueL1 % 32 == 0, "kNnueL1 must be multiple of 32.");
 constexpr uint32_t kNnueRunBlockThreshold = 1;
-constexpr int kNnueFileVersion = 2;
+constexpr uint32_t kNnueFeatureFlagRuns = 1u << 0;
+constexpr uint32_t kNnueFeatureFlagPipDelta = 1u << 1;
+constexpr uint32_t kNnueFeatureFlagMobility = 1u << 2;
+constexpr uint32_t kNnueFeatureFlags = kNnueFeatureFlagRuns |
+kNnueFeatureFlagPipDelta |
+kNnueFeatureFlagMobility;
+constexpr int kNnueFileVersion = 3;
 constexpr uint32_t kNnueEndianMarker = 0x01020304u;
 constexpr uint32_t kNnueQuantInt8 = 1;
 constexpr uint32_t kNnueQuantInt16 = 2;
@@ -81,6 +104,9 @@ struct NnueCache {
   std::array<uint8_t, 2> off{};
   std::array<uint32_t, 2> blocked_bits{};
   std::array<std::array<uint64_t, 2>, 2> run_bits{};
+  int pip_delta_bucket = 0;
+  int mobility_bucket = 0;
+  int opp_mobility_bucket = 0;
   std::array<int16_t, kNnueL1> acc{};
 };
 

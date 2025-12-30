@@ -136,7 +136,7 @@ class LnueShardReader:
         ) = struct.unpack(_HEADER_FMT, raw)
         if magic != _LNUE_MAGIC:
             raise ValueError("Invalid LNUE header magic.")
-        if version not in (1, 2):
+        if version not in (1, 2, 3):
             raise ValueError("Unsupported LNUE version.")
         if endian != _ENDIAN_MARKER:
             raise ValueError("Unsupported endianness.")

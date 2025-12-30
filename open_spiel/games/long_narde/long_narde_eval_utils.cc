@@ -91,6 +91,8 @@ void PrintUsage(const char* bin) {
             << "             [--nnue_a path] [--nnue_b path]\n"
             << "             [--out path] [--progress 0|1] [--workers N]"
             << " [--report_every N] [--tt_entries N]\n"
+            << "             [--root_full_depth_top_k N]"
+            << " [--root_reduced_depth N]\n"
             << "             [--chance_samples N] [--chance_sample_depth N]"
             << " [--chance_seed N]\n";
 }

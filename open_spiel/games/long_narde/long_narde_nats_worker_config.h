@@ -36,10 +36,14 @@ struct WorkerConfig {
   int max_moves = 1000;
   int workers = 0;
   double temperature = 1.0;
+  double temperature_end = -1.0;
+  int temperature_decay_plies = 0;
   double alpha = 0.5;
   int64_t games = 0;
   uint64_t seed = 7;
   int tt_entries = 200000;
+  int root_full_depth_top_k = 0;
+  int root_reduced_depth = -1;
   int chance_samples = 0;
   int chance_sample_depth = 1;
   uint64_t chance_seed = 0;

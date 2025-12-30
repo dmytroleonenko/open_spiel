@@ -60,7 +60,8 @@ void WriteHeader(std::ofstream* out, const LnueShardConfig& config) {
   WriteU32(out, kLnueSchemaId);
   WriteU32(out, nnue::kNnueFeatureDim);
   uint32_t flags = kLnueFlagHasRunFeatures | kLnueFlagDualHead |
-                   kLnueFlagHasGameId | kLnueFlagHasPly;
+                   kLnueFlagHasGameId | kLnueFlagHasPly |
+                   kLnueFlagHasPipDelta | kLnueFlagHasMobility;
   WriteU32(out, flags);
   WriteU32(out, kLnueFeatureIndexBytes);
   WriteU64(out, config.seed);
@@ -171,7 +172,8 @@ bool SerializeTrajectoryInternal(const std::vector<SelfPlaySample>& samples,
   header.schema_id = kLnueSchemaId;
   header.feature_dim = nnue::kNnueFeatureDim;
   header.flags = kLnueFlagHasRunFeatures | kLnueFlagDualHead |
-                 kLnueFlagHasGameId | kLnueFlagHasPly;
+                 kLnueFlagHasGameId | kLnueFlagHasPly |
+                 kLnueFlagHasPipDelta | kLnueFlagHasMobility;
   header.feature_index_bytes = kLnueFeatureIndexBytes;
   header.num_samples = static_cast<uint32_t>(samples.size());
   header.bytes_offsets = bytes_offsets;
@@ -409,6 +411,16 @@ bool LnueStreamWriter::AddSamples(const std::vector<SelfPlaySample>& samples) {
     }
   }
   return true;
+}
+
+bool LnueStreamWriter::Flush() {
+  if (out_ == nullptr) {
+    return false;
+  }
+  if (buffer_.empty()) {
+    return true;
+  }
+  return FlushChunk(static_cast<int>(buffer_.size()));
 }
 
 void LnueStreamWriter::Close() {

@@ -29,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+#include "open_spiel/games/long_narde/long_narde_selfplay_io.h"
 #include "open_spiel/spiel_utils.h"
 #include "open_spiel/utils/thread.h"
 
@@ -39,6 +40,32 @@ namespace {
 struct PendingSample {
   SelfPlaySample sample;
 };
+
+struct StreamWriterState {
+  LnueStreamWriter* writer = nullptr;
+  std::mutex* mutex = nullptr;
+  int flush_every_games = 1;
+  int games_since_flush = 0;
+  int64_t games_written = 0;
+  int64_t samples_written = 0;
+  std::function<void(int64_t, int64_t)> on_flush;
+};
+
+double TemperatureForPly(const SelfPlayConfig& config, int ply) {
+  double end = config.temperature_end;
+  if (end < 0.0) {
+    end = config.temperature;
+  }
+  if (config.temperature_decay_plies <= 0 || end == config.temperature) {
+    return config.temperature;
+  }
+  double t = static_cast<double>(ply) /
+             static_cast<double>(config.temperature_decay_plies);
+  if (t >= 1.0) {
+    return end;
+  }
+  return config.temperature + (end - config.temperature) * t;
+}
 
 Action SampleChanceOutcome(
     const std::vector<std::pair<Action, double>>& outcomes,
@@ -106,6 +133,35 @@ void FinalizeSamples(const std::vector<double>& returns,
   pending->clear();
 }
 
+bool WriteSamplesToStream(StreamWriterState* state,
+                          std::vector<SelfPlaySample>* samples) {
+  if (state == nullptr || state->writer == nullptr || state->mutex == nullptr ||
+      samples == nullptr) {
+    return false;
+  }
+  if (samples->empty()) {
+    return true;
+  }
+  std::lock_guard<std::mutex> lock(*state->mutex);
+  if (!state->writer->AddSamples(*samples)) {
+    return false;
+  }
+  state->samples_written += static_cast<int64_t>(samples->size());
+  state->games_written += 1;
+  state->games_since_flush += 1;
+  if (state->flush_every_games > 0 &&
+      state->games_since_flush >= state->flush_every_games) {
+    if (!state->writer->Flush()) {
+      return false;
+    }
+    state->games_since_flush = 0;
+    if (state->on_flush) {
+      state->on_flush(state->games_written, state->samples_written);
+    }
+  }
+  return true;
+}
+
 SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
                         const nnue::NnueEvaluator& evaluator,
                         const SearchConfig& search_config,
@@ -113,7 +169,8 @@ SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
                         std::atomic<int>* next_game,
                         std::atomic<int>* games_done,
                         const std::chrono::steady_clock::time_point* start_time,
-                        std::mutex* cout_mutex) {
+                        std::mutex* cout_mutex,
+                        StreamWriterState* writer_state) {
   SelfPlayBatch batch;
   if (total_games <= 0 || next_game == nullptr) {
     return batch;
@@ -134,6 +191,7 @@ SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
     auto* lnstate = static_cast<LongNardeState*>(state.get());
 
     std::vector<PendingSample> pending;
+    std::vector<SelfPlaySample> game_samples;
     int moves = 0;
     int ply = 0;
 
@@ -155,9 +213,10 @@ SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
                                                    &rng);
         lnstate->ApplyAction(chance_action);
       } else {
-        std::vector<std::pair<Action, double>> scored =
-            search.EvaluateDecisionActions(lnstate);
-        Action action = SampleSoftmax(scored, config.temperature, &rng);
+      std::vector<std::pair<Action, double>> scored =
+          search.EvaluateDecisionActions(lnstate);
+      double temperature = TemperatureForPly(config, ply);
+      Action action = SampleSoftmax(scored, temperature, &rng);
         lnstate->ApplyAction(action);
         moves += 1;
         ply += 1;
@@ -166,7 +225,17 @@ SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
 
     if (lnstate->IsTerminal()) {
       std::vector<double> returns = lnstate->Returns();
-      FinalizeSamples(returns, config, &pending, &batch.samples);
+      if (writer_state == nullptr) {
+        FinalizeSamples(returns, config, &pending, &batch.samples);
+      } else {
+        FinalizeSamples(returns, config, &pending, &game_samples);
+        if (!WriteSamplesToStream(writer_state, &game_samples)) {
+          if (next_game != nullptr) {
+            next_game->store(total_games);
+          }
+          break;
+        }
+      }
     }
     batch.stats.games += 1;
     batch.stats.total_moves += moves;
@@ -230,7 +299,7 @@ SelfPlayBatch RunSelfPlay(std::shared_ptr<const Game> game,
       partials[i] =
           RunWorker(game, evaluator, search_config, selfplay_config,
                     total_games, &next_game, &games_done, &start_time,
-                    &cout_mutex);
+                    &cout_mutex, nullptr);
     });
   }
 
@@ -247,6 +316,71 @@ SelfPlayBatch RunSelfPlay(std::shared_ptr<const Game> game,
   }
 
   return batch;
+}
+
+SelfPlayStats RunSelfPlayStreaming(std::shared_ptr<const Game> game,
+                                   const nnue::NnueEvaluator& evaluator,
+                                   const SearchConfig& search_config,
+                                   const SelfPlayConfig& selfplay_config,
+                                   LnueStreamWriter* writer,
+                                   const SelfPlayStreamConfig& stream_config) {
+  SPIEL_CHECK_TRUE(game != nullptr);
+  SelfPlayStats stats;
+  if (writer == nullptr) {
+    return stats;
+  }
+  int workers = selfplay_config.num_workers;
+  if (workers <= 0) {
+    unsigned int hc = std::thread::hardware_concurrency();
+    workers = hc == 0 ? 1 : static_cast<int>(hc) + 1;
+  }
+  int total_games = std::max(selfplay_config.num_games, 0);
+  workers = std::min(workers, std::max(total_games, 1));
+
+  std::vector<SelfPlayBatch> partials(workers);
+  std::vector<Thread> threads;
+  threads.reserve(workers);
+  std::atomic<int> games_done{static_cast<int>(stream_config.start_game)};
+  std::atomic<int> next_game{static_cast<int>(stream_config.start_game)};
+  std::mutex cout_mutex;
+  std::mutex writer_mutex;
+  auto start_time = std::chrono::steady_clock::now();
+
+  StreamWriterState writer_state;
+  writer_state.writer = writer;
+  writer_state.mutex = &writer_mutex;
+  writer_state.flush_every_games = stream_config.flush_every_games;
+  writer_state.games_written = stream_config.start_game;
+  writer_state.samples_written = stream_config.start_samples;
+  writer_state.on_flush = stream_config.on_flush;
+
+  for (int i = 0; i < workers; ++i) {
+    threads.emplace_back([&, i]() {
+      partials[i] =
+          RunWorker(game, evaluator, search_config, selfplay_config,
+                    total_games, &next_game, &games_done, &start_time,
+                    &cout_mutex, &writer_state);
+    });
+  }
+
+  for (auto& thread : threads) {
+    thread.join();
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(writer_mutex);
+    if (writer_state.writer->Flush() && writer_state.on_flush) {
+      writer_state.on_flush(writer_state.games_written,
+                            writer_state.samples_written);
+    }
+  }
+
+  for (auto& part : partials) {
+    stats.games += part.stats.games;
+    stats.total_moves += part.stats.total_moves;
+  }
+
+  return stats;
 }
 
 }  // namespace long_narde

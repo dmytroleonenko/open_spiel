@@ -26,13 +26,15 @@
 namespace open_spiel {
 namespace long_narde {
 
-constexpr uint32_t kLnueFormatVersion = 2;
+constexpr uint32_t kLnueFormatVersion = 3;
 constexpr uint32_t kLnueEndianMarker = 0x01020304u;
-constexpr uint32_t kLnueSchemaId = 1;
+constexpr uint32_t kLnueSchemaId = 2;
 constexpr uint32_t kLnueFlagHasRunFeatures = 1u << 0;
 constexpr uint32_t kLnueFlagDualHead = 1u << 1;
 constexpr uint32_t kLnueFlagHasGameId = 1u << 2;
 constexpr uint32_t kLnueFlagHasPly = 1u << 3;
+constexpr uint32_t kLnueFlagHasPipDelta = 1u << 4;
+constexpr uint32_t kLnueFlagHasMobility = 1u << 5;
 constexpr uint32_t kLnueFeatureIndexBytes = 2;
 
 struct LnueShardConfig {
@@ -61,6 +63,15 @@ struct LnueTrajectoryHeader {
   uint32_t bytes_ply;
 };
 
+struct LnueResumeState {
+  uint64_t seed = 0;
+  uint32_t shard_id = 0;
+  uint32_t run_block_threshold = 0;
+  uint64_t games_done = 0;
+  uint64_t samples_done = 0;
+  std::uintmax_t valid_bytes = 0;
+};
+
 bool WriteLnueShard(const std::string& path, const SelfPlayBatch& batch,
                     const LnueShardConfig& config);
 
@@ -76,7 +87,10 @@ class LnueStreamWriter {
   ~LnueStreamWriter();
 
   bool Open(const std::string& path, const LnueShardConfig& config);
+  bool OpenAppend(const std::string& path, const LnueShardConfig& config,
+                  LnueResumeState* state);
   bool AddSamples(const std::vector<SelfPlaySample>& samples);
+  bool Flush();
   void Close();
   int samples_in_buffer() const { return static_cast<int>(buffer_.size()); }
 

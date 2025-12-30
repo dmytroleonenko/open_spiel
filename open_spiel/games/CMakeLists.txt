@@ -14,6 +14,8 @@ set(GAME_SOURCES
   long_narde/long_narde_nnue_cache.h
   long_narde/long_narde_nnue.cc
   long_narde/long_narde_nnue.h
+  long_narde/long_narde_nnue_features.cc
+  long_narde/long_narde_nnue_features.h
   long_narde/long_narde_nnue_kernels.cc
   long_narde/long_narde_nnue_kernels.h
   long_narde/long_narde_nnue_io.cc
@@ -23,6 +25,7 @@ set(GAME_SOURCES
   long_narde/long_narde_selfplay.h
   long_narde/long_narde_selfplay_io.cc
   long_narde/long_narde_selfplay_io.h
+  long_narde/long_narde_selfplay_resume.cc
   long_narde/long_narde_rules.cc
   long_narde/long_narde_state.cc
   long_narde/long_narde_tables.cc
@@ -391,20 +394,6 @@ add_executable(long_narde_lnue_probe long_narde/long_narde_lnue_probe.cc
 
 add_executable(long_narde_eval long_narde/long_narde_eval_main.cc
                long_narde/long_narde_eval_utils.cc
-               ${OPEN_SPIEL_OBJECTS})
-
-add_executable(tic_tac_toe_nnue_selfplay
-               tic_tac_toe/tic_tac_toe_nnue_selfplay_main.cc
-               tic_tac_toe/tic_tac_toe_selfplay.cc
-               tic_tac_toe/tic_tac_toe_selfplay_io.cc
-               tic_tac_toe/tic_tac_toe_nnue.cc
-               tic_tac_toe/tic_tac_toe_nnue_io.cc
-               ${OPEN_SPIEL_OBJECTS})
-
-add_executable(tic_tac_toe_nnue_eval
-               tic_tac_toe/tic_tac_toe_nnue_eval_main.cc
-               tic_tac_toe/tic_tac_toe_nnue.cc
-               tic_tac_toe/tic_tac_toe_nnue_io.cc
                ${OPEN_SPIEL_OBJECTS})
 
 add_library(long_narde_nats OBJECT long_narde/long_narde_nats.cc)

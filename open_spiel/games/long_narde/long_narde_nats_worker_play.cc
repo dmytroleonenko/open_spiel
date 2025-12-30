@@ -36,6 +36,22 @@ struct PendingSample {
   SelfPlaySample sample;
 };
 
+double TemperatureForPly(const WorkerConfig& config, int ply) {
+  double end = config.temperature_end;
+  if (end < 0.0) {
+    end = config.temperature;
+  }
+  if (config.temperature_decay_plies <= 0 || end == config.temperature) {
+    return config.temperature;
+  }
+  double t = static_cast<double>(ply) /
+             static_cast<double>(config.temperature_decay_plies);
+  if (t >= 1.0) {
+    return end;
+  }
+  return config.temperature + (end - config.temperature) * t;
+}
+
 Action SampleChanceOutcome(const ActionsAndProbs& outcomes,
                            std::mt19937* rng) {
   double sum = 0.0;
@@ -147,7 +163,8 @@ std::vector<SelfPlaySample> PlayOneGame(std::shared_ptr<const Game> game,
     } else {
       std::vector<std::pair<Action, double>> scored =
           search->EvaluateDecisionActions(lnstate);
-      Action action = SampleSoftmax(scored, config.temperature, rng);
+      double temperature = TemperatureForPly(config, ply);
+      Action action = SampleSoftmax(scored, temperature, rng);
       lnstate->ApplyAction(action);
       moves += 1;
       ply += 1;

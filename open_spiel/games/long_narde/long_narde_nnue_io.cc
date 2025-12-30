@@ -86,7 +86,8 @@ bool ReadHeaderFromBuffer(const char* data, std::size_t size,
 
 bool LoadHeaderPayload(std::ifstream* file, const NnueFileHeader& header,
                        NnueNetwork* net) {
-  if (header.run_features_enabled == 0 || header.run_block_threshold != 1) {
+  if (header.run_features_enabled != kNnueFeatureFlags ||
+      header.run_block_threshold != 1) {
     return false;
   }
   if (header.w0_type != kNnueQuantInt16 || header.w1_type != kNnueQuantInt8 ||
@@ -132,7 +133,8 @@ bool LoadHeaderPayloadFromBuffer(const char* data, std::size_t size,
                                  std::size_t* offset,
                                  const NnueFileHeader& header,
                                  NnueNetwork* net) {
-  if (header.run_features_enabled == 0 || header.run_block_threshold != 1) {
+  if (header.run_features_enabled != kNnueFeatureFlags ||
+      header.run_block_threshold != 1) {
     return false;
   }
   if (header.w0_type != kNnueQuantInt16 || header.w1_type != kNnueQuantInt8 ||

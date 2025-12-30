@@ -103,6 +103,11 @@ void ApplyConfigArgs(const std::unordered_map<std::string, std::string>& args,
   config->depth = GetIntArg(args, "depth", config->depth);
   config->workers = GetIntArg(args, "workers", config->workers);
   config->temperature = GetDoubleArg(args, "temperature", config->temperature);
+  config->temperature_end =
+      GetDoubleArg(args, "temperature_end", config->temperature_end);
+  config->temperature_decay_plies =
+      GetIntArg(args, "temperature_decay_plies",
+                config->temperature_decay_plies);
   config->alpha = GetDoubleArg(args, "alpha", config->alpha);
   config->games = GetInt64Arg(args, "games", config->games);
   config->seed = GetUint64Arg(args, "seed", config->seed);
@@ -117,6 +122,11 @@ void ApplyConfigArgs(const std::unordered_map<std::string, std::string>& args,
   config->report_every_seconds =
       GetIntArg(args, "report_every_seconds", config->report_every_seconds);
   config->tt_entries = GetIntArg(args, "tt_entries", config->tt_entries);
+  config->root_full_depth_top_k =
+      GetIntArg(args, "root_full_depth_top_k",
+                config->root_full_depth_top_k);
+  config->root_reduced_depth =
+      GetIntArg(args, "root_reduced_depth", config->root_reduced_depth);
   config->chance_samples =
       GetIntArg(args, "chance_samples", config->chance_samples);
   config->chance_sample_depth =

@@ -35,8 +35,10 @@ _BASE_FEATURES = _BASE_PER_SIDE * 2
 _RUN_FEATURES_PER_SIDE = sum(
     _NUM_POINTS - length + 1 for length in range(_RUN_MIN, _RUN_MAX + 1)
 )
+_EXTRA_ACTIVE = 3
 _MAX_ACTIVE = _BASE_FEATURES // _BUCKETS + _RUN_FEATURES_PER_SIDE * 2
-_MIN_ACTIVE = _BASE_FEATURES // _BUCKETS
+_MAX_ACTIVE += _EXTRA_ACTIVE
+_MIN_ACTIVE = _BASE_FEATURES // _BUCKETS + _EXTRA_ACTIVE
 
 
 def _repo_root() -> Path:
@@ -332,7 +334,6 @@ def main() -> None:
             model,
             name="golden",
             author="golden",
-            run_features_enabled=1,
             run_block_threshold=reader.header.run_block_threshold,
         )
 

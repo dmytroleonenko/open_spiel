@@ -1,4 +1,5 @@
 """Closed-loop self-play training for Long Narde NNUE."""
+# pylint: disable=duplicate-code
 
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from open_spiel.python.algorithms.long_narde_nnue.lnue_reader import (
 from open_spiel.python.algorithms.long_narde_nnue.train import (
     NnueNet,
     _build_base_cmd,
+    _bootstrap_targets,
     _iter_batches,
     _resolve_device,
     _save_nnue,
@@ -110,6 +112,42 @@ def _count_samples(paths: Iterable[Path]) -> int:
     return total
 
 
+def _parse_iter_index(path: Path) -> int | None:
+    name = path.name
+    if not name.startswith("iter_"):
+        return None
+    suffix = name.split("_", 1)[-1]
+    try:
+        return int(suffix)
+    except ValueError:
+        return None
+
+
+def _collect_replay_shards(
+    output_dir: Path,
+    current_iter: int,
+    replay_iters: int,
+    replay_max_shards: int,
+) -> List[Path]:
+    if replay_iters <= 0:
+        return []
+    candidates = []
+    for path in output_dir.glob("iter_*"):
+        idx = _parse_iter_index(path)
+        if idx is None or idx >= current_iter:
+            continue
+        candidates.append((idx, path))
+    candidates.sort(key=lambda entry: entry[0], reverse=True)
+    candidates = candidates[:replay_iters]
+    shards: List[Path] = []
+    for _, iter_dir in candidates:
+        data_dir = iter_dir / "data"
+        shards.extend(sorted(data_dir.glob("*.lnue")))
+        if 0 < replay_max_shards <= len(shards):
+            return shards[:replay_max_shards]
+    return shards
+
+
 def _collect_nats_shards(
     stream_dir: Path,
     iter_data_dir: Path,
@@ -118,6 +156,8 @@ def _collect_nats_shards(
     progress: bool,
 ) -> List[Path]:
     # pylint: disable=too-many-arguments,too-many-positional-arguments
+    # pylint: disable=too-many-locals
+    # pylint: disable=too-many-locals
     iter_data_dir.mkdir(parents=True, exist_ok=True)
     stream_dir.mkdir(parents=True, exist_ok=True)
     collected = len(list(iter_data_dir.glob("*.lnue")))
@@ -166,6 +206,8 @@ def _train_epoch(
     ev_weight: float,
     quant_loss: bool,
     quant_loss_weight: float,
+    bootstrap_steps: int,
+    bootstrap_alpha: float,
     seed: int,
     epoch_idx: int,
 ) -> None:
@@ -190,8 +232,13 @@ def _train_epoch(
     for shard_path in shard_list:
         reader = LnueShardReader(str(shard_path))
         for chunk in reader.iter_chunks():
+            target_override = None
+            if bootstrap_steps > 0:
+                target_override = _bootstrap_targets(
+                    chunk, bootstrap_steps, bootstrap_alpha
+                )
             for indices, offsets, outcome, target in _iter_batches(
-                chunk, batch_size, np_rng
+                chunk, batch_size, np_rng, target_override
             ):
                 _train_batch(
                     model,
@@ -213,7 +260,7 @@ def _train_epoch(
     progress.finish()
 
 
-def _run_eval(
+def _run_eval(  # pylint: disable=too-many-locals
     bin_path: Path,
     nnue_a: Path | None,
     nnue_b: Path | None,
@@ -223,6 +270,8 @@ def _run_eval(
     eval_workers: int,
     progress: bool,
     report_every: int,
+    root_full_depth_top_k: int,
+    root_reduced_depth: int,
     chance_samples: int,
     chance_sample_depth: int,
     chance_seed: int,
@@ -239,6 +288,10 @@ def _run_eval(
             str(eval_workers),
         ]
     )
+    if root_full_depth_top_k > 0:
+        cmd.extend(["--root_full_depth_top_k", str(root_full_depth_top_k)])
+    if root_reduced_depth >= 0:
+        cmd.extend(["--root_reduced_depth", str(root_reduced_depth)])
     if chance_samples > 0:
         cmd.extend(["--chance_samples", str(chance_samples)])
         cmd.extend(["--chance_sample_depth", str(chance_sample_depth)])
@@ -292,9 +345,18 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--chunk", type=int, default=4096)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--temperature_end", type=float, default=-1.0)
+    parser.add_argument("--temperature_decay_plies", type=int, default=0)
+    parser.add_argument("--root_full_depth_top_k", type=int, default=0)
+    parser.add_argument("--root_reduced_depth", type=int, default=-1)
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--selfplay_progress", type=int, default=1)
     parser.add_argument("--selfplay_report_every", type=int, default=100)
+    parser.add_argument("--selfplay_stream", type=int, default=1)
+    parser.add_argument("--selfplay_resume", type=int, default=1)
+    parser.add_argument("--selfplay_flush_every_games", type=int, default=1)
+    parser.add_argument("--selfplay_lock", default="")
+    parser.add_argument("--selfplay_force_lock", type=int, default=0)
     parser.add_argument("--skip_selfplay", action="store_true")
     parser.add_argument("--selfplay_dir", default="")
     parser.add_argument("--eval_games", type=int, default=1000)
@@ -302,6 +364,9 @@ def main() -> None:
     parser.add_argument("--eval_workers", type=int, default=0)
     parser.add_argument("--eval_progress", type=int, default=1)
     parser.add_argument("--eval_report_every", type=int, default=100)
+    parser.add_argument("--replay_iters", type=int, default=0)
+    parser.add_argument("--replay_frac", type=float, default=0.0)
+    parser.add_argument("--replay_max_shards", type=int, default=0)
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--chance_samples", type=int, default=0)
     parser.add_argument("--chance_sample_depth", type=int, default=1)
@@ -322,6 +387,15 @@ def main() -> None:
     parser.add_argument("--nats_version_start", type=int, default=0)
     args = parser.parse_args()
     device = _resolve_device(args.device)
+    bootstrap_alpha = args.bootstrap_alpha
+    if bootstrap_alpha < 0.0:
+        bootstrap_alpha = args.alpha
+    temperature_end = args.temperature_end
+    if temperature_end < 0.0:
+        temperature_end = None
+    temperature_decay_plies = args.temperature_decay_plies
+    if temperature_decay_plies <= 0:
+        temperature_decay_plies = None
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -442,12 +516,31 @@ def main() -> None:
                     seed=shard_seed,
                     chunk=args.chunk,
                     temperature=args.temperature,
+                    temperature_end=temperature_end,
+                    temperature_decay_plies=temperature_decay_plies,
                     alpha=args.alpha,
                     workers=args.workers,
                     shard_id=shard_idx,
                     progress=args.selfplay_progress != 0,
                     report_every=args.selfplay_report_every,
                     nnue_path=prev_nnue,
+                    root_full_depth_top_k=args.root_full_depth_top_k,
+                    root_reduced_depth=args.root_reduced_depth,
+                    stream=args.selfplay_stream != 0,
+                    resume=args.selfplay_resume != 0,
+                    flush_every_games=args.selfplay_flush_every_games,
+                    lock_path=(
+                        (
+                            Path(
+                                f"{args.selfplay_lock}.{shard_idx:04d}"
+                            )
+                            if args.selfplay_lock and num_shards > 1
+                            else Path(args.selfplay_lock)
+                        )
+                        if args.selfplay_lock
+                        else None
+                    ),
+                    force_lock=args.selfplay_force_lock != 0,
                     chance_samples=args.chance_samples,
                     chance_sample_depth=args.chance_sample_depth,
                     chance_seed=args.chance_seed,
@@ -464,14 +557,46 @@ def main() -> None:
             shard_paths = sorted(data_dir.glob("*.lnue"))
         if not shard_paths:
             raise ValueError("No LNUE shards generated.")
+        replay_candidates = _collect_replay_shards(
+            output_dir,
+            iteration,
+            args.replay_iters,
+            args.replay_max_shards,
+        )
 
         header = LnueShardReader(str(shard_paths[0])).header
         model = NnueNet(feature_dim=header.feature_dim).to(device)
         torch.manual_seed(args.seed + iteration)
 
         for epoch in range(args.epochs):
+            train_shards = shard_paths
+            replay_subset: List[Path] = []
+            if replay_candidates and args.replay_frac > 0.0:
+                desired = int(round(args.replay_frac * len(shard_paths)))
+                if desired > 0:
+                    np_rng = np.random.default_rng(
+                        args.seed + iteration * 1000 + epoch
+                    )
+                    if desired >= len(replay_candidates):
+                        replay_subset = replay_candidates
+                    else:
+                        indices = np_rng.choice(
+                            len(replay_candidates),
+                            size=desired,
+                            replace=False,
+                        )
+                        replay_subset = [
+                            replay_candidates[i] for i in indices
+                        ]
+                    train_shards = shard_paths + replay_subset
+                    print(
+                        f"iter {iteration} epoch {epoch + 1}: "
+                        f"replay {len(replay_subset)} shard(s) "
+                        f"(pool {len(replay_candidates)})",
+                        flush=True,
+                    )
             _train_epoch(
-                shard_paths,
+                train_shards,
                 model,
                 device,
                 args.batch_size,
@@ -480,6 +605,8 @@ def main() -> None:
                 args.ev_weight,
                 args.quant_loss,
                 args.quant_loss_weight,
+                args.bootstrap_steps,
+                bootstrap_alpha,
                 args.seed + iteration * 1000,
                 epoch,
             )
@@ -490,7 +617,6 @@ def main() -> None:
             model,
             name=f"iter_{iteration:02d}",
             author="closed_loop",
-            run_features_enabled=1,
             run_block_threshold=header.run_block_threshold,
         )
         if nats_url and args.nats_publish != 0:
@@ -515,6 +641,8 @@ def main() -> None:
             args.eval_workers,
             args.eval_progress != 0,
             args.eval_report_every,
+            args.root_full_depth_top_k,
+            args.root_reduced_depth,
             args.chance_samples,
             args.chance_sample_depth,
             args.chance_seed,
@@ -529,6 +657,8 @@ def main() -> None:
             args.eval_workers,
             args.eval_progress != 0,
             args.eval_report_every,
+            args.root_full_depth_top_k,
+            args.root_reduced_depth,
             args.chance_samples,
             args.chance_sample_depth,
             args.chance_seed,
