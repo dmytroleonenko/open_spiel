@@ -158,6 +158,8 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
   nnue::NnueModel model;
   if (!config.nnue_path.empty()) {
     model.Load(config.nnue_path);
+    std::cerr << "[worker] loaded weights from file "
+              << config.nnue_path << "\n";
   } else if (config.wait_for_weights && store != nullptr) {
     int local_version = 0;
     std::string payload;
@@ -165,6 +167,8 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
     model.LoadFromBytes(payload);
+    std::cerr << "[worker] loaded weights from NATS version="
+              << local_version << " bytes=" << payload.size() << "\n";
   }
   nnue::NnueEvaluator evaluator(&model);
 
@@ -241,6 +245,8 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
           stats->weights_version.store(local_version,
                                        std::memory_order_relaxed);
         }
+        std::cerr << "[worker] updated weights from NATS version="
+                  << local_version << " bytes=" << payload.size() << "\n";
       }
     }
 
@@ -361,6 +367,15 @@ int main(int argc, char** argv) {
   if (!request_set) {
     config.request_weights = config.nnue_path.empty();
   }
+  std::cerr << "[worker] config: depth=" << config.depth
+            << " root_full_depth_top_k=" << config.root_full_depth_top_k
+            << " root_reduced_depth=" << config.root_reduced_depth
+            << " chance_samples=" << config.chance_samples
+            << " chance_sample_depth=" << config.chance_sample_depth
+            << " temperature=" << config.temperature
+            << " temperature_end=" << config.temperature_end
+            << " temperature_decay_plies=" << config.temperature_decay_plies
+            << " alpha=" << config.alpha << "\n";
 
   std::shared_ptr<const open_spiel::Game> game =
       open_spiel::LoadGame("long_narde");
