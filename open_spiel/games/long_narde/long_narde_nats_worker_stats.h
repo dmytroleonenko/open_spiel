@@ -32,7 +32,7 @@ struct WorkerStats {
   std::array<std::atomic<int64_t>, kMaxDepthStats> depth_time_us{};
   std::array<std::atomic<int64_t>, kMaxDepthStats> depth_calls{};
 
-  void AddGame();
+  int64_t AddGame();
   void AddSamples(int64_t count);
   void AddSearchTimings(const std::vector<double>& times_ms);
 };

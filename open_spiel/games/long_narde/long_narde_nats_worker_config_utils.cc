@@ -121,6 +121,8 @@ void ApplyConfigArgs(const std::unordered_map<std::string, std::string>& args,
       GetIntArg(args, "request_interval_ms", config->request_interval_ms);
   config->report_every_seconds =
       GetIntArg(args, "report_every_seconds", config->report_every_seconds);
+  config->report_every_games =
+      GetIntArg(args, "report_every_games", config->report_every_games);
   config->tt_entries = GetIntArg(args, "tt_entries", config->tt_entries);
   config->root_full_depth_top_k =
       GetIntArg(args, "root_full_depth_top_k",

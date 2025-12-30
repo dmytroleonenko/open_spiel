@@ -24,8 +24,8 @@
 namespace open_spiel {
 namespace long_narde {
 
-void WorkerStats::AddGame() {
-  games.fetch_add(1, std::memory_order_relaxed);
+int64_t WorkerStats::AddGame() {
+  return games.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
 void WorkerStats::AddSamples(int64_t count) {

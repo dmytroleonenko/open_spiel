@@ -158,8 +158,10 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
   nnue::NnueModel model;
   if (!config.nnue_path.empty()) {
     model.Load(config.nnue_path);
-    std::cerr << "[worker] loaded weights from file "
-              << config.nnue_path << "\n";
+    if (worker_id == 0) {
+      std::cerr << "[worker] loaded weights from file "
+                << config.nnue_path << "\n";
+    }
   } else if (config.wait_for_weights && store != nullptr) {
     int local_version = 0;
     std::string payload;
@@ -167,8 +169,10 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
     model.LoadFromBytes(payload);
-    std::cerr << "[worker] loaded weights from NATS version="
-              << local_version << " bytes=" << payload.size() << "\n";
+    if (worker_id == 0) {
+      std::cerr << "[worker] loaded weights from NATS version="
+                << local_version << " bytes=" << payload.size() << "\n";
+    }
   }
   nnue::NnueEvaluator evaluator(&model);
 
@@ -225,7 +229,17 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
         break;
       }
       if (stats != nullptr) {
-        stats->AddGame();
+        int64_t total_games = stats->AddGame();
+        if (config.report_every_games > 0 &&
+            total_games % config.report_every_games == 0) {
+          int64_t total_samples =
+              stats->samples.load(std::memory_order_relaxed);
+          int64_t pending_now =
+              stats->pending.load(std::memory_order_relaxed);
+          std::cerr << "[worker] completed games=" << total_games
+                    << " samples=" << total_samples
+                    << " pending=" << pending_now << "\n";
+        }
       }
       pending.pop_front();
       mark_pending(-1);
@@ -245,8 +259,10 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
           stats->weights_version.store(local_version,
                                        std::memory_order_relaxed);
         }
-        std::cerr << "[worker] updated weights from NATS version="
-                  << local_version << " bytes=" << payload.size() << "\n";
+        if (worker_id == 0) {
+          std::cerr << "[worker] updated weights from NATS version="
+                    << local_version << " bytes=" << payload.size() << "\n";
+        }
       }
     }
 
@@ -284,7 +300,17 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
       continue;
     }
     if (stats != nullptr) {
-      stats->AddGame();
+      int64_t total_games = stats->AddGame();
+      if (config.report_every_games > 0 &&
+          total_games % config.report_every_games == 0) {
+        int64_t total_samples =
+            stats->samples.load(std::memory_order_relaxed);
+        int64_t pending_now =
+            stats->pending.load(std::memory_order_relaxed);
+        std::cerr << "[worker] completed games=" << total_games
+                  << " samples=" << total_samples
+                  << " pending=" << pending_now << "\n";
+      }
     }
   }
 }
@@ -303,7 +329,8 @@ void PrintUsage(const char* bin) {
             << "             [--request_weights 0|1]"
             << " [--request_interval_ms N]"
             << " [--request_config 0|1] [--config_timeout_ms N]\n"
-            << "             [--report_every_seconds N] [--tt_entries N]\n"
+            << "             [--report_every_seconds N]"
+            << " [--report_every_games N] [--tt_entries N]\n"
             << "             [--root_full_depth_top_k N]"
             << " [--root_reduced_depth N]\n"
             << "             [--chance_samples N] [--chance_sample_depth N]"
@@ -375,7 +402,8 @@ int main(int argc, char** argv) {
             << " temperature=" << config.temperature
             << " temperature_end=" << config.temperature_end
             << " temperature_decay_plies=" << config.temperature_decay_plies
-            << " alpha=" << config.alpha << "\n";
+            << " alpha=" << config.alpha
+            << " report_every_games=" << config.report_every_games << "\n";
 
   std::shared_ptr<const open_spiel::Game> game =
       open_spiel::LoadGame("long_narde");

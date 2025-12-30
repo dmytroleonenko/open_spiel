@@ -51,6 +51,7 @@ struct WorkerConfig {
   bool request_weights = false;
   int request_interval_ms = 1000;
   int report_every_seconds = 60;
+  int report_every_games = 0;
 };
 
 }  // namespace long_narde
