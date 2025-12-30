@@ -151,6 +151,8 @@ int main(int argc, char** argv) {
     }
     payload.assign((std::istreambuf_iterator<char>(file)),
                    std::istreambuf_iterator<char>());
+    std::cout << "Loaded " << payload.size() << " bytes from "
+              << config.path << "\n";
   }
 
   NatsConnection conn;
@@ -179,9 +181,13 @@ int main(int argc, char** argv) {
     std::cerr << "Failed to subscribe to " << request_subject << "\n";
     return 1;
   }
+  std::cout << "Serving weights on " << subject << " (requests on "
+            << request_subject << ")\n";
 
   if (config.announce && !payload.empty()) {
     conn.Publish(subject, payload);
+    std::cout << "Announced " << payload.size() << " bytes on " << subject
+              << "\n";
   }
 
   open_spiel::long_narde::NatsMessage msg;
@@ -190,11 +196,15 @@ int main(int argc, char** argv) {
       const std::string& reply_subject = msg.payload;
       if (!reply_subject.empty() && !payload.empty()) {
         conn.Publish(reply_subject, payload);
+        std::cout << "Published " << payload.size() << " bytes to "
+                  << reply_subject << "\n";
       }
       continue;
     }
     if (!msg.payload.empty()) {
       payload = std::move(msg.payload);
+      std::cout << "Received weights update (" << payload.size()
+                << " bytes)\n";
     }
   }
   return 0;
