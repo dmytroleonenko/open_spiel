@@ -112,13 +112,6 @@ void CollectActiveFeaturesInternal(const LongNardeState& state,
   }
   int pip_bucket = PipDeltaBucketFromBoard(board);
   active->indices[active->count++] = kNnuePipDeltaOffset + pip_bucket;
-  int mobility_bucket = MobilityBucketFromBoard(board);
-  internal::Board opp_board = board;
-  internal::FlipBoard(&opp_board);
-  int opp_mobility_bucket = MobilityBucketFromBoard(opp_board);
-  active->indices[active->count++] = kNnueMobilityOffset + mobility_bucket;
-  active->indices[active->count++] =
-      kNnueOppMobilityOffset + opp_mobility_bucket;
 }
 void BuildAccumulatorInternal(const NnueNetwork& net,
                               const NnueActiveFeatures& active,

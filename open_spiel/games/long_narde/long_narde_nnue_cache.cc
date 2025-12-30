@@ -179,20 +179,14 @@ internal::Board BoardFromCounts(
 void SetExtraBuckets(nnue::NnueCache* cache) {
   internal::Board board = BoardFromCounts(cache->counts);
   cache->pip_delta_bucket = nnue::PipDeltaBucketFromBoard(board);
-  cache->mobility_bucket = nnue::MobilityBucketFromBoard(board);
-  internal::Board opp_board = board;
-  internal::FlipBoard(&opp_board);
-  cache->opp_mobility_bucket = nnue::MobilityBucketFromBoard(opp_board);
+  cache->mobility_bucket = 0;
+  cache->opp_mobility_bucket = 0;
 }
 
 void UpdateExtraFeatures(const nnue::NnueNetwork& net, nnue::NnueCache* cache,
                          nnue::AddRowFn add_row, nnue::SubRowFn sub_row) {
   internal::Board board = BoardFromCounts(cache->counts);
   int pip_bucket = nnue::PipDeltaBucketFromBoard(board);
-  int mobility_bucket = nnue::MobilityBucketFromBoard(board);
-  internal::Board opp_board = board;
-  internal::FlipBoard(&opp_board);
-  int opp_mobility_bucket = nnue::MobilityBucketFromBoard(opp_board);
   auto update_bucket = [&](int* cached, int offset, int next) {
     if (*cached == next) {
       return;
@@ -205,10 +199,6 @@ void UpdateExtraFeatures(const nnue::NnueNetwork& net, nnue::NnueCache* cache,
   };
   update_bucket(&cache->pip_delta_bucket, nnue::kNnuePipDeltaOffset,
                 pip_bucket);
-  update_bucket(&cache->mobility_bucket, nnue::kNnueMobilityOffset,
-                mobility_bucket);
-  update_bucket(&cache->opp_mobility_bucket, nnue::kNnueOppMobilityOffset,
-                opp_mobility_bucket);
 }
 
 void BuildActiveFromCache(const nnue::NnueCache& cache,
@@ -240,8 +230,6 @@ void BuildActiveFromCache(const nnue::NnueCache& cache,
     }
   }
   AddFeature(nnue::kNnuePipDeltaOffset + cache.pip_delta_bucket, active);
-  AddFeature(nnue::kNnueMobilityOffset + cache.mobility_bucket, active);
-  AddFeature(nnue::kNnueOppMobilityOffset + cache.opp_mobility_bucket, active);
 }
 
 void RebuildAccumulatorFromCache(const nnue::NnueNetwork& net,
