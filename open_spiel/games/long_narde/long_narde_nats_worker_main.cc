@@ -403,7 +403,8 @@ int main(int argc, char** argv) {
             << " temperature_end=" << config.temperature_end
             << " temperature_decay_plies=" << config.temperature_decay_plies
             << " alpha=" << config.alpha
-            << " report_every_games=" << config.report_every_games << "\n";
+            << " report_every_games=" << config.report_every_games
+            << " report_every_seconds=" << config.report_every_seconds << "\n";
 
   std::shared_ptr<const open_spiel::Game> game =
       open_spiel::LoadGame("long_narde");
