@@ -41,11 +41,9 @@ class NnueNet(torch.nn.Module):
         )
         self.b0 = torch.nn.Parameter(torch.zeros(l1))
         self.fc1 = torch.nn.Linear(l1, l2)
-        self.fc2 = torch.nn.Linear(l2, 3)
+        self.fc2 = torch.nn.Linear(l2, 4)
 
-    def forward(
-        self, indices: torch.Tensor, offsets: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, indices: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
         """Runs a forward pass on sparse feature indices."""
         x = self.embed(indices, offsets) + self.b0
         x = torch.clamp(x, min=0.0, max=_Q)
@@ -75,9 +73,7 @@ class NnueNet(torch.nn.Module):
 
 
 def _mps_embedding_bag_supported() -> bool:
-    if not (
-        torch.backends.mps.is_available() and torch.backends.mps.is_built()
-    ):
+    if not (torch.backends.mps.is_available() and torch.backends.mps.is_built()):
         return False
     try:
         weight = torch.zeros((2, 2), device="mps")
@@ -106,7 +102,7 @@ def _iter_batches(
     batch_size: int,
     rng: np.random.Generator,
     target: np.ndarray | None = None,
-) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     """Yields index bags and targets for mini-batches within a chunk."""
     # pylint: disable=too-many-locals
     num_samples = chunk.outcome.shape[0]
@@ -137,6 +133,7 @@ def _iter_batches(
             new_offsets,
             chunk.outcome[batch_ids].astype(np.float32),
             target_arr[batch_ids].astype(np.float32),
+            chunk.mobility[batch_ids].astype(np.float32),
         )
 
 
@@ -178,12 +175,15 @@ def _ev_from_logits(logits: torch.Tensor) -> torch.Tensor:
     return p_win + p_mars - (1.0 - p_win) - p_opp_mars
 
 
+# pylint: disable=too-many-arguments,too-many-positional-arguments
 def _loss_from_logits(
     logits: torch.Tensor,
     outcome_t: torch.Tensor,
     target_t: torch.Tensor,
+    mobility_t: torch.Tensor,
     criterion: torch.nn.Module,
     ev_weight: float,
+    mobility_weight: float,
 ) -> torch.Tensor:
     """Computes the combined BCE + EV regression loss."""
     win_t, mars_t, opp_mars_t = _targets_from_outcome(outcome_t)
@@ -192,12 +192,16 @@ def _loss_from_logits(
         + criterion(logits[:, 1], mars_t)
         + criterion(logits[:, 2], opp_mars_t)
     )
+    if mobility_weight:
+        p_mobility = torch.sigmoid(logits[:, 3])
+        loss = loss + mobility_weight * torch.mean((p_mobility - mobility_t) ** 2)
     if ev_weight:
         ev = _ev_from_logits(logits)
         loss = loss + ev_weight * torch.mean((ev - target_t) ** 2)
     return loss
 
 
+# pylint: disable=too-many-arguments,too-many-positional-arguments
 def _train_batch(
     model: NnueNet,
     optimizer: torch.optim.Optimizer,
@@ -206,22 +210,26 @@ def _train_batch(
     offsets: np.ndarray,
     outcome: np.ndarray,
     target: np.ndarray,
+    mobility: np.ndarray,
     device: str,
     ev_weight: float,
+    mobility_weight: float,
     quant_loss: bool,
     quant_loss_weight: float,
 ) -> None:
     """Runs a single optimization step on one batch."""
-    # pylint: disable=too-many-arguments,too-many-positional-arguments
     # pylint: disable=too-many-locals,too-many-branches
     indices_t = torch.from_numpy(indices).to(device)
     offsets_t = torch.from_numpy(offsets).to(device)
     outcome_t = torch.from_numpy(outcome).to(device)
     target_t = torch.from_numpy(target).to(device)
+    mobility_t = torch.from_numpy(mobility).to(device)
 
     optimizer.zero_grad()
     logits = model(indices_t, offsets_t)
-    loss = _loss_from_logits(logits, outcome_t, target_t, criterion, ev_weight)
+    loss = _loss_from_logits(
+        logits, outcome_t, target_t, mobility_t, criterion, ev_weight, mobility_weight
+    )
     if quant_loss:
         loss = loss + quant_loss_weight * model.quantization_error()
     loss.backward()
@@ -265,9 +273,7 @@ def _build_selfplay_cmd(
     if temperature_end is not None:
         cmd.extend(["--temperature_end", str(temperature_end)])
     if temperature_decay_plies is not None:
-        cmd.extend(
-            ["--temperature_decay_plies", str(temperature_decay_plies)]
-        )
+        cmd.extend(["--temperature_decay_plies", str(temperature_decay_plies)])
     cmd.extend(["--alpha", str(alpha)])
     if workers is not None:
         cmd.extend(["--workers", str(workers)])
@@ -302,9 +308,7 @@ def _build_selfplay_cmd(
     return cmd
 
 
-def _build_base_cmd(
-    bin_path: Path, games: int, depth: int, seed: int
-) -> list[str]:
+def _build_base_cmd(bin_path: Path, games: int, depth: int, seed: int) -> list[str]:
     """Builds the shared portion of selfplay/eval command lines."""
     return [
         str(bin_path),
@@ -485,7 +489,7 @@ def train(args) -> None:
                     target_override = _bootstrap_targets(
                         chunk, bootstrap_steps, bootstrap_alpha
                     )
-                for indices, offsets, outcome, target in _iter_batches(
+                for indices, offsets, outcome, target, mobility in _iter_batches(
                     chunk, args.batch_size, np_rng, target_override
                 ):
                     batch_kwargs = {
@@ -496,8 +500,10 @@ def train(args) -> None:
                         "offsets": offsets,
                         "outcome": outcome,
                         "target": target,
+                        "mobility": mobility,
                         "device": device,
                         "ev_weight": args.ev_weight,
+                        "mobility_weight": args.mobility_weight,
                         "quant_loss": args.quant_loss,
                         "quant_loss_weight": args.quant_loss_weight,
                     }
@@ -510,11 +516,13 @@ def train(args) -> None:
                 out_path = f"{base}_epoch{epoch + 1}{ext}"
             _save_nnue(out_path, model, args.name, args.author)
 
+
 def add_training_args(parser: argparse.ArgumentParser) -> None:
     """Adds common optimizer/training flags to an argument parser."""
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--weight_decay", type=float, default=1e-5)
     parser.add_argument("--ev_weight", type=float, default=0.5)
+    parser.add_argument("--mobility_weight", type=float, default=0.1)
     parser.add_argument("--quant_loss", action="store_true")
     parser.add_argument("--quant_loss_weight", type=float, default=0.0001)
     parser.add_argument("--bootstrap_steps", type=int, default=0)
@@ -524,9 +532,7 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
 def parse_args() -> argparse.Namespace:
     """Parses CLI arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--data_dir", required=True, help="Directory with LNUE shards."
-    )
+    parser.add_argument("--data_dir", required=True, help="Directory with LNUE shards.")
     parser.add_argument("--output_path", default="", help="Output NNUE path.")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=1024)

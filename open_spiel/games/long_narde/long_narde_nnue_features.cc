@@ -84,6 +84,13 @@ int MobilityBucketFromBoard(const internal::Board& board) {
   return expected / kNnueMobilityBucketWidth;
 }
 
+float MobilityValueFromBoard(const internal::Board& board) {
+  int expected = ExpectedLegalActions(board);
+  expected = std::min(kNnueMobilityMax, std::max(0, expected));
+  return static_cast<float>(expected) /
+         static_cast<float>(kNnueMobilityMax);
+}
+
 }  // namespace nnue
 }  // namespace long_narde
 }  // namespace open_spiel

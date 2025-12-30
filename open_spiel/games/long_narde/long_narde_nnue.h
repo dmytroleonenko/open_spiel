@@ -66,7 +66,7 @@ constexpr int kNnueMaxActiveFeatures =
 kNnueExtraActiveFeatures;
 constexpr int kNnueL1 = 256;
 constexpr int kNnueL2 = 32;
-constexpr int kNnueL3 = 3;
+constexpr int kNnueL3 = 4;
 static_assert(kNnueL1 % 16 == 0, "kNnueL1 must be multiple of 16.");
 static_assert(kNnueL1 % 32 == 0, "kNnueL1 must be multiple of 32.");
 constexpr uint32_t kNnueRunBlockThreshold = 1;
@@ -85,6 +85,7 @@ struct NnueEval {
   float p_win = 0.0f;
   float p_mars = 0.0f;
   float p_opp_mars = 0.0f;
+  float p_opp_mobility = 0.0f;
   float ev = 0.0f;
 };
 
@@ -92,6 +93,7 @@ struct NnueRawOutput {
   int32_t logit_win = 0;
   int32_t logit_mars = 0;
   int32_t logit_opp_mars = 0;
+  int32_t logit_opp_mobility = 0;
 };
 
 struct NnueActiveFeatures {

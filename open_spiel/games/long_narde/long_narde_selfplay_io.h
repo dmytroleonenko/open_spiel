@@ -26,7 +26,7 @@
 namespace open_spiel {
 namespace long_narde {
 
-constexpr uint32_t kLnueFormatVersion = 3;
+constexpr uint32_t kLnueFormatVersion = 4;
 constexpr uint32_t kLnueEndianMarker = 0x01020304u;
 constexpr uint32_t kLnueSchemaId = 2;
 constexpr uint32_t kLnueFlagHasRunFeatures = 1u << 0;
@@ -61,7 +61,9 @@ struct LnueTrajectoryHeader {
   uint32_t bytes_target;
   uint32_t bytes_game_id;
   uint32_t bytes_ply;
+  uint32_t bytes_mobility;
 };
+
 
 struct LnueResumeState {
   uint64_t seed = 0;

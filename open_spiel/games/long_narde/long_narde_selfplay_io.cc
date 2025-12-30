@@ -11,9 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
 #include "open_spiel/games/long_narde/long_narde_selfplay_io.h"
-
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -22,37 +20,29 @@
 #include <string>
 #include <utility>
 #include <vector>
-
 #include "open_spiel/games/long_narde/long_narde_nnue.h"
 #include "open_spiel/spiel_utils.h"
-
 namespace open_spiel {
 namespace long_narde {
 namespace {
-
 constexpr std::array<char, 4> kLnueMagic = {'L', 'N', 'U', 'E'};
 constexpr std::array<char, 4> kLnueChunkMagic = {'C', 'H', 'N', 'K'};
 constexpr std::array<char, 4> kLnueTrajectoryMagic = {'L', 'N', 'U', 'T'};
-constexpr uint32_t kLnueTrajectoryVersion = 1;
-
+constexpr uint32_t kLnueTrajectoryVersion = 2;
 void WriteRaw(std::ofstream* out, const void* data, std::size_t size) {
   out->write(reinterpret_cast<const char*>(data),
              static_cast<std::streamsize>(size));
 }
-
 void AppendRaw(std::string* out, const void* data, std::size_t size) {
   out->append(reinterpret_cast<const char*>(data),
               static_cast<std::string::size_type>(size));
 }
-
 void WriteU32(std::ofstream* out, uint32_t value) {
   WriteRaw(out, &value, sizeof(value));
 }
-
 void WriteU64(std::ofstream* out, uint64_t value) {
   WriteRaw(out, &value, sizeof(value));
 }
-
 void WriteHeader(std::ofstream* out, const LnueShardConfig& config) {
   WriteRaw(out, kLnueMagic.data(), kLnueMagic.size());
   WriteU32(out, kLnueFormatVersion);
@@ -80,7 +70,6 @@ void WriteChunkHeader(std::ofstream* out, uint32_t uncompressed_bytes,
   std::array<uint32_t, 3> reserved{};
   WriteRaw(out, reserved.data(), reserved.size() * sizeof(uint32_t));
 }
-
 uint32_t ComputeOffsets(const std::vector<SelfPlaySample>& samples,
                         int start, int count,
                         std::vector<uint32_t>* offsets,
@@ -108,12 +97,14 @@ void FillColumnar(const std::vector<SelfPlaySample>& samples, int start,
                   int count, std::vector<float>* v_search,
                   std::vector<int8_t>* outcome, std::vector<float>* target,
                   std::vector<uint64_t>* game_id,
-                  std::vector<uint16_t>* ply) {
+                  std::vector<uint16_t>* ply,
+                  std::vector<float>* mobility) {
   v_search->resize(count);
   outcome->resize(count);
   target->resize(count);
   game_id->resize(count);
   ply->resize(count);
+  mobility->resize(count);
   for (int i = 0; i < count; ++i) {
     const SelfPlaySample& sample = samples[start + i];
     (*v_search)[i] = static_cast<float>(sample.search_value);
@@ -123,6 +114,7 @@ void FillColumnar(const std::vector<SelfPlaySample>& samples, int start,
     (*target)[i] = static_cast<float>(sample.target_value);
     (*game_id)[i] = sample.game_id;
     (*ply)[i] = sample.ply;
+    (*mobility)[i] = sample.mobility;
   }
 }
 
@@ -139,17 +131,14 @@ bool SerializeTrajectoryInternal(const std::vector<SelfPlaySample>& samples,
   std::vector<uint32_t> offsets;
   std::vector<uint16_t> indices;
   uint32_t total_indices =
-      ComputeOffsets(samples, 0, static_cast<int>(samples.size()), &offsets,
-                     &indices);
-
-  std::vector<float> v_search;
+      ComputeOffsets(samples, 0, static_cast<int>(samples.size()),
+                     &offsets, &indices);
+  std::vector<float> v_search, target, mobility;
   std::vector<int8_t> outcome;
-  std::vector<float> target;
   std::vector<uint64_t> game_id;
   std::vector<uint16_t> ply;
-  FillColumnar(samples, 0, samples.size(), &v_search, &outcome, &target,
-               &game_id, &ply);
-
+  FillColumnar(samples, 0, static_cast<int>(samples.size()),
+               &v_search, &outcome, &target, &game_id, &ply, &mobility);
   uint32_t bytes_offsets =
       static_cast<uint32_t>(offsets.size() * sizeof(uint32_t));
   uint32_t bytes_indices =
@@ -164,9 +153,11 @@ bool SerializeTrajectoryInternal(const std::vector<SelfPlaySample>& samples,
       static_cast<uint32_t>(game_id.size() * sizeof(uint64_t));
   uint32_t bytes_ply =
       static_cast<uint32_t>(ply.size() * sizeof(uint16_t));
-
+  uint32_t bytes_mobility =
+      static_cast<uint32_t>(mobility.size() * sizeof(float));
   LnueTrajectoryHeader header{};
-  std::memcpy(header.magic, kLnueTrajectoryMagic.data(), sizeof(header.magic));
+  std::memcpy(header.magic, kLnueTrajectoryMagic.data(),
+              sizeof(header.magic));
   header.version = kLnueTrajectoryVersion;
   header.endian = kLnueEndianMarker;
   header.schema_id = kLnueSchemaId;
@@ -183,7 +174,7 @@ bool SerializeTrajectoryInternal(const std::vector<SelfPlaySample>& samples,
   header.bytes_target = bytes_target;
   header.bytes_game_id = bytes_game_id;
   header.bytes_ply = bytes_ply;
-
+  header.bytes_mobility = bytes_mobility;
   AppendRaw(out, &header, sizeof(header));
   AppendRaw(out, offsets.data(), bytes_offsets);
   AppendRaw(out, indices.data(), bytes_indices);
@@ -192,22 +183,19 @@ bool SerializeTrajectoryInternal(const std::vector<SelfPlaySample>& samples,
   AppendRaw(out, target.data(), bytes_target);
   AppendRaw(out, game_id.data(), bytes_game_id);
   AppendRaw(out, ply.data(), bytes_ply);
+  AppendRaw(out, mobility.data(), bytes_mobility);
   return static_cast<uint32_t>(indices.size()) == total_indices;
 }
 
 bool ReadExact(const char* data, std::size_t size, std::size_t* offset,
                void* dst, std::size_t bytes) {
-  if (offset == nullptr || dst == nullptr) {
-    return false;
-  }
-  if (*offset + bytes > size) {
+  if (!offset || !dst || *offset + bytes > size) {
     return false;
   }
   std::memcpy(dst, data + *offset, bytes);
   *offset += bytes;
   return true;
 }
-
 }  // namespace
 
 bool WriteLnueShard(const std::string& path, const SelfPlayBatch& batch,
@@ -215,36 +203,28 @@ bool WriteLnueShard(const std::string& path, const SelfPlayBatch& batch,
   if (nnue::kNnueFeatureDim > 0xFFFF) {
     SpielFatalError("LNUE requires feature dimension <= 65535.");
   }
-
   std::string out_path = path;
   if (config.write_tmp) {
     out_path = path + ".tmp";
   }
-
-  std::ofstream out(out_path, std::ios::binary | std::ios::out);
+  std::ofstream out(out_path, std::ios::binary);
   if (!out.is_open()) {
     return false;
   }
-
   WriteHeader(&out, config);
-
   int total_samples = static_cast<int>(batch.samples.size());
   int samples_per_chunk = std::max(1, config.samples_per_chunk);
   for (int start = 0; start < total_samples; start += samples_per_chunk) {
     int count = std::min(samples_per_chunk, total_samples - start);
     std::vector<uint32_t> offsets;
     std::vector<uint16_t> indices;
-    uint32_t total_indices =
-        ComputeOffsets(batch.samples, start, count, &offsets, &indices);
-
-    std::vector<float> v_search;
+    ComputeOffsets(batch.samples, start, count, &offsets, &indices);
+    std::vector<float> v_search, target, mobility;
     std::vector<int8_t> outcome;
-    std::vector<float> target;
     std::vector<uint64_t> game_id;
     std::vector<uint16_t> ply;
     FillColumnar(batch.samples, start, count, &v_search, &outcome, &target,
-                 &game_id, &ply);
-
+                 &game_id, &ply, &mobility);
     uint32_t bytes_offsets =
         static_cast<uint32_t>(offsets.size() * sizeof(uint32_t));
     uint32_t bytes_indices =
@@ -259,11 +239,11 @@ bool WriteLnueShard(const std::string& path, const SelfPlayBatch& batch,
         static_cast<uint32_t>(game_id.size() * sizeof(uint64_t));
     uint32_t bytes_ply =
         static_cast<uint32_t>(ply.size() * sizeof(uint16_t));
-
-    uint32_t uncompressed_bytes = bytes_offsets + bytes_indices + bytes_search +
-                                  bytes_outcome + bytes_target + bytes_game_id +
-                                  bytes_ply;
-
+    uint32_t bytes_mobility =
+        static_cast<uint32_t>(mobility.size() * sizeof(float));
+    uint32_t uncompressed_bytes =
+        bytes_offsets + bytes_indices + bytes_search + bytes_outcome +
+        bytes_target + bytes_game_id + bytes_ply + bytes_mobility;
     WriteChunkHeader(&out, uncompressed_bytes, /*compressed_bytes=*/0, count);
     WriteRaw(&out, offsets.data(), bytes_offsets);
     WriteRaw(&out, indices.data(), bytes_indices);
@@ -272,8 +252,8 @@ bool WriteLnueShard(const std::string& path, const SelfPlayBatch& batch,
     WriteRaw(&out, target.data(), bytes_target);
     WriteRaw(&out, game_id.data(), bytes_game_id);
     WriteRaw(&out, ply.data(), bytes_ply);
+    WriteRaw(&out, mobility.data(), bytes_mobility);
   }
-
   out.close();
   if (config.write_tmp) {
     std::remove(path.c_str());
@@ -320,15 +300,44 @@ bool DeserializeLnueTrajectory(const std::string& payload,
       header.feature_index_bytes != kLnueFeatureIndexBytes) {
     return false;
   }
+  uint32_t expected_flags =
+      kLnueFlagHasRunFeatures | kLnueFlagDualHead | kLnueFlagHasGameId |
+      kLnueFlagHasPly | kLnueFlagHasPipDelta | kLnueFlagHasMobility;
+  if (header.flags != expected_flags) {
+    return false;
+  }
   uint32_t count = header.num_samples;
+  uint32_t expected_offsets =
+      static_cast<uint32_t>((count + 1) * sizeof(uint32_t));
+  uint32_t expected_search =
+      static_cast<uint32_t>(count * sizeof(float));
+  uint32_t expected_outcome =
+      static_cast<uint32_t>(count * sizeof(int8_t));
+  uint32_t expected_target =
+      static_cast<uint32_t>(count * sizeof(float));
+  uint32_t expected_game_id =
+      static_cast<uint32_t>(count * sizeof(uint64_t));
+  uint32_t expected_ply =
+      static_cast<uint32_t>(count * sizeof(uint16_t));
+  uint32_t expected_mobility =
+      static_cast<uint32_t>(count * sizeof(float));
+  if (header.bytes_offsets != expected_offsets ||
+      header.bytes_search != expected_search ||
+      header.bytes_outcome != expected_outcome ||
+      header.bytes_target != expected_target ||
+      header.bytes_game_id != expected_game_id ||
+      header.bytes_ply != expected_ply ||
+      header.bytes_mobility != expected_mobility ||
+      header.bytes_indices % kLnueFeatureIndexBytes != 0) {
+    return false;
+  }
   std::vector<uint32_t> offsets(count + 1);
-  std::vector<uint16_t> indices(header.bytes_indices / sizeof(uint16_t));
-  std::vector<float> v_search(count);
+  std::vector<uint16_t> indices(header.bytes_indices /
+                                sizeof(uint16_t));
+  std::vector<float> v_search(count), target(count), mobility(count);
   std::vector<int8_t> outcome(count);
-  std::vector<float> target(count);
   std::vector<uint64_t> game_id(count);
   std::vector<uint16_t> ply(count);
-
   if (!ReadExact(payload.data(), payload.size(), &offset, offsets.data(),
                  header.bytes_offsets) ||
       !ReadExact(payload.data(), payload.size(), &offset, indices.data(),
@@ -342,7 +351,12 @@ bool DeserializeLnueTrajectory(const std::string& payload,
       !ReadExact(payload.data(), payload.size(), &offset, game_id.data(),
                  header.bytes_game_id) ||
       !ReadExact(payload.data(), payload.size(), &offset, ply.data(),
-                 header.bytes_ply)) {
+                 header.bytes_ply) ||
+      !ReadExact(payload.data(), payload.size(), &offset, mobility.data(),
+                 header.bytes_mobility)) {
+    return false;
+  }
+  if (offsets.back() > indices.size()) {
     return false;
   }
   samples->reserve(count);
@@ -362,13 +376,13 @@ bool DeserializeLnueTrajectory(const std::string& payload,
     sample.target_value = target[i];
     sample.game_id = game_id[i];
     sample.ply = ply[i];
+    sample.mobility = mobility[i];
     samples->push_back(std::move(sample));
   }
   return true;
 }
 
 LnueStreamWriter::~LnueStreamWriter() { Close(); }
-
 bool LnueStreamWriter::Open(const std::string& path,
                             const LnueShardConfig& config) {
   Close();
@@ -395,7 +409,6 @@ bool LnueStreamWriter::Open(const std::string& path,
   buffer_.clear();
   return true;
 }
-
 bool LnueStreamWriter::AddSamples(const std::vector<SelfPlaySample>& samples) {
   if (out_ == nullptr) {
     return false;
@@ -412,7 +425,6 @@ bool LnueStreamWriter::AddSamples(const std::vector<SelfPlaySample>& samples) {
   }
   return true;
 }
-
 bool LnueStreamWriter::Flush() {
   if (out_ == nullptr) {
     return false;
@@ -422,7 +434,6 @@ bool LnueStreamWriter::Flush() {
   }
   return FlushChunk(static_cast<int>(buffer_.size()));
 }
-
 void LnueStreamWriter::Close() {
   if (out_ != nullptr) {
     if (!buffer_.empty()) {
@@ -440,7 +451,6 @@ void LnueStreamWriter::Close() {
   path_.clear();
   tmp_path_.clear();
 }
-
 bool LnueStreamWriter::FlushChunk(int count) {
   if (out_ == nullptr || count <= 0) {
     return false;
@@ -449,14 +459,12 @@ bool LnueStreamWriter::FlushChunk(int count) {
   std::vector<uint32_t> offsets;
   std::vector<uint16_t> indices;
   ComputeOffsets(buffer_, 0, count, &offsets, &indices);
-
-  std::vector<float> v_search;
+  std::vector<float> v_search, target, mobility;
   std::vector<int8_t> outcome;
-  std::vector<float> target;
   std::vector<uint64_t> game_id;
   std::vector<uint16_t> ply;
-  FillColumnar(buffer_, 0, count, &v_search, &outcome, &target, &game_id, &ply);
-
+  FillColumnar(buffer_, 0, count, &v_search, &outcome, &target,
+               &game_id, &ply, &mobility);
   uint32_t bytes_offsets =
       static_cast<uint32_t>(offsets.size() * sizeof(uint32_t));
   uint32_t bytes_indices =
@@ -471,11 +479,11 @@ bool LnueStreamWriter::FlushChunk(int count) {
       static_cast<uint32_t>(game_id.size() * sizeof(uint64_t));
   uint32_t bytes_ply =
       static_cast<uint32_t>(ply.size() * sizeof(uint16_t));
-
-  uint32_t uncompressed_bytes = bytes_offsets + bytes_indices + bytes_search +
-                                bytes_outcome + bytes_target + bytes_game_id +
-                                bytes_ply;
-
+  uint32_t bytes_mobility =
+      static_cast<uint32_t>(mobility.size() * sizeof(float));
+  uint32_t uncompressed_bytes =
+      bytes_offsets + bytes_indices + bytes_search + bytes_outcome +
+      bytes_target + bytes_game_id + bytes_ply + bytes_mobility;
   WriteChunkHeader(out_, uncompressed_bytes, /*compressed_bytes=*/0, count);
   WriteRaw(out_, offsets.data(), bytes_offsets);
   WriteRaw(out_, indices.data(), bytes_indices);
@@ -484,10 +492,9 @@ bool LnueStreamWriter::FlushChunk(int count) {
   WriteRaw(out_, target.data(), bytes_target);
   WriteRaw(out_, game_id.data(), bytes_game_id);
   WriteRaw(out_, ply.data(), bytes_ply);
-
+  WriteRaw(out_, mobility.data(), bytes_mobility);
   buffer_.erase(buffer_.begin(), buffer_.begin() + count);
   return true;
 }
-
 }  // namespace long_narde
 }  // namespace open_spiel

@@ -29,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+#include "open_spiel/games/long_narde/long_narde_nnue_features.h"
 #include "open_spiel/games/long_narde/long_narde_selfplay_io.h"
 #include "open_spiel/spiel_utils.h"
 #include "open_spiel/utils/thread.h"
@@ -170,6 +171,7 @@ SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
                         std::atomic<int>* games_done,
                         const std::chrono::steady_clock::time_point* start_time,
                         std::mutex* cout_mutex,
+                        int start_game,
                         StreamWriterState* writer_state) {
   SelfPlayBatch batch;
   if (total_games <= 0 || next_game == nullptr) {
@@ -204,8 +206,12 @@ SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
               (static_cast<uint64_t>(config.seed) << 32) ^
               static_cast<uint64_t>(game_id);
           entry.sample.ply = static_cast<uint16_t>(ply);
+          internal::Board opp_board = lnstate->board();
+          internal::FlipBoard(&opp_board);
+          entry.sample.mobility = nnue::MobilityValueFromBoard(opp_board);
           nnue::CollectActiveFeatureIndices(*lnstate,
                                             &entry.sample.active_features);
+
           entry.sample.search_value = search.Search(lnstate).value;
           pending.push_back(std::move(entry));
         }
@@ -213,10 +219,10 @@ SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
                                                    &rng);
         lnstate->ApplyAction(chance_action);
       } else {
-      std::vector<std::pair<Action, double>> scored =
-          search.EvaluateDecisionActions(lnstate);
-      double temperature = TemperatureForPly(config, ply);
-      Action action = SampleSoftmax(scored, temperature, &rng);
+        std::vector<std::pair<Action, double>> scored =
+            search.EvaluateDecisionActions(lnstate);
+        double temperature = TemperatureForPly(config, ply);
+        Action action = SampleSoftmax(scored, temperature, &rng);
         lnstate->ApplyAction(action);
         moves += 1;
         ply += 1;
@@ -241,22 +247,24 @@ SelfPlayBatch RunWorker(std::shared_ptr<const Game> game,
     batch.stats.total_moves += moves;
 
     if (games_done != nullptr && config.progress && config.report_every > 0) {
-      int done = games_done->fetch_add(1) + 1;
-      if (done % config.report_every == 0 || done == total_games) {
+      int done_total = games_done->fetch_add(1) + 1;
+      if (done_total % config.report_every == 0 ||
+          done_total == total_games) {
         double elapsed = 0.0;
         if (start_time != nullptr) {
           elapsed = std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - *start_time)
                         .count();
         }
-        double rate = elapsed > 0.0 ? done / elapsed : 0.0;
-        int remaining = std::max(total_games - done, 0);
+        int done_new = std::max(done_total - start_game, 0);
+        double rate = elapsed > 0.0 ? done_new / elapsed : 0.0;
+        int remaining = std::max(total_games - done_total, 0);
         double eta = rate > 0.0 ? remaining / rate : 0.0;
         if (cout_mutex != nullptr) {
           std::lock_guard<std::mutex> lock(*cout_mutex);
-          double pct = 100.0 * static_cast<double>(done) / total_games;
+          double pct = 100.0 * static_cast<double>(done_total) / total_games;
           std::ostream& out = std::cerr;
-          out << "[selfplay] " << done << "/" << total_games << " ("
+          out << "[selfplay] " << done_total << "/" << total_games << " ("
               << std::fixed << std::setprecision(1) << pct
               << "%) " << std::setprecision(2) << rate
               << " games/s ETA " << std::setprecision(0) << eta
@@ -299,7 +307,7 @@ SelfPlayBatch RunSelfPlay(std::shared_ptr<const Game> game,
       partials[i] =
           RunWorker(game, evaluator, search_config, selfplay_config,
                     total_games, &next_game, &games_done, &start_time,
-                    &cout_mutex, nullptr);
+                    &cout_mutex, /*start_game=*/0, nullptr);
     });
   }
 
@@ -359,7 +367,7 @@ SelfPlayStats RunSelfPlayStreaming(std::shared_ptr<const Game> game,
       partials[i] =
           RunWorker(game, evaluator, search_config, selfplay_config,
                     total_games, &next_game, &games_done, &start_time,
-                    &cout_mutex, &writer_state);
+                    &cout_mutex, stream_config.start_game, &writer_state);
     });
   }
 

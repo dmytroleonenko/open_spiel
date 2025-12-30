@@ -392,6 +392,10 @@ add_executable(long_narde_selfplay long_narde/long_narde_selfplay_main.cc
 add_executable(long_narde_lnue_probe long_narde/long_narde_lnue_probe.cc
                ${OPEN_SPIEL_OBJECTS})
 
+add_executable(long_narde_lnue_tool long_narde/long_narde_lnue_tool.cc
+               long_narde/long_narde_lnue_tool_lib.cc
+               ${OPEN_SPIEL_OBJECTS})
+
 add_executable(long_narde_eval long_narde/long_narde_eval_main.cc
                long_narde/long_narde_eval_utils.cc
                ${OPEN_SPIEL_OBJECTS})

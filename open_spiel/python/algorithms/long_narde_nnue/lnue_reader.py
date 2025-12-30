@@ -20,6 +20,7 @@ _ENDIAN_MARKER = 0x01020304
 @dataclass(frozen=True)
 class LnueHeader:
     """LNUE file header."""
+
     # pylint: disable=too-many-instance-attributes
 
     version: int
@@ -35,6 +36,7 @@ class LnueHeader:
 @dataclass(frozen=True)
 class LnueChunk:
     """Chunk payload with columnar arrays."""
+    # pylint: disable=too-many-instance-attributes
 
     offsets: np.ndarray
     indices: np.ndarray
@@ -43,6 +45,7 @@ class LnueChunk:
     target: np.ndarray
     game_id: np.ndarray
     ply: np.ndarray
+    mobility: np.ndarray
 
 
 class LnueShardReader:
@@ -93,6 +96,7 @@ class LnueShardReader:
                 target = _read_array(handle, np.float32, num_samples)
                 game_id = _read_array(handle, np.uint64, num_samples)
                 ply = _read_array(handle, np.uint16, num_samples)
+                mobility = _read_array(handle, np.float32, num_samples)
 
                 read_bytes = (
                     offsets.nbytes
@@ -102,6 +106,7 @@ class LnueShardReader:
                     + target.nbytes
                     + game_id.nbytes
                     + ply.nbytes
+                    + mobility.nbytes
                 )
                 if read_bytes != unc_bytes:
                     raise ValueError("LNUE chunk size mismatch.")
@@ -114,6 +119,7 @@ class LnueShardReader:
                     target=target,
                     game_id=game_id,
                     ply=ply,
+                    mobility=mobility,
                 )
 
     def _read_header(self, handle) -> LnueHeader:
@@ -136,7 +142,7 @@ class LnueShardReader:
         ) = struct.unpack(_HEADER_FMT, raw)
         if magic != _LNUE_MAGIC:
             raise ValueError("Invalid LNUE header magic.")
-        if version not in (1, 2, 3):
+        if version != 4:
             raise ValueError("Unsupported LNUE version.")
         if endian != _ENDIAN_MARKER:
             raise ValueError("Unsupported endianness.")

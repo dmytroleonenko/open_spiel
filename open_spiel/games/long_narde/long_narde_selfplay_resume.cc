@@ -206,6 +206,8 @@ bool ScanLnueFile(const std::string& path, const LnueShardConfig& config,
         static_cast<std::size_t>(chunk.num_samples) * sizeof(int8_t);
     std::size_t bytes_target =
         static_cast<std::size_t>(chunk.num_samples) * sizeof(float);
+    std::size_t bytes_mobility =
+        static_cast<std::size_t>(chunk.num_samples) * sizeof(float);
     in.seekg(static_cast<std::streamoff>(bytes_search + bytes_outcome +
                                          bytes_target),
              std::ios::cur);
@@ -226,7 +228,8 @@ bool ScanLnueFile(const std::string& path, const LnueShardConfig& config,
     }
     std::size_t bytes_ply =
         static_cast<std::size_t>(chunk.num_samples) * sizeof(uint16_t);
-    in.seekg(static_cast<std::streamoff>(bytes_ply), std::ios::cur);
+    in.seekg(static_cast<std::streamoff>(bytes_ply + bytes_mobility),
+             std::ios::cur);
     if (!in.good()) {
       break;
     }
@@ -234,7 +237,8 @@ bool ScanLnueFile(const std::string& path, const LnueShardConfig& config,
         offsets.size() * sizeof(uint32_t);
     std::size_t uncompressed =
         bytes_offsets + bytes_indices + bytes_search + bytes_outcome +
-        bytes_target + game_id.size() * sizeof(uint64_t) + bytes_ply;
+        bytes_target + game_id.size() * sizeof(uint64_t) + bytes_ply +
+        bytes_mobility;
     if (uncompressed != chunk.uncompressed_bytes) {
       break;
     }

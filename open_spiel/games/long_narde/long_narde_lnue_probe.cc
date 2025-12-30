@@ -123,7 +123,7 @@ bool ReadLnueHeader(std::ifstream* in, LnueHeader* header) {
   if (std::memcmp(header->magic, kLnueMagic.data(), kLnueMagic.size()) != 0) {
     return false;
   }
-  if (header->version != 1 && header->version != kLnueFormatVersion) {
+  if (header->version != kLnueFormatVersion) {
     return false;
   }
   if (header->endian != kLnueEndianMarker) {
@@ -247,12 +247,14 @@ int RunLnueProbe(int argc, char** argv) {
     std::vector<float> target(num_samples);
     std::vector<uint64_t> game_id(num_samples);
     std::vector<uint16_t> ply(num_samples);
+    std::vector<float> mobility(num_samples);
 
     if (!ReadExact(&in, v_search.data(), num_samples * sizeof(float)) ||
         !ReadExact(&in, outcome.data(), num_samples * sizeof(int8_t)) ||
         !ReadExact(&in, target.data(), num_samples * sizeof(float)) ||
         !ReadExact(&in, game_id.data(), num_samples * sizeof(uint64_t)) ||
-        !ReadExact(&in, ply.data(), num_samples * sizeof(uint16_t))) {
+        !ReadExact(&in, ply.data(), num_samples * sizeof(uint16_t)) ||
+        !ReadExact(&in, mobility.data(), num_samples * sizeof(float))) {
       std::cerr << "Failed to read LNUE columns.\n";
       return 1;
     }

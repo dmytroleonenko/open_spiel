@@ -12,22 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_NNUE_FEATURES_H_
-#define OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_NNUE_FEATURES_H_
+#ifndef OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_LNUE_TOOL_LIB_H_
+#define OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_LNUE_TOOL_LIB_H_
 
-#include "open_spiel/games/long_narde/long_narde_internal.h"
-#include "open_spiel/games/long_narde/long_narde_nnue.h"
+#include <string>
+#include <vector>
 
 namespace open_spiel {
 namespace long_narde {
-namespace nnue {
 
-int PipDeltaBucketFromBoard(const internal::Board& board);
-int MobilityBucketFromBoard(const internal::Board& board);
-float MobilityValueFromBoard(const internal::Board& board);
+struct ToolConfig {
+  std::string out_dir;
+  std::string out_prefix = "shard";
+  int games_per_shard = 0;
+  int samples_per_chunk = 4096;
+  int start_index = 0;
+  int out_shards = 0;
+  bool limit_output = false;
+};
 
-}  // namespace nnue
+bool ParseShardName(const std::string& path, std::string* prefix, int* index);
+bool ProcessInputs(const std::vector<std::string>& inputs,
+                   const ToolConfig& config);
+
 }  // namespace long_narde
 }  // namespace open_spiel
 
-#endif  // OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_NNUE_FEATURES_H_
+#endif  // OPEN_SPIEL_GAMES_LONG_NARDE_LONG_NARDE_LNUE_TOOL_LIB_H_

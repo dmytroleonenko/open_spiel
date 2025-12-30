@@ -204,6 +204,7 @@ def _train_epoch(
     lr: float,
     weight_decay: float,
     ev_weight: float,
+    mobility_weight: float,
     quant_loss: bool,
     quant_loss_weight: float,
     bootstrap_steps: int,
@@ -237,7 +238,7 @@ def _train_epoch(
                 target_override = _bootstrap_targets(
                     chunk, bootstrap_steps, bootstrap_alpha
                 )
-            for indices, offsets, outcome, target in _iter_batches(
+            for indices, offsets, outcome, target, mobility in _iter_batches(
                 chunk, batch_size, np_rng, target_override
             ):
                 _train_batch(
@@ -248,8 +249,10 @@ def _train_epoch(
                     offsets,
                     outcome,
                     target,
+                    mobility,
                     device,
                     ev_weight,
+                    mobility_weight,
                     quant_loss,
                     quant_loss_weight,
                 )
@@ -603,6 +606,7 @@ def main() -> None:
                 args.lr,
                 args.weight_decay,
                 args.ev_weight,
+                args.mobility_weight,
                 args.quant_loss,
                 args.quant_loss_weight,
                 args.bootstrap_steps,
@@ -647,34 +651,39 @@ def main() -> None:
             args.chance_sample_depth,
             args.chance_seed,
         )
-        summary_prev = _run_eval(
-            eval_bin,
-            nnue_path,
-            prev_nnue,
-            args.eval_games,
-            eval_depth,
-            eval_seed + 1,
-            args.eval_workers,
-            args.eval_progress != 0,
-            args.eval_report_every,
-            args.root_full_depth_top_k,
-            args.root_reduced_depth,
-            args.chance_samples,
-            args.chance_sample_depth,
-            args.chance_seed,
-        )
+        summary_prev = None
+        if prev_nnue is not None:
+            summary_prev = _run_eval(
+                eval_bin,
+                nnue_path,
+                prev_nnue,
+                args.eval_games,
+                eval_depth,
+                eval_seed + 1,
+                args.eval_workers,
+                args.eval_progress != 0,
+                args.eval_report_every,
+                args.root_full_depth_top_k,
+                args.root_reduced_depth,
+                args.chance_samples,
+                args.chance_sample_depth,
+                args.chance_seed,
+            )
 
         with open(log_path, "a", encoding="utf-8") as handle:
             handle.write(
                 f"iter={iteration} match=vs_random {summary_random}\n"
             )
-            prev_label = prev_nnue.name if prev_nnue else "random"
-            handle.write(
-                f"iter={iteration} match=vs_prev({prev_label}) {summary_prev}\n"
-            )
+            if summary_prev is not None:
+                prev_label = prev_nnue.name
+                handle.write(
+                    f"iter={iteration} match=vs_prev({prev_label}) "
+                    f"{summary_prev}\n"
+                )
 
         print(summary_random)
-        print(summary_prev)
+        if summary_prev is not None:
+            print(summary_prev)
 
         prev_nnue = nnue_path
 
