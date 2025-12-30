@@ -24,9 +24,12 @@
 namespace open_spiel {
 namespace long_narde {
 
-void WorkerStats::AddGame(int64_t samples_in_game) {
+void WorkerStats::AddGame() {
   games.fetch_add(1, std::memory_order_relaxed);
-  samples.fetch_add(samples_in_game, std::memory_order_relaxed);
+}
+
+void WorkerStats::AddSamples(int64_t count) {
+  samples.fetch_add(count, std::memory_order_relaxed);
 }
 
 void WorkerStats::AddSearchTimings(const std::vector<double>& times_ms) {

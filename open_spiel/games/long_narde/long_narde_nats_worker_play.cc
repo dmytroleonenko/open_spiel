@@ -156,6 +156,9 @@ std::vector<SelfPlaySample> PlayOneGame(std::shared_ptr<const Game> game,
           stats->AddSearchTimings(search->last_root_times_ms());
         }
         pending.push_back(std::move(entry));
+        if (stats != nullptr) {
+          stats->AddSamples(1);
+        }
       }
       Action chance_action =
           SampleChanceOutcome(lnstate->ChanceOutcomes(), rng);

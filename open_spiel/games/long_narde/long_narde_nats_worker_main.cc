@@ -221,7 +221,7 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
         break;
       }
       if (stats != nullptr) {
-        stats->AddGame(pending.front().samples);
+        stats->AddGame();
       }
       pending.pop_front();
       mark_pending(-1);
@@ -278,7 +278,7 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
       continue;
     }
     if (stats != nullptr) {
-      stats->AddGame(current.samples);
+      stats->AddGame();
     }
   }
 }
