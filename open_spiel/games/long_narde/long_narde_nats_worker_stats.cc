@@ -16,13 +16,30 @@
 
 #include <algorithm>
 #include <chrono>
+#include <ctime>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 
 namespace open_spiel {
 namespace long_narde {
+
+std::string Timestamp() {
+  auto now = std::chrono::system_clock::now();
+  std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_snapshot{};
+#if defined(_WIN32)
+  localtime_s(&tm_snapshot, &now_c);
+#else
+  localtime_r(&now_c, &tm_snapshot);
+#endif
+  std::ostringstream out;
+  out << std::put_time(&tm_snapshot, "%F %T");
+  return out.str();
+}
 
 int64_t WorkerStats::AddGame() {
   return games.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -92,7 +109,7 @@ void RunStatsReporter(int report_every_seconds, const WorkerStats* stats,
     double avg_samples =
         total_games > 0 ? static_cast<double>(total_samples) / total_games
                         : 0.0;
-    std::cerr << "[worker] games=" << total_games
+    std::cerr << "[" << Timestamp() << "] [worker] games=" << total_games
               << " samples=" << total_samples << " weights=" << version
               << " pending=" << pending
               << " overall=" << overall_games_s << " g/s " << overall_samples_s

@@ -17,11 +17,14 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <deque>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <random>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -78,6 +81,28 @@ struct WeightsStore {
     return !payload_out->empty();
   }
 };
+
+std::string Timestamp() {
+  auto now = std::chrono::system_clock::now();
+  std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_snapshot{};
+#if defined(_WIN32)
+  localtime_s(&tm_snapshot, &now_c);
+#else
+  localtime_r(&now_c, &tm_snapshot);
+#endif
+  std::ostringstream out;
+  out << std::put_time(&tm_snapshot, "%F %T");
+  return out.str();
+}
+
+double ElapsedSeconds() {
+  static const auto start_time = std::chrono::steady_clock::now();
+  auto now = std::chrono::steady_clock::now();
+  return std::chrono::duration_cast<std::chrono::duration<double>>(
+             now - start_time)
+      .count();
+}
 
 void RequestLatestWeights(const WorkerConfig& config, const WeightsStore* store,
                           const std::string& inbox_subject) {
@@ -159,7 +184,8 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
   if (!config.nnue_path.empty()) {
     model.Load(config.nnue_path);
     if (worker_id == 0) {
-      std::cerr << "[worker] loaded weights from file "
+      std::cerr << "[" << Timestamp()
+                << "] [worker] loaded weights from file "
                 << config.nnue_path << "\n";
     }
   } else if (config.wait_for_weights && store != nullptr) {
@@ -170,7 +196,8 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
     }
     model.LoadFromBytes(payload);
     if (worker_id == 0) {
-      std::cerr << "[worker] loaded weights from NATS version="
+      std::cerr << "[" << Timestamp()
+                << "] [worker] loaded weights from NATS version="
                 << local_version << " bytes=" << payload.size() << "\n";
     }
   }
@@ -236,9 +263,11 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
               stats->samples.load(std::memory_order_relaxed);
           int64_t pending_now =
               stats->pending.load(std::memory_order_relaxed);
-          std::cerr << "[worker] completed games=" << total_games
+          std::cerr << "[" << Timestamp()
+                    << "] [worker] completed games=" << total_games
                     << " samples=" << total_samples
-                    << " pending=" << pending_now << "\n";
+                    << " pending=" << pending_now
+                    << " elapsed_s=" << ElapsedSeconds() << "\n";
         }
       }
       pending.pop_front();
@@ -260,7 +289,8 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
                                        std::memory_order_relaxed);
         }
         if (worker_id == 0) {
-          std::cerr << "[worker] updated weights from NATS version="
+          std::cerr << "[" << Timestamp()
+                    << "] [worker] updated weights from NATS version="
                     << local_version << " bytes=" << payload.size() << "\n";
         }
       }
@@ -307,9 +337,11 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
             stats->samples.load(std::memory_order_relaxed);
         int64_t pending_now =
             stats->pending.load(std::memory_order_relaxed);
-        std::cerr << "[worker] completed games=" << total_games
+        std::cerr << "[" << Timestamp()
+                  << "] [worker] completed games=" << total_games
                   << " samples=" << total_samples
-                  << " pending=" << pending_now << "\n";
+                  << " pending=" << pending_now
+                  << " elapsed_s=" << ElapsedSeconds() << "\n";
       }
     }
   }
@@ -376,7 +408,8 @@ int main(int argc, char** argv) {
       FetchRemoteConfig(config, &remote_payload)) {
     remote_args = ParseConfigPayload(remote_payload);
     ApplyConfigArgs(remote_args, &config);
-    std::cerr << "[worker] loaded config from NATS subject "
+    std::cerr << "[" << Timestamp()
+              << "] [worker] loaded config from NATS subject "
               << open_spiel::long_narde::BuildSubject(
                      config.config_subject, config.run_id)
               << "\n";
@@ -394,7 +427,8 @@ int main(int argc, char** argv) {
   if (!request_set) {
     config.request_weights = config.nnue_path.empty();
   }
-  std::cerr << "[worker] config: depth=" << config.depth
+  std::cerr << "[" << Timestamp() << "] [worker] config: depth="
+            << config.depth
             << " root_full_depth_top_k=" << config.root_full_depth_top_k
             << " root_reduced_depth=" << config.root_reduced_depth
             << " chance_samples=" << config.chance_samples
