@@ -180,9 +180,9 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
   }
   std::string subject = BuildSubject(config.traj_subject, config.run_id);
 
-  nnue::NnueModel model;
+  auto model = std::make_unique<nnue::NnueModel>();
   if (!config.nnue_path.empty()) {
-    model.Load(config.nnue_path);
+    model->Load(config.nnue_path);
     if (worker_id == 0) {
       std::cerr << "[" << Timestamp()
                 << "] [worker] loaded weights from file "
@@ -194,14 +194,14 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
     while (!store->GetIfNew(&local_version, &payload)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
-    model.LoadFromBytes(payload);
+    model->LoadFromBytes(payload);
     if (worker_id == 0) {
       std::cerr << "[" << Timestamp()
                 << "] [worker] loaded weights from NATS version="
                 << local_version << " bytes=" << payload.size() << "\n";
     }
   }
-  nnue::NnueEvaluator evaluator(&model);
+  nnue::NnueEvaluator evaluator(model.get());
 
   SearchConfig search_config;
   search_config.max_depth = config.depth;
@@ -283,7 +283,7 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
     if (store != nullptr) {
       std::string payload;
       if (store->GetIfNew(&local_version, &payload)) {
-        model.LoadFromBytes(payload);
+        model->LoadFromBytes(payload);
         if (stats != nullptr) {
           stats->weights_version.store(local_version,
                                        std::memory_order_relaxed);
@@ -408,7 +408,7 @@ int main(int argc, char** argv) {
       FetchRemoteConfig(config, &remote_payload)) {
     remote_args = ParseConfigPayload(remote_payload);
     ApplyConfigArgs(remote_args, &config);
-    std::cerr << "[" << Timestamp()
+    std::cerr << "[" << open_spiel::long_narde::Timestamp()
               << "] [worker] loaded config from NATS subject "
               << open_spiel::long_narde::BuildSubject(
                      config.config_subject, config.run_id)
@@ -427,7 +427,8 @@ int main(int argc, char** argv) {
   if (!request_set) {
     config.request_weights = config.nnue_path.empty();
   }
-  std::cerr << "[" << Timestamp() << "] [worker] config: depth="
+  std::cerr << "[" << open_spiel::long_narde::Timestamp()
+            << "] [worker] config: depth="
             << config.depth
             << " root_full_depth_top_k=" << config.root_full_depth_top_k
             << " root_reduced_depth=" << config.root_reduced_depth
