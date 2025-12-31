@@ -7,6 +7,7 @@ import argparse
 import math
 import shutil
 import subprocess
+import struct
 import time
 from pathlib import Path
 from typing import Iterable, List
@@ -110,6 +111,49 @@ def _count_samples(paths: Iterable[Path]) -> int:
         for chunk in reader.iter_chunks():
             total += int(chunk.outcome.shape[0])
     return total
+
+
+_NNUE_HEADER_FMT = "<4s16I"
+_NNUE_HEADER_SIZE = struct.calcsize(_NNUE_HEADER_FMT)
+_NNUE_ENDIAN_MARKER = 0x01020304
+
+
+def _nnue_file_complete(path: Path) -> bool:
+    """Returns True if a NNUE file looks complete (headered or raw blob)."""
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return False
+    if size < _NNUE_HEADER_SIZE:
+        return False
+    try:
+        with open(path, "rb") as handle:
+            header_raw = handle.read(_NNUE_HEADER_SIZE)
+    except OSError:
+        return False
+    if len(header_raw) != _NNUE_HEADER_SIZE:
+        return False
+    magic, _, endian, *rest = struct.unpack(_NNUE_HEADER_FMT, header_raw)
+    if magic != b"LNNU" or endian != _NNUE_ENDIAN_MARKER:
+        return False
+    payload_size = rest[-2]
+    expected_size = _NNUE_HEADER_SIZE + int(payload_size)
+    return size == expected_size
+
+
+def _resume_state(output_dir: Path) -> tuple[int, Path | None]:
+    """Finds the first incomplete iter_XX and the last completed NNUE path."""
+    prev_nnue = None
+    iteration = 0
+    while True:
+        iter_dir = output_dir / f"iter_{iteration:02d}"
+        nnue_path = iter_dir / f"nnue_iter_{iteration:02d}.nnue"
+        if nnue_path.exists() and _nnue_file_complete(nnue_path):
+            prev_nnue = nnue_path
+            iteration += 1
+            continue
+        break
+    return iteration, prev_nnue
 
 
 def _parse_iter_index(path: Path) -> int | None:
@@ -342,6 +386,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output_dir", default="results/nnue_closed_loop")
     parser.add_argument("--iterations", type=int, default=1)
+    parser.add_argument("--resume", type=int, default=1)
     parser.add_argument("--games_per_iter", type=int, default=10000)
     parser.add_argument("--games_per_shard", type=int, default=1000)
     parser.add_argument("--depth", type=int, default=5)
@@ -440,8 +485,17 @@ def main() -> None:
         print(f"using nats_run_id: {nats_run_id}", flush=True)
 
     prev_nnue = Path(args.init_nnue) if args.init_nnue else None
-
-    for iteration in range(args.iterations):
+    start_iter = 0
+    if args.resume != 0:
+        start_iter, prev_found = _resume_state(output_dir)
+        if start_iter > 0:
+            prev_nnue = prev_found
+            print(
+                f"resuming from iter {start_iter} (prev_nnue={prev_nnue})",
+                flush=True,
+            )
+    end_iter = start_iter + max(0, args.iterations)
+    for iteration in range(start_iter, end_iter):
         iter_dir = output_dir / f"iter_{iteration:02d}"
         iter_dir.mkdir(parents=True, exist_ok=True)
         data_dir = iter_dir / "data"
