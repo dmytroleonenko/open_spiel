@@ -25,7 +25,9 @@ from open_spiel.python.algorithms.long_narde_nnue.train import (
     _bootstrap_targets,
     _configure_torch_threads,
     _iter_batches,
+    _lr_for_step,
     _load_nnue,
+    _parse_lr_milestones,
     _resolve_device,
     _save_nnue,
     _train_batch,
@@ -159,6 +161,55 @@ def _resume_state(output_dir: Path) -> tuple[int, Path | None]:
     return iteration, prev_nnue
 
 
+def _champion_state_path(output_dir: Path) -> Path:
+    return output_dir / "champion.txt"
+
+
+def _load_champion_state(output_dir: Path) -> Path | None:
+    state_path = _champion_state_path(output_dir)
+    try:
+        raw = state_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = output_dir / candidate
+    return candidate if candidate.exists() else None
+
+
+def _write_champion_state(output_dir: Path, champion_path: Path) -> None:
+    try:
+        rel = champion_path.relative_to(output_dir)
+        value = str(rel)
+    except ValueError:
+        value = str(champion_path)
+    _champion_state_path(output_dir).write_text(
+        value + "\n",
+        encoding="utf-8",
+    )
+
+
+def _parse_eval_summary(summary: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for token in summary.split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        out[key] = value
+    return out
+
+
+def _winrate_from_eval_summary(summary: str) -> float:
+    fields = _parse_eval_summary(summary)
+    games = int(fields.get("games", "0"))
+    wins = int(fields.get("wins_net1", "0"))
+    if games <= 0:
+        return 0.0
+    return wins / float(games)
+
+
 def _parse_iter_index(path: Path) -> int | None:
     name = path.name
     if not name.startswith("iter_"):
@@ -254,6 +305,7 @@ def _train_epoch(
     mobility_weight: float,
     quant_loss: bool,
     quant_loss_weight: float,
+    grad_clip_norm: float,
     bootstrap_steps: int,
     bootstrap_alpha: float,
     seed: int,
@@ -313,6 +365,7 @@ def _train_epoch(
                     mobility_weight,
                     quant_loss,
                     quant_loss_weight,
+                    grad_clip_norm,
                 )
 
                 processed += int(outcome.shape[0])
@@ -402,6 +455,10 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=1)
     parser.add_argument("--resume", type=int, default=1)
     parser.add_argument("--warm_start", type=int, default=1)
+    parser.add_argument("--champion_gating", type=int, default=0)
+    parser.add_argument("--champion_winrate", type=float, default=0.52)
+    parser.add_argument("--champion_eval_games", type=int, default=0)
+    parser.add_argument("--champion_eval_depth", type=int, default=-1)
     parser.add_argument("--games_per_iter", type=int, default=10000)
     parser.add_argument("--games_per_shard", type=int, default=1000)
     parser.add_argument("--depth", type=int, default=5)
@@ -467,6 +524,7 @@ def main() -> None:
     temperature_decay_plies = args.temperature_decay_plies
     if temperature_decay_plies <= 0:
         temperature_decay_plies = None
+    lr_milestones = _parse_lr_milestones(args.lr_milestones)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -517,11 +575,20 @@ def main() -> None:
                 f"resuming from iter {start_iter} (prev_nnue={prev_nnue})",
                 flush=True,
             )
+    champion_nnue = prev_nnue
+    if args.champion_gating != 0:
+        champion_loaded = _load_champion_state(output_dir)
+        if champion_loaded is not None:
+            champion_nnue = champion_loaded
+            print(f"loaded champion: {champion_nnue}", flush=True)
+        elif champion_nnue is not None:
+            _write_champion_state(output_dir, champion_nnue)
     end_iter = start_iter + max(0, args.iterations)
     for iteration in range(start_iter, end_iter):
         iter_dir = output_dir / f"iter_{iteration:02d}"
         iter_dir.mkdir(parents=True, exist_ok=True)
         data_dir = iter_dir / "data"
+        baseline_nnue = champion_nnue
         use_nats = bool(nats_url)
         if use_nats:
             stream_dir = (
@@ -603,7 +670,7 @@ def main() -> None:
                     shard_id=shard_idx,
                     progress=args.selfplay_progress != 0,
                     report_every=args.selfplay_report_every,
-                    nnue_path=prev_nnue,
+                    nnue_path=baseline_nnue,
                     root_full_depth_top_k=args.root_full_depth_top_k,
                     root_reduced_depth=args.root_reduced_depth,
                     stream=args.selfplay_stream != 0,
@@ -646,14 +713,16 @@ def main() -> None:
 
         header = LnueShardReader(str(shard_paths[0])).header
         model = NnueNet(feature_dim=header.feature_dim).to(device)
-        if args.warm_start != 0 and prev_nnue is not None:
-            name, author = _load_nnue(str(prev_nnue), model, device)
+        if args.warm_start != 0 and baseline_nnue is not None:
+            name, author = _load_nnue(str(baseline_nnue), model, device)
             print(
-                f"iter {iteration}: warm-started from {prev_nnue.name} "
+                f"iter {iteration}: warm-started from {baseline_nnue.name} "
                 f"(name={name!r}, author={author!r})",
                 flush=True,
             )
         torch.manual_seed(args.seed + iteration)
+
+        iter_lr = _lr_for_step(args.lr, lr_milestones, iteration)
 
         bootstrap_cache = None
         if args.bootstrap_steps > 0:
@@ -690,12 +759,13 @@ def main() -> None:
                 model,
                 device,
                 args.batch_size,
-                args.lr,
+                iter_lr,
                 args.weight_decay,
                 args.ev_weight,
                 args.mobility_weight,
                 args.quant_loss,
                 args.quant_loss_weight,
+                args.grad_clip_norm,
                 args.bootstrap_steps,
                 bootstrap_alpha,
                 args.seed + iteration * 1000,
@@ -711,18 +781,16 @@ def main() -> None:
             author="closed_loop",
             run_block_threshold=header.run_block_threshold,
         )
-        if nats_url and args.nats_publish != 0:
-            version = args.nats_version_start + iteration
-            _publish_nnue(
-                publish_bin,
-                nats_url,
-                nats_run_id,
-                nnue_path,
-                version,
-            )
 
         eval_seed = args.seed + iteration * 1000000 + 777
         eval_depth = args.eval_depth if args.eval_depth >= 0 else args.depth
+        compare_games = args.eval_games
+        compare_depth = eval_depth
+        if args.champion_gating != 0:
+            if args.champion_eval_games > 0:
+                compare_games = args.champion_eval_games
+            if args.champion_eval_depth >= 0:
+                compare_depth = args.champion_eval_depth
         summary_random = _run_eval(
             eval_bin,
             nnue_path,
@@ -739,14 +807,14 @@ def main() -> None:
             args.chance_sample_depth,
             args.chance_seed,
         )
-        summary_prev = None
-        if prev_nnue is not None:
-            summary_prev = _run_eval(
+        summary_compare = None
+        if baseline_nnue is not None:
+            summary_compare = _run_eval(
                 eval_bin,
                 nnue_path,
-                prev_nnue,
-                args.eval_games,
-                eval_depth,
+                baseline_nnue,
+                compare_games,
+                compare_depth,
                 eval_seed + 1,
                 args.eval_workers,
                 args.eval_progress != 0,
@@ -758,21 +826,80 @@ def main() -> None:
                 args.chance_seed,
             )
 
-        with open(log_path, "a", encoding="utf-8") as handle:
-            handle.write(
-                f"iter={iteration} match=vs_random {summary_random}\n"
-            )
-            if summary_prev is not None:
-                prev_label = prev_nnue.name
-                handle.write(
-                    f"iter={iteration} match=vs_prev({prev_label}) "
-                    f"{summary_prev}\n"
+        gate_result = "accepted"
+        gate_winrate = None
+        gate_threshold = args.champion_winrate
+        if args.champion_gating != 0:
+            if baseline_nnue is None:
+                champion_nnue = nnue_path
+                _write_champion_state(output_dir, champion_nnue)
+            elif summary_compare is None:
+                gate_result = "rejected_no_eval"
+            else:
+                gate_winrate = _winrate_from_eval_summary(summary_compare)
+                if gate_winrate >= gate_threshold:
+                    champion_nnue = nnue_path
+                    _write_champion_state(output_dir, champion_nnue)
+                else:
+                    gate_result = "rejected"
+
+        if nats_url and args.nats_publish != 0:
+            publish_path = nnue_path
+            if args.champion_gating != 0 and gate_result != "accepted":
+                publish_path = None
+            if publish_path is not None:
+                version = args.nats_version_start + iteration
+                _publish_nnue(
+                    publish_bin,
+                    nats_url,
+                    nats_run_id,
+                    publish_path,
+                    version,
                 )
 
-        print(summary_random)
-        if summary_prev is not None:
-            print(summary_prev)
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(
+                f"iter={iteration} lr={iter_lr} match=vs_random {summary_random}\n"
+            )
+            if summary_compare is not None:
+                label = baseline_nnue.name if baseline_nnue is not None else "none"
+                match = "vs_prev" if args.champion_gating == 0 else "vs_champion"
+                handle.write(
+                    f"iter={iteration} lr={iter_lr} match={match}({label}) "
+                    f"{summary_compare}\n"
+                )
+            if args.champion_gating != 0:
+                handle.write(
+                    f"iter={iteration} lr={iter_lr} champion_gate={gate_result} "
+                    f"threshold={gate_threshold}"
+                )
+                if gate_winrate is not None:
+                    handle.write(f" winrate={gate_winrate}")
+                if baseline_nnue is not None:
+                    handle.write(f" baseline={baseline_nnue.name}")
+                handle.write("\n")
 
+        print(summary_random)
+        if summary_compare is not None:
+            print(summary_compare)
+        if args.champion_gating != 0:
+            if baseline_nnue is None:
+                print(
+                    f"iter {iteration}: champion gate bootstrap -> accept",
+                    flush=True,
+                )
+            else:
+                winrate_str = (
+                    f"{gate_winrate:.4f}" if gate_winrate is not None else "n/a"
+                )
+                print(
+                    f"iter {iteration}: champion gate={gate_result} "
+                    f"winrate={winrate_str} threshold={gate_threshold:.4f}",
+                    flush=True,
+                )
+
+        if args.champion_gating == 0:
+            champion_nnue = nnue_path
         prev_nnue = nnue_path
 
 

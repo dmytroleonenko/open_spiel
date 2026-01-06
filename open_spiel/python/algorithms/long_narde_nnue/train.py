@@ -128,6 +128,45 @@ def _configure_torch_threads(
     return torch.get_num_threads(), torch.get_num_interop_threads()
 
 
+def _parse_lr_milestones(spec: str) -> list[tuple[int, float]]:
+    """Parses a comma-separated list of step:lr pairs."""
+    milestones: list[tuple[int, float]] = []
+    spec = spec.strip()
+    if not spec:
+        return milestones
+    for entry in spec.split(","):
+        item = entry.strip()
+        if not item:
+            continue
+        if ":" not in item:
+            raise ValueError(f"Invalid lr milestone {item!r} (expected step:lr).")
+        step_str, lr_str = item.split(":", 1)
+        step = int(step_str.strip())
+        lr = float(lr_str.strip())
+        if step < 0:
+            raise ValueError(f"lr milestone step must be >=0, got {step}.")
+        if lr <= 0.0:
+            raise ValueError(f"lr milestone lr must be >0, got {lr}.")
+        milestones.append((step, lr))
+    milestones.sort(key=lambda pair: pair[0])
+    return milestones
+
+
+def _lr_for_step(base_lr: float, milestones: list[tuple[int, float]], step: int) -> float:
+    """Returns the learning rate for a given step."""
+    lr = float(base_lr)
+    for milestone_step, milestone_lr in milestones:
+        if step < milestone_step:
+            break
+        lr = float(milestone_lr)
+    return lr
+
+
+def _set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
+    for group in optimizer.param_groups:
+        group["lr"] = float(lr)
+
+
 def _iter_batches(
     chunk,
     batch_size: int,
@@ -274,6 +313,7 @@ def _train_batch(
     mobility_weight: float,
     quant_loss: bool,
     quant_loss_weight: float,
+    grad_clip_norm: float,
 ) -> None:
     """Runs a single optimization step on one batch."""
     # pylint: disable=too-many-locals,too-many-branches
@@ -291,6 +331,8 @@ def _train_batch(
     if quant_loss:
         loss = loss + quant_loss_weight * model.quantization_error()
     loss.backward()
+    if grad_clip_norm > 0.0:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
     optimizer.step()
     model.clip_parameters()
 
@@ -623,6 +665,8 @@ def train(args) -> None:
         getattr(args, "torch_interop_threads", 0),
     )
     print(f"torch threads: intra={intra} interop={interop}", flush=True)
+    lr_milestones = _parse_lr_milestones(getattr(args, "lr_milestones", ""))
+    grad_clip_norm = float(getattr(args, "grad_clip_norm", 0.0))
     bootstrap_steps = max(0, int(args.bootstrap_steps))
     bootstrap_alpha = args.bootstrap_alpha
     if bootstrap_alpha < 0.0:
@@ -635,12 +679,12 @@ def train(args) -> None:
     first_header = LnueShardReader(shard_paths[0]).header
     model = NnueNet(feature_dim=first_header.feature_dim).to(device)
     criterion = torch.nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
-    )
+    optimizer = torch.optim.Adam(model.parameters(), weight_decay=args.weight_decay)
+    _set_optimizer_lr(optimizer, _lr_for_step(args.lr, lr_milestones, 0))
     bootstrap_cache: dict[str, dict[int, float]] = {}
 
     for epoch in range(args.epochs):
+        _set_optimizer_lr(optimizer, _lr_for_step(args.lr, lr_milestones, epoch))
         np_rng.shuffle(shard_paths)
         for shard_path in shard_paths:
             lookup = None
@@ -673,6 +717,7 @@ def train(args) -> None:
                         "mobility_weight": args.mobility_weight,
                         "quant_loss": args.quant_loss,
                         "quant_loss_weight": args.quant_loss_weight,
+                        "grad_clip_norm": grad_clip_norm,
                     }
                     _train_batch(**batch_kwargs)
 
@@ -690,6 +735,20 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--weight_decay", type=float, default=1e-5)
     parser.add_argument("--ev_weight", type=float, default=0.5)
     parser.add_argument("--mobility_weight", type=float, default=0.1)
+    parser.add_argument(
+        "--lr_milestones",
+        default="",
+        help=(
+            "Comma-separated step:lr pairs to override --lr "
+            "(step=epoch for train.py, step=iteration for closed_loop)."
+        ),
+    )
+    parser.add_argument(
+        "--grad_clip_norm",
+        type=float,
+        default=0.0,
+        help="Global gradient clipping (0 disables).",
+    )
     parser.add_argument(
         "--torch_threads",
         type=int,
