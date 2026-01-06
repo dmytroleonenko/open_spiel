@@ -128,20 +128,22 @@ void RequestLatestWeights(const WorkerConfig& config, const WeightsStore* store,
   }
 }
 
-
 void WeightSubscriber(const WorkerConfig& config, WeightsStore* store) {
   if (store == nullptr) {
     return;
   }
   NatsConnection conn;
   if (!conn.Connect(config.nats_url)) {
-    std::cerr << "Failed to connect to NATS at " << config.nats_url << "\n";
+    std::cerr << "[" << Timestamp()
+              << "] [worker] failed to connect to NATS at " << config.nats_url
+              << "\n";
     return;
   }
   std::string weights_subject =
       BuildSubject(config.weights_subject, config.run_id);
   if (!conn.Subscribe(weights_subject, 1)) {
-    std::cerr << "Failed to subscribe to " << weights_subject << "\n";
+    std::cerr << "[" << Timestamp() << "] [worker] failed to subscribe to "
+              << weights_subject << "\n";
     return;
   }
   std::string inbox_subject;
@@ -155,31 +157,31 @@ void WeightSubscriber(const WorkerConfig& config, WeightsStore* store) {
                         .count())),
         config.run_id);
     if (!conn.Subscribe(inbox_subject, 2)) {
-      std::cerr << "Failed to subscribe to " << inbox_subject << "\n";
+      std::cerr << "[" << Timestamp() << "] [worker] failed to subscribe to "
+                << inbox_subject << "\n";
       return;
     }
     std::thread request_thread(RequestLatestWeights, config, store,
                                inbox_subject);
     request_thread.detach();
   }
-
   NatsMessage msg;
   while (conn.NextMessage(&msg)) {
     store->Update(msg.payload);
   }
 }
-
 void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
                 std::atomic<int64_t>* next_game,
                 const WeightsStore* store, WorkerStats* stats,
+                uint32_t game_id_prefix,
                 int worker_id) {
   NatsConnection conn;
   bool connected = conn.Connect(config.nats_url);
   if (!connected) {
-    std::cerr << "Worker " << worker_id << " failed to connect to NATS.\n";
+    std::cerr << "[" << Timestamp() << "] [worker] worker " << worker_id
+              << " failed to connect to NATS.\n";
   }
   std::string subject = BuildSubject(config.traj_subject, config.run_id);
-
   auto model = std::make_unique<nnue::NnueModel>();
   if (!config.nnue_path.empty()) {
     model->Load(config.nnue_path);
@@ -275,8 +277,8 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
     }
   };
   while (true) {
-    int64_t game_id = next_game->fetch_add(1);
-    if (config.games > 0 && game_id >= config.games) {
+    int64_t local_game_id = next_game->fetch_add(1);
+    if (config.games > 0 && local_game_id >= config.games) {
       break;
     }
 
@@ -301,12 +303,21 @@ void WorkerLoop(std::shared_ptr<const Game> game, const WorkerConfig& config,
       flush_pending();
     }
 
-    uint64_t game_seed = config.seed + static_cast<uint64_t>(game_id) * 9973u;
-    std::mt19937 rng(static_cast<uint32_t>(game_seed));
+    uint64_t game_seed =
+        config.seed ^
+        (static_cast<uint64_t>(game_id_prefix) << 32) ^
+        (static_cast<uint64_t>(local_game_id) * 9973u);
+    uint32_t seed32 =
+        static_cast<uint32_t>(game_seed) ^
+        static_cast<uint32_t>(game_seed >> 32);
+    std::mt19937 rng(seed32);
 
+    uint64_t game_id =
+        (static_cast<uint64_t>(game_id_prefix) << 32) |
+        (static_cast<uint64_t>(local_game_id) & 0xffffffffULL);
     std::vector<SelfPlaySample> samples =
         PlayOneGame(game, &search, config,
-                    static_cast<uint64_t>(game_id), &rng, stats);
+                    game_id, &rng, stats);
 
     std::string payload;
     if (!SerializeLnueTrajectory(samples, shard_config, &payload)) {
@@ -387,6 +398,7 @@ int main(int argc, char** argv) {
   using open_spiel::long_narde::GetUint64Arg;
   using open_spiel::long_narde::PrintUsage;
   using open_spiel::long_narde::RunStatsReporter;
+  using open_spiel::long_narde::Timestamp;
   using open_spiel::long_narde::WeightSubscriber;
   using open_spiel::long_narde::WorkerLoop;
   using open_spiel::long_narde::WorkerStats;
@@ -427,8 +439,7 @@ int main(int argc, char** argv) {
   if (!request_set) {
     config.request_weights = config.nnue_path.empty();
   }
-  std::cerr << "[" << open_spiel::long_narde::Timestamp()
-            << "] [worker] config: depth="
+  std::cerr << "[" << Timestamp() << "] [worker] config: depth="
             << config.depth
             << " root_full_depth_top_k=" << config.root_full_depth_top_k
             << " root_reduced_depth=" << config.root_reduced_depth
@@ -440,23 +451,29 @@ int main(int argc, char** argv) {
             << " alpha=" << config.alpha
             << " report_every_games=" << config.report_every_games
             << " report_every_seconds=" << config.report_every_seconds << "\n";
-
   std::shared_ptr<const open_spiel::Game> game =
       open_spiel::LoadGame("long_narde");
-
   int workers = config.workers;
   if (workers <= 0) {
     unsigned int hc = std::thread::hardware_concurrency();
     workers = hc == 0 ? 1 : static_cast<int>(hc) + 1;
   }
   config.workers = workers;
-  std::cerr << "[worker] nnue_kernel=" << NnueKernelName()
-            << " workers=" << config.workers << "\n";
-
+  std::cerr << "[" << Timestamp() << "] [worker] nnue_kernel="
+            << NnueKernelName() << " workers=" << config.workers << "\n";
   WeightsStore store;
   std::thread sub_thread(WeightSubscriber, config, &store);
   sub_thread.detach();
-
+  uint32_t game_id_prefix = static_cast<uint32_t>(config.seed);
+  std::random_device rd;
+  game_id_prefix ^= static_cast<uint32_t>(rd());
+  game_id_prefix ^=
+      static_cast<uint32_t>(
+          std::chrono::steady_clock::now().time_since_epoch().count());
+  game_id_prefix ^=
+      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&config));
+  std::cerr << "[" << Timestamp() << "] [worker] game_id_prefix="
+            << game_id_prefix << "\n";
   WorkerStats stats;
   std::atomic<bool> reporter_done{false};
   std::thread reporter_thread;
@@ -465,13 +482,12 @@ int main(int argc, char** argv) {
                                   config.report_every_seconds, &stats,
                                   &reporter_done);
   }
-
   std::atomic<int64_t> next_game{0};
   std::vector<std::thread> threads;
   threads.reserve(workers);
   for (int i = 0; i < workers; ++i) {
     threads.emplace_back(WorkerLoop, game, config, &next_game, &store, &stats,
-                         i);
+                         game_id_prefix, i);
   }
   for (auto& thread : threads) {
     thread.join();
@@ -480,6 +496,5 @@ int main(int argc, char** argv) {
   if (reporter_thread.joinable()) {
     reporter_thread.join();
   }
-
   return 0;
 }

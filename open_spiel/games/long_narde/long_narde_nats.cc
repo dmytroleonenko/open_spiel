@@ -14,7 +14,10 @@
 
 #include "open_spiel/games/long_narde/long_narde_nats.h"
 
+#include <chrono>
 #include <cstring>
+#include <ctime>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -42,6 +45,20 @@ struct HostPort {
   std::string host;
   std::string port;
 };
+
+std::string Timestamp() {
+  auto now = std::chrono::system_clock::now();
+  std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_snapshot{};
+#if defined(_WIN32)
+  localtime_s(&tm_snapshot, &now_c);
+#else
+  localtime_r(&now_c, &tm_snapshot);
+#endif
+  std::ostringstream out;
+  out << std::put_time(&tm_snapshot, "%F %T");
+  return out.str();
+}
 
 bool SetSendTimeout(int socket, int timeout_ms) {
 #if defined(_WIN32)
@@ -164,11 +181,13 @@ bool NatsConnection::Connect(const std::string& url) {
   int on = 1;
   if (::setsockopt(socket_, SOL_SOCKET, SO_NOSIGPIPE, &on,
                    sizeof(on)) != 0) {
-    std::cerr << "Warning: failed to set SO_NOSIGPIPE\n";
+    std::cerr << "[" << Timestamp()
+              << "] [nats] warning: failed to set SO_NOSIGPIPE\n";
   }
 #endif
   if (!SetSendTimeout(socket_, 2000)) {
-    std::cerr << "Warning: failed to set SO_SNDTIMEO\n";
+    std::cerr << "[" << Timestamp()
+              << "] [nats] warning: failed to set SO_SNDTIMEO\n";
   }
 
   const std::string connect =

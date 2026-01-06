@@ -21,8 +21,11 @@ from open_spiel.python.algorithms.long_narde_nnue.lnue_reader import (
 from open_spiel.python.algorithms.long_narde_nnue.train import (
     NnueNet,
     _build_base_cmd,
+    _build_bootstrap_lookup,
     _bootstrap_targets,
+    _configure_torch_threads,
     _iter_batches,
+    _load_nnue,
     _resolve_device,
     _save_nnue,
     _train_batch,
@@ -255,6 +258,7 @@ def _train_epoch(
     bootstrap_alpha: float,
     seed: int,
     epoch_idx: int,
+    bootstrap_cache: dict[str, dict[int, float]] | None = None,
 ) -> None:
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     # pylint: disable=too-many-locals
@@ -275,12 +279,22 @@ def _train_epoch(
     shard_list = list(shard_paths)
     np_rng.shuffle(shard_list)
     for shard_path in shard_list:
+        lookup = None
+        if bootstrap_steps > 0:
+            cache_key = str(shard_path)
+            if bootstrap_cache is not None:
+                lookup = bootstrap_cache.get(cache_key)
+                if lookup is None:
+                    lookup = _build_bootstrap_lookup(cache_key)
+                    bootstrap_cache[cache_key] = lookup
+            else:
+                lookup = _build_bootstrap_lookup(cache_key)
         reader = LnueShardReader(str(shard_path))
         for chunk in reader.iter_chunks():
             target_override = None
             if bootstrap_steps > 0:
                 target_override = _bootstrap_targets(
-                    chunk, bootstrap_steps, bootstrap_alpha
+                    chunk, bootstrap_steps, bootstrap_alpha, lookup
                 )
             for indices, offsets, outcome, target, mobility in _iter_batches(
                 chunk, batch_size, np_rng, target_override
@@ -387,6 +401,7 @@ def main() -> None:
     parser.add_argument("--output_dir", default="results/nnue_closed_loop")
     parser.add_argument("--iterations", type=int, default=1)
     parser.add_argument("--resume", type=int, default=1)
+    parser.add_argument("--warm_start", type=int, default=1)
     parser.add_argument("--games_per_iter", type=int, default=10000)
     parser.add_argument("--games_per_shard", type=int, default=1000)
     parser.add_argument("--depth", type=int, default=5)
@@ -435,6 +450,14 @@ def main() -> None:
     parser.add_argument("--nats_version_start", type=int, default=0)
     args = parser.parse_args()
     device = _resolve_device(args.device)
+    if device == "cpu":
+        intra, interop = _configure_torch_threads(
+            args.torch_threads, args.torch_interop_threads
+        )
+        print(
+            f"torch threads: intra={intra} interop={interop}",
+            flush=True,
+        )
     bootstrap_alpha = args.bootstrap_alpha
     if bootstrap_alpha < 0.0:
         bootstrap_alpha = args.alpha
@@ -623,13 +646,23 @@ def main() -> None:
 
         header = LnueShardReader(str(shard_paths[0])).header
         model = NnueNet(feature_dim=header.feature_dim).to(device)
+        if args.warm_start != 0 and prev_nnue is not None:
+            name, author = _load_nnue(str(prev_nnue), model, device)
+            print(
+                f"iter {iteration}: warm-started from {prev_nnue.name} "
+                f"(name={name!r}, author={author!r})",
+                flush=True,
+            )
         torch.manual_seed(args.seed + iteration)
 
+        bootstrap_cache = None
+        if args.bootstrap_steps > 0:
+            bootstrap_cache = {}
         for epoch in range(args.epochs):
             train_shards = shard_paths
             replay_subset: List[Path] = []
             if replay_candidates and args.replay_frac > 0.0:
-                desired = int(round(args.replay_frac * len(shard_paths)))
+                desired = int(math.ceil(args.replay_frac * len(shard_paths)))
                 if desired > 0:
                     np_rng = np.random.default_rng(
                         args.seed + iteration * 1000 + epoch
@@ -667,6 +700,7 @@ def main() -> None:
                 bootstrap_alpha,
                 args.seed + iteration * 1000,
                 epoch,
+                bootstrap_cache,
             )
 
         nnue_path = iter_dir / f"nnue_iter_{iteration:02d}.nnue"
@@ -688,7 +722,7 @@ def main() -> None:
             )
 
         eval_seed = args.seed + iteration * 1000000 + 777
-        eval_depth = args.eval_depth if args.eval_depth > 0 else args.depth
+        eval_depth = args.eval_depth if args.eval_depth >= 0 else args.depth
         summary_random = _run_eval(
             eval_bin,
             nnue_path,

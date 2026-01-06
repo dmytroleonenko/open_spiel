@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "open_spiel/games/long_narde/long_narde.h"
-#include "open_spiel/games/long_narde/long_narde_nnue.h"
+#include "open_spiel/games/long_narde/long_narde_nnue_features.h"
 #include "open_spiel/games/long_narde/long_narde_nats_worker_stats.h"
 #include "open_spiel/games/long_narde/long_narde_search.h"
 #include "open_spiel/games/long_narde/long_narde_selfplay_io.h"
@@ -145,9 +145,11 @@ std::vector<SelfPlaySample> PlayOneGame(std::shared_ptr<const Game> game,
       if (!lnstate->initial_roll()) {
         PendingSample entry;
         entry.sample.player = lnstate->current_player_id();
-        entry.sample.game_id =
-            (static_cast<uint64_t>(config.seed) << 32) ^ game_id;
+        entry.sample.game_id = game_id;
         entry.sample.ply = static_cast<uint16_t>(ply);
+        internal::Board opp_board = lnstate->board();
+        internal::FlipBoard(&opp_board);
+        entry.sample.mobility = nnue::MobilityValueFromBoard(opp_board);
         nnue::CollectActiveFeatureIndices(*lnstate,
                                           &entry.sample.active_features);
         SearchResult result = search->Search(lnstate);

@@ -10,6 +10,10 @@ if [ -z "${VIRTUAL_ENV:-}" ] && [ -f "$repo_root/venv/bin/activate" ]; then
   source "$repo_root/venv/bin/activate"
 fi
 
+# Ensure pylint cache is writable in sandboxed/locked-down environments.
+export PYLINTHOME="${PYLINTHOME:-$repo_root/.pylint_cache}"
+mkdir -p "$PYLINTHOME"
+
 staged_files=()
 while IFS= read -r -d '' file; do
   staged_files+=("$file")

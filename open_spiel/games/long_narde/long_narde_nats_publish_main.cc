@@ -12,9 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <chrono>
+#include <ctime>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -93,6 +97,20 @@ std::string BuildSubject(const std::string& base, const std::string& run_id) {
   return base + "." + run_id;
 }
 
+std::string Timestamp() {
+  auto now = std::chrono::system_clock::now();
+  std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_snapshot{};
+#if defined(_WIN32)
+  localtime_s(&tm_snapshot, &now_c);
+#else
+  localtime_r(&now_c, &tm_snapshot);
+#endif
+  std::ostringstream out;
+  out << std::put_time(&tm_snapshot, "%F %T");
+  return out.str();
+}
+
 void PrintUsage(const char* bin) {
   std::cout << "Usage: " << bin
             << " [--nats url] [--run_id id] [--weights_subject name]"
@@ -115,6 +133,7 @@ int main(int argc, char** argv) {
   using open_spiel::long_narde::ParseArgs;
   using open_spiel::long_narde::PrintUsage;
   using open_spiel::long_narde::PublishConfig;
+  using open_spiel::long_narde::Timestamp;
 
   auto args = ParseArgs(argc, argv);
   if (args.find("help") != args.end()) {
@@ -146,48 +165,55 @@ int main(int argc, char** argv) {
   if (!config.path.empty()) {
     std::ifstream file(config.path, std::ios::binary | std::ios::in);
     if (!file.is_open()) {
-      std::cerr << "Failed to open " << config.path << "\n";
+      std::cerr << "[" << Timestamp() << "] [publish] failed to open "
+                << config.path << "\n";
       return 1;
     }
     payload.assign((std::istreambuf_iterator<char>(file)),
                    std::istreambuf_iterator<char>());
-    std::cout << "Loaded " << payload.size() << " bytes from "
-              << config.path << "\n";
+    std::cout << "[" << Timestamp() << "] [publish] loaded " << payload.size()
+              << " bytes from " << config.path << "\n";
   }
 
   NatsConnection conn;
   if (!conn.Connect(config.nats_url)) {
-    std::cerr << "Failed to connect to NATS at " << config.nats_url << "\n";
+    std::cerr << "[" << Timestamp()
+              << "] [publish] failed to connect to NATS at " << config.nats_url
+              << "\n";
     return 1;
   }
   std::string subject = BuildSubject(config.weights_subject, config.run_id);
   if (!config.serve) {
     if (!conn.Publish(subject, payload)) {
-      std::cerr << "Failed to publish weights to " << subject << "\n";
+      std::cerr << "[" << Timestamp()
+                << "] [publish] failed to publish weights to " << subject
+                << "\n";
       return 1;
     }
-    std::cout << "Published " << payload.size() << " bytes to " << subject
-              << "\n";
+    std::cout << "[" << Timestamp() << "] [publish] published "
+              << payload.size() << " bytes to " << subject << "\n";
     return 0;
   }
 
   std::string request_subject =
       BuildSubject(config.request_subject, config.run_id);
   if (!conn.Subscribe(subject, 1)) {
-    std::cerr << "Failed to subscribe to " << subject << "\n";
+    std::cerr << "[" << Timestamp() << "] [publish] failed to subscribe to "
+              << subject << "\n";
     return 1;
   }
   if (!conn.Subscribe(request_subject, 2)) {
-    std::cerr << "Failed to subscribe to " << request_subject << "\n";
+    std::cerr << "[" << Timestamp() << "] [publish] failed to subscribe to "
+              << request_subject << "\n";
     return 1;
   }
-  std::cout << "Serving weights on " << subject << " (requests on "
-            << request_subject << ")\n";
+  std::cout << "[" << Timestamp() << "] [publish] serving weights on "
+            << subject << " (requests on " << request_subject << ")\n";
 
   if (config.announce && !payload.empty()) {
     conn.Publish(subject, payload);
-    std::cout << "Announced " << payload.size() << " bytes on " << subject
-              << "\n";
+    std::cout << "[" << Timestamp() << "] [publish] announced "
+              << payload.size() << " bytes on " << subject << "\n";
   }
 
   open_spiel::long_narde::NatsMessage msg;
@@ -196,15 +222,15 @@ int main(int argc, char** argv) {
       const std::string& reply_subject = msg.payload;
       if (!reply_subject.empty() && !payload.empty()) {
         conn.Publish(reply_subject, payload);
-        std::cout << "Published " << payload.size() << " bytes to "
-                  << reply_subject << "\n";
+        std::cout << "[" << Timestamp() << "] [publish] published "
+                  << payload.size() << " bytes to " << reply_subject << "\n";
       }
       continue;
     }
     if (!msg.payload.empty()) {
       payload = std::move(msg.payload);
-      std::cout << "Received weights update (" << payload.size()
-                << " bytes)\n";
+      std::cout << "[" << Timestamp() << "] [publish] received weights update ("
+                << payload.size() << " bytes)\n";
     }
   }
   return 0;

@@ -26,6 +26,9 @@ _NNUE_VERSION = 3
 _NNUE_TYPE_INT8 = 1
 _NNUE_TYPE_INT16 = 2
 _NNUE_FEATURE_FLAGS = (1 << 0) | (1 << 1) | (1 << 2)
+_NNUE_HEADER_FMT = "<4s16I"
+_NNUE_HEADER_SIZE = struct.calcsize(_NNUE_HEADER_FMT)
+_BOOTSTRAP_PLY_SHIFT = 16
 
 
 class NnueNet(torch.nn.Module):
@@ -97,6 +100,34 @@ def _resolve_device(device: str) -> str:
     return "cpu"
 
 
+def _configure_torch_threads(
+    torch_threads: int,
+    torch_interop_threads: int,
+) -> tuple[int, int]:
+    """Configures PyTorch CPU thread pools.
+
+    Args:
+      torch_threads: Intra-op threads. <=0 means "use all cores".
+      torch_interop_threads: Inter-op threads. <=0 means "leave default".
+
+    Returns:
+      (intra_threads, interop_threads) after configuration.
+    """
+    cpu_count = os.cpu_count() or 1
+    threads = int(torch_threads)
+    if threads <= 0:
+        threads = cpu_count
+    threads = max(1, threads)
+    torch.set_num_threads(threads)
+    interop = int(torch_interop_threads)
+    if interop > 0:
+        try:
+            torch.set_num_interop_threads(interop)
+        except RuntimeError:
+            pass
+    return torch.get_num_threads(), torch.get_num_interop_threads()
+
+
 def _iter_batches(
     chunk,
     batch_size: int,
@@ -137,24 +168,51 @@ def _iter_batches(
         )
 
 
-def _bootstrap_targets(chunk, steps: int, alpha: float) -> np.ndarray:
+def _bootstrap_targets(
+    chunk,
+    steps: int,
+    alpha: float,
+    lookup: dict[int, float] | None = None,
+) -> np.ndarray:
     if steps <= 0:
         return chunk.target
     alpha = float(np.clip(alpha, 0.0, 1.0))
     outcome = chunk.outcome.astype(np.float32)
     target = np.empty_like(chunk.target, dtype=np.float32)
-    game_map: dict[int, dict[int, int]] = {}
+    if lookup is None:
+        game_map: dict[int, dict[int, int]] = {}
+        for idx, (game_id, ply) in enumerate(zip(chunk.game_id, chunk.ply)):
+            game_map.setdefault(int(game_id), {})[int(ply)] = idx
+        for idx, (game_id, ply) in enumerate(zip(chunk.game_id, chunk.ply)):
+            ply_lookup = game_map[int(game_id)]
+            next_idx = ply_lookup.get(int(ply) + steps)
+            if next_idx is None:
+                bootstrap = float(chunk.v_search[idx])
+            else:
+                bootstrap = float(chunk.v_search[next_idx])
+            target[idx] = alpha * bootstrap + (1.0 - alpha) * outcome[idx]
+        return target
     for idx, (game_id, ply) in enumerate(zip(chunk.game_id, chunk.ply)):
-        game_map.setdefault(int(game_id), {})[int(ply)] = idx
-    for idx, (game_id, ply) in enumerate(zip(chunk.game_id, chunk.ply)):
-        lookup = game_map[int(game_id)]
-        next_idx = lookup.get(int(ply) + steps)
-        if next_idx is None:
+        next_key = (int(game_id) << _BOOTSTRAP_PLY_SHIFT) | (
+            int(ply) + steps
+        )
+        bootstrap = lookup.get(next_key)
+        if bootstrap is None:
             bootstrap = float(chunk.v_search[idx])
-        else:
-            bootstrap = float(chunk.v_search[next_idx])
         target[idx] = alpha * bootstrap + (1.0 - alpha) * outcome[idx]
     return target
+
+
+def _build_bootstrap_lookup(shard_path: str) -> dict[int, float]:
+    lookup: dict[int, float] = {}
+    reader = LnueShardReader(shard_path)
+    for chunk in reader.iter_chunks():
+        for game_id, ply, v_search in zip(
+            chunk.game_id, chunk.ply, chunk.v_search
+        ):
+            key = (int(game_id) << _BOOTSTRAP_PLY_SHIFT) | int(ply)
+            lookup[key] = float(v_search)
+    return lookup
 
 
 def _targets_from_outcome(
@@ -456,6 +514,103 @@ def _save_nnue(
         handle.write(b2_q.tobytes(order="C"))
 
 
+def _load_nnue(path: str, model: NnueNet, device: str) -> tuple[str, str]:
+    """Loads a quantized NNUE file into a PyTorch model.
+
+    Args:
+      path: NNUE file path.
+      model: Model to populate (must match dimensions).
+      device: Torch device string to load onto.
+
+    Returns:
+      (name, author) strings from the NNUE header.
+    """
+    # pylint: disable=too-many-locals
+    with open(path, "rb") as handle:
+        header_bytes = handle.read(_NNUE_HEADER_SIZE)
+        if len(header_bytes) != _NNUE_HEADER_SIZE:
+            raise ValueError("Incomplete NNUE header.")
+        (
+            magic,
+            version,
+            endian,
+            feature_dim,
+            l1,
+            l2,
+            l3,
+            _run_features_enabled,
+            _run_block_threshold,
+            w0_type,
+            w1_type,
+            w2_type,
+            b0_type,
+            b1_type,
+            b2_type,
+            payload_size,
+            _,
+        ) = struct.unpack(_NNUE_HEADER_FMT, header_bytes)
+        if magic != _NNUE_MAGIC or endian != _NNUE_ENDIAN or version != _NNUE_VERSION:
+            raise ValueError(
+                "Unsupported NNUE header: "
+                f"magic={magic!r} endian={endian} version={version}"
+            )
+        if payload_size <= 0:
+            raise ValueError("Invalid NNUE payload size.")
+        if w0_type != _NNUE_TYPE_INT16 or b0_type != _NNUE_TYPE_INT16:
+            raise ValueError("Unsupported NNUE embedding types.")
+        if (
+            w1_type != _NNUE_TYPE_INT8
+            or b1_type != _NNUE_TYPE_INT8
+            or w2_type != _NNUE_TYPE_INT8
+            or b2_type != _NNUE_TYPE_INT8
+        ):
+            raise ValueError("Unsupported NNUE linear types.")
+        if feature_dim != model.feature_dim:
+            raise ValueError(
+                f"NNUE feature_dim mismatch: {feature_dim} != {model.feature_dim}"
+            )
+        if l1 != model.l1 or l2 != model.l2:
+            raise ValueError("NNUE hidden size mismatch.")
+        if l3 != int(model.fc2.out_features):
+            raise ValueError("NNUE output size mismatch.")
+
+        name = handle.read(64).split(b"\0", 1)[0].decode("ascii", errors="ignore")
+        author = (
+            handle.read(64).split(b"\0", 1)[0].decode("ascii", errors="ignore")
+        )
+
+        w0_bytes = feature_dim * l1 * 2
+        b0_bytes = l1 * 2
+        w1_bytes = l1 * l2
+        b1_bytes = l2
+        w2_bytes = l2 * l3
+        b2_bytes = l3
+
+        w0_q = np.frombuffer(handle.read(w0_bytes), dtype=np.int16).copy()
+        b0_q = np.frombuffer(handle.read(b0_bytes), dtype=np.int16).copy()
+        w1_q = np.frombuffer(handle.read(w1_bytes), dtype=np.int8).copy()
+        b1_q = np.frombuffer(handle.read(b1_bytes), dtype=np.int8).copy()
+        w2_q = np.frombuffer(handle.read(w2_bytes), dtype=np.int8).copy()
+        b2_q = np.frombuffer(handle.read(b2_bytes), dtype=np.int8).copy()
+
+    w0 = w0_q.reshape((feature_dim, l1)).astype(np.float32) / _SCALE
+    b0 = b0_q.astype(np.float32) / _SCALE
+    w1 = w1_q.reshape((l2, l1)).astype(np.float32) / _SCALE
+    b1 = b1_q.astype(np.float32) / _SCALE
+    w2 = w2_q.reshape((l3, l2)).astype(np.float32) / _SCALE
+    b2 = b2_q.astype(np.float32) / _SCALE
+
+    with torch.no_grad():
+        model.embed.weight.copy_(torch.from_numpy(w0).to(device))
+        model.b0.copy_(torch.from_numpy(b0).to(device))
+        model.fc1.weight.copy_(torch.from_numpy(w1).to(device))
+        model.fc1.bias.copy_(torch.from_numpy(b1).to(device))
+        model.fc2.weight.copy_(torch.from_numpy(w2).to(device))
+        model.fc2.bias.copy_(torch.from_numpy(b2).to(device))
+    model.clip_parameters()
+    return name, author
+
+
 def train(args) -> None:
     """Training loop for LNUE shard datasets."""
     # pylint: disable=too-many-locals
@@ -463,6 +618,11 @@ def train(args) -> None:
     np_rng = np.random.default_rng(args.seed)
 
     device = _resolve_device(args.device)
+    intra, interop = _configure_torch_threads(
+        getattr(args, "torch_threads", 0),
+        getattr(args, "torch_interop_threads", 0),
+    )
+    print(f"torch threads: intra={intra} interop={interop}", flush=True)
     bootstrap_steps = max(0, int(args.bootstrap_steps))
     bootstrap_alpha = args.bootstrap_alpha
     if bootstrap_alpha < 0.0:
@@ -478,16 +638,23 @@ def train(args) -> None:
     optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
+    bootstrap_cache: dict[str, dict[int, float]] = {}
 
     for epoch in range(args.epochs):
         np_rng.shuffle(shard_paths)
         for shard_path in shard_paths:
+            lookup = None
+            if bootstrap_steps > 0:
+                lookup = bootstrap_cache.get(shard_path)
+                if lookup is None:
+                    lookup = _build_bootstrap_lookup(shard_path)
+                    bootstrap_cache[shard_path] = lookup
             reader = LnueShardReader(shard_path)
             for chunk in reader.iter_chunks():
                 target_override = None
                 if bootstrap_steps > 0:
                     target_override = _bootstrap_targets(
-                        chunk, bootstrap_steps, bootstrap_alpha
+                        chunk, bootstrap_steps, bootstrap_alpha, lookup
                     )
                 for indices, offsets, outcome, target, mobility in _iter_batches(
                     chunk, args.batch_size, np_rng, target_override
@@ -523,6 +690,18 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--weight_decay", type=float, default=1e-5)
     parser.add_argument("--ev_weight", type=float, default=0.5)
     parser.add_argument("--mobility_weight", type=float, default=0.1)
+    parser.add_argument(
+        "--torch_threads",
+        type=int,
+        default=0,
+        help="PyTorch intra-op CPU threads (<=0 uses all cores).",
+    )
+    parser.add_argument(
+        "--torch_interop_threads",
+        type=int,
+        default=0,
+        help="PyTorch inter-op threads (<=0 keeps default).",
+    )
     parser.add_argument("--quant_loss", action="store_true")
     parser.add_argument("--quant_loss_weight", type=float, default=0.0001)
     parser.add_argument("--bootstrap_steps", type=int, default=0)

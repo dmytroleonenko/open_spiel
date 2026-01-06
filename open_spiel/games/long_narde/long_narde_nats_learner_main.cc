@@ -16,6 +16,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -34,6 +35,20 @@ namespace {
 
 std::string NextShardStatePath(const std::string& out_dir) {
   return out_dir + "/next_shard.txt";
+}
+
+std::string Timestamp() {
+  auto now = std::chrono::system_clock::now();
+  std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_snapshot{};
+#if defined(_WIN32)
+  localtime_s(&tm_snapshot, &now_c);
+#else
+  localtime_r(&now_c, &tm_snapshot);
+#endif
+  std::ostringstream out;
+  out << std::put_time(&tm_snapshot, "%F %T");
+  return out.str();
 }
 
 int LoadNextShardId(const std::string& out_dir, bool* has_state) {
@@ -194,6 +209,7 @@ int main(int argc, char** argv) {
   using open_spiel::long_narde::PrintUsage;
   using open_spiel::long_narde::SaveNextShardId;
   using open_spiel::long_narde::SelfPlaySample;
+  using open_spiel::long_narde::Timestamp;
 
   auto args = ParseArgs(argc, argv);
   if (args.find("help") != args.end()) {
@@ -216,25 +232,31 @@ int main(int argc, char** argv) {
   config.progress = GetBoolArg(args, "progress", config.progress);
 
   if (!open_spiel::file::Mkdirs(config.out_dir)) {
-    std::cerr << "Failed to create output dir " << config.out_dir << "\n";
+    std::cerr << "[" << Timestamp()
+              << "] [learner] failed to create output dir " << config.out_dir
+              << "\n";
     return 1;
   }
 
   bool has_state = false;
   int shard_id = LoadNextShardId(config.out_dir, &has_state);
   if (has_state) {
-    std::cerr << "[learner] resuming at shard " << shard_id << "\n";
+    std::cerr << "[" << Timestamp() << "] [learner] resuming at shard "
+              << shard_id << "\n";
   }
 
   NatsConnection conn;
   if (!conn.Connect(config.nats_url)) {
-    std::cerr << "Failed to connect to NATS at " << config.nats_url << "\n";
+    std::cerr << "[" << Timestamp()
+              << "] [learner] failed to connect to NATS at " << config.nats_url
+              << "\n";
     return 1;
   }
 
   std::string subject = BuildSubject(config.traj_subject, config.run_id);
   if (!conn.Subscribe(subject, 1)) {
-    std::cerr << "Failed to subscribe to " << subject << "\n";
+    std::cerr << "[" << Timestamp() << "] [learner] failed to subscribe to "
+              << subject << "\n";
     return 1;
   }
 
@@ -244,11 +266,11 @@ int main(int argc, char** argv) {
   int total_samples = 0;
   int last_report_games = 0;
   int last_report_samples = 0;
-  auto start_time = std::chrono::steady_clock::now();
-  auto last_report_time = start_time;
+  auto last_report_time = std::chrono::steady_clock::now();
 
   if (!OpenShard(config, shard_id, &writer)) {
-    std::cerr << "Failed to open shard " << shard_id << "\n";
+    std::cerr << "[" << Timestamp() << "] [learner] failed to open shard "
+              << shard_id << "\n";
     return 1;
   }
   SaveNextShardId(config.out_dir, shard_id + 1);
@@ -257,11 +279,13 @@ int main(int argc, char** argv) {
   while (conn.NextMessage(&msg)) {
     std::vector<SelfPlaySample> samples;
     if (!DeserializeLnueTrajectory(msg.payload, &samples)) {
-      std::cerr << "Failed to parse trajectory payload.\n";
+      std::cerr << "[" << Timestamp()
+                << "] [learner] failed to parse trajectory payload.\n";
       continue;
     }
     if (!writer.AddSamples(samples)) {
-      std::cerr << "Failed to append samples to shard.\n";
+      std::cerr << "[" << Timestamp()
+                << "] [learner] failed to append samples to shard.\n";
       return 1;
     }
     games_in_shard += 1;
@@ -271,20 +295,12 @@ int main(int argc, char** argv) {
     if (config.progress && config.report_every > 0 &&
         total_games % config.report_every == 0) {
       auto now = std::chrono::steady_clock::now();
-      double total_elapsed =
-          std::chrono::duration_cast<std::chrono::duration<double>>(
-              now - start_time)
-              .count();
       double window_elapsed =
           std::chrono::duration_cast<std::chrono::duration<double>>(
               now - last_report_time)
               .count();
       int window_games = total_games - last_report_games;
       int window_samples = total_samples - last_report_samples;
-      double overall_games_s =
-          total_elapsed > 0.0 ? total_games / total_elapsed : 0.0;
-      double overall_samples_s =
-          total_elapsed > 0.0 ? total_samples / total_elapsed : 0.0;
       double window_games_s =
           window_elapsed > 0.0 ? window_games / window_elapsed : 0.0;
       double window_samples_s =
@@ -292,13 +308,11 @@ int main(int argc, char** argv) {
       double avg_samples =
           total_games > 0 ? static_cast<double>(total_samples) / total_games
                           : 0.0;
-      std::cerr << "[learner] games=" << total_games
-                << " samples=" << total_samples
-                << " shard=" << shard_id << " (" << games_in_shard
-                << "/" << config.games_per_shard << ") overall="
-                << overall_games_s << " g/s " << overall_samples_s
-                << " s/s window=" << window_games_s << " g/s "
-                << window_samples_s << " s/s avg=" << avg_samples
+      std::cerr << "[" << Timestamp() << "] [learner] games=" << total_games
+                << " samples=" << total_samples << " shard=" << shard_id
+                << " (" << games_in_shard << "/" << config.games_per_shard
+                << ") rate=" << window_games_s << " g/s " << window_samples_s
+                << " s/s window_s=" << window_elapsed << " avg=" << avg_samples
                 << " s/g\n";
       last_report_time = now;
       last_report_games = total_games;
@@ -314,7 +328,8 @@ int main(int argc, char** argv) {
       shard_id += 1;
       games_in_shard = 0;
       if (!OpenShard(config, shard_id, &writer)) {
-        std::cerr << "Failed to open shard " << shard_id << "\n";
+        std::cerr << "[" << Timestamp() << "] [learner] failed to open shard "
+                  << shard_id << "\n";
         return 1;
       }
       SaveNextShardId(config.out_dir, shard_id + 1);

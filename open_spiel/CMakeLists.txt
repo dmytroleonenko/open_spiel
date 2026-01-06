@@ -32,12 +32,21 @@ set(CMAKE_CUDA_STANDARD_REQUIRED TRUE)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 
 # Set default build type.
-set (BUILD_TYPE $ENV{BUILD_TYPE})
-if(NOT BUILD_TYPE)
-   set(BUILD_TYPE Testing
-       CACHE STRING "Choose the type of build: Debug Release Testing."
-       FORCE)
+# OpenSpiel scripts set `BUILD_TYPE` via the environment. For manual builds,
+# fall back to CMake's standard `CMAKE_BUILD_TYPE`.
+if(DEFINED ENV{BUILD_TYPE} AND NOT "$ENV{BUILD_TYPE}" STREQUAL "")
+  set(BUILD_TYPE "$ENV{BUILD_TYPE}")
+elseif(NOT BUILD_TYPE)
+  if(DEFINED CMAKE_BUILD_TYPE AND NOT "${CMAKE_BUILD_TYPE}" STREQUAL "")
+    set(BUILD_TYPE "${CMAKE_BUILD_TYPE}")
+  else()
+    set(BUILD_TYPE "Testing")
+  endif()
 endif()
+set(
+  BUILD_TYPE "${BUILD_TYPE}"
+  CACHE STRING "Choose the type of build: Debug Release Testing."
+  FORCE)
 message("${BoldYellow}Current build type is: ${BUILD_TYPE}${ColourReset}")
 
 if(${BUILD_TYPE} STREQUAL "Debug")
@@ -93,12 +102,17 @@ set (CMAKE_POSITION_INDEPENDENT_CODE ON)
 # dependency is enabled -- see code below.
 macro(openspiel_optional_dependency DEP_NAME DEP_DEFAULT DEP_DESCRIPTION)
   set (${DEP_NAME} ${DEP_DEFAULT} CACHE BOOL ${DEP_DESCRIPTION})
-  if(NOT DEFINED ENV{${DEP_NAME}})
-    message("${BoldRed}${DEP_NAME} not set. Defaults to ${DEP_DEFAULT}${ColourReset}")
-    set (ENV{${DEP_NAME}} ${DEP_DEFAULT})
+  if(DEFINED ENV{${DEP_NAME}})
+    set (${DEP_NAME} $ENV{${DEP_NAME}})
+    # Keep the cache consistent with the env-provided value.
+    set (${DEP_NAME} ${${DEP_NAME}} CACHE BOOL ${DEP_DESCRIPTION} FORCE)
+    set (_OPEN_SPIEL_DEP_SOURCE "env")
+  else()
+    # Env not set: use the CMake cache value (possibly provided via `-D...`).
+    set (ENV{${DEP_NAME}} ${${DEP_NAME}})
+    set (_OPEN_SPIEL_DEP_SOURCE "cmake")
   endif()
-  set (${DEP_NAME} $ENV{${DEP_NAME}})
-  message("${BoldYellow}${DEP_NAME}: ${${DEP_NAME}} ${ColourReset}")
+  message("${BoldYellow}${DEP_NAME}: ${${DEP_NAME}} (${_OPEN_SPIEL_DEP_SOURCE}) ${ColourReset}")
   # If the dependency is on, pass in compiler flags to enable conditional code,
   # e.g. #if OPEN_SPIEL_BUILD_WITH_...
   if (${DEP_NAME})
