@@ -34,13 +34,23 @@ _BOOTSTRAP_PLY_SHIFT = 16
 class NnueNet(torch.nn.Module):
     """Sparse NNUE network for Long Narde."""
 
-    def __init__(self, feature_dim: int, l1: int = 256, l2: int = 32):
+    def __init__(
+        self,
+        feature_dim: int,
+        l1: int = 256,
+        l2: int = 32,
+        sparse_embed: bool = False,
+    ):
         super().__init__()
         self.feature_dim = feature_dim
         self.l1 = l1
         self.l2 = l2
         self.embed = torch.nn.EmbeddingBag(
-            feature_dim, l1, mode="sum", include_last_offset=True
+            feature_dim,
+            l1,
+            mode="sum",
+            include_last_offset=True,
+            sparse=sparse_embed,
         )
         self.b0 = torch.nn.Parameter(torch.zeros(l1))
         self.fc1 = torch.nn.Linear(l1, l2)
@@ -54,11 +64,13 @@ class NnueNet(torch.nn.Module):
         x = torch.clamp(x, min=0.0, max=_Q)
         return self.fc2(x)
 
-    def quantization_error(self) -> torch.Tensor:
+    def quantization_error(self, include_embed: bool = True) -> torch.Tensor:
         """Returns quantization penalty for 1/64 grid."""
         total = torch.tensor(0.0, device=self.embed.weight.device)
         count = 0
         for param in self.parameters():
+            if not include_embed and param is self.embed.weight:
+                continue
             if param.requires_grad:
                 q = torch.clamp(torch.round(param * _SCALE) / _SCALE, -_Q, _Q)
                 total = total + torch.sum((param - q) ** 2)
@@ -165,6 +177,56 @@ def _lr_for_step(base_lr: float, milestones: list[tuple[int, float]], step: int)
 def _set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
     for group in optimizer.param_groups:
         group["lr"] = float(lr)
+
+
+def _dense_params(model: NnueNet) -> list[torch.nn.Parameter]:
+    return [p for n, p in model.named_parameters() if n != "embed.weight"]
+
+
+def _build_optimizers(
+    model: NnueNet,
+    args,
+) -> tuple[
+    torch.optim.Optimizer, torch.optim.Optimizer | None, list[torch.nn.Parameter], bool
+]:
+    """Builds optimizer(s) for NNUE training."""
+    use_mixed = args.optimizer == "sparseadam_sgd"
+    dense_params = _dense_params(model)
+    optimizer_embed = None
+    if args.optimizer == "adam":
+        optimizer_dense = torch.optim.Adam(
+            model.parameters(), weight_decay=args.weight_decay
+        )
+    elif args.optimizer == "adamw":
+        optimizer_dense = torch.optim.AdamW(
+            model.parameters(), weight_decay=args.weight_decay
+        )
+    elif args.optimizer == "sparseadam_sgd":
+        optimizer_embed = torch.optim.SparseAdam(
+            [model.embed.weight],
+            lr=args.lr * args.embed_lr_scale,
+        )
+        optimizer_dense = torch.optim.SGD(
+            dense_params,
+            lr=args.lr,
+            momentum=args.sgd_momentum,
+            weight_decay=args.weight_decay,
+            nesterov=bool(args.sgd_nesterov),
+        )
+    else:
+        raise ValueError(f"Unsupported optimizer: {args.optimizer!r}")
+    return optimizer_dense, optimizer_embed, dense_params, use_mixed
+
+
+def _set_optimizers_lr(
+    optimizer_dense: torch.optim.Optimizer,
+    optimizer_embed: torch.optim.Optimizer | None,
+    lr: float,
+    embed_lr_scale: float,
+) -> None:
+    _set_optimizer_lr(optimizer_dense, lr)
+    if optimizer_embed is not None:
+        _set_optimizer_lr(optimizer_embed, lr * embed_lr_scale)
 
 
 def _iter_batches(
@@ -314,6 +376,9 @@ def _train_batch(
     quant_loss: bool,
     quant_loss_weight: float,
     grad_clip_norm: float,
+    optimizer_embed: torch.optim.Optimizer | None = None,
+    dense_params: list[torch.nn.Parameter] | None = None,
+    quantize_embed: bool = True,
 ) -> None:
     """Runs a single optimization step on one batch."""
     # pylint: disable=too-many-locals,too-many-branches
@@ -324,16 +389,30 @@ def _train_batch(
     mobility_t = torch.from_numpy(mobility).to(device)
 
     optimizer.zero_grad()
+    if optimizer_embed is not None:
+        optimizer_embed.zero_grad()
     logits = model(indices_t, offsets_t)
     loss = _loss_from_logits(
         logits, outcome_t, target_t, mobility_t, criterion, ev_weight, mobility_weight
     )
     if quant_loss:
-        loss = loss + quant_loss_weight * model.quantization_error()
+        loss = loss + quant_loss_weight * model.quantization_error(
+            include_embed=quantize_embed
+        )
     loss.backward()
     if grad_clip_norm > 0.0:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
+        clip_params = dense_params
+        if clip_params is None:
+            clip_params = [
+                param
+                for param in model.parameters()
+                if param.grad is not None and not param.grad.is_sparse
+            ]
+        if clip_params:
+            torch.nn.utils.clip_grad_norm_(clip_params, grad_clip_norm)
     optimizer.step()
+    if optimizer_embed is not None:
+        optimizer_embed.step()
     model.clip_parameters()
 
 
@@ -677,14 +756,28 @@ def train(args) -> None:
         raise ValueError("No LNUE shards found.")
 
     first_header = LnueShardReader(shard_paths[0]).header
-    model = NnueNet(feature_dim=first_header.feature_dim).to(device)
+    use_mixed = args.optimizer == "sparseadam_sgd"
+    model = NnueNet(
+        feature_dim=first_header.feature_dim,
+        sparse_embed=use_mixed,
+    ).to(device)
     criterion = torch.nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.Adam(model.parameters(), weight_decay=args.weight_decay)
-    _set_optimizer_lr(optimizer, _lr_for_step(args.lr, lr_milestones, 0))
+    optimizer_dense, optimizer_embed, dense_params, use_mixed = _build_optimizers(
+        model, args
+    )
+    _set_optimizers_lr(
+        optimizer_dense,
+        optimizer_embed,
+        _lr_for_step(args.lr, lr_milestones, 0),
+        args.embed_lr_scale,
+    )
     bootstrap_cache: dict[str, dict[int, float]] = {}
 
     for epoch in range(args.epochs):
-        _set_optimizer_lr(optimizer, _lr_for_step(args.lr, lr_milestones, epoch))
+        epoch_lr = _lr_for_step(args.lr, lr_milestones, epoch)
+        _set_optimizers_lr(
+            optimizer_dense, optimizer_embed, epoch_lr, args.embed_lr_scale
+        )
         np_rng.shuffle(shard_paths)
         for shard_path in shard_paths:
             lookup = None
@@ -705,7 +798,8 @@ def train(args) -> None:
                 ):
                     batch_kwargs = {
                         "model": model,
-                        "optimizer": optimizer,
+                        "optimizer": optimizer_dense,
+                        "optimizer_embed": optimizer_embed,
                         "criterion": criterion,
                         "indices": indices,
                         "offsets": offsets,
@@ -718,6 +812,8 @@ def train(args) -> None:
                         "quant_loss": args.quant_loss,
                         "quant_loss_weight": args.quant_loss_weight,
                         "grad_clip_norm": grad_clip_norm,
+                        "dense_params": dense_params if use_mixed else None,
+                        "quantize_embed": not use_mixed,
                     }
                     _train_batch(**batch_kwargs)
 
@@ -731,8 +827,32 @@ def train(args) -> None:
 
 def add_training_args(parser: argparse.ArgumentParser) -> None:
     """Adds common optimizer/training flags to an argument parser."""
+    parser.add_argument(
+        "--optimizer",
+        default="adam",
+        choices=("adam", "adamw", "sparseadam_sgd"),
+        help="Optimizer: adam/adamw, or sparseadam_sgd (SparseAdam on embed + SGD on dense).",
+    )
     parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument(
+        "--embed_lr_scale",
+        type=float,
+        default=1.0,
+        help="Multiplier for embedding LR when using sparseadam_sgd.",
+    )
     parser.add_argument("--weight_decay", type=float, default=1e-5)
+    parser.add_argument(
+        "--sgd_momentum",
+        type=float,
+        default=0.9,
+        help="SGD momentum for dense layers when using sparseadam_sgd.",
+    )
+    parser.add_argument(
+        "--sgd_nesterov",
+        type=int,
+        default=0,
+        help="Use Nesterov momentum for dense layers when using sparseadam_sgd.",
+    )
     parser.add_argument("--ev_weight", type=float, default=0.5)
     parser.add_argument("--mobility_weight", type=float, default=0.1)
     parser.add_argument(

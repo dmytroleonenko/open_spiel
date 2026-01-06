@@ -301,6 +301,10 @@ def _train_epoch(
     batch_size: int,
     lr: float,
     weight_decay: float,
+    optimizer_name: str,
+    embed_lr_scale: float,
+    sgd_momentum: float,
+    sgd_nesterov: bool,
     ev_weight: float,
     mobility_weight: float,
     quant_loss: bool,
@@ -316,9 +320,31 @@ def _train_epoch(
     # pylint: disable=too-many-locals
     np_rng = np.random.default_rng(seed + epoch_idx)
     criterion = torch.nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=lr, weight_decay=weight_decay
-    )
+    optimizer_embed = None
+    dense_params = [p for n, p in model.named_parameters() if n != "embed.weight"]
+    if optimizer_name == "adam":
+        optimizer_dense = torch.optim.Adam(
+            model.parameters(), lr=lr, weight_decay=weight_decay
+        )
+    elif optimizer_name == "adamw":
+        optimizer_dense = torch.optim.AdamW(
+            model.parameters(), lr=lr, weight_decay=weight_decay
+        )
+    elif optimizer_name == "sparseadam_sgd":
+        optimizer_embed = torch.optim.SparseAdam(
+            [model.embed.weight],
+            lr=lr * embed_lr_scale,
+        )
+        optimizer_dense = torch.optim.SGD(
+            dense_params,
+            lr=lr,
+            momentum=sgd_momentum,
+            weight_decay=weight_decay,
+            nesterov=bool(sgd_nesterov),
+        )
+    else:
+        raise ValueError(f"Unsupported optimizer: {optimizer_name!r}")
+    use_mixed = optimizer_embed is not None
 
     total_samples = _count_samples(shard_paths)
     progress = ProgressBar(
@@ -353,7 +379,7 @@ def _train_epoch(
             ):
                 _train_batch(
                     model,
-                    optimizer,
+                    optimizer_dense,
                     criterion,
                     indices,
                     offsets,
@@ -366,6 +392,9 @@ def _train_epoch(
                     quant_loss,
                     quant_loss_weight,
                     grad_clip_norm,
+                    optimizer_embed=optimizer_embed,
+                    dense_params=dense_params if use_mixed else None,
+                    quantize_embed=not use_mixed,
                 )
 
                 processed += int(outcome.shape[0])
@@ -712,7 +741,11 @@ def main() -> None:
         )
 
         header = LnueShardReader(str(shard_paths[0])).header
-        model = NnueNet(feature_dim=header.feature_dim).to(device)
+        use_mixed = args.optimizer == "sparseadam_sgd"
+        model = NnueNet(
+            feature_dim=header.feature_dim,
+            sparse_embed=use_mixed,
+        ).to(device)
         if args.warm_start != 0 and baseline_nnue is not None:
             name, author = _load_nnue(str(baseline_nnue), model, device)
             print(
@@ -761,6 +794,10 @@ def main() -> None:
                 args.batch_size,
                 iter_lr,
                 args.weight_decay,
+                args.optimizer,
+                args.embed_lr_scale,
+                args.sgd_momentum,
+                args.sgd_nesterov != 0,
                 args.ev_weight,
                 args.mobility_weight,
                 args.quant_loss,
