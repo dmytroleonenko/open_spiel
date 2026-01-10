@@ -14,10 +14,12 @@
 
 #include <array>
 #include <cstdio>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/container/btree_map.h"
@@ -130,8 +132,10 @@ std::pair<std::vector<double>, std::vector<std::string>> PlayGame(
       std::cerr << "State: " << std::endl << state->ToString() << std::endl;
   }
 
-  std::cerr << "Returns: " << absl::StrJoin(state->Returns(), ",")
-            << " Game actions: " << absl::StrJoin(history, " ") << std::endl;
+  if (!quiet) {
+    std::cerr << "Returns: " << absl::StrJoin(state->Returns(), ",")
+              << " Game actions: " << absl::StrJoin(history, " ") << std::endl;
+  }
   return {state->Returns(), history};
 }
 
